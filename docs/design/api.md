@@ -1,0 +1,408 @@
+# Assay — Test & Fixture API Design
+
+> Status: **design draft** — we are nailing the authoring surface before building the
+> Rust engine. Nothing here is implemented yet. The goal of this document is to make the
+> Lua DSL feel right in example code first, then work backward to the runtime.
+
+## What Assay is
+
+A **programmable, language-agnostic acceptance-test runner**: a real scripting language
+(Lua) plus a real fixture model, shipped as a single static binary. It is not a unit-test
+framework (JUnit/pytest own that inside their languages) and it is not a single-protocol
+tool (Hurl owns HTTP). It occupies the **black-box acceptance/integration layer**: bring a
+system into existence (render it, build it, boot it), then poke it with shell + HTTP +
+filesystem assertions, with fixtures holding the setup/teardown together.
+
+The wedge over the existing agnostic testers (Hurl, Bats, Venom, Robot Framework, goss) is
+deliberate:
+
+- They are **single-domain** or **declarative YAML/Gherkin**. The moment a test needs a
+  loop, a computed value, a conditional, or reusable setup, YAML hits a wall.
+- None of them have a **fixture model** — scoped setup/teardown with dependency injection
+  and caching. That is the thing pytest users cannot live without, and it is structurally
+  impossible in a declarative format.
+
+So the two things this document must get right are the **fixture model** and the
+**assertion surface**. Everything else (discovery, reporting, the http/shell modules) is
+comparatively mechanical.
+
+## Architectural stance (informs the API)
+
+The core runner is **domain-agnostic**. Archetype rendering is a *plugin*, not a built-in.
+
+```
+assay-core      → discovery, fixtures, assertions, reporting, the `assay`/`ctx`/`expect` surface
+  modules (first-party plugins):
+    fs          → file/dir handles, exists/contains/snapshot
+    shell       → run commands, assert exit/stdout/stderr
+    http        → blocking get/post, assert status/body/json
+    archetect   → render(source, answers) in-process via archetect-core   ← the justifying use case
+```
+
+`assay-core` has **zero** archetect-specific assumptions. The `archetect` module is the
+first-party plugin that justifies the whole runner's existence and is our dogfooding
+target, but it sits behind the same plugin boundary that a `docker` or `terraform` module
+would. This lets the general-purpose framework *emerge* from a real shipped use case
+instead of being speculative.
+
+---
+
+## The fixture model
+
+This is the heart of the design. Borrowed conceptually from pytest, adapted to honest Lua
+idioms (no decorators, no parameter-name reflection).
+
+### Declaring a fixture
+
+```lua
+local assay = require("assay")
+
+-- assay.fixture(name, scope, factory)
+-- scope: "test" (default) | "file" | "suite"
+assay.fixture("workspace", "file", function(ctx)
+  local dir = fs.tempdir()
+  ctx:defer(function() fs.remove_all(dir) end)   -- teardown, LIFO
+  return dir                                       -- the fixture value
+end)
+```
+
+A fixture is a **named factory** that produces a value. It may register teardown via
+`ctx:defer(fn)` (Go-style; runs in LIFO order when the scope ends) and may depend on other
+fixtures via `ctx:use(name)`.
+
+We chose `ctx:defer()` over a coroutine `yield`-style teardown (pytest's `yield` fixtures)
+because it is trivial to drive across the Rust/Lua boundary, supports multiple cleanups
+per fixture, and reads clearly. A `yield`-style sugar could be layered on later, but there
+is exactly **one** blessed way for v1.
+
+### Requesting fixtures (dependency injection)
+
+Lua cannot reliably reflect a function's parameter names, so we do **not** auto-inject by
+signature the way pytest does. Injection is **explicit and lazy** via `ctx:use(name)`:
+
+```lua
+assay.test("renders into a clean workspace", function(t)
+  local ws = t:use("workspace")     -- fixture instantiated on first use, then cached per scope
+  ...
+end)
+```
+
+Explicit `use` buys three things pytest's magic hides:
+1. **Laziness** — a fixture is only built when something actually asks for it.
+2. **Traceability** — you can grep for `use("workspace")` to find every dependent.
+3. **No name-collision surprises** between fixtures and local variables.
+
+Fixtures depend on other fixtures the same way:
+
+```lua
+assay.fixture("rendered_project", "file", function(ctx)
+  local ws = ctx:use("workspace")            -- fixture-to-fixture dependency
+  return archetect.render{ source = "…", destination = ws, defaults = true }
+end)
+```
+
+### Scopes and caching
+
+| Scope    | Instantiated              | Torn down                | Cache key                     |
+|----------|---------------------------|--------------------------|-------------------------------|
+| `test`   | first `use` in a test     | after that test          | (fixture, test invocation)    |
+| `file`   | first `use` in a file     | after all tests in file  | (fixture, file)               |
+| `suite`  | first `use` in the run    | after the whole run      | (fixture, run)                |
+
+Caching is **per scope instance**: two tests in the same file that both `use("rendered_project")`
+(scope `file`) share one render; its teardown runs once, after the last test in the file.
+A `test`-scoped fixture is rebuilt fresh for every test.
+
+Teardown order is **LIFO within a scope**, and scopes tear down inner-to-outer
+(`test` before `file` before `suite`). A fixture's `defer`red cleanups run before the
+cleanups of any fixture it depended on — dependencies outlive their dependents.
+
+### Autouse fixtures
+
+A fixture can opt into running even when no test names it — useful for ambient setup
+(seeding a temp HOME, starting a mock server):
+
+```lua
+assay.fixture("mock_registry", { scope = "suite", autouse = true }, function(ctx)
+  local server = http.serve_mock({ ["/v1/index"] = { status = 200, json = {...} } })
+  ctx:defer(function() server:stop() end)
+  return server
+end)
+```
+
+(The options-table form `{ scope=..., autouse=... }` is accepted anywhere the bare scope
+string is; the string is just sugar for `{ scope = "..." }`.)
+
+### Parametrized fixtures
+
+A fixture can be **parametrized**, producing one variant per parameter. Every test that
+uses it is multiplied across the variants (this is pytest's most powerful and most-copied
+feature):
+
+```lua
+assay.fixture("toolchain", "suite", function(ctx)
+  local tc = ctx:param()               -- "stable" or "nightly"
+  return { name = tc, cargo = "cargo +" .. tc }
+end, { params = { "stable", "nightly" } })
+
+assay.test("builds on the toolchain", function(t)
+  local tc = t:use("toolchain")
+  local r = shell.run(tc.cargo .. " build", { cwd = t:use("workspace") })
+  t.expect(r.code):equals(0)
+end)
+-- Runs twice: "builds on the toolchain[stable]" and "…[nightly]".
+```
+
+---
+
+## Tests
+
+```lua
+-- assay.test(name, factory)   or   assay.test(name, opts, factory)
+assay.test("builds cleanly", function(t)
+  ...
+end)
+
+assay.test("flaky network path", { retries = 2, timeout = "30s", tags = { "net" } }, function(t)
+  ...
+end)
+```
+
+### Parametrized tests (table-driven)
+
+```lua
+-- assay.test_each(name_template, cases, factory)
+assay.test_each("renders for {lang}", {
+  { lang = "rust", entry = "src/main.rs" },
+  { lang = "java", entry = "src/main/java/App.java" },
+}, function(t, case)
+  local out = archetect.render{ source = "…", answers = { language = case.lang }, defaults = true }
+  t.expect(out:file(case.entry)):exists()
+end)
+```
+
+`{lang}` in the name template is filled from the case table so each row reports as a
+distinct test.
+
+### Grouping
+
+`describe` is **organizational labeling** in v1 (nested names in the report), not a new
+fixture scope. `before_each`/`after_each`/`before_all`/`after_all` attach to the enclosing
+file (or `describe` block) and are convenience wrappers over autouse fixtures:
+
+```lua
+assay.describe("rust cli archetype", function()
+  assay.before_all(function() ... end)
+
+  assay.test("has a Cargo.toml", function(t) ... end)
+  assay.test("compiles", function(t) ... end)
+end)
+```
+
+> Open question: whether `describe` should introduce a real nested fixture scope (jest
+> semantics). Deferred — labeling-only keeps the scope model to three clean levels for v1.
+
+---
+
+## The test/fixture context (`t` / `ctx`)
+
+Tests receive a **TestContext** (`t`); fixtures receive a **Context** (`ctx`). They share a
+base; the test context adds assertions and skip/case.
+
+| Member            | On       | Purpose                                                        |
+|-------------------|----------|---------------------------------------------------------------|
+| `ctx:use(name)`   | both     | Instantiate/fetch a fixture value (lazy, scope-cached)        |
+| `ctx:defer(fn)`   | both     | Register LIFO teardown for the current scope                  |
+| `ctx:tempdir()`   | both     | A scratch dir auto-removed when the scope ends                |
+| `ctx:log(msg)`    | both     | Structured log line attached to the test/fixture in the report|
+| `ctx:param()`     | fixtures | Current parameter (parametrized fixtures)                     |
+| `t.expect(v)`     | tests    | Start a fluent assertion (see below)                          |
+| `t:skip(reason)`  | tests    | Skip the current test at runtime                              |
+| `t.name`          | tests    | The resolved test name                                        |
+| `t.case`          | tests    | The current case table (parametrized tests)                   |
+
+`t.expect` is a bound callable field (matches `t.expect(out:file("x"))`); `use`/`defer`/
+`tempdir` are methods (colon).
+
+---
+
+## Assertions
+
+A single fluent entry point, `expect(subject)`, returning a matcher. Matchers validate the
+subject's type at call time, so domain subjects (file handles, shell results) get rich
+checks.
+
+```lua
+t.expect(r.code):equals(0)
+t.expect(r.stdout):contains("Compiling")
+t.expect(r.stdout):matches("Finished .+ in %d")     -- Lua pattern
+t.expect(out:file("Cargo.toml")):exists()
+t.expect(out:dir("target")):never():exists()         -- negation
+t.expect(res.status):is_one_of({ 200, 204 })
+t.expect(value):is_nil()
+t.expect(list):has_length(3)
+```
+
+### Core matchers (v1)
+
+| Matcher                     | Passes when …                                         |
+|-----------------------------|-------------------------------------------------------|
+| `:equals(x)` / `:eq(x)`     | deep-equal to `x`                                     |
+| `:is_truthy()` / `:is_falsy()` | Lua truthiness                                     |
+| `:is_true()` / `:is_false()`| strictly boolean                                      |
+| `:is_nil()`                 | value is nil                                          |
+| `:contains(x)`              | substring (strings) or membership (tables)            |
+| `:matches(pat)`             | Lua-pattern match (strings)                           |
+| `:has_length(n)`            | `#subject == n`                                       |
+| `:is_one_of(t)`             | membership in `t`                                     |
+| `:gt(n)` `:gte(n)` `:lt(n)` `:lte(n)` | numeric comparison                          |
+| `:exists()` / `:is_file()` / `:is_dir()` / `:is_empty()` | filesystem handle checks   |
+
+`:never()` returns a negated matcher (`t.expect(x):never():contains("secret")`).
+
+### Soft assertions
+
+By default a failed assertion **fails the test immediately**. `t.expect_all(function() … end)`
+collects multiple failures before failing (useful for asserting many files at once):
+
+```lua
+t.expect_all(function()
+  t.expect(out:file("README.md")):exists()
+  t.expect(out:file("LICENSE")):exists()
+  t.expect(out:file(".gitignore")):exists()
+end)  -- reports every missing file, not just the first
+```
+
+### Snapshots
+
+We already lean on Rust's `insta` in the archetect workspace; the file module exposes the
+same idea to Lua for whole-file / whole-tree snapshotting:
+
+```lua
+t.expect(out:file("src/main.rs")):matches_snapshot()      -- .snap alongside the test file
+t.expect(out:tree()):matches_snapshot("full-layout")      -- named snapshot of the rendered tree
+```
+
+`assay test --update-snapshots` rewrites them, mirroring `cargo insta`.
+
+---
+
+## Modules (first-party plugins)
+
+All are `require`-able and globally available inside test files.
+
+### `fs`
+
+```lua
+fs.tempdir()               -- create a temp dir (not auto-cleaned; pair with ctx:defer or ctx:tempdir)
+fs.remove_all(path)
+fs.read(path)              -- string
+fs.exists(path)            -- bool
+fs.glob(root, "**/*.rs")   -- list of paths
+```
+
+Rendered output and `fs` both yield **tree/file handles**:
+
+```lua
+local out = archetect.render{ … }          -- out is a tree handle rooted at the destination
+out.path                                    -- absolute root
+out:file("src/main.rs")                     -- file handle (relative to root)
+out:dir("src")                              -- dir handle
+out:file("x"):read()                        -- string contents
+out:tree()                                  -- serializable snapshot of the whole layout
+```
+
+### `shell`
+
+```lua
+local r = shell.run("cargo build", {
+  cwd = out.path,
+  env = { RUST_LOG = "info" },
+  timeout = "120s",
+  check = false,            -- if true, non-zero exit raises instead of returning
+})
+r.code        -- integer exit code
+r.stdout      -- string
+r.stderr      -- string
+r.duration    -- seconds (number)
+r:ok()        -- r.code == 0
+```
+
+### `http` (blocking in v1)
+
+Deliberately synchronous. Test suites are IO-bound but rarely need in-test concurrency;
+parallelism lives at the test-case level in the Rust runner, not inside a test.
+
+```lua
+local res = http.get("http://localhost:8080/health", { headers = { Accept = "application/json" } })
+res.status                 -- integer
+res.body                   -- string
+res.headers                -- table
+res:json()                 -- decoded table (raises on non-JSON)
+
+http.post(url, { json = { name = "widget" }, timeout = "10s" })
+
+-- retry helper for boot-then-probe flows
+http.wait_for("http://localhost:8080/health", { status = 200, timeout = "30s", every = "500ms" })
+```
+
+### `archetect` (the justifying plugin)
+
+Renders **in-process** via `archetect-core` — the single biggest advantage over a
+pytest-style subprocess harness. Prompt answers are passed as data (no `-a k=v` string
+marshaling), errors surface as real diagnostics, and we can assert on the IO-protocol
+write operations, not just the post-hoc filesystem.
+
+```lua
+local out = archetect.render{
+  source = "https://github.com/archetect/archetype-rust-cli.git",  -- or a local path
+  answers = { project_name = "widget", description = "demo" },
+  switches = { "ci" },
+  defaults = true,                 -- use defaults for anything unanswered (headless)
+  destination = t:tempdir(),       -- optional; a temp dir is used if omitted
+}
+
+out:file("Cargo.toml")             -- tree handle, as above
+out.writes                         -- ordered list of IO-protocol write ops the render intended
+```
+
+---
+
+## Discovery, layout, CLI
+
+- Test files match `**/*_test.lua` (and `**/*.test.lua`). Each file is one `file` scope.
+- A directory tree of test files is a **suite**; `suite`-scoped fixtures span the run.
+- Fixtures/helpers can live in a `conftest.lua`-equivalent (`assay.lua`) loaded before the
+  test files in its directory and inherited by subdirectories.
+
+```
+$ assay test                     # discover & run under CWD
+$ assay test tests/rust_cli      # a subtree
+$ assay test -k "compiles"       # filter by name substring
+$ assay test --tags net          # filter by tag
+$ assay test --update-snapshots
+$ assay test --jobs 8            # test-case-level parallelism (fixtures respect scope)
+$ assay test --format tap|pretty|json
+```
+
+Two front doors over the same `assay-core` lib (mirrors `archetect-core` ← `archetect-bin`):
+1. `assay` — the standalone binary (general-purpose positioning).
+2. `archetect test` — the same runner surfaced as an archetect subcommand for archetype
+   authors who already have the CLI. *"The generator ships its own test framework."*
+
+---
+
+## Open questions (to resolve while prototyping the engine)
+
+1. **`describe` scoping** — labeling-only (current) vs. real nested fixture scope (jest).
+2. **Fixture finalization on failure** — if a test fails mid-way, teardown still runs; do
+   we surface teardown errors as separate failures or attach them to the test?
+3. **Parallelism vs. `suite`/`file` fixtures** — a `file`-scoped fixture is naturally
+   serialized within its file; across files we can parallelize freely. Confirm the cache
+   is keyed so parallel workers don't double-instantiate a `suite` fixture (needs a
+   once-guard in the runtime).
+4. **`http` async** — keep blocking for v1; revisit only if a real suite needs in-test
+   concurrency.
+5. **Assertion library: build vs. vendor** — leaning build (~150 lines, our idioms) over
+   vendoring busted, which assumes LuaRocks/standalone Lua and won't map onto embedded
+   mlua cleanly. Same "vendored fork on our terms" stance as MiniJinja/inquire.
