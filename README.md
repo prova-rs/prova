@@ -42,6 +42,8 @@ parametrization) in one static binary with no runtime to install.
 
 **Design phase.** We are nailing the authoring surface before building the Rust engine.
 
+- [`docs/design/foundations.md`](docs/design/foundations.md) — the thesis: orthogonal
+  primitives, classic footguns, and how Assay aims to subsume the acceptance-testing landscape
 - [`docs/design/api.md`](docs/design/api.md) — the fixture model + assertion surface (start here)
 - [`library/assay.lua`](library/assay.lua), [`library/modules.lua`](library/modules.lua) —
   LuaLS annotations: authoritative API surface + editor completion/hover
