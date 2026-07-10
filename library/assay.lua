@@ -126,38 +126,99 @@ function Matcher:matches_snapshot(name) end
 --- is a concurrent reader. Only enforced under `--jobs`.
 ---@alias assay.Resource string|assay.SharedResource
 
----@class assay.TestOpts
----@field timeout? string                # e.g. "30s"
----@field retries? integer
----@field tags? string[]                 # selection tags (see `-m` expressions)
----@field depends_on? assay.Test[]       # skip this test if any upstream failed/was skipped
----@field resources? assay.Resource[]    # resources this test needs (concurrency gating)
----@field serial? boolean                # never run concurrently with anything (process-wide exclusive)
+--- A handle to any schedulable unit — a `test`, `flow`, or `group`. Pass to `depends_on`.
+--- Units with no edge between them are mutually isolated and may run in parallel.
+---@alias assay.Unit assay.Test|assay.Flow|assay.Group
 
 --- A test handle returned by `assay.test`/`assay.test_each`. Pass to `depends_on`.
 ---@class assay.Test
-
---- A flow handle returned by `assay.flow`. A flow is one ordered scheduling unit. Pass to
---- `depends_on`.
+--- A flow handle returned by `assay.flow`. One ordered scheduling unit.
 ---@class assay.Flow
-
+--- A group handle returned by `assay.group`. One scheduling unit whose children run per the
+--- group's independent strategy.
+---@class assay.Group
 --- A shared (concurrent-reader) resource token, from `assay.shared`.
 ---@class assay.SharedResource
 
---- The flow builder passed to a `flow` body. Declare ordered steps; steps share the
---- enclosing scope and later steps are skipped once an earlier one fails.
+--- Options shared by any schedulable unit (test/flow/group).
+---@class assay.UnitOpts
+---@field tags? string[]                 # selection tags (see `-m` expressions)
+---@field depends_on? assay.Unit[]       # skip this unit if any upstream failed/was skipped
+---@field resources? assay.Resource[]    # resources this unit needs (concurrency gating)
+---@field serial? boolean                # never run concurrently with anything (process-wide exclusive)
+
+---@class assay.TestOpts : assay.UnitOpts
+---@field timeout? string                # e.g. "30s"
+---@field retries? integer
+
+---@class assay.FlowOpts : assay.UnitOpts
+---@field timeout? string                # whole-flow timeout
+
+--- A group is the *independent* strategy: children are isolated, unordered, parallelizable.
+---@class assay.GroupOpts : assay.UnitOpts
+---@field order? "any"|"declared"        # default "any" — do not rely on order; use `flow` if you need it
+---@field parallel? boolean              # default true — set false to serialize the group's children
+
+--- The flow builder: the *sequence* strategy. Declares ordered steps that share the flow's
+--- scope; later steps are skipped once an earlier one fails. Shared mutable state lives here
+--- and only here — this is the sole capability that grants it.
 ---@class assay.FlowBuilder
 local FlowBuilder = {}
 --- Declare an ordered step. Steps run in declaration order on a single worker.
 ---@param name string
 ---@param body fun(t: assay.TestContext)
 function FlowBuilder:step(name, body) end
---- Use a fixture for the flow's lifetime (`flow` scope).
+--- Use a fixture for the flow's lifetime (`flow` scope) — shared across all steps.
 ---@generic T
 ---@param fixture assay.Fixture<T>
 ---@return T
 ---@overload fun(self: assay.FlowBuilder, name: string): any
 function FlowBuilder:use(fixture) end
+
+--- The group builder: the *independent* strategy. Declares child units (tests, flows, nested
+--- groups) that are isolated and parallelizable. It deliberately exposes **no shared-state
+--- mechanism** — cross-child built-up context is not representable here; use a `flow`.
+---@class assay.GroupBuilder
+local GroupBuilder = {}
+--- Declare an independent test in this group.
+---@overload fun(self: assay.GroupBuilder, name: string, factory: fun(t: assay.TestContext)): assay.Test
+---@param name string
+---@param opts assay.TestOpts
+---@param factory fun(t: assay.TestContext)
+---@return assay.Test
+function GroupBuilder:test(name, opts, factory) end
+--- Table-driven tests within this group.
+---@param name_template string
+---@param cases table[]
+---@param factory fun(t: assay.TestContext, case: table)
+---@return assay.Test
+function GroupBuilder:test_each(name_template, cases, factory) end
+--- Declare a flow (ordered sequence) as a child unit of this group.
+---@overload fun(self: assay.GroupBuilder, name: string, body: fun(flow: assay.FlowBuilder)): assay.Flow
+---@param name string
+---@param opts assay.FlowOpts
+---@param body fun(flow: assay.FlowBuilder)
+---@return assay.Flow
+function GroupBuilder:flow(name, opts, body) end
+--- Declare a nested group.
+---@overload fun(self: assay.GroupBuilder, name: string, body: fun(g: assay.GroupBuilder)): assay.Group
+---@param name string
+---@param opts assay.GroupOpts
+---@param body fun(g: assay.GroupBuilder)
+---@return assay.Group
+function GroupBuilder:group(name, opts, body) end
+--- Label-only subgrouping for reporting (inherits strategy; no new scope).
+---@param label string
+---@param body fun(g: assay.GroupBuilder)
+function GroupBuilder:describe(label, body) end
+---@param fn fun(t: assay.TestContext)
+function GroupBuilder:before_each(fn) end
+---@param fn fun(t: assay.TestContext)
+function GroupBuilder:after_each(fn) end
+---@param fn fun()
+function GroupBuilder:before_all(fn) end
+---@param fn fun()
+function GroupBuilder:after_all(fn) end
 
 ---@class assay
 local assay = {}
@@ -173,7 +234,10 @@ local assay = {}
 ---@return assay.Fixture<T>
 function assay.fixture(name, scope, factory, opts) end
 
----Declare a test. Returns a handle usable in another test's `depends_on`.
+-- The top-level `assay.test`/`test_each`/`flow`/`group` register into the file's implicit
+-- group (the independent strategy). Inside an explicit group, use the `GroupBuilder` methods.
+
+---Declare an independent test in the file's implicit group. Returns a handle for `depends_on`.
 ---@overload fun(name: string, factory: fun(t: assay.TestContext)): assay.Test
 ---@param name string
 ---@param opts assay.TestOpts
@@ -189,15 +253,25 @@ function assay.test(name, opts, factory) end
 ---@return assay.Test
 function assay.test_each(name_template, cases, factory) end
 
----Declare a flow: an ordered sequence of steps sharing the enclosing scope. Steps run in
----order on one worker; once a step fails, the rest are skipped. The go-to construct when a
----test needs ordering plus built-up state. Returns a handle usable in `depends_on`.
+---Declare a flow: an ordered sequence of steps sharing the flow's scope. Steps run in order
+---on one worker; once a step fails, the rest are skipped. The go-to construct when you need
+---ordering plus built-up state. Returns a handle usable in `depends_on`.
 ---@overload fun(name: string, body: fun(flow: assay.FlowBuilder)): assay.Flow
 ---@param name string
----@param opts assay.TestOpts             # tags/resources/depends_on apply to the whole flow
+---@param opts assay.FlowOpts            # tags/resources/depends_on apply to the whole flow
 ---@param body fun(flow: assay.FlowBuilder)
 ---@return assay.Flow
 function assay.flow(name, opts, body) end
+
+---Declare an independent group: an isolated, unordered, parallelizable bag of child units.
+---The builder exposes `test`/`flow`/`group` but **no shared-state mechanism** — that is the
+---point (invalid states unrepresentable). Returns a handle usable in `depends_on`.
+---@overload fun(name: string, body: fun(g: assay.GroupBuilder)): assay.Group
+---@param name string
+---@param opts assay.GroupOpts
+---@param body fun(g: assay.GroupBuilder)
+---@return assay.Group
+function assay.group(name, opts, body) end
 
 ---Mark a resource token as a concurrent reader (readers-writer semantics). Bare-string
 ---tokens are exclusive; wrap in `assay.shared` to allow concurrent holders.

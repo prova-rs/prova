@@ -77,16 +77,17 @@ assay test -m "(smoke or regression) and not offline"
 ### 3. Ordering & dependency — isolated by default, ordered flows by choice
 
 The honest position separates two knobs most frameworks conflate: **isolation** (do tests
-share state?) and **order** (what sequence runs?). Assay's defaults: **isolation by
-construction** (the API exposes no ambient global state to leak) + **deterministic
-definition order** (no reordering behind your back). We do *not* randomize by default —
-randomization is a unit-testing device for catching accidental coupling, and in
-acceptance/integration testing ordered-with-shared-context is a legitimate, often dominant
-shape, so randomizing fights the domain. Randomization is instead an **opt-in hardening
-pass** (`--shuffle[=seed]`). TestNG gained traction precisely because it made ordered,
-dependent flows first-class where pytest fumbles them; we make both isolation and ordering
-easy and explicit. See `api.md` → "Execution model" for the full statement. The two ordering
-constructs:
+share state?) and **order** (what sequence runs?). Assay's answer is to make **execution
+strategy a property of the container**, not a global default or a CLI flag: `assay.group`
+(independent — isolated, unordered, parallelizable) vs. `assay.flow` (sequence — ordered
+steps sharing context, cascade-skip). You read the container and you know. This applies
+*make-invalid-states-unrepresentable* to execution — shared mutable context is a flow-only
+capability a `group` never receives — and it makes `--jobs` purely a throughput knob, never
+semantic. We do *not* randomize by default; randomization is an **opt-in hardening pass**
+(`--shuffle[=seed]`) that proves a group's children are truly independent. TestNG gained
+traction precisely because it made ordered, dependent flows first-class where pytest fumbles
+them; we make both strategies first-class and visible. See `api.md` → "Execution model" for
+the full statement. The two ordering constructs:
 
 **Dependency edges (hard):** a test declares upstream dependencies; the runner topo-sorts,
 and if an upstream *fails*, dependents are **skipped, not failed** (the key TestNG behavior):

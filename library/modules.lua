@@ -113,6 +113,14 @@ function http.get(url, opts) end
 ---@param opts? assay.HttpOpts
 ---@return assay.HttpResponse
 function http.post(url, opts) end
+---@param url string
+---@param opts? assay.HttpOpts
+---@return assay.HttpResponse
+function http.put(url, opts) end
+---@param url string
+---@param opts? assay.HttpOpts
+---@return assay.HttpResponse
+function http.delete(url, opts) end
 ---Poll until the endpoint responds as expected or the timeout elapses.
 ---@param url string
 ---@param opts? assay.WaitOpts

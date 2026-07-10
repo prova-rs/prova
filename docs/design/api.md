@@ -224,149 +224,152 @@ end)
 
 ---
 
-## Execution model: ordering, isolation & concurrency
+## Execution model: strategy is declared by the container
 
-Ordering and isolation are stated up front, because being surprised by them is the fastest
-way a suite loses trust. The rules are deliberately boring and explicit.
+Every test lives inside a **strategy container** that determines how its children run. You do
+not configure execution with CLI flags or a global default — you read the container and you
+know. There are exactly two, each with a fixed, nameable guarantee, and each is designed so
+that **invalid states are unrepresentable**: a container only exposes the capabilities its
+strategy permits.
 
-**The four rules**
+| Container     | Strategy    | Children                    | Order                        | Shared context             | Concurrency                 |
+|---------------|-------------|-----------------------------|------------------------------|----------------------------|-----------------------------|
+| `assay.group` | independent | tests, flows, nested groups | unspecified (don't rely)     | **none — not representable** | children parallelizable     |
+| `assay.flow`  | sequence    | ordered steps               | declared order               | **the flow context**       | steps serial, one worker    |
 
-1. **Definition order is the default, and it is deterministic.** Tests run top-to-bottom in
-   declared order within a file; files run in a stable, sorted order. No randomization, no
-   reordering behind your back — what you read is what runs.
-2. **Isolation is the default *state* model.** Tests never share mutable state unless you
-   deliberately create it (a broader-scoped fixture, or a flow). Enforced by the *shape of
-   the API*, not by OS sandboxing — see below.
-3. **Ordering, when you need it, is a first-class construct — never a trick.** Reach for a
-   `flow` (linear, shared context) or `depends_on` (a DAG edge). Both are one line and their
-   semantics — including *skip-downstream-on-failure* — are guaranteed.
-4. **Parallelism is opt-in and never violates rules 1–3.** The runner is serial by default
-   (safest for side-effecting acceptance tests). `--jobs N` turns on concurrency; the
-   resource scheduler then runs independent tests in parallel while honoring every declared
-   order and dependency.
+- A **`group`** is a bag of independent units: isolated, unordered, parallelizable. Its
+  `GroupBuilder` exposes `test`/`flow`/`group` — and **no shared-state mechanism**, so
+  cross-child built-up context cannot be written. (Group children may also run on separate
+  workers, so a smuggled closure variable wouldn't work anyway — the execution model enforces
+  what the API already forbids.)
+- A **`flow`** is an ordered sequence. Its `FlowBuilder` exposes `step` plus a shared scope;
+  steps run in declared order on one worker and **cascade-skip** once a step fails.
 
-The key move is separating two knobs most frameworks conflate: **isolation** (do tests share
-state?) and **order** (what sequence do they run in?). Go couples them — it randomizes order
-*to force* isolation. We don't. With isolation as the default state model, definition order
-is safe *and* predictable: you can't accidentally depend on order because there is no ambient
-state to leak, and when you *want* to depend on order, you say so.
+This is *make-invalid-states-unrepresentable* applied to execution: shared mutable context is
+a **flow-only capability**, granted by the `FlowBuilder`. A `group` never receives it, so
+"ordered tests quietly sharing state" is not a mistake you can express.
 
-**Why not randomize by default?** Randomized order (Go, pytest-randomly) exists to catch
-accidental coupling in tests that are *supposed* to be isolated — a unit-testing concern. In
-acceptance/integration testing, ordered-with-shared-context is a legitimate and often
-*dominant* shape, so randomizing by default fights the domain and surprises authors: the
-"purity nobody asked for." We get the same safety another way (isolation by construction) and
-offer randomization as an **opt-in hardening pass**:
+**The file is an implicit `group`.** Bare `assay.test(...)`, `assay.flow(...)`, and
+`assay.group(...)` at the top level register into it — so the terse common case (a handful of
+independent tests) needs zero ceremony. And because the file defaults to the *independent*
+(safe) strategy, **the presence of a `flow` is always the visible signal that ordering and
+shared state are in play.** The dangerous axis is never silent; the safe axis is the quiet
+default.
 
+```lua
+-- top level = the file's implicit group (independent)
+assay.test("renders Cargo.toml", function(t) ... end)
+assay.test("renders README",     function(t) ... end)   -- may run concurrently with the above
+
+-- an explicit independent group, via its builder
+assay.group("http surface", function(g)
+  g:test("GET /health",  function(t) ... end)
+  g:test("GET /version", function(t) ... end)
+  g:flow("session lifecycle", function(f)               -- a flow nested in a group is one atomic unit
+    f:step("login",  function(t) ... end)
+    f:step("logout", function(t) ... end)
+  end)
+end)
 ```
-assay test --shuffle           # random order, prints a seed
-assay test --shuffle=1234      # replay that exact seed
+
+### Units, isolation, and dependencies
+
+A **unit** is the atom of scheduling: a top-level `test`, a `flow`, or a `group`. One uniform
+rule governs how units relate:
+
+> Units with no dependency edge between them are mutually isolated and may run in parallel
+> (subject to resources). A dependency edge orders them and gates on success.
+
+So **two flows with no edge between them run in parallel** — a flow is internally serial, but
+flows are independent of *each other* unless you say otherwise. `assay.test`, `assay.flow`,
+and `assay.group` all return handles; `depends_on` accepts any unit:
+
+```lua
+-- A login flow, then two independent journeys that both need a logged-in, populated account.
+local login = assay.flow("login", function(f)
+  f:step("authenticate", function(t) ... end)
+end)
+
+local populate = assay.flow("populate account", { depends_on = { login } }, function(f)
+  f:step("seed profile", function(t) ... end)
+  f:step("seed billing", function(t) ... end)
+end)
+
+-- Same upstreams, no edge between them → these two run in parallel.
+assay.flow("checkout journey", { depends_on = { login, populate } }, function(f) ... end)
+assay.flow("settings journey", { depends_on = { login, populate } }, function(f) ... end)
 ```
 
-**What you give up — and what going further would cost.** Choosing definition-order +
-opt-in-shuffle over randomize-by-default costs you *automatic* coupling detection on every
-run; isolation-by-construction buys most of it back, and `--shuffle` recovers the rest on
-demand. Going the *other* direction — a fully-ordered suite where every test implicitly
-continues the previous one — is what we explicitly reject: it forfeits parallelism, destroys
-fault isolation (one failure makes everything after it meaningless), makes a single test
-un-runnable alone, and turns inserting a test into a landmine. Explicit `flow`/`depends_on`
-give real ordering exactly where you declare it, while everything else stays independent and
-parallelizable. **Ordering you declare is a guarantee; isolation you don't override is a
-guarantee. Both are easy; neither is a surprise.**
-
-### Isolation — enforced by API shape, not sandboxing
-
-"Hermetic by default" is an honest claim here because the DSL gives you **no ambient mutable
-global state to leak**:
-
-- There is no implicit working directory and no `os.chdir`. Every side-effecting call takes
-  its context explicitly: `shell.run(cmd, { cwd = …, env = … })`, `fs.read(path)`.
-- Scratch space is `ctx:tempdir()` — unique per scope, auto-removed.
-- The only ways to share state across tests are the *tracked, scoped* ones: a broader-scoped
-  fixture, or a flow's context. Both appear in the report and tear down deterministically.
-
-Two tests therefore cannot corrupt each other through the framework's own surface. That is
-what lets definition order be the safe default without a randomizer policing it.
+- The dependency graph is a DAG over units; a cycle is a collection-time error.
+- If any upstream fails or is skipped, the dependent unit is **skipped, not failed**, with the
+  reason (the TestNG behavior). A failed `login` skips `populate`, `checkout`, and `settings`
+  — no cascade of spurious failures.
+- `depends_on` gates on **pass/fail only; it does not transfer state.** Data flows through a
+  fixture (or, within a linear sequence, the flow's own context). Keeping "did it pass?"
+  separate from "give me its value" is deliberate — conflating them is how brittle implicit
+  ordering creeps in.
 
 ### Flows — ordered steps with shared context
 
-A `flow` is the go-to when you *do* need order plus built-up state — the create → read →
-update → delete shape that dominates integration testing. Steps run in declared order, share
-the enclosing scope, and **once a step fails the remaining steps are skipped** (reported as
-skipped-due-to-upstream; the flow is marked failed):
-
 ```lua
-local api = "http://localhost:8080"
+assay.flow("order lifecycle", function(f)
+  local order                                 -- shared by all steps (the flow context)
 
-assay.flow("order lifecycle", function(flow)
-  local order                       -- shared by all steps (plain Lua closure)
-
-  flow:step("create", function(t)
+  f:step("create", function(t)
     order = http.post(api .. "/orders", { json = { sku = "widget", qty = 2 } }):json()
     t.expect(order.id):is_truthy()
   end)
 
-  flow:step("read back", function(t)          -- skipped if "create" failed
-    local res = http.get(api .. "/orders/" .. order.id)
-    t.expect(res.status):equals(200)
-    t.expect(res:json().qty):equals(2)
+  f:step("read back", function(t)             -- skipped if "create" failed
+    t.expect(http.get(api .. "/orders/" .. order.id):json().qty):equals(2)
   end)
 
-  flow:step("delete", function(t)
+  f:step("cancel", function(t)
     t.expect(http.post(api .. "/orders/" .. order.id .. "/cancel").status):equals(204)
   end)
 end)
 ```
 
-- A flow is **one scheduling unit**: its steps always run serially, in order, on one worker —
-  never split or parallelized. Independent flows/tests still parallelize around it.
-- Flow-level fixtures via `flow:use(fixture)` live for the flow's lifetime (`flow` scope).
-  Inside a flow, `test`-scoped fixtures are per-**step**.
-- Flow-level opts (`tags`, `resources`, `depends_on`) apply to the whole flow.
+- A flow is **one scheduling unit**: steps run serially, in order, on one worker — never split.
+- Flow-level fixtures via `f:use(fixture)` live for the flow's lifetime (`flow` scope). Inside
+  a flow, `test`-scoped fixtures are per-**step**.
 - A step may `t:skip(reason)` itself; a step is the flow's analog of a test for reporting.
 
-Flows are the sanctioned home for shared mutable state — reach for them instead of widening a
-fixture's scope just to smuggle state between tests.
+### Concurrency is `--jobs`; it is never semantic
 
-### Dependencies — `depends_on`
+Because strategy is declared in the code, `--jobs N` sets only **how many workers may run** —
+never what the tests *mean*. A flow is serial at `--jobs 100`; an independent group is
+parallelizable at `--jobs 1` (it just won't actually overlap). The CLI cannot change
+semantics, so it cannot surprise you.
 
-When the relationship is a graph rather than a tidy line (a test needs another's *success*,
-but they aren't a single sequence), declare an edge. `assay.test` and `assay.flow` return
-**handles** (like fixtures); pass them to `depends_on`:
-
-```lua
-local seeded = assay.test("seed reference data", function(t) ... end)
-
-assay.test("report reflects seed", { depends_on = { seeded } }, function(t) ... end)
--- If `seeded` fails or is skipped, this test is SKIPPED (not failed), with the reason.
-```
-
-- The runner topologically sorts; a cycle is a collection-time error.
-- Independent subgraphs run in parallel under `--jobs`; dependency edges are always honored.
-- **`depends_on` gates on pass/fail; it does not transfer state.** If a dependent also needs
-  the upstream's *data*, share it through a fixture (or use a flow for a linear sequence).
-  Keeping "did it pass?" separate from "give me its value" is deliberate — conflating them is
-  exactly how implicit, brittle ordering creeps in.
-
-### Resources & parallelism
-
-Under `--jobs N`, tests run concurrently. Shared *external* resources — a port, a database,
-an account, a file path — make that unsafe unless declared. A test or flow lists the
-resources it needs; the scheduler guarantees safe co-scheduling:
+Within the parallelizable set, shared *external* resources still need declaring so the
+scheduler co-schedules safely:
 
 ```lua
-assay.test("boots on :8080",   { resources = { "port:8080" } },       function(t) ... end)  -- exclusive
-assay.test("also wants :8080", { resources = { "port:8080" } },       function(t) ... end)  -- never concurrent with the above
-assay.test("reads shared db",  { resources = { assay.shared("db") } },function(t) ... end)  -- concurrent with other shared("db")
+assay.test("boots on :8080",  { resources = { "port:8080" } },        function(t) ... end)  -- exclusive
+assay.test("reads shared db", { resources = { assay.shared("db") } }, function(t) ... end)  -- concurrent reader
 ```
 
-- A bare string token is **exclusive**: no two holders run at once. `assay.shared(token)` is a
-  concurrent reader — readers run together, but an exclusive holder waits for all readers to
-  release (a readers-writer lock over the token namespace).
-- `{ serial = true }` is sugar for a single process-wide exclusive resource — the escape hatch
-  for "never run this alongside anything."
-- Resource declarations are inert under the serial default and fully enforced under `--jobs`,
-  so you can declare them up front and scale out later without touching the tests.
+A bare token is **exclusive** (no two holders at once); `assay.shared(token)` is a concurrent
+reader (readers-writer over the token namespace); `{ serial = true }` is sugar for a
+process-wide exclusive. Declarations are inert at `--jobs 1` and enforced above it, so you
+declare once and scale out without touching tests.
+
+### Order within a group, and hardening
+
+A `group` makes **no order guarantee** — that contract is what keeps its children independent.
+The runner may iterate in definition order for reproducibility, but you must not rely on it;
+`assay test --shuffle[=seed]` randomizes (printing/reproducing the seed) to *prove*
+independence. Ordered execution is never a group's job — that is what `flow` is for.
+
+### Isolation — enforced by API shape, not sandboxing
+
+"Hermetic by default" is honest here because the DSL exposes **no ambient mutable global
+state**: no implicit cwd, no `os.chdir`; `shell.run(cmd, { cwd = …, env = … })` and
+`fs.read(path)` take context explicitly; scratch is per-scope `ctx:tempdir()`. The *only*
+sanctioned shared state is a flow's context (scoped, ordered, deterministically torn down) or
+a broader-scoped fixture (tracked, reported). Two independent units therefore cannot corrupt
+each other through the framework's own surface.
 
 ---
 
