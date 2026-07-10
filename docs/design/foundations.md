@@ -76,11 +76,17 @@ assay test -m "(smoke or regression) and not offline"
 
 ### 3. Ordering & dependency — isolated by default, ordered flows by choice
 
-The honest position: **tests should be isolated and order-independent by default** — so
-default execution is *randomized* (with a printed seed) to surface hidden coupling, exactly
-like Go and pytest-randomly. But there are legitimate integration cases where sequence and
-built-up context are the point (create → read → update → delete). TestNG gained traction on
-this and pytest still fumbles it. We support both, explicitly:
+The honest position separates two knobs most frameworks conflate: **isolation** (do tests
+share state?) and **order** (what sequence runs?). Assay's defaults: **isolation by
+construction** (the API exposes no ambient global state to leak) + **deterministic
+definition order** (no reordering behind your back). We do *not* randomize by default —
+randomization is a unit-testing device for catching accidental coupling, and in
+acceptance/integration testing ordered-with-shared-context is a legitimate, often dominant
+shape, so randomizing fights the domain. Randomization is instead an **opt-in hardening
+pass** (`--shuffle[=seed]`). TestNG gained traction precisely because it made ordered,
+dependent flows first-class where pytest fumbles them; we make both isolation and ordering
+easy and explicit. See `api.md` → "Execution model" for the full statement. The two ordering
+constructs:
 
 **Dependency edges (hard):** a test declares upstream dependencies; the runner topo-sorts,
 and if an upstream *fails*, dependents are **skipped, not failed** (the key TestNG behavior):
@@ -155,7 +161,7 @@ sits behind — so the agnostic core never grows a Docker dependency.
 |---|---|---|
 | **Teardown skipped on failure/panic/timeout** | Leaked containers, ports, temp dirs poison later runs | Teardown is guaranteed: `defer`s run on pass, fail, assertion-abort, *and* test timeout; best-effort on signals. Teardown errors are reported, never swallowed. |
 | **`shell.run("server &")` orphans processes** | Backgrounded child escapes; port stays bound | No backgrounding. `shell.spawn` returns a handle; teardown kills the whole **process group** (not just the pid). |
-| **Hidden inter-test coupling** | Passes in order, fails when reordered/parallelized | **Randomized order by default** with a printed, replayable `--seed`. Coupling surfaces immediately instead of in CI six months later. |
+| **Hidden inter-test coupling** | Passes in order, fails when reordered/parallelized | **Isolation by construction** (no ambient global state to leak) prevents most coupling structurally; opt-in `--shuffle[=seed]` hardening surfaces anything that slips through, reproducibly. |
 | **Retries hide real flakiness** | Green build masks a genuine race | Retries allowed but **flakes are surfaced**: a test that passes only on retry is reported `FLAKY`, countable and quarantinable — not silently green. |
 | **Scope mismatch** | A `suite` fixture depends on a `test` fixture → nonsense lifetime | **Validated at collection**: a broader-scoped fixture may not depend on a narrower one; hard error with a clear message (pytest does this; we do it up front). |
 | **Parallel double-build of a `suite` fixture** | Two workers each construct the "once" resource | Once-guard keyed by `(fixture, run)` with cross-worker coordination; documented ownership model. |
@@ -231,8 +237,9 @@ pytest's plugin ecosystem did, while the core stays small and correct.
    whether steps can themselves be tagged/skipped individually.
 2. **Resource model surface** — string tokens (`"port:8080"`) vs. typed resource objects;
    how `shared` vs. exclusive is expressed; interaction with `file`/`suite` fixtures.
-3. **Randomize-by-default** — confirm we default to seeded-random order (opinionated) with
-   `--in-order` as the opt-out, vs. definition-order default.
+3. ~~Randomize-by-default~~ **Decided**: deterministic definition order + isolation by
+   construction; `--shuffle[=seed]` is opt-in hardening, not the default. (See api.md →
+   Execution model.)
 4. **Capability registry** — how `requires = {"docker"}` resolves to a probe; are capabilities
    first-party-only or plugin-registerable?
 5. **Hermeticism depth** — how far the per-test sandbox goes (cwd/env always; temp HOME opt-in?).

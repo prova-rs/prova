@@ -118,14 +118,46 @@ function Matcher:matches_snapshot(name) end
 ------------------------------------------------------------------------------------------
 
 ---@class assay.FixtureOpts
----@field scope? "test"|"file"|"suite"   # default "test"
+---@field scope? "test"|"flow"|"file"|"suite"   # default "test"; `flow` only valid inside a flow
 ---@field autouse? boolean               # run even when no test names it
 ---@field params? any[]                  # parametrize: one variant per element (see Context:param)
+
+--- A resource token gating concurrency: a bare string is exclusive; `assay.shared(token)`
+--- is a concurrent reader. Only enforced under `--jobs`.
+---@alias assay.Resource string|assay.SharedResource
 
 ---@class assay.TestOpts
 ---@field timeout? string                # e.g. "30s"
 ---@field retries? integer
----@field tags? string[]
+---@field tags? string[]                 # selection tags (see `-m` expressions)
+---@field depends_on? assay.Test[]       # skip this test if any upstream failed/was skipped
+---@field resources? assay.Resource[]    # resources this test needs (concurrency gating)
+---@field serial? boolean                # never run concurrently with anything (process-wide exclusive)
+
+--- A test handle returned by `assay.test`/`assay.test_each`. Pass to `depends_on`.
+---@class assay.Test
+
+--- A flow handle returned by `assay.flow`. A flow is one ordered scheduling unit. Pass to
+--- `depends_on`.
+---@class assay.Flow
+
+--- A shared (concurrent-reader) resource token, from `assay.shared`.
+---@class assay.SharedResource
+
+--- The flow builder passed to a `flow` body. Declare ordered steps; steps share the
+--- enclosing scope and later steps are skipped once an earlier one fails.
+---@class assay.FlowBuilder
+local FlowBuilder = {}
+--- Declare an ordered step. Steps run in declaration order on a single worker.
+---@param name string
+---@param body fun(t: assay.TestContext)
+function FlowBuilder:step(name, body) end
+--- Use a fixture for the flow's lifetime (`flow` scope).
+---@generic T
+---@param fixture assay.Fixture<T>
+---@return T
+---@overload fun(self: assay.FlowBuilder, name: string): any
+function FlowBuilder:use(fixture) end
 
 ---@class assay
 local assay = {}
@@ -141,11 +173,12 @@ local assay = {}
 ---@return assay.Fixture<T>
 function assay.fixture(name, scope, factory, opts) end
 
----Declare a test.
----@overload fun(name: string, factory: fun(t: assay.TestContext))
+---Declare a test. Returns a handle usable in another test's `depends_on`.
+---@overload fun(name: string, factory: fun(t: assay.TestContext)): assay.Test
 ---@param name string
 ---@param opts assay.TestOpts
 ---@param factory fun(t: assay.TestContext)
+---@return assay.Test
 function assay.test(name, opts, factory) end
 
 ---Declare a table-driven test: one test per case. `{placeholders}` in `name_template` are
@@ -153,7 +186,24 @@ function assay.test(name, opts, factory) end
 ---@param name_template string
 ---@param cases table[]
 ---@param factory fun(t: assay.TestContext, case: table)
+---@return assay.Test
 function assay.test_each(name_template, cases, factory) end
+
+---Declare a flow: an ordered sequence of steps sharing the enclosing scope. Steps run in
+---order on one worker; once a step fails, the rest are skipped. The go-to construct when a
+---test needs ordering plus built-up state. Returns a handle usable in `depends_on`.
+---@overload fun(name: string, body: fun(flow: assay.FlowBuilder)): assay.Flow
+---@param name string
+---@param opts assay.TestOpts             # tags/resources/depends_on apply to the whole flow
+---@param body fun(flow: assay.FlowBuilder)
+---@return assay.Flow
+function assay.flow(name, opts, body) end
+
+---Mark a resource token as a concurrent reader (readers-writer semantics). Bare-string
+---tokens are exclusive; wrap in `assay.shared` to allow concurrent holders.
+---@param token string
+---@return assay.SharedResource
+function assay.shared(token) end
 
 ---Group tests for reporting. Labeling-only in v1 (does not introduce a new fixture scope).
 ---@param label string

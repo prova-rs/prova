@@ -122,8 +122,12 @@ handles that sibling test files `require`, keeping types intact without a global
 | Scope    | Instantiated              | Torn down                | Cache key                     |
 |----------|---------------------------|--------------------------|-------------------------------|
 | `test`   | first `use` in a test     | after that test          | (fixture, test invocation)    |
+| `flow`   | first `use` in a flow     | after the flow's steps   | (fixture, flow invocation)    |
 | `file`   | first `use` in a file     | after all tests in file  | (fixture, file)               |
 | `suite`  | first `use` in the run    | after the whole run      | (fixture, run)                |
+
+The `flow` scope is only valid inside a `flow` (see [Execution model](#flows--ordered-steps-with-shared-context));
+declaring it elsewhere is a collection error. Inside a flow, `test` scope means **per-step**.
 
 Caching is **per scope instance**: two tests in the same file that both `use("rendered_project")`
 (scope `file`) share one render; its teardown runs once, after the last test in the file.
@@ -217,6 +221,152 @@ end)
 
 > Open question: whether `describe` should introduce a real nested fixture scope (jest
 > semantics). Deferred — labeling-only keeps the scope model to three clean levels for v1.
+
+---
+
+## Execution model: ordering, isolation & concurrency
+
+Ordering and isolation are stated up front, because being surprised by them is the fastest
+way a suite loses trust. The rules are deliberately boring and explicit.
+
+**The four rules**
+
+1. **Definition order is the default, and it is deterministic.** Tests run top-to-bottom in
+   declared order within a file; files run in a stable, sorted order. No randomization, no
+   reordering behind your back — what you read is what runs.
+2. **Isolation is the default *state* model.** Tests never share mutable state unless you
+   deliberately create it (a broader-scoped fixture, or a flow). Enforced by the *shape of
+   the API*, not by OS sandboxing — see below.
+3. **Ordering, when you need it, is a first-class construct — never a trick.** Reach for a
+   `flow` (linear, shared context) or `depends_on` (a DAG edge). Both are one line and their
+   semantics — including *skip-downstream-on-failure* — are guaranteed.
+4. **Parallelism is opt-in and never violates rules 1–3.** The runner is serial by default
+   (safest for side-effecting acceptance tests). `--jobs N` turns on concurrency; the
+   resource scheduler then runs independent tests in parallel while honoring every declared
+   order and dependency.
+
+The key move is separating two knobs most frameworks conflate: **isolation** (do tests share
+state?) and **order** (what sequence do they run in?). Go couples them — it randomizes order
+*to force* isolation. We don't. With isolation as the default state model, definition order
+is safe *and* predictable: you can't accidentally depend on order because there is no ambient
+state to leak, and when you *want* to depend on order, you say so.
+
+**Why not randomize by default?** Randomized order (Go, pytest-randomly) exists to catch
+accidental coupling in tests that are *supposed* to be isolated — a unit-testing concern. In
+acceptance/integration testing, ordered-with-shared-context is a legitimate and often
+*dominant* shape, so randomizing by default fights the domain and surprises authors: the
+"purity nobody asked for." We get the same safety another way (isolation by construction) and
+offer randomization as an **opt-in hardening pass**:
+
+```
+assay test --shuffle           # random order, prints a seed
+assay test --shuffle=1234      # replay that exact seed
+```
+
+**What you give up — and what going further would cost.** Choosing definition-order +
+opt-in-shuffle over randomize-by-default costs you *automatic* coupling detection on every
+run; isolation-by-construction buys most of it back, and `--shuffle` recovers the rest on
+demand. Going the *other* direction — a fully-ordered suite where every test implicitly
+continues the previous one — is what we explicitly reject: it forfeits parallelism, destroys
+fault isolation (one failure makes everything after it meaningless), makes a single test
+un-runnable alone, and turns inserting a test into a landmine. Explicit `flow`/`depends_on`
+give real ordering exactly where you declare it, while everything else stays independent and
+parallelizable. **Ordering you declare is a guarantee; isolation you don't override is a
+guarantee. Both are easy; neither is a surprise.**
+
+### Isolation — enforced by API shape, not sandboxing
+
+"Hermetic by default" is an honest claim here because the DSL gives you **no ambient mutable
+global state to leak**:
+
+- There is no implicit working directory and no `os.chdir`. Every side-effecting call takes
+  its context explicitly: `shell.run(cmd, { cwd = …, env = … })`, `fs.read(path)`.
+- Scratch space is `ctx:tempdir()` — unique per scope, auto-removed.
+- The only ways to share state across tests are the *tracked, scoped* ones: a broader-scoped
+  fixture, or a flow's context. Both appear in the report and tear down deterministically.
+
+Two tests therefore cannot corrupt each other through the framework's own surface. That is
+what lets definition order be the safe default without a randomizer policing it.
+
+### Flows — ordered steps with shared context
+
+A `flow` is the go-to when you *do* need order plus built-up state — the create → read →
+update → delete shape that dominates integration testing. Steps run in declared order, share
+the enclosing scope, and **once a step fails the remaining steps are skipped** (reported as
+skipped-due-to-upstream; the flow is marked failed):
+
+```lua
+local api = "http://localhost:8080"
+
+assay.flow("order lifecycle", function(flow)
+  local order                       -- shared by all steps (plain Lua closure)
+
+  flow:step("create", function(t)
+    order = http.post(api .. "/orders", { json = { sku = "widget", qty = 2 } }):json()
+    t.expect(order.id):is_truthy()
+  end)
+
+  flow:step("read back", function(t)          -- skipped if "create" failed
+    local res = http.get(api .. "/orders/" .. order.id)
+    t.expect(res.status):equals(200)
+    t.expect(res:json().qty):equals(2)
+  end)
+
+  flow:step("delete", function(t)
+    t.expect(http.post(api .. "/orders/" .. order.id .. "/cancel").status):equals(204)
+  end)
+end)
+```
+
+- A flow is **one scheduling unit**: its steps always run serially, in order, on one worker —
+  never split or parallelized. Independent flows/tests still parallelize around it.
+- Flow-level fixtures via `flow:use(fixture)` live for the flow's lifetime (`flow` scope).
+  Inside a flow, `test`-scoped fixtures are per-**step**.
+- Flow-level opts (`tags`, `resources`, `depends_on`) apply to the whole flow.
+- A step may `t:skip(reason)` itself; a step is the flow's analog of a test for reporting.
+
+Flows are the sanctioned home for shared mutable state — reach for them instead of widening a
+fixture's scope just to smuggle state between tests.
+
+### Dependencies — `depends_on`
+
+When the relationship is a graph rather than a tidy line (a test needs another's *success*,
+but they aren't a single sequence), declare an edge. `assay.test` and `assay.flow` return
+**handles** (like fixtures); pass them to `depends_on`:
+
+```lua
+local seeded = assay.test("seed reference data", function(t) ... end)
+
+assay.test("report reflects seed", { depends_on = { seeded } }, function(t) ... end)
+-- If `seeded` fails or is skipped, this test is SKIPPED (not failed), with the reason.
+```
+
+- The runner topologically sorts; a cycle is a collection-time error.
+- Independent subgraphs run in parallel under `--jobs`; dependency edges are always honored.
+- **`depends_on` gates on pass/fail; it does not transfer state.** If a dependent also needs
+  the upstream's *data*, share it through a fixture (or use a flow for a linear sequence).
+  Keeping "did it pass?" separate from "give me its value" is deliberate — conflating them is
+  exactly how implicit, brittle ordering creeps in.
+
+### Resources & parallelism
+
+Under `--jobs N`, tests run concurrently. Shared *external* resources — a port, a database,
+an account, a file path — make that unsafe unless declared. A test or flow lists the
+resources it needs; the scheduler guarantees safe co-scheduling:
+
+```lua
+assay.test("boots on :8080",   { resources = { "port:8080" } },       function(t) ... end)  -- exclusive
+assay.test("also wants :8080", { resources = { "port:8080" } },       function(t) ... end)  -- never concurrent with the above
+assay.test("reads shared db",  { resources = { assay.shared("db") } },function(t) ... end)  -- concurrent with other shared("db")
+```
+
+- A bare string token is **exclusive**: no two holders run at once. `assay.shared(token)` is a
+  concurrent reader — readers run together, but an exclusive holder waits for all readers to
+  release (a readers-writer lock over the token namespace).
+- `{ serial = true }` is sugar for a single process-wide exclusive resource — the escape hatch
+  for "never run this alongside anything."
+- Resource declarations are inert under the serial default and fully enforced under `--jobs`,
+  so you can declare them up front and scale out later without touching the tests.
 
 ---
 
