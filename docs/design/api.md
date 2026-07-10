@@ -78,28 +78,44 @@ is exactly **one** blessed way for v1.
 ### Requesting fixtures (dependency injection)
 
 Lua cannot reliably reflect a function's parameter names, so we do **not** auto-inject by
-signature the way pytest does. Injection is **explicit and lazy** via `ctx:use(name)`:
+signature the way pytest does. Injection is **explicit and lazy** via `ctx:use(...)`.
+
+`assay.fixture` **returns a handle**; you pass that handle to `use`:
 
 ```lua
+local workspace = assay.fixture("workspace", "file", function(ctx)
+  return ctx:tempdir()                 -- factory returns string
+end)                                   -- workspace : assay.Fixture<string>
+
 assay.test("renders into a clean workspace", function(t)
-  local ws = t:use("workspace")     -- fixture instantiated on first use, then cached per scope
+  local ws = t:use(workspace)          -- ws : string — type flows through (see LSP note)
   ...
 end)
 ```
 
-Explicit `use` buys three things pytest's magic hides:
+Handle-based (not string-based) `use` is a **deliberate, LSP-driven decision**. With
+LuaCATS generics, `assay.fixture(...)` returns `assay.Fixture<T>` (T = the factory's return
+type) and `ctx:use(handle)` recovers `T` at the call site — full completion and
+type-checking on fixture values. A string key (`use("workspace")`) is a type black hole:
+LuaLS can only type it as `any`. A bare-string overload is retained as an **escape hatch**
+for cross-file lookup by name, but it is untyped; prefer the handle.
+
+Explicit `use` (either form) also buys three things pytest's parameter-name magic hides:
 1. **Laziness** — a fixture is only built when something actually asks for it.
-2. **Traceability** — you can grep for `use("workspace")` to find every dependent.
+2. **Traceability** — you can grep for the handle/name to find every dependent.
 3. **No name-collision surprises** between fixtures and local variables.
 
-Fixtures depend on other fixtures the same way:
+Fixtures depend on other fixtures the same way — capture the handle, `use` it:
 
 ```lua
-assay.fixture("rendered_project", "file", function(ctx)
-  local ws = ctx:use("workspace")            -- fixture-to-fixture dependency
+local rendered_project = assay.fixture("rendered_project", "file", function(ctx)
+  local ws = ctx:use(workspace)              -- fixture-to-fixture dependency (typed)
   return archetect.render{ source = "…", destination = ws, defaults = true }
 end)
 ```
+
+Cross-file fixtures: a `conftest`-equivalent module (`assay.lua`) can `return` a table of
+handles that sibling test files `require`, keeping types intact without a global registry.
 
 ### Scopes and caching
 
@@ -140,14 +156,14 @@ uses it is multiplied across the variants (this is pytest's most powerful and mo
 feature):
 
 ```lua
-assay.fixture("toolchain", "suite", function(ctx)
+local toolchain = assay.fixture("toolchain", "suite", function(ctx)
   local tc = ctx:param()               -- "stable" or "nightly"
   return { name = tc, cargo = "cargo +" .. tc }
 end, { params = { "stable", "nightly" } })
 
 assay.test("builds on the toolchain", function(t)
-  local tc = t:use("toolchain")
-  local r = shell.run(tc.cargo .. " build", { cwd = t:use("workspace") })
+  local tc = t:use(toolchain)
+  local r = shell.run(tc.cargo .. " build", { cwd = t:use(workspace) })
   t.expect(r.code):equals(0)
 end)
 -- Runs twice: "builds on the toolchain[stable]" and "…[nightly]".
@@ -391,6 +407,28 @@ Two front doors over the same `assay-core` lib (mirrors `archetect-core` ← `ar
    authors who already have the CLI. *"The generator ships its own test framework."*
 
 ---
+
+## Tooling / LSP (decided up front)
+
+Authoring quality is a first-class goal, so the LSP story is settled before the engine:
+
+- **LuaCATS via `lua-language-server`.** LuaCATS is the annotation dialect LuaLS consumes
+  (`---@class`, `---@param`, generics, `---@meta`). It gives types through comments with
+  **zero build step** — the right fit for a DSL where authors write plain Lua. We reject
+  Teal (a compile-to-Lua typed dialect) because it would force authors to write `.tl` and
+  compile. This also matches archetect's existing choice for its own Lua API annotations.
+- **Target Lua 5.4**, matching archetect's mlua (`features = ["lua54"]`). `runtime.version`
+  in `.luarc.json` is pinned to `Lua 5.4`.
+- **Annotations are the authoritative surface.** `library/assay.lua` + `library/modules.lua`
+  (`---@meta` stubs) define the API; the runtime must conform to them. Risk to manage:
+  drift between hand-written stubs and the Rust-registered API. For the POC we hand-maintain;
+  longer term we may generate the stubs from the Rust registration to guarantee they match.
+- **Generics carry fixture types.** `assay.fixture` → `assay.Fixture<T>`; `ctx:use(handle)`
+  → `T`. This is *why* `use` takes a handle, not a string (see DI section).
+- **Distribution mirrors `archetect ide setup`.** An `assay ide setup` command will
+  `include_str!` the stubs, install them to the data dir, and write/update a `.luarc.json`
+  (`runtime.version` + `workspace.library`). The repo checks in a `.luarc.json` pointing at
+  `library/` so the examples are typed during prototyping right now.
 
 ## Open questions (to resolve while prototyping the engine)
 

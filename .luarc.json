@@ -1,0 +1,15 @@
+{
+  "runtime.version": "Lua 5.4",
+  "workspace.library": [
+    "library"
+  ],
+  "workspace.checkThirdParty": false,
+  "diagnostics.globals": [
+    "fs",
+    "shell",
+    "http",
+    "archetect"
+  ],
+  "completion.callSnippet": "Replace",
+  "hint.enable": true
+}

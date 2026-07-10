@@ -7,13 +7,13 @@
 local assay = require("assay")
 
 -- Parametrized suite fixture: the whole file's tests run once per toolchain.
-assay.fixture("toolchain", "suite", function(ctx)
+local toolchain = assay.fixture("toolchain", "suite", function(ctx)
   return { name = ctx:param() }
 end, { params = { "stable" } })
 
 -- Render + build once per suite.
-assay.fixture("built_service", "suite", function(ctx)
-  local tc = ctx:use("toolchain")
+local built_service = assay.fixture("built_service", "suite", function(ctx)
+  local tc = ctx:use(toolchain)
   local out = archetect.render{
     source = "https://github.com/archetect/archetype-rust-service-tonic-workspace.git",
     answers = { project_name = "orders", port = 8080 },
@@ -26,8 +26,8 @@ assay.fixture("built_service", "suite", function(ctx)
 end)
 
 -- Boot the built binary, wait for health, tear it down at suite end.
-assay.fixture("running_service", "suite", function(ctx)
-  local svc = ctx:use("built_service")
+local running_service = assay.fixture("running_service", "suite", function(ctx)
+  local svc = ctx:use(built_service)
   local proc = shell.run("./target/release/orders &", { cwd = svc.path })  -- illustrative; real API: shell.spawn
   ctx:defer(function() shell.run("pkill -f target/release/orders") end)
   http.wait_for("http://localhost:8080/health", { status = 200, timeout = "30s", every = "500ms" })
@@ -35,7 +35,7 @@ assay.fixture("running_service", "suite", function(ctx)
 end)
 
 assay.test("health endpoint is green", function(t)
-  local svc = t:use("running_service")
+  local svc = t:use(running_service)
   local res = http.get(svc.base .. "/health")
   t.expect(res.status):equals(200)
   t.expect(res:json().status):equals("ok")
@@ -45,7 +45,7 @@ assay.test_each("rejects bad input on {route}", {
   { route = "/orders", payload = {} },
   { route = "/orders", payload = { quantity = -1 } },
 }, function(t, case)
-  local svc = t:use("running_service")
+  local svc = t:use(running_service)
   local res = http.post(svc.base .. case.route, { json = case.payload })
   t.expect(res.status):is_one_of({ 400, 422 })
 end)

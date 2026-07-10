@@ -16,9 +16,15 @@ local Context = {}
 
 ---Instantiate or fetch a fixture value. Lazy: the fixture is built on first use and then
 ---cached for its scope. Fixture-to-fixture dependencies use this too.
----@param name string
----@return any value
-function Context:use(name) end
+---
+---Prefer passing the **handle** returned by `assay.fixture` — the fixture's value type
+---then flows through to the call site (full completion + type-checking). Passing a bare
+---string name also works (cross-file lookup) but yields an untyped `any`.
+---@generic T
+---@param fixture assay.Fixture<T>   # handle from assay.fixture — type flows through
+---@return T
+---@overload fun(self: assay.Context, name: string): any
+function Context:use(fixture) end
 
 ---Register a teardown callback for the current scope. Callbacks run LIFO when the scope
 ---ends; a fixture's deferrals run before those of any fixture it depended on.
@@ -40,18 +46,23 @@ function Context:param() end
 ---Context passed to test bodies. Extends `assay.Context` with assertions and control flow.
 ---@class assay.TestContext : assay.Context
 ---@field expect fun(subject: any): assay.Matcher  # start a fluent assertion
+---@field expect_all fun(body: fun())              # soft assertions: collect all failures in `body`
 ---@field name string                              # resolved test name
 ---@field case table|nil                           # current case (parametrized tests)
 local TestContext = {}
 
----Collect multiple assertion failures inside `body` before failing the test (soft
----assertions). Reports every failure, not just the first.
----@param body fun()
-function TestContext:expect_all(body) end
-
 ---Skip the current test at runtime with a reason.
 ---@param reason string
 function TestContext:skip(reason) end
+
+------------------------------------------------------------------------------------------
+-- Fixtures
+------------------------------------------------------------------------------------------
+
+---A fixture handle returned by `assay.fixture`. Generic over the fixture's value type `T`,
+---so `ctx:use(handle)` recovers `T` at the call site. Treat it as opaque — pass it to
+---`use`, don't inspect it.
+---@class assay.Fixture<T>
 
 ------------------------------------------------------------------------------------------
 -- Matchers
@@ -121,10 +132,13 @@ local assay = {}
 
 ---Declare a fixture: a named factory producing a value, with optional scoped teardown and
 ---dependencies. `scope` may be a string ("test"|"file"|"suite") or a full options table.
+---Returns a typed handle; pass it to `ctx:use(handle)` so the value type flows through.
+---@generic T
 ---@param name string
 ---@param scope "test"|"file"|"suite"|assay.FixtureOpts
----@param factory fun(ctx: assay.Context): any
+---@param factory fun(ctx: assay.Context): T
 ---@param opts? assay.FixtureOpts        # when `scope` is a bare string, extra opts (e.g. params)
+---@return assay.Fixture<T>
 function assay.fixture(name, scope, factory, opts) end
 
 ---Declare a test.
