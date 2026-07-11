@@ -170,7 +170,7 @@ end, { params = { "stable", "nightly" } })
 assay.test("builds on the toolchain", function(t)
   local tc = t:use(toolchain)
   local r = shell.run(tc.cargo .. " build", { cwd = t:use(workspace) })
-  t.expect(r.code):equals(0)
+  t:expect(r.code):equals(0)
 end)
 -- Runs twice: "builds on the toolchain[stable]" and "…[nightly]".
 ```
@@ -199,7 +199,7 @@ assay.test_each("renders for {lang}", {
   { lang = "java", entry = "src/main/java/App.java" },
 }, function(t, case)
   local out = archetect.render{ source = "…", answers = { language = case.lang }, defaults = true }
-  t.expect(out:file(case.entry)):exists()
+  t:expect(out:file(case.entry)):exists()
 end)
 ```
 
@@ -319,15 +319,15 @@ assay.flow("order lifecycle", function(f)
 
   f:step("create", function(t)
     order = http.post(api .. "/orders", { json = { sku = "widget", qty = 2 } }):json()
-    t.expect(order.id):is_truthy()
+    t:expect(order.id):is_truthy()
   end)
 
   f:step("read back", function(t)             -- skipped if "create" failed
-    t.expect(http.get(api .. "/orders/" .. order.id):json().qty):equals(2)
+    t:expect(http.get(api .. "/orders/" .. order.id):json().qty):equals(2)
   end)
 
   f:step("cancel", function(t)
-    t.expect(http.post(api .. "/orders/" .. order.id .. "/cancel").status):equals(204)
+    t:expect(http.post(api .. "/orders/" .. order.id .. "/cancel").status):equals(204)
   end)
 end)
 ```
@@ -415,32 +415,41 @@ base; the test context adds assertions and skip/case.
 | `ctx:defer(fn)`   | both     | Register LIFO teardown for the current scope                  |
 | `ctx:tempdir()`   | both     | A scratch dir auto-removed when the scope ends                |
 | `ctx:log(msg)`    | both     | Structured log line attached to the test/fixture in the report|
-| `ctx:param()`     | fixtures | Current parameter (parametrized fixtures)                     |
-| `t.expect(v)`     | tests    | Start a fluent assertion (see below)                          |
-| `t:skip(reason)`  | tests    | Skip the current test at runtime                              |
-| `t.name`          | tests    | The resolved test name                                        |
-| `t.case`          | tests    | The current case table (parametrized tests)                   |
+| `ctx:param()`         | fixtures | Current parameter (parametrized fixtures)                 |
+| `t:expect(v, label?)` | tests    | Start a fluent assertion; optional `label` for messages   |
+| `t:expect_all(fn)`    | tests    | Soft assertions — collect all failures in `fn`            |
+| `t:skip(reason)`      | tests    | Skip the current test at runtime                          |
+| `t.name`              | tests    | The resolved test name                                    |
+| `t.case`              | tests    | The current case table (parametrized tests)               |
 
-`t.expect` is a bound callable field (matches `t.expect(out:file("x"))`); `use`/`defer`/
-`tempdir` are methods (colon).
+Everything callable on `t`/`ctx` is a colon-method (`t:expect`, `t:use`, `t:defer`) — no
+dot/colon mix to trip over. The only dot members are plain data fields (`t.name`, `t.case`).
 
 ---
 
 ## Assertions
 
-A single fluent entry point, `expect(subject)`, returning a matcher. Matchers validate the
-subject's type at call time, so domain subjects (file handles, shell results) get rich
-checks.
+A single fluent entry point, `t:expect(subject, label?)`, returning a matcher. Matchers
+validate the subject's type at call time, so domain subjects (file handles, shell results)
+get rich checks.
 
 ```lua
-t.expect(r.code):equals(0)
-t.expect(r.stdout):contains("Compiling")
-t.expect(r.stdout):matches("Finished .+ in %d")     -- Lua pattern
-t.expect(out:file("Cargo.toml")):exists()
-t.expect(out:dir("target")):never():exists()         -- negation
-t.expect(res.status):is_one_of({ 200, 204 })
-t.expect(value):is_nil()
-t.expect(list):has_length(3)
+t:expect(r.code):equals(0)
+t:expect(r.stdout):contains("Compiling")
+t:expect(r.stdout):matches("Finished .+ in %d")     -- Lua pattern
+t:expect(out:file("Cargo.toml")):exists()
+t:expect(out:dir("target")):never():exists()         -- negation
+t:expect(res.status):is_one_of({ 200, 204 })
+t:expect(value):is_nil()
+t:expect(list):has_length(3)
+```
+
+The optional second argument is a **label** woven into the failure message, so anonymous
+values still read clearly when they fail:
+
+```lua
+t:expect(order.id, "order id"):is_truthy()
+-- on failure: "order id: expected a truthy value, got nil"
 ```
 
 ### Core matchers (v1)
@@ -458,18 +467,18 @@ t.expect(list):has_length(3)
 | `:gt(n)` `:gte(n)` `:lt(n)` `:lte(n)` | numeric comparison                          |
 | `:exists()` / `:is_file()` / `:is_dir()` / `:is_empty()` | filesystem handle checks   |
 
-`:never()` returns a negated matcher (`t.expect(x):never():contains("secret")`).
+`:never()` returns a negated matcher (`t:expect(x):never():contains("secret")`).
 
 ### Soft assertions
 
-By default a failed assertion **fails the test immediately**. `t.expect_all(function() … end)`
+By default a failed assertion **fails the test immediately**. `t:expect_all(function() … end)`
 collects multiple failures before failing (useful for asserting many files at once):
 
 ```lua
-t.expect_all(function()
-  t.expect(out:file("README.md")):exists()
-  t.expect(out:file("LICENSE")):exists()
-  t.expect(out:file(".gitignore")):exists()
+t:expect_all(function()
+  t:expect(out:file("README.md")):exists()
+  t:expect(out:file("LICENSE")):exists()
+  t:expect(out:file(".gitignore")):exists()
 end)  -- reports every missing file, not just the first
 ```
 
@@ -479,8 +488,8 @@ We already lean on Rust's `insta` in the archetect workspace; the file module ex
 same idea to Lua for whole-file / whole-tree snapshotting:
 
 ```lua
-t.expect(out:file("src/main.rs")):matches_snapshot()      -- .snap alongside the test file
-t.expect(out:tree()):matches_snapshot("full-layout")      -- named snapshot of the rendered tree
+t:expect(out:file("src/main.rs")):matches_snapshot()      -- .snap alongside the test file
+t:expect(out:tree()):matches_snapshot("full-layout")      -- named snapshot of the rendered tree
 ```
 
 `assay test --update-snapshots` rewrites them, mirroring `cargo insta`.

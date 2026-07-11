@@ -16,17 +16,17 @@ assay.flow("order lifecycle", { tags = { "acceptance" }, requires = { "network" 
 
   flow:step("create", function(t)
     order = http.post(base .. "/orders", { json = { sku = "widget", qty = 2 } }):json()
-    t.expect(order.id):is_truthy()
+    t:expect(order.id):is_truthy()
   end)
 
   flow:step("read back", function(t)
     local res = http.get(base .. "/orders/" .. order.id)
-    t.expect(res.status):equals(200)
-    t.expect(res:json().qty):equals(2)
+    t:expect(res.status):equals(200)
+    t:expect(res:json().qty):equals(2)
   end)
 
   flow:step("cancel", function(t)
-    t.expect(http.post(base .. "/orders/" .. order.id .. "/cancel").status):equals(204)
+    t:expect(http.post(base .. "/orders/" .. order.id .. "/cancel").status):equals(204)
   end)
 end)
 
@@ -36,12 +36,12 @@ end)
 --------------------------------------------------------------------------------------------
 local seed = assay.test("seed reference data", { tags = { "slow" }, resources = { assay.shared("db") } }, function(t)
   local base = t:use(api)
-  t.expect(http.post(base .. "/admin/seed").status):equals(200)
+  t:expect(http.post(base .. "/admin/seed").status):equals(200)
 end)
 
 assay.test("report reflects seed", { depends_on = { seed }, resources = { assay.shared("db") } }, function(t)
   local base = t:use(api)
   local res = http.get(base .. "/reports/summary")
-  t.expect(res.status):equals(200)
-  t.expect(res:json().records):gt(0)
+  t:expect(res.status):equals(200)
+  t:expect(res:json().records):gt(0)
 end)

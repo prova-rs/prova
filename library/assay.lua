@@ -45,11 +45,22 @@ function Context:param() end
 
 ---Context passed to test bodies. Extends `assay.Context` with assertions and control flow.
 ---@class assay.TestContext : assay.Context
----@field expect fun(subject: any): assay.Matcher  # start a fluent assertion
----@field expect_all fun(body: fun())              # soft assertions: collect all failures in `body`
 ---@field name string                              # resolved test name
 ---@field case table|nil                           # current case (parametrized tests)
 local TestContext = {}
+
+---Start a fluent assertion. The optional `label` is used in the failure message, so a failed
+---check reads e.g. "order id: expected truthy, got nil" instead of pointing at an anonymous
+---value.
+---@param subject any
+---@param label? string
+---@return assay.Matcher
+function TestContext:expect(subject, label) end
+
+---Soft assertions: collect every failure inside `body` before failing the test. Reports all
+---failures, not just the first.
+---@param body fun()
+function TestContext:expect_all(body) end
 
 ---Skip the current test at runtime with a reason.
 ---@param reason string

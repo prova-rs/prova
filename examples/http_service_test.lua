@@ -35,8 +35,8 @@ end)
 assay.test("health endpoint is green", function(t)
   local svc = t:use(running_service)
   local res = http.get(svc.base .. "/health")
-  t.expect(res.status):equals(200)
-  t.expect(res:json().status):equals("ok")
+  t:expect(res.status):equals(200)
+  t:expect(res:json().status):equals("ok")
 end)
 
 assay.test_each("rejects bad input on {route}", {
@@ -45,5 +45,5 @@ assay.test_each("rejects bad input on {route}", {
 }, function(t, case)
   local svc = t:use(running_service)
   local res = http.post(svc.base .. case.route, { json = case.payload })
-  t.expect(res.status):is_one_of({ 400, 422 })
+  t:expect(res.status):is_one_of({ 400, 422 })
 end)

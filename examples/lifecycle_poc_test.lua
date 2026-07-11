@@ -32,16 +32,16 @@ local conn = assay.fixture("conn", "test", function(ctx)
 end)
 
 assay.test("first test acquires connection #1", function(t)
-  t.expect(t:use(conn)):equals(1)
+  t:expect(t:use(conn)):equals(1)
 end)
 
 assay.test("second test also sees #1 — test-scoped conn was torn down and rebuilt", function(t)
   -- `db` is file-scoped, so it's the SAME instance as the previous test (not rebuilt),
   -- but `conn` is test-scoped: the previous test's defer decremented back to 0, so we're at 1 again.
-  t.expect(t:use(conn)):equals(1)
+  t:expect(t:use(conn)):equals(1)
 end)
 
 assay.test("the shared db root lives under the suite dir", function(t)
   local database = t:use(db)
-  t.expect(database.root):contains(t:use(suite_dir))  -- same suite_dir instance, built once
+  t:expect(database.root):contains(t:use(suite_dir))  -- same suite_dir instance, built once
 end)

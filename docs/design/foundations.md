@@ -106,10 +106,10 @@ assay.flow("order lifecycle", function(flow)
   local order_id
   flow:step("create order", function(t)
     order_id = http.post(api .. "/orders", { json = {...} }):json().id
-    t.expect(order_id):is_truthy()
+    t:expect(order_id):is_truthy()
   end)
   flow:step("read the order", function(t)          -- runs only if "create" passed
-    t.expect(http.get(api .. "/orders/" .. order_id).status):equals(200)
+    t:expect(http.get(api .. "/orders/" .. order_id).status):equals(200)
   end)
   flow:step("delete the order", function(t) ... end)
 end)

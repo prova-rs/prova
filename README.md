@@ -23,9 +23,9 @@ end)
 
 assay.test("compiles cleanly", function(t)
   local p = t:use("project")
-  t.expect(p:file("Cargo.toml")):exists()
+  t:expect(p:file("Cargo.toml")):exists()
   local r = shell.run("cargo build", { cwd = p.path })
-  t.expect(r.code):equals(0)
+  t:expect(r.code):equals(0)
 end)
 ```
 
