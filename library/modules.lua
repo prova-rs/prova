@@ -47,6 +47,10 @@ function fs.remove_all(path) end
 ---@param path string
 ---@return string
 function fs.read(path) end
+---Write `contents` to `path`, creating parent directories as needed.
+---@param path string
+---@param contents string
+function fs.write(path, contents) end
 ---@param path string
 ---@return boolean
 function fs.exists(path) end

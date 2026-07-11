@@ -27,10 +27,9 @@
 //! Declarations are inert at `concurrency = 1` and enforced above it.
 //!
 //! Execution defaults to **sequential** (`concurrency = 1`): correct and deterministic for
-//! fixture-sharing tests. Parallelism is opt-in via `RunConfig`/`--jobs` and becomes safe once the
-//! resource scheduler lands. Fixture factories are called synchronously in this increment (async
-//! factories are a later step: the Lua API `ctx:use(handle)` is unchanged, only the Rust binding
-//! upgrades from a sync to an async method).
+//! fixture-sharing tests. Parallelism is opt-in via `RunConfig`/`--jobs`, made safe by the resource
+//! scheduler. **`ctx:use` is an async method**, so fixture factories can `await` (e.g. `shell.run`);
+//! the capability modules (`shell`, `fs`) live in `modules.rs`.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -173,7 +172,7 @@ fn teardown_scope(scope: &Rc<RefCell<ScopeState>>) {
     }
 }
 
-fn make_tempdir() -> std::io::Result<PathBuf> {
+pub(crate) fn make_tempdir() -> std::io::Result<PathBuf> {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let nanos = SystemTime::now()
@@ -322,6 +321,10 @@ struct TestRun {
 /// Injected into every body/factory. `own_scope` is the scope its `defer`/`tempdir` target and the
 /// floor for the scope-mismatch check; `test_scope` is the active test/step scope instance;
 /// `flow_scope` is the enclosing flow's scope instance (present only inside a flow).
+///
+/// `Clone` is cheap (all fields are `Rc`/`Copy`) and lets the async `use` method own a snapshot in
+/// its future without holding the userdata borrow across an `await`.
+#[derive(Clone)]
 struct Ctx {
     run: Rc<RefCell<TestRun>>,
     state: Rc<RunState>,
@@ -348,7 +351,11 @@ impl Ctx {
     }
 }
 
-fn resolve_use(lua: &Lua, this: &Ctx, target: Value) -> mlua::Result<Value> {
+/// Resolve `ctx:use(handle|name)` to a fixture value, building it lazily if not cached. Async so a
+/// factory can `await` (e.g. `shell.run`, `http.wait_for`). Recursion (a factory that itself calls
+/// `ctx:use`) reenters through Lua, not Rust, so no boxing is needed. No `RefCell` borrow is held
+/// across the `await`.
+async fn resolve_use(lua: &Lua, this: &Ctx, target: Value) -> mlua::Result<Value> {
     let id = match &target {
         Value::UserData(ud) => {
             ud.borrow::<FixtureHandle>()
@@ -396,15 +403,17 @@ fn resolve_use(lua: &Lua, this: &Ctx, target: Value) -> mlua::Result<Value> {
         own_scope: def.scope,
     };
     let child_ud = lua.create_userdata(child)?;
-    let value: Value = def.factory.call(child_ud)?;
+    let value: Value = def.factory.call_async(child_ud).await?;
     ss.borrow_mut().cache.insert(id, value.clone());
     Ok(value)
 }
 
 impl UserData for Ctx {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("use", |lua, this, target: Value| {
-            resolve_use(lua, this, target)
+        // Async so fixture factories (and test bodies) can `await` while a fixture is built.
+        methods.add_async_method("use", |lua, this, target: Value| {
+            let ctx = (*this).clone();
+            async move { resolve_use(&lua, &ctx, target).await }
         });
 
         methods.add_method("defer", |_, this, f: Function| {
@@ -542,6 +551,34 @@ impl UserData for Matcher {
                 )
             })
         });
+
+        // Filesystem matchers: the subject is a path string (e.g. `t:expect(dir.."/Cargo.toml")`).
+        methods.add_method("exists", |_, this, ()| {
+            let pass = subject_path(&this.subject).is_some_and(|p| p.exists());
+            this.record(pass, || {
+                format!("expected path {} to exist", display(&this.subject))
+            })
+        });
+        methods.add_method("is_file", |_, this, ()| {
+            let pass = subject_path(&this.subject).is_some_and(|p| p.is_file());
+            this.record(pass, || {
+                format!("expected {} to be a file", display(&this.subject))
+            })
+        });
+        methods.add_method("is_dir", |_, this, ()| {
+            let pass = subject_path(&this.subject).is_some_and(|p| p.is_dir());
+            this.record(pass, || {
+                format!("expected {} to be a directory", display(&this.subject))
+            })
+        });
+    }
+}
+
+/// A `Value` interpreted as a filesystem path, if it is a string.
+fn subject_path(v: &Value) -> Option<PathBuf> {
+    match v {
+        Value::String(s) => s.to_str().ok().map(|bs| PathBuf::from(&*bs)),
+        _ => None,
     }
 }
 
@@ -706,6 +743,10 @@ fn build_lua(root_name: String) -> mlua::Result<(Lua, SharedCollector)> {
     )?;
 
     lua.globals().set("prova", prova)?;
+
+    // First-party capability modules (`shell`, `fs`) as their own injected globals.
+    crate::modules::install(&lua)?;
+
     Ok((lua, col))
 }
 
@@ -1404,7 +1445,7 @@ fn read_and_collect(path: &Path) -> mlua::Result<(Lua, SharedCollector)> {
 
 fn new_runtime() -> mlua::Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_current_thread()
-        .enable_time()
+        .enable_all() // time (timeouts/sleep) + io (child-process pipes for the shell module)
         .build()
         .map_err(|e| mlua::Error::RuntimeError(format!("failed to start async runtime: {e}")))
 }

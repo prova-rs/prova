@@ -7,6 +7,7 @@
 
 mod engine;
 pub mod model;
+mod modules;
 mod suite;
 
 pub use engine::{discover_path, run_path, run_path_with, RunConfig};

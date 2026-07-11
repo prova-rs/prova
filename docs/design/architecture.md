@@ -126,7 +126,15 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
 - **Fixtures + scopes + teardown**: `prova.fixture(name, scope, factory)` → typed handle;
   `ctx:use(handle|name)` builds-or-caches; `test`/`flow`/`file`/`suite` scopes with per-scope
   caches; `ctx:defer` (LIFO); `ctx:tempdir` (auto-removed); scope-mismatch rejection; inner→outer
-  teardown. *(`examples/lifecycle_poc_test.lua` runs green, teardown order verified.)*
+  teardown. **`ctx:use` is async** — a factory can `await` (e.g. `shell.run`, a readiness poll);
+  recursion reenters through Lua, so no boxing. *(`lifecycle_poc_test.lua`; `async_fixture` proves a
+  factory that awaits and chains through a fixture-uses-fixture edge.)*
+- **Capability modules** (`modules.rs`), injected as their own globals: **`shell.run(cmd, {cwd,
+  env, timeout, check})`** (async via `tokio::process`; returns `{code, stdout, stderr, duration}` +
+  `:ok()`) and **`fs`** (`exists`/`read`/`write`/`remove_all`/`tempdir`/`glob`). Filesystem matchers
+  `:exists()`/`:is_file()`/`:is_dir()` take a path-string subject. This is the slice that lets prova
+  test a real rendered workspace. *(`examples/shell_fs_test.lua`: async fixture builds a workspace
+  via shell, tests assert with shell + fs.)*
 - **Flows**: `prova.flow(name, body)` / `g:flow(...)` register a `Flow` node; `f:step(name, fn)`
   declares ordered steps. A flow is **one scheduling unit** (`PlanUnit::Flow`): steps run serially
   in declared order, sharing closure upvalues (the flow context bag) and a `flow`-scope instance;
@@ -172,9 +180,9 @@ The scheduler/lifecycle **spine is now complete** (collect → plan → deps →
 execute). The remaining increments pivot from engine to **product** — the capabilities that make
 prova useful beyond testing itself:
 
-1. **Async fixtures + async modules** — upgrade `ctx:use` to an async method so factories can
-   `await`, then land the first real capability modules (`fs`/`shell`/`http`) plus soft assertions
-   (`expect_all`) and snapshots. Also `requires` (capability gating → skip, not fail).
+1. **More capability + assertions** — the `http` module (`get`/`post`/`json`/`wait_for`) and the
+   `archetect.render` plugin (the justifying use case); soft assertions (`expect_all`), snapshots,
+   and `requires` (capability gating → skip, not fail). *(Async fixtures + `shell`/`fs` — done.)*
 2. **Flow ergonomics**: `f:use(fixture)` builder sugar (currently flow-scoped fixtures are used via
    `t:use` inside steps); re-runnable flow bodies (re-invoke to get fresh closures) as the
    precondition for the **load executor** treating a flow as a reusable scenario.
