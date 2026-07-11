@@ -5,19 +5,19 @@
 --- are isolated among themselves unless an edge says otherwise, and that a failed upstream
 --- SKIPS (not fails) everything downstream. No real endpoints; illustrative of the model.
 
-local api = assay.fixture("api_base", "suite", function(ctx)
+local api = prova.fixture("api_base", "suite", function(ctx)
   return "http://localhost:8080"
 end)
 
 -- Shared account state flows through this fixture, NOT through depends_on edges.
-local account = assay.fixture("account", "suite", function(ctx)
+local account = prova.fixture("account", "suite", function(ctx)
   return { id = nil, token = nil }             -- populated by the login/populate flows
 end)
 
 --------------------------------------------------------------------------------------------
 -- login: the root of the graph. Everything else depends (transitively) on it.
 --------------------------------------------------------------------------------------------
-local login = assay.flow("login", { resources = { assay.shared("auth") } }, function(f)
+local login = prova.flow("login", { resources = { prova.shared("auth") } }, function(f)
   local base, acct = f:use(api), f:use(account)
   f:step("authenticate", function(t)
     local res = http.post(base .. "/auth/login", { json = { user = "demo", pass = "demo" } })
@@ -30,7 +30,7 @@ end)
 --------------------------------------------------------------------------------------------
 -- populate: depends on login; seeds data the journeys will read.
 --------------------------------------------------------------------------------------------
-local populate = assay.flow("populate account", { depends_on = { login } }, function(f)
+local populate = prova.flow("populate account", { depends_on = { login } }, function(f)
   local base, acct = f:use(api), f:use(account)
   f:step("create profile", function(t)
     acct.id = http.post(base .. "/users", { json = { token = acct.token } }):json().id
@@ -45,7 +45,7 @@ end)
 -- Two journeys: same upstreams, no edge between them → they run in parallel (under --jobs).
 -- If login or populate fails, BOTH are skipped with the reason — no spurious cascade.
 --------------------------------------------------------------------------------------------
-assay.flow("checkout journey", { depends_on = { login, populate }, tags = { "acceptance" } }, function(f)
+prova.flow("checkout journey", { depends_on = { login, populate }, tags = { "acceptance" } }, function(f)
   local base, acct = f:use(api), f:use(account)
   f:step("add to cart", function(t)
     t:expect(http.post(base .. "/carts/" .. acct.id .. "/items", { json = { sku = "widget" } }).status):equals(200)
@@ -55,7 +55,7 @@ assay.flow("checkout journey", { depends_on = { login, populate }, tags = { "acc
   end)
 end)
 
-assay.flow("settings journey", { depends_on = { login, populate }, tags = { "acceptance" } }, function(f)
+prova.flow("settings journey", { depends_on = { login, populate }, tags = { "acceptance" } }, function(f)
   local base, acct = f:use(api), f:use(account)
   f:step("update email", function(t)
     t:expect(http.put(base .. "/users/" .. acct.id, { json = { email = "demo@example.com" } }).status):equals(200)

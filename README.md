@@ -1,18 +1,18 @@
-# assay
+# prova
 
 **A programmable, language-agnostic acceptance-test runner** — a real scripting language
 (Lua) plus a real fixture model, shipped as a single static binary.
 
-Assay is not a unit-test framework (JUnit/pytest own that inside their languages) and not a
+Prova is not a unit-test framework (JUnit/pytest own that inside their languages) and not a
 single-protocol tool (Hurl owns HTTP). It occupies the **black-box acceptance/integration
 layer**: bring a system into existence — render it, build it, boot it — then poke it with
 shell + HTTP + filesystem assertions, with **fixtures** holding setup and teardown
 together.
 
 ```lua
--- `assay` and the fs/shell/http/archetect modules are injected globals — no require needed.
+-- `prova` and the fs/shell/http/archetect modules are injected globals — no require needed.
 
-assay.fixture("project", "file", function(ctx)
+prova.fixture("project", "file", function(ctx)
   return archetect.render{
     source = "https://github.com/archetect/archetype-rust-cli.git",
     answers = { project_name = "widget" },
@@ -21,7 +21,7 @@ assay.fixture("project", "file", function(ctx)
   }
 end)
 
-assay.test("compiles cleanly", function(t)
+prova.test("compiles cleanly", function(t)
   local p = t:use("project")
   t:expect(p:file("Cargo.toml")):exists()
   local r = shell.run("cargo build", { cwd = p.path })
@@ -43,19 +43,19 @@ parametrization) in one static binary with no runtime to install.
 **Design phase.** We are nailing the authoring surface before building the Rust engine.
 
 - [`docs/design/foundations.md`](docs/design/foundations.md) — the thesis: orthogonal
-  primitives, classic footguns, and how Assay aims to subsume the acceptance-testing landscape
+  primitives, classic footguns, and how Prova aims to subsume the acceptance-testing landscape
 - [`docs/design/api.md`](docs/design/api.md) — the fixture model + assertion surface (start here)
-- [`library/assay.lua`](library/assay.lua), [`library/modules.lua`](library/modules.lua) —
+- [`library/prova.lua`](library/prova.lua), [`library/modules.lua`](library/modules.lua) —
   LuaLS annotations: authoritative API surface + editor completion/hover
 - [`examples/`](examples/) — worked acceptance tests you can read to feel the ergonomics
 
 ## Relationship to archetect
 
-Assay is a sibling to [archetect](https://github.com/archetect), sharing its Lua runtime
+Prova is a sibling to [archetect](https://github.com/archetect), sharing its Lua runtime
 and philosophy. The core runner is **domain-agnostic**; archetype rendering is a first-party
 **plugin** (`archetect.render` renders in-process via `archetect-core`, no subprocess). It
 is both the justifying use case and our dogfooding target. Two front doors over one core
-lib: the standalone `assay` binary, and `archetect test` for authors who already have the
+lib: the standalone `prova` binary, and `archetect test` for authors who already have the
 CLI. Library sharing between the repos is TBD as the engine takes shape.
 
 ## License

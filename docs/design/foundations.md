@@ -1,7 +1,7 @@
-# Assay — Foundations: what it takes to *not* be another half-baked test framework
+# Prova — Foundations: what it takes to *not* be another half-baked test framework
 
 > Companion to [`api.md`](api.md). That doc specifies the authoring surface; this one is the
-> thesis behind it — the primitives and footguns that decide whether Assay becomes the
+> thesis behind it — the primitives and footguns that decide whether Prova becomes the
 > one-stop acceptance-testing tool or just adds to the pile.
 
 ## Thesis: orthogonal primitives, not a feature pile
@@ -24,7 +24,7 @@ concerns. Get the axes right and independent, and the rest is expressible.
 
 ### The five axes
 
-1. **Lifecycle (scope)** — when state is constructed and destroyed. *(Assay: fixtures with
+1. **Lifecycle (scope)** — when state is constructed and destroyed. *(Prova: fixtures with
    `test`/`file`/`suite` scopes.)*
 2. **Selection (tags → expressions)** — which tests run. A boolean tag-expression language,
    not single tags.
@@ -60,8 +60,8 @@ Single tags are not enough; the winning capability is a **boolean expression lan
 tags (JUnit5 tag expressions, pytest `-m "slow and not network"`):
 
 ```
-assay test -m "acceptance and not slow"
-assay test -m "(smoke or regression) and not offline"
+prova test -m "acceptance and not slow"
+prova test -m "(smoke or regression) and not offline"
 ```
 
 - **Tags attach at every level** (suite/file/`describe`/test) and **inherit downward**: tag
@@ -77,9 +77,9 @@ assay test -m "(smoke or regression) and not offline"
 ### 3. Ordering & dependency — isolated by default, ordered flows by choice
 
 The honest position separates two knobs most frameworks conflate: **isolation** (do tests
-share state?) and **order** (what sequence runs?). Assay's answer is to make **execution
-strategy a property of the container**, not a global default or a CLI flag: `assay.group`
-(independent — isolated, unordered, parallelizable) vs. `assay.flow` (sequence — ordered
+share state?) and **order** (what sequence runs?). Prova's answer is to make **execution
+strategy a property of the container**, not a global default or a CLI flag: `prova.group`
+(independent — isolated, unordered, parallelizable) vs. `prova.flow` (sequence — ordered
 steps sharing context, cascade-skip). You read the container and you know. This applies
 *make-invalid-states-unrepresentable* to execution — shared mutable context is a flow-only
 capability a `group` never receives — and it makes `--jobs` purely a throughput knob, never
@@ -93,8 +93,8 @@ the full statement. The two ordering constructs:
 and if an upstream *fails*, dependents are **skipped, not failed** (the key TestNG behavior):
 
 ```lua
-local created = assay.test("creates the resource", function(t) ... end)
-assay.test("reads it back", { depends_on = { created } }, function(t) ... end)  -- skipped if create failed
+local created = prova.test("creates the resource", function(t) ... end)
+prova.test("reads it back", { depends_on = { created } }, function(t) ... end)  -- skipped if create failed
 ```
 
 **Flows / scenarios (ordered + shared context):** a first-class construct for stateful
@@ -102,7 +102,7 @@ sequences. Steps run in order, **share one context object**, and later steps aut
 an earlier step fails. This is the "built-up context" integration pattern, made safe:
 
 ```lua
-assay.flow("order lifecycle", function(flow)
+prova.flow("order lifecycle", function(flow)
   local order_id
   flow:step("create order", function(t)
     order_id = http.post(api .. "/orders", { json = {...} }):json().id
@@ -126,11 +126,11 @@ a filesystem path, an account). The fix is **declared resources** that gate the 
 first-class primitive here):
 
 ```lua
-assay.test("binds :8080", { resources = { "port:8080" } }, function(t) ... end)      -- exclusive
-assay.test("reads shared db", { resources = { assay.shared("db") } }, function(t) ... end) -- shared-read
+prova.test("binds :8080", { resources = { "port:8080" } }, function(t) ... end)      -- exclusive
+prova.test("reads shared db", { resources = { prova.shared("db") } }, function(t) ... end) -- shared-read
 ```
 
-- A resource is exclusive by default; `assay.shared(x)` allows concurrent readers.
+- A resource is exclusive by default; `prova.shared(x)` allows concurrent readers.
 - The scheduler is a constraint solver over resources → maximal safe parallelism with zero
   races, *without* forcing `--jobs 1`.
 - `file`/`suite`-scoped fixtures interact with this: a `file`-scoped fixture pins its file's
@@ -141,7 +141,7 @@ assay.test("reads shared db", { resources = { assay.shared("db") } }, function(t
 ### 5. Provisioning — SUT lifecycle is a first-class citizen
 
 The thing acceptance testing uniquely needs and unit frameworks ignore: **bringing the
-system-under-test into existence and tearing it down reliably.** Assay treats this as core,
+system-under-test into existence and tearing it down reliably.** Prova treats this as core,
 via provisioning modules behind the fixture boundary:
 
 - **process** — `shell.spawn` returning a handle with health-wait and **process-group kill**
@@ -158,7 +158,7 @@ sits behind — so the agnostic core never grows a Docker dependency.
 
 ## Classic footguns (and the decision that defuses each)
 
-| Footgun | Why it bites | Assay's foundation |
+| Footgun | Why it bites | Prova's foundation |
 |---|---|---|
 | **Teardown skipped on failure/panic/timeout** | Leaked containers, ports, temp dirs poison later runs | Teardown is guaranteed: `defer`s run on pass, fail, assertion-abort, *and* test timeout; best-effort on signals. Teardown errors are reported, never swallowed. |
 | **`shell.run("server &")` orphans processes** | Backgrounded child escapes; port stays bound | No backgrounding. `shell.spawn` returns a handle; teardown kills the whole **process group** (not just the pid). |
@@ -205,7 +205,7 @@ otherwise we're half-baked at everything.
 
 - **In-language unit testing** stays with JUnit/pytest/Go/Vitest. We cannot mock a Java
   private method or introspect a Go struct from Lua, and pretending otherwise is the trap.
-  Assay is **black-box / out-of-process**: it tests systems through their real surfaces
+  Prova is **black-box / out-of-process**: it tests systems through their real surfaces
   (files, processes, HTTP/gRPC, exit codes), not a language's internals.
 - **Load/performance testing** stays with k6/Gatling. We assert correctness of behavior, not
   throughput distributions. (We may *measure* timing, not *model* load.)
@@ -218,7 +218,7 @@ process's memory, it's out of scope; if it observes the system from outside, it'
 
 ## Minimal core vs. plugins (how "subsume" stays buildable)
 
-`assay-core` implements only the axes and cross-cutting engine:
+`prova-core` implements only the axes and cross-cutting engine:
 
 - collection, tag-expression selection, the dependency DAG + flows, the resource scheduler,
   the fixture/scope/teardown machine, `expect`, reporters (pluggable), config/environments,
@@ -227,7 +227,7 @@ process's memory, it's out of scope; if it observes the system from outside, it'
 Everything domain-specific is a **plugin** (Lua-first for matchers/reporters/fixtures;
 Rust for protocols/perf): `fs`, `shell`/`process`, `http`, `container`, `compose`, `mock`,
 `grpc`, and `archetect`. New capability = new plugin, never a core fork. That plugin surface
-— not a bigger feature list — is what lets Assay grow to cover the landscape the way
+— not a bigger feature list — is what lets Prova grow to cover the landscape the way
 pytest's plugin ecosystem did, while the core stays small and correct.
 
 ---

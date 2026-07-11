@@ -2,5 +2,5 @@
 **/*.rs.bk
 Cargo.lock
 .DS_Store
-/.assay
+/.prova
 *.snap.new

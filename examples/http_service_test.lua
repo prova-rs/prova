@@ -5,12 +5,12 @@
 --- tests. This is the black-box acceptance layer the framework is built for.
 
 -- Parametrized suite fixture: the whole file's tests run once per toolchain.
-local toolchain = assay.fixture("toolchain", "suite", function(ctx)
+local toolchain = prova.fixture("toolchain", "suite", function(ctx)
   return { name = ctx:param() }
 end, { params = { "stable" } })
 
 -- Render + build once per suite.
-local built_service = assay.fixture("built_service", "suite", function(ctx)
+local built_service = prova.fixture("built_service", "suite", function(ctx)
   local tc = ctx:use(toolchain)
   local out = archetect.render{
     source = "https://github.com/archetect/archetype-rust-service-tonic-workspace.git",
@@ -24,7 +24,7 @@ local built_service = assay.fixture("built_service", "suite", function(ctx)
 end)
 
 -- Boot the built binary, wait for health, tear it down at suite end.
-local running_service = assay.fixture("running_service", "suite", function(ctx)
+local running_service = prova.fixture("running_service", "suite", function(ctx)
   local svc = ctx:use(built_service)
   local proc = shell.run("./target/release/orders &", { cwd = svc.path })  -- illustrative; real API: shell.spawn
   ctx:defer(function() shell.run("pkill -f target/release/orders") end)
@@ -32,14 +32,14 @@ local running_service = assay.fixture("running_service", "suite", function(ctx)
   return { base = "http://localhost:8080" }
 end)
 
-assay.test("health endpoint is green", function(t)
+prova.test("health endpoint is green", function(t)
   local svc = t:use(running_service)
   local res = http.get(svc.base .. "/health")
   t:expect(res.status):equals(200)
   t:expect(res:json().status):equals("ok")
 end)
 
-assay.test_each("rejects bad input on {route}", {
+prova.test_each("rejects bad input on {route}", {
   { route = "/orders", payload = {} },
   { route = "/orders", payload = { quantity = -1 } },
 }, function(t, case)

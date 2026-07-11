@@ -1,33 +1,33 @@
 ---@meta
---- Assay first-party module annotations: fs, shell, http, archetect.
+--- Prova first-party module annotations: fs, shell, http, archetect.
 --- These modules are globally available inside test files (no require needed) and also
---- `require`-able by name. `archetect` is a plugin over `assay-core`, not a built-in.
+--- `require`-able by name. `archetect` is a plugin over `prova-core`, not a built-in.
 
 ------------------------------------------------------------------------------------------
 -- Handles
 ------------------------------------------------------------------------------------------
 
 ---A file handle rooted within a tree. Read its contents, or assert on it via `expect`.
----@class assay.FileHandle
+---@class prova.FileHandle
 ---@field path string   # absolute path
 local FileHandle = {}
 ---@return string contents
 function FileHandle:read() end
 
 ---A directory handle.
----@class assay.DirHandle
+---@class prova.DirHandle
 ---@field path string
 local DirHandle = {}
 
 ---A tree handle rooted at a directory (e.g. a render destination).
----@class assay.Tree
+---@class prova.Tree
 ---@field path string   # absolute root
 local Tree = {}
 ---@param rel string
----@return assay.FileHandle
+---@return prova.FileHandle
 function Tree:file(rel) end
 ---@param rel string
----@return assay.DirHandle
+---@return prova.DirHandle
 function Tree:dir(rel) end
 ---Serializable snapshot of the whole layout (for `:matches_snapshot()`).
 ---@return table
@@ -37,7 +37,7 @@ function Tree:tree() end
 -- fs
 ------------------------------------------------------------------------------------------
 
----@class assay.fs
+---@class prova.fs
 fs = {}
 ---Create a temp dir. Not auto-cleaned; pair with `ctx:defer` or use `ctx:tempdir()`.
 ---@return string path
@@ -59,7 +59,7 @@ function fs.glob(root, pattern) end
 -- shell
 ------------------------------------------------------------------------------------------
 
----@class assay.ShellResult
+---@class prova.ShellResult
 ---@field code integer
 ---@field stdout string
 ---@field stderr string
@@ -68,24 +68,24 @@ local ShellResult = {}
 ---@return boolean          # code == 0
 function ShellResult:ok() end
 
----@class assay.ShellOpts
+---@class prova.ShellOpts
 ---@field cwd? string
 ---@field env? table<string,string>
 ---@field timeout? string     # e.g. "120s"
 ---@field check? boolean      # if true, non-zero exit raises instead of returning
 
----@class assay.shell
+---@class prova.shell
 shell = {}
 ---@param command string
----@param opts? assay.ShellOpts
----@return assay.ShellResult
+---@param opts? prova.ShellOpts
+---@return prova.ShellResult
 function shell.run(command, opts) end
 
 ------------------------------------------------------------------------------------------
 -- http (blocking in v1)
 ------------------------------------------------------------------------------------------
 
----@class assay.HttpResponse
+---@class prova.HttpResponse
 ---@field status integer
 ---@field body string
 ---@field headers table<string,string>
@@ -94,44 +94,44 @@ local HttpResponse = {}
 ---@return table
 function HttpResponse:json() end
 
----@class assay.HttpOpts
+---@class prova.HttpOpts
 ---@field headers? table<string,string>
 ---@field json? table            # request body, JSON-encoded
 ---@field timeout? string
 
----@class assay.WaitOpts : assay.HttpOpts
+---@class prova.WaitOpts : prova.HttpOpts
 ---@field status? integer        # expected status (default 200)
 ---@field every? string          # poll interval, e.g. "500ms"
 
----@class assay.http
+---@class prova.http
 http = {}
 ---@param url string
----@param opts? assay.HttpOpts
----@return assay.HttpResponse
+---@param opts? prova.HttpOpts
+---@return prova.HttpResponse
 function http.get(url, opts) end
 ---@param url string
----@param opts? assay.HttpOpts
----@return assay.HttpResponse
+---@param opts? prova.HttpOpts
+---@return prova.HttpResponse
 function http.post(url, opts) end
 ---@param url string
----@param opts? assay.HttpOpts
----@return assay.HttpResponse
+---@param opts? prova.HttpOpts
+---@return prova.HttpResponse
 function http.put(url, opts) end
 ---@param url string
----@param opts? assay.HttpOpts
----@return assay.HttpResponse
+---@param opts? prova.HttpOpts
+---@return prova.HttpResponse
 function http.delete(url, opts) end
 ---Poll until the endpoint responds as expected or the timeout elapses.
 ---@param url string
----@param opts? assay.WaitOpts
----@return assay.HttpResponse
+---@param opts? prova.WaitOpts
+---@return prova.HttpResponse
 function http.wait_for(url, opts) end
 
 ------------------------------------------------------------------------------------------
 -- archetect (plugin: in-process render via archetect-core)
 ------------------------------------------------------------------------------------------
 
----@class assay.RenderOpts
+---@class prova.RenderOpts
 ---@field source string                    # local path or git URL
 ---@field answers? table<string,any>       # prompt answers as data
 ---@field switches? string[]
@@ -139,12 +139,12 @@ function http.wait_for(url, opts) end
 ---@field destination? string              # optional; a temp dir is used if omitted
 
 ---A render result: a `Tree` plus the ordered IO-protocol write operations it intended.
----@class assay.RenderResult : assay.Tree
+---@class prova.RenderResult : prova.Tree
 ---@field writes table[]                   # ordered WriteFile/WriteDirectory ops
 
----@class assay.archetect
+---@class prova.archetect
 archetect = {}
 ---Render an archetype in-process and return its output tree.
----@param opts assay.RenderOpts
----@return assay.RenderResult
+---@param opts prova.RenderOpts
+---@return prova.RenderResult
 function archetect.render(opts) end

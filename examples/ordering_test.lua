@@ -3,14 +3,14 @@
 --- No archetect/network; illustrative of the execution model, not runnable yet.
 
 -- A fixture the flow will build once for its whole lifetime (flow scope).
-local api = assay.fixture("api_base", "suite", function(ctx)
+local api = prova.fixture("api_base", "suite", function(ctx)
   return "http://localhost:8080"
 end)
 
 --------------------------------------------------------------------------------------------
 -- Flow: ordered steps sharing state. `read`/`delete` are skipped if `create` fails.
 --------------------------------------------------------------------------------------------
-assay.flow("order lifecycle", { tags = { "acceptance" }, requires = { "network" }, resources = { assay.port(8080) } }, function(flow)
+prova.flow("order lifecycle", { tags = { "acceptance" }, requires = { "network" }, resources = { prova.port(8080) } }, function(flow)
   local base = flow:use(api)     -- flow-scoped fixture value
   local order                    -- shared across steps via closure
 
@@ -34,12 +34,12 @@ end)
 -- depends_on: a DAG edge. `report` is SKIPPED (not failed) if `seed` didn't pass.
 -- Note: depends_on gates on pass/fail only — shared data flows through the fixture, not the edge.
 --------------------------------------------------------------------------------------------
-local seed = assay.test("seed reference data", { tags = { "slow" }, resources = { assay.shared("db") } }, function(t)
+local seed = prova.test("seed reference data", { tags = { "slow" }, resources = { prova.shared("db") } }, function(t)
   local base = t:use(api)
   t:expect(http.post(base .. "/admin/seed").status):equals(200)
 end)
 
-assay.test("report reflects seed", { depends_on = { seed }, resources = { assay.shared("db") } }, function(t)
+prova.test("report reflects seed", { depends_on = { seed }, resources = { prova.shared("db") } }, function(t)
   local base = t:use(api)
   local res = http.get(base .. "/reports/summary")
   t:expect(res.status):equals(200)
