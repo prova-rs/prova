@@ -50,6 +50,9 @@ impl Params {
 pub struct UnitOpts {
     pub timeout: Option<Duration>,
     pub tags: Vec<String>,
+    /// Units this one depends on, as arena indices (resolved from `depends_on` handles). A unit is
+    /// skipped (not failed) if any transitive dependency leaf failed or was skipped.
+    pub depends_on: Vec<NodeIx>,
 }
 
 /// Result totals for a run.

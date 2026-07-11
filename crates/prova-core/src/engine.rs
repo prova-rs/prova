@@ -13,6 +13,13 @@
 //! `flow`-scope instance; once a step fails the rest cascade-skip. Flows parallelize with sibling
 //! units like any other unit.
 //!
+//! And the **dependency DAG** (`depends_on`): `prova.test`/`flow`/`group` return `UnitHandle`s;
+//! `build_plan` flattens the tree to `Leaf`s (tests + flows) and expands each unit's `depends_on`
+//! (folding in inherited group-level deps) into concrete leaf edges. The scheduler (`run_plan`)
+//! runs a leaf only once all its dependency leaves have **passed**; if any failed or was skipped it
+//! cascade-skips (transitively). Independent leaves run concurrently up to `concurrency`; an edge
+//! orders and gates regardless of the job count — so this is the substrate for safe parallelism.
+//!
 //! Execution defaults to **sequential** (`concurrency = 1`): correct and deterministic for
 //! fixture-sharing tests. Parallelism is opt-in via `RunConfig`/`--jobs` and becomes safe once the
 //! resource scheduler lands. Fixture factories are called synchronously in this increment (async
@@ -107,6 +114,14 @@ struct FixtureHandle {
     id: usize,
 }
 impl UserData for FixtureHandle {}
+
+/// Opaque handle returned by `prova.test`/`flow`/`group` (and the builder variants); carries the
+/// unit's arena index so `depends_on = { handle }` can resolve the edge. Treat as opaque.
+#[derive(Clone, Copy)]
+struct UnitHandle {
+    ix: NodeIx,
+}
+impl UserData for UnitHandle {}
 
 /// Live state for one scope instance: cached fixture values, LIFO teardowns, temp dirs.
 #[derive(Default)]
@@ -217,7 +232,31 @@ fn parse_opts(t: &mlua::Table) -> mlua::Result<UnitOpts> {
         .get::<Option<String>>("timeout")?
         .and_then(|s| parse_duration(&s));
     let tags = t.get::<Option<Vec<String>>>("tags")?.unwrap_or_default();
-    Ok(UnitOpts { timeout, tags })
+    let depends_on = match t.get::<Option<Vec<Value>>>("depends_on")? {
+        None => Vec::new(),
+        Some(vals) => vals
+            .into_iter()
+            .map(|v| match v {
+                Value::UserData(ud) => ud
+                    .borrow::<UnitHandle>()
+                    .map(|h| h.ix)
+                    .map_err(|_| {
+                        mlua::Error::RuntimeError(
+                            "depends_on entries must be unit handles from prova.test/flow/group"
+                                .into(),
+                        )
+                    }),
+                _ => Err(mlua::Error::RuntimeError(
+                    "depends_on entries must be unit handles from prova.test/flow/group".into(),
+                )),
+            })
+            .collect::<mlua::Result<Vec<_>>>()?,
+    };
+    Ok(UnitOpts {
+        timeout,
+        tags,
+        depends_on,
+    })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -507,20 +546,9 @@ fn build_lua(root_name: String) -> mlua::Result<(Lua, SharedCollector)> {
         let col = col.clone();
         prova.set(
             "test",
-            lua.create_function(move |_, (name, a, b): (String, Value, Value)| {
-                let (opts, body) = split_opts_body(a, b)?;
-                col.borrow_mut().add(
-                    0,
-                    Node {
-                        name,
-                        kind: NodeKind::Test,
-                        params: Params::default(),
-                        opts,
-                        children: vec![],
-                        body: Some(body),
-                    },
-                );
-                Ok(())
+            lua.create_function(move |lua, (name, a, b): (String, Value, Value)| {
+                let ix = register_test(&col, 0, name, a, b)?;
+                lua.create_userdata(UnitHandle { ix })
             })?,
         )?;
     }
@@ -528,24 +556,9 @@ fn build_lua(root_name: String) -> mlua::Result<(Lua, SharedCollector)> {
         let col = col.clone();
         prova.set(
             "group",
-            lua.create_function(move |lua, (name, body): (String, Function)| {
-                let gix = col.borrow_mut().add(
-                    0,
-                    Node {
-                        name,
-                        kind: NodeKind::Group,
-                        params: Params::default(),
-                        opts: UnitOpts::default(),
-                        children: vec![],
-                        body: None,
-                    },
-                );
-                let gb = lua.create_userdata(GroupBuilder {
-                    col: col.clone(),
-                    ix: gix,
-                })?;
-                body.call::<()>(gb)?;
-                Ok(())
+            lua.create_function(move |lua, (name, a, b): (String, Value, Value)| {
+                let ix = register_group(lua, &col, 0, name, a, b)?;
+                lua.create_userdata(UnitHandle { ix })
             })?,
         )?;
     }
@@ -553,8 +566,9 @@ fn build_lua(root_name: String) -> mlua::Result<(Lua, SharedCollector)> {
         let col = col.clone();
         prova.set(
             "flow",
-            lua.create_function(move |lua, (name, body): (String, Function)| {
-                register_flow(lua, &col, 0, name, body)
+            lua.create_function(move |lua, (name, a, b): (String, Value, Value)| {
+                let ix = register_flow(lua, &col, 0, name, a, b)?;
+                lua.create_userdata(UnitHandle { ix })
             })?,
         )?;
     }
@@ -606,66 +620,96 @@ struct GroupBuilder {
 
 impl UserData for GroupBuilder {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("test", |_, this, (name, a, b): (String, Value, Value)| {
-            let (opts, body) = split_opts_body(a, b)?;
-            this.col.borrow_mut().add(
-                this.ix,
-                Node {
-                    name,
-                    kind: NodeKind::Test,
-                    params: Params::default(),
-                    opts,
-                    children: vec![],
-                    body: Some(body),
-                },
-            );
-            Ok(())
+        methods.add_method("test", |lua, this, (name, a, b): (String, Value, Value)| {
+            let ix = register_test(&this.col, this.ix, name, a, b)?;
+            lua.create_userdata(UnitHandle { ix })
         });
 
-        methods.add_method("group", |lua, this, (name, body): (String, Function)| {
-            let gix = this.col.borrow_mut().add(
-                this.ix,
-                Node {
-                    name,
-                    kind: NodeKind::Group,
-                    params: Params::default(),
-                    opts: UnitOpts::default(),
-                    children: vec![],
-                    body: None,
-                },
-            );
-            let gb = lua.create_userdata(GroupBuilder {
-                col: this.col.clone(),
-                ix: gix,
-            })?;
-            body.call::<()>(gb)?;
-            Ok(())
+        methods.add_method("group", |lua, this, (name, a, b): (String, Value, Value)| {
+            let ix = register_group(lua, &this.col, this.ix, name, a, b)?;
+            lua.create_userdata(UnitHandle { ix })
         });
 
-        methods.add_method("flow", |lua, this, (name, body): (String, Function)| {
-            register_flow(lua, &this.col, this.ix, name, body)
+        methods.add_method("flow", |lua, this, (name, a, b): (String, Value, Value)| {
+            let ix = register_flow(lua, &this.col, this.ix, name, a, b)?;
+            lua.create_userdata(UnitHandle { ix })
         });
     }
 }
 
+/// Register a leaf `test`/`step` node under `parent`; returns its arena index (the unit handle id).
+fn register_test(
+    col: &SharedCollector,
+    parent: NodeIx,
+    name: String,
+    a: Value,
+    b: Value,
+) -> mlua::Result<NodeIx> {
+    let (opts, body) = split_opts_body(a, b)?;
+    Ok(col.borrow_mut().add(
+        parent,
+        Node {
+            name,
+            kind: NodeKind::Test,
+            params: Params::default(),
+            opts,
+            children: vec![],
+            body: Some(body),
+        },
+    ))
+}
+
+/// Register a `group` node under `parent` and run its builder body to collect child units.
+/// Accepts `(name, body)` or `(name, opts, body)`; `opts.depends_on` gates the whole group.
+fn register_group(
+    lua: &Lua,
+    col: &SharedCollector,
+    parent: NodeIx,
+    name: String,
+    a: Value,
+    b: Value,
+) -> mlua::Result<NodeIx> {
+    let (opts, body) = split_opts_body(a, b)?;
+    let gix = col.borrow_mut().add(
+        parent,
+        Node {
+            name,
+            kind: NodeKind::Group,
+            params: Params::default(),
+            opts,
+            children: vec![],
+            body: None,
+        },
+    );
+    let gb = lua.create_userdata(GroupBuilder {
+        col: col.clone(),
+        ix: gix,
+    })?;
+    body.call::<()>(gb)?;
+    Ok(gix)
+}
+
 /// Register a `flow` node under `parent` and run its builder body to collect the ordered steps.
-/// The body runs once at collection time; its closures share upvalues (the flow's context bag),
-/// so `local x` captured across steps is genuinely shared state — the flow's one blessed way to
-/// carry built-up context, which a `group` structurally cannot express.
+/// Accepts `(name, body)` or `(name, opts, body)`. The body runs once at collection time; its
+/// closures share upvalues (the flow's context bag), so `local x` captured across steps is
+/// genuinely shared state — the flow's one blessed way to carry built-up context, which a `group`
+/// structurally cannot express.
 fn register_flow(
     lua: &Lua,
     col: &SharedCollector,
     parent: NodeIx,
     name: String,
-    body: Function,
-) -> mlua::Result<()> {
+    a: Value,
+    b: Value,
+) -> mlua::Result<NodeIx> {
+    let (opts, body) = split_opts_body(a, b)?;
     let fix = col.borrow_mut().add(
         parent,
         Node {
             name,
             kind: NodeKind::Flow,
             params: Params::default(),
-            opts: UnitOpts::default(),
+            opts,
             children: vec![],
             body: None,
         },
@@ -675,7 +719,7 @@ fn register_flow(
         ix: fix,
     })?;
     body.call::<()>(fb)?;
-    Ok(())
+    Ok(fix)
 }
 
 /// Builds a flow's ordered steps. Only exposes `step` — no nested groups, no unordered children —
@@ -743,20 +787,58 @@ fn plan_item(node: &Node, ancestors: &[String]) -> PlanItem {
     }
 }
 
-fn build_plan(col: &Collector, ix: NodeIx, ancestors: &mut Vec<String>, out: &mut Vec<PlanUnit>) {
+/// One schedulable unit: a top-level `test` or a `flow` (a group is not a leaf — it expands to the
+/// leaves under it). `deps` are the leaf ids this leaf must wait for; a leaf is skipped if any of
+/// them failed or was skipped. `deps` already fold in **inherited** group-level `depends_on` and are
+/// expanded from unit handles to concrete leaves.
+struct Leaf {
+    unit: PlanUnit,
+    /// Node-level dependencies (own `depends_on` + inherited from ancestor groups), pre-expansion.
+    raw_deps: Vec<NodeIx>,
+    /// Expanded leaf-id dependencies (filled by `expand_deps`).
+    deps: Vec<usize>,
+}
+
+/// The executable plan: a flat list of leaves plus the leaf-level dependency DAG.
+struct Plan {
+    leaves: Vec<Leaf>,
+}
+
+/// Walk the tree, emitting a `Leaf` per test/flow and recording, for every node, which leaves live
+/// under it (so a `depends_on` on a group can expand to that group's leaves). `inherited` carries
+/// ancestor groups' `depends_on` down so a group-level dependency applies to each contained leaf.
+fn collect_leaves(
+    col: &Collector,
+    ix: NodeIx,
+    ancestors: &mut Vec<String>,
+    inherited: &[NodeIx],
+    leaves: &mut Vec<Leaf>,
+    node_leaves: &mut HashMap<NodeIx, Vec<usize>>,
+) -> Vec<usize> {
     let node = &col.nodes[ix];
-    match node.kind {
+    let my_leaves = match node.kind {
         NodeKind::Group => {
             let named = ix != 0 && !node.name.is_empty();
             if named {
                 ancestors.push(format!("{}{}", node.name, node.params.suffix()));
             }
+            let mut child_inherited = inherited.to_vec();
+            child_inherited.extend(node.opts.depends_on.iter().copied());
+            let mut ids = Vec::new();
             for &child in &node.children {
-                build_plan(col, child, ancestors, out);
+                ids.extend(collect_leaves(
+                    col,
+                    child,
+                    ancestors,
+                    &child_inherited,
+                    leaves,
+                    node_leaves,
+                ));
             }
             if named {
                 ancestors.pop();
             }
+            ids
         }
         NodeKind::Flow => {
             ancestors.push(format!("{}{}", node.name, node.params.suffix()));
@@ -766,12 +848,104 @@ fn build_plan(col: &Collector, ix: NodeIx, ancestors: &mut Vec<String>, out: &mu
                 .map(|&c| plan_item(&col.nodes[c], ancestors))
                 .collect();
             ancestors.pop();
-            out.push(PlanUnit::Flow { steps });
+            let id = push_leaf(leaves, PlanUnit::Flow { steps }, node, inherited);
+            vec![id]
         }
         NodeKind::Test => {
-            out.push(PlanUnit::Test(plan_item(node, ancestors)));
+            let id = push_leaf(leaves, PlanUnit::Test(plan_item(node, ancestors)), node, inherited);
+            vec![id]
+        }
+    };
+    node_leaves.insert(ix, my_leaves.clone());
+    my_leaves
+}
+
+fn push_leaf(leaves: &mut Vec<Leaf>, unit: PlanUnit, node: &Node, inherited: &[NodeIx]) -> usize {
+    let mut raw_deps = inherited.to_vec();
+    raw_deps.extend(node.opts.depends_on.iter().copied());
+    let id = leaves.len();
+    leaves.push(Leaf {
+        unit,
+        raw_deps,
+        deps: Vec::new(),
+    });
+    id
+}
+
+/// Turn each leaf's node-level `raw_deps` (which may point at a group) into concrete leaf-id edges,
+/// dropping any self-edge.
+fn expand_deps(leaves: &mut [Leaf], node_leaves: &HashMap<NodeIx, Vec<usize>>) {
+    for (i, leaf) in leaves.iter_mut().enumerate() {
+        let raw = std::mem::take(&mut leaf.raw_deps);
+        let mut set = std::collections::BTreeSet::new();
+        for dep_ix in raw {
+            if let Some(dep_leaves) = node_leaves.get(&dep_ix) {
+                for &dl in dep_leaves {
+                    if dl != i {
+                        set.insert(dl);
+                    }
+                }
+            }
+        }
+        leaf.deps = set.into_iter().collect();
+    }
+}
+
+/// Kahn-style reachability over the leaf DAG. Returns the names of leaves caught in a cycle, if any.
+/// (Handle references are backward in definition order, so a cycle is practically unreachable from
+/// valid Lua — this is a defensive collection-time guard the design mandates.)
+fn find_cycle(leaves: &[Leaf]) -> Option<Vec<String>> {
+    let n = leaves.len();
+    let mut resolved = vec![false; n];
+    let mut remaining = n;
+    while remaining > 0 {
+        let mut progressed = false;
+        for i in 0..n {
+            if resolved[i] {
+                continue;
+            }
+            if leaves[i].deps.iter().all(|&d| resolved[d]) {
+                resolved[i] = true;
+                remaining -= 1;
+                progressed = true;
+            }
+        }
+        if !progressed {
+            return Some(
+                (0..n)
+                    .filter(|&i| !resolved[i])
+                    .map(|i| unit_name(&leaves[i]).to_string())
+                    .collect(),
+            );
         }
     }
+    None
+}
+
+/// A leaf's display name for messages — its first reported path (the flow/test name with ancestry).
+fn unit_name(leaf: &Leaf) -> &str {
+    leaf.unit.leaf_paths().first().copied().unwrap_or("<unit>")
+}
+
+fn build_plan(col: &Collector) -> mlua::Result<Plan> {
+    let mut leaves = Vec::new();
+    let mut node_leaves = HashMap::new();
+    collect_leaves(
+        col,
+        0,
+        &mut Vec::new(),
+        &[],
+        &mut leaves,
+        &mut node_leaves,
+    );
+    expand_deps(&mut leaves, &node_leaves);
+    if let Some(cycle) = find_cycle(&leaves) {
+        return Err(mlua::Error::RuntimeError(format!(
+            "dependency cycle detected among units: {}",
+            cycle.join(", ")
+        )));
+    }
+    Ok(Plan { leaves })
 }
 
 struct NodeResult {
@@ -891,34 +1065,123 @@ async fn run_unit(lua: &Lua, unit: &PlanUnit, state: &Rc<RunState>) -> Vec<NodeR
     }
 }
 
+/// The unit-level outcome used for dependency gating: a unit failed if any of its leaf results
+/// failed; else passed if any passed; else it was entirely skipped.
+fn unit_outcome(results: &[NodeResult]) -> Outcome {
+    if results.iter().any(|r| r.outcome == Outcome::Failed) {
+        Outcome::Failed
+    } else if results.iter().any(|r| r.outcome == Outcome::Passed) {
+        Outcome::Passed
+    } else {
+        Outcome::Skipped
+    }
+}
+
+/// Build skipped results for a unit that never ran (a dependency did not pass) — one per reported
+/// path (a flow reports one skip per step), so the report stays consistent with a unit that ran.
+fn skip_leaf(unit: &PlanUnit, reason: &str) -> Vec<NodeResult> {
+    unit.leaf_paths()
+        .into_iter()
+        .map(|path| NodeResult {
+            path: path.to_string(),
+            outcome: Outcome::Skipped,
+            duration: Duration::ZERO,
+            assertions: 0,
+            message: Some(reason.to_string()),
+        })
+        .collect()
+}
+
+fn emit_finished(reporter: &mut dyn Reporter, summary: &mut Summary, results: &[NodeResult]) {
+    for result in results {
+        summary.tally(result.outcome);
+        reporter.event(&Event::NodeFinished {
+            path: &result.path,
+            outcome: result.outcome,
+            duration: result.duration,
+            assertions: result.assertions,
+            message: result.message.as_deref(),
+        });
+    }
+}
+
+/// Dependency-aware scheduler. A leaf runs once all its dependency leaves have resolved and all
+/// **passed**; if any dependency failed or was skipped, the leaf cascade-skips (transitively, since
+/// a skip is itself a resolved non-pass). Independent leaves run concurrently up to
+/// `config.concurrency`; with the default of 1 this is definition-order sequential.
 async fn run_plan(
     lua: &Lua,
-    plan: &[PlanUnit],
+    plan: &Plan,
     state: &Rc<RunState>,
     config: &RunConfig,
     reporter: &mut dyn Reporter,
     summary: &mut Summary,
 ) {
-    for unit in plan {
-        for path in unit.leaf_paths() {
-            reporter.event(&Event::NodeStarted { path });
-        }
-    }
+    let leaves = &plan.leaves;
+    let n = leaves.len();
+    let concurrency = config.concurrency.max(1);
+    let mut outcome: Vec<Option<Outcome>> = vec![None; n];
+    let mut started = vec![false; n];
+    let mut in_flight = futures::stream::FuturesUnordered::new();
 
-    let mut stream = futures::stream::iter(plan.iter().map(|unit| run_unit(lua, unit, state)))
-        .buffer_unordered(config.concurrency.max(1));
-
-    while let Some(results) = stream.next().await {
-        for result in results {
-            summary.tally(result.outcome);
-            reporter.event(&Event::NodeFinished {
-                path: &result.path,
-                outcome: result.outcome,
-                duration: result.duration,
-                assertions: result.assertions,
-                message: result.message.as_deref(),
-            });
+    loop {
+        // Cascade-skip to a fixpoint: any pending leaf whose deps are all resolved but not all
+        // passed is skipped without running. Looping catches transitive skips in one pass.
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for i in 0..n {
+                if started[i] || outcome[i].is_some() {
+                    continue;
+                }
+                if !leaves[i].deps.iter().all(|&d| outcome[d].is_some()) {
+                    continue;
+                }
+                if let Some(&blocker) = leaves[i]
+                    .deps
+                    .iter()
+                    .find(|&&d| outcome[d] != Some(Outcome::Passed))
+                {
+                    let reason = format!(
+                        "skipped: dependency {:?} did not pass",
+                        unit_name(&leaves[blocker])
+                    );
+                    let results = skip_leaf(&leaves[i].unit, &reason);
+                    for path in leaves[i].unit.leaf_paths() {
+                        reporter.event(&Event::NodeStarted { path });
+                    }
+                    emit_finished(reporter, summary, &results);
+                    outcome[i] = Some(Outcome::Skipped);
+                    started[i] = true;
+                    changed = true;
+                }
+            }
         }
+
+        // Launch runnable leaves (all deps passed) up to the concurrency limit.
+        for i in 0..n {
+            if in_flight.len() >= concurrency {
+                break;
+            }
+            if started[i] || outcome[i].is_some() {
+                continue;
+            }
+            if leaves[i].deps.iter().all(|&d| outcome[d] == Some(Outcome::Passed)) {
+                started[i] = true;
+                for path in leaves[i].unit.leaf_paths() {
+                    reporter.event(&Event::NodeStarted { path });
+                }
+                in_flight.push(async move { (i, run_unit(lua, &leaves[i].unit, state).await) });
+            }
+        }
+
+        if in_flight.is_empty() {
+            break; // nothing running and nothing became ready — all leaves resolved
+        }
+
+        let (i, results) = in_flight.next().await.expect("in_flight is non-empty");
+        outcome[i] = Some(unit_outcome(&results));
+        emit_finished(reporter, summary, &results);
     }
 }
 
@@ -958,8 +1221,7 @@ pub fn run_path_with(
     let (lua, col) = read_and_collect(path)?;
     let (plan, state) = {
         let col = col.borrow();
-        let mut plan = Vec::new();
-        build_plan(&col, 0, &mut Vec::new(), &mut plan);
+        let plan = build_plan(&col)?;
         let state = Rc::new(RunState {
             defs: col.fixtures.clone(),
             suite: Rc::new(RefCell::new(ScopeState::default())),
@@ -987,10 +1249,10 @@ pub fn run_path_with(
 pub fn discover_path(path: &Path) -> mlua::Result<Vec<String>> {
     let (_lua, col) = read_and_collect(path)?;
     let col = col.borrow();
-    let mut plan = Vec::new();
-    build_plan(&col, 0, &mut Vec::new(), &mut plan);
+    let plan = build_plan(&col)?;
     Ok(plan
+        .leaves
         .iter()
-        .flat_map(|unit| unit.leaf_paths().into_iter().map(String::from))
+        .flat_map(|leaf| leaf.unit.leaf_paths().into_iter().map(String::from))
         .collect())
 }

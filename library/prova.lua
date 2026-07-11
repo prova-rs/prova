@@ -318,6 +318,11 @@ function prova.shared(resource) end
 ---@param body fun()
 function prova.describe(label, body) end
 
+---Await `millis` milliseconds without blocking the worker (cooperative async). A low-level timing
+---primitive, mainly for tests and boot-then-probe waits; prefer `http.wait_for` for readiness polls.
+---@param millis integer
+function prova.sleep(millis) end
+
 ---@param fn fun(t: prova.TestContext)
 function prova.before_each(fn) end
 ---@param fn fun(t: prova.TestContext)

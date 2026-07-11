@@ -44,15 +44,16 @@
 ## definition → plan → execute
 
 ```
-collect (run the .lua file)        →  Node arena (groups/tests; later flows/fixtures)
-  build_plan (walk, apply strategy) →  Vec<PlanItem> (path, body, timeout, params, deps, resources)
-    run_plan (executor)             →  drives bodies, emits Events, tallies Summary
+collect (run the .lua file)        →  Node arena (groups/flows/tests + fixtures)
+  build_plan (flatten + expand deps)→  Plan { leaves: [Leaf{unit, deps}] } — a leaf DAG
+    run_plan (scheduler)            →  drives bodies deps-first, emits Events, tallies Summary
 ```
 
-The **plan** is where strategy is resolved: group = independent items (parallelizable), flow =
-an ordered sub-plan on one worker, `depends_on` = edges that gate/order items, resources = the
-scheduler's constraints. Keeping the plan a distinct artifact is what lets a **load executor** be
-a drop-in alternative to the acceptance executor over the same items.
+The **plan** is where strategy is resolved: a group flattens to its leaves (independent,
+parallelizable), a flow becomes one leaf whose steps are an ordered sub-run on one worker,
+`depends_on` becomes leaf edges that gate/order (resources — the scheduler's concurrency
+constraints — are next). Keeping the plan a distinct artifact is what lets a **load executor** be
+a drop-in alternative to the acceptance executor over the same leaves.
 
 ## Timeouts (the three mechanisms)
 
@@ -117,7 +118,8 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
 ## Current status (implemented)
 
 - Async collect→plan→execute for `prova.test` / `prova.group` / `prova.flow`; injected `prova`
-  global.
+  global. All three (and the builder variants) accept an optional `opts` table and return unit
+  handles for `depends_on`.
 - **Fixtures + scopes + teardown**: `prova.fixture(name, scope, factory)` → typed handle;
   `ctx:use(handle|name)` builds-or-caches; `test`/`flow`/`file`/`suite` scopes with per-scope
   caches; `ctx:defer` (LIFO); `ctx:tempdir` (auto-removed); scope-mismatch rejection; inner→outer
@@ -128,6 +130,16 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
   once a step fails the rest **cascade-skip** (skip, not fail; a self-`skip` does not cascade); the
   flow scope tears down after the last step. Flows parallelize with sibling units.
   *(`examples/flow_poc_test.lua` runs green: shared upvalue, shared flow-fixture, cascade proven.)*
+- **Dependency DAG** (`depends_on`): `prova.test`/`flow`/`group` return `UnitHandle`s. `build_plan`
+  flattens the tree into leaves (tests + flows; a group is not a leaf) and expands each unit's
+  `depends_on` — folding in **inherited** group-level deps — into concrete leaf edges (a dep on a
+  group fans out to that group's leaves). Cycles are a collection-time error (defensive; Lua's
+  backward handle refs make them practically unreachable). The scheduler runs a leaf once all its
+  dependency leaves have **passed**; any failed/skipped dep **cascade-skips** it (transitively,
+  skip-not-fail — TestNG behavior). Edges gate on pass/fail only; **data flows through fixtures**,
+  not deps. Independent leaves run concurrently up to `concurrency`; an edge orders regardless of
+  job count. *(`examples/depends_on_test.lua`: login→populate→journeys + transitive group-edge
+  cascade; `dag_serial` proves a chain serializes under `concurrency = 8`.)*
 - `t:expect` matchers (`equals`/`eq`/`is_true`/`is_false`/`is_nil`/`is_truthy`/`contains`,
   `:never()`, optional label), `t:skip`, `t:log`.
 - Concurrent async execution (proven) + I/O timeouts via cancellation. Default execution is
@@ -136,9 +148,11 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
 
 ## Next increments
 
-1. **Units + `depends_on`** DAG (skip-downstream); **resources** + the constraint-solving
-   scheduler; then safe parallelism + per-worker Lua states. (`prova.test`/`flow`/`group` return
-   handles; `depends_on` gates on pass/fail only, does not transfer state.)
+1. **Resources + the concurrency scheduler**: `prova.port`/`resource`/`shared`/`serial` declare
+   external constraints; the scheduler co-schedules the parallelizable set so declared resources
+   don't collide. With the dependency DAG already in place, this is what makes raising `--jobs`
+   above 1 the *default*-safe knob it's designed to be, plus **per-worker Lua states** for true
+   multi-core. Also `requires` (capability gating → skip, not fail).
 2. **Async fixtures** (upgrade `ctx:use` to an async method so factories can `await`) and async
    **modules**: `fs`/`shell`/`http`; soft assertions (`expect_all`); snapshots.
 3. **Flow ergonomics**: `f:use(fixture)` builder sugar (currently flow-scoped fixtures are used via
