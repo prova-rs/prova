@@ -6,7 +6,7 @@ use prova_core::{run_path_with, NullReporter, RunConfig};
 fn run(file: &str, concurrency: usize) -> (prova_core::Summary, std::time::Duration) {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("testdata/{file}"));
     let mut reporter = NullReporter;
-    let config = RunConfig { concurrency };
+    let config = RunConfig::new(concurrency);
     let start = Instant::now();
     let summary = run_path_with(&path, &mut reporter, &config).expect("run");
     (summary, start.elapsed())

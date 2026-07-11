@@ -13,12 +13,8 @@ fn testdata(name: &str) -> PathBuf {
 fn async_bodies_run_concurrently_and_time_out() {
     let mut reporter = NullReporter;
     let started = Instant::now();
-    let summary = run_path_with(
-        &testdata("async.lua"),
-        &mut reporter,
-        &RunConfig { concurrency: 8 },
-    )
-    .expect("run async.lua");
+    let summary = run_path_with(&testdata("async.lua"), &mut reporter, &RunConfig::new(8))
+        .expect("run async.lua");
     let elapsed = started.elapsed();
 
     // Two 40ms sleepers pass; the over-budget test is cancelled → failed.

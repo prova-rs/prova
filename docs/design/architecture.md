@@ -132,9 +132,21 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
 - **Capability modules** (`modules.rs`), injected as their own globals: **`shell.run(cmd, {cwd,
   env, timeout, check})`** (async via `tokio::process`; returns `{code, stdout, stderr, duration}` +
   `:ok()`) and **`fs`** (`exists`/`read`/`write`/`remove_all`/`tempdir`/`glob`). Filesystem matchers
-  `:exists()`/`:is_file()`/`:is_dir()` take a path-string subject. This is the slice that lets prova
-  test a real rendered workspace. *(`examples/shell_fs_test.lua`: async fixture builds a workspace
-  via shell, tests assert with shell + fs.)*
+  `:exists()`/`:is_file()`/`:is_dir()` take a path-string **or handle-table** subject. This is the
+  slice that lets prova test a real rendered workspace. *(`examples/shell_fs_test.lua`: async fixture
+  builds a workspace via shell, tests assert with shell + fs.)*
+- **Plugin-module hook**: `RunConfig::with_module(Fn(&Lua) -> Result)` registers extra globals into
+  every Lua state the run creates (built-ins `shell`/`fs` are always installed). This keeps
+  `prova-core` domain-agnostic while letting the host inject capabilities — the plugin boundary the
+  design calls for.
+- **`archetect` plugin** (`prova-archetect` crate, kept out of the core): `archetect.render{source,
+  answers, switches, defaults, destination}` renders an archetype **in-process** via archetect-core
+  — the justifying use case. Headless (never prompts): a `CapturingIoHandle` (a `ScriptIoHandle`)
+  writes files, Acks in lockstep, and records the ordered write list; render runs on a dedicated OS
+  thread (isolated from prova's Tokio runtime). Returns a **tree handle** table (`out.path`,
+  `out:file(rel)`, `out:dir(rel)`, `out:read()`, `out.writes`) that flows into the fs matchers. The
+  standalone `prova` binary ships it. *(`examples/archetect_render_test.lua` + a real greeting
+  archetype fixture; `tests/render.rs` proves defaults + answer-override in-process and end-to-end.)*
 - **Flows**: `prova.flow(name, body)` / `g:flow(...)` register a `Flow` node; `f:step(name, fn)`
   declares ordered steps. A flow is **one scheduling unit** (`PlanUnit::Flow`): steps run serially
   in declared order, sharing closure upvalues (the flow context bag) and a `flow`-scope instance;
@@ -180,9 +192,10 @@ The scheduler/lifecycle **spine is now complete** (collect → plan → deps →
 execute). The remaining increments pivot from engine to **product** — the capabilities that make
 prova useful beyond testing itself:
 
-1. **More capability + assertions** — the `http` module (`get`/`post`/`json`/`wait_for`) and the
-   `archetect.render` plugin (the justifying use case); soft assertions (`expect_all`), snapshots,
-   and `requires` (capability gating → skip, not fail). *(Async fixtures + `shell`/`fs` — done.)*
+1. **More capability + assertions** — the `http` module (`get`/`post`/`json`/`wait_for`) for
+   boot-and-probe service tests; soft assertions (`expect_all`), snapshots (`matches_snapshot`), and
+   `requires` (capability gating → skip, not fail). *(Async fixtures + `shell`/`fs` + the `archetect`
+   plugin — done.)*
 2. **Flow ergonomics**: `f:use(fixture)` builder sugar (currently flow-scoped fixtures are used via
    `t:use` inside steps); re-runnable flow bodies (re-invoke to get fresh closures) as the
    precondition for the **load executor** treating a flow as a reusable scenario.

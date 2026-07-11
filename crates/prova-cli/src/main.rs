@@ -101,7 +101,8 @@ fn main() -> ExitCode {
         ))])),
     };
 
-    let config = RunConfig { concurrency: jobs };
+    // The standalone `prova` binary ships the archetect plugin, so `archetect.render{...}` works.
+    let config = RunConfig::new(jobs).with_module(prova_archetect::install);
     match run_suite(&files, reporter.as_mut(), &config) {
         Ok(summary) if summary.is_success() => ExitCode::SUCCESS,
         Ok(_) => ExitCode::FAILURE,

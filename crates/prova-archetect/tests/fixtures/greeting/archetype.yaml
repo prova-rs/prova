@@ -1,0 +1,5 @@
+---
+description: "Greeting archetype — prova test fixture"
+
+requires:
+  archetect: "3.0.0"

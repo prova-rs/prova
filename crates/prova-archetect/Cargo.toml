@@ -1,0 +1,17 @@
+[package]
+name = "prova-archetect"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The `archetect` plugin module for prova: renders archetypes in-process via archetect-core and
+# exposes them to the Lua DSL as `archetect.render{...}`. Kept out of prova-core so the core stays
+# domain-agnostic (this is the same plugin boundary a `docker` or `terraform` module would sit on).
+
+[dependencies]
+prova-core = { path = "../prova-core" }
+mlua = { workspace = true }
+# archetect referenced by path until it is published to crates.io.
+archetect-core = { path = "../../../archetect/archetect-core" }
+archetect-api = { path = "../../../archetect/archetect-api" }
+camino = { version = "1.1", features = ["serde1"] }

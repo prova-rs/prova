@@ -18,7 +18,7 @@ fn runs_a_multi_file_suite_and_aggregates() {
     assert_eq!(files.len(), 2, "found both test files");
 
     let mut reporter = NullReporter;
-    let config = RunConfig { concurrency: 4 };
+    let config = RunConfig::new(4);
     let summary = run_suite(&files, &mut reporter, &config).expect("run suite");
 
     // alpha: 2 pass + 1 fail; beta: 1 pass + 1 skip.
@@ -37,7 +37,7 @@ fn cpu_bound_files_parallelize_across_workers() {
 
     let time = |jobs: usize| {
         let mut reporter = NullReporter;
-        let config = RunConfig { concurrency: jobs };
+        let config = RunConfig::new(jobs);
         let start = Instant::now();
         let summary = run_suite(&files, &mut reporter, &config).expect("run");
         assert_eq!(summary.passed, 2, "both cpu tests pass at jobs={jobs}");

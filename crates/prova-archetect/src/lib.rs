@@ -1,0 +1,261 @@
+//! The `archetect` plugin module for prova: render an archetype **in-process** via archetect-core
+//! and expose it to the Lua DSL as `archetect.render{...}`.
+//!
+//! This is the justifying use case for prova — testing rendered archetypes without a subprocess, so
+//! answers pass as data and failures surface as real diagnostics. It lives in its own crate (not
+//! `prova-core`) to keep the core domain-agnostic: `prova_archetect::install` is a `prova_core`
+//! plugin module the host wires in.
+//!
+//! Rendering runs on a dedicated OS thread (join-blocking) so it is fully isolated from prova's
+//! per-worker Tokio runtime — archetect's render is synchronous, and a fresh thread guarantees no
+//! nested-runtime surprise. It is headless (never prompts): supply `answers` for anything without a
+//! default, or `defaults = true` to take every default.
+
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use archetect_api::{ClientMessage, ContextValue, IoError, ScriptIoHandle, ScriptMessage};
+
+/// Re-exported so callers of [`render_headless`] can build answer maps without a direct
+/// archetect-api dependency.
+pub use archetect_api::ContextMap;
+use archetect_core::archetype::render_context::RenderContext;
+use archetect_core::configuration::Configuration;
+use archetect_core::errors::ArchetectError;
+use archetect_core::Archetect;
+use camino::Utf8PathBuf;
+use mlua::{Lua, Table, Value};
+
+/// Install the `archetect` global into a Lua state. Pass to `RunConfig::with_module`.
+pub fn install(lua: &Lua) -> mlua::Result<()> {
+    let archetect = lua.create_table()?;
+    archetect.set("render", lua.create_function(render)?)?;
+    lua.globals().set("archetect", archetect)?;
+    Ok(())
+}
+
+/// `archetect.render{ source, answers?, switches?, defaults?, destination? }` → a tree handle
+/// rooted at the destination (`out.path`, `out:file(rel)`, `out:read()`, `out.writes`).
+fn render(lua: &Lua, opts: Table) -> mlua::Result<Table> {
+    let source: String = opts
+        .get::<Option<String>>("source")?
+        .ok_or_else(|| mlua::Error::RuntimeError("archetect.render requires a `source`".into()))?;
+    let switches: Vec<String> = opts
+        .get::<Option<Vec<String>>>("switches")?
+        .unwrap_or_default();
+    let use_defaults = opts.get::<Option<bool>>("defaults")?.unwrap_or(false);
+    let answers = parse_answers(opts.get::<Option<Table>>("answers")?)?;
+    let destination = match opts.get::<Option<String>>("destination")? {
+        Some(d) => PathBuf::from(d),
+        None => temp_destination()
+            .map_err(|e| mlua::Error::RuntimeError(format!("archetect.render tempdir: {e}")))?,
+    };
+
+    let writes = render_on_thread(source, destination.clone(), answers, switches, use_defaults)
+        .map_err(mlua::Error::RuntimeError)?;
+
+    let handle = path_handle(lua, destination.to_string_lossy().into_owned())?;
+    handle.set("writes", lua.create_sequence_from(writes)?)?;
+    Ok(handle)
+}
+
+/// Convert a Lua `answers` table into a `ContextMap`. Supports string / integer / number / boolean
+/// values and string arrays — the common archetype answer shapes.
+fn parse_answers(answers: Option<Table>) -> mlua::Result<ContextMap> {
+    let mut map = ContextMap::new();
+    if let Some(table) = answers {
+        for pair in table.pairs::<String, Value>() {
+            let (key, value) = pair?;
+            map.insert(key, lua_to_context_value(value)?);
+        }
+    }
+    Ok(map)
+}
+
+fn lua_to_context_value(value: Value) -> mlua::Result<ContextValue> {
+    Ok(match value {
+        Value::String(s) => ContextValue::String(s.to_str()?.to_string()),
+        Value::Integer(i) => ContextValue::Integer(i),
+        Value::Number(n) => ContextValue::Float(n),
+        Value::Boolean(b) => ContextValue::Boolean(b),
+        Value::Table(t) => {
+            // Treat a sequence table as an array of values.
+            let mut items = Vec::new();
+            for item in t.sequence_values::<Value>() {
+                items.push(lua_to_context_value(item?)?);
+            }
+            ContextValue::Array(items)
+        }
+        other => {
+            return Err(mlua::Error::RuntimeError(format!(
+                "archetect.render: unsupported answer value of type {}",
+                other.type_name()
+            )))
+        }
+    })
+}
+
+/// Run the render on a dedicated OS thread and join — isolates it from prova's Tokio runtime, and
+/// keeps `ArchetectError` (not `Send`-guaranteed) from crossing the boundary by stringifying first.
+fn render_on_thread(
+    source: String,
+    destination: PathBuf,
+    answers: ContextMap,
+    switches: Vec<String>,
+    use_defaults: bool,
+) -> Result<Vec<String>, String> {
+    std::thread::spawn(move || {
+        render_headless(&source, &destination, answers, switches, use_defaults)
+            .map_err(|e| e.to_string())
+    })
+    .join()
+    .map_err(|_| "archetect render thread panicked".to_string())?
+}
+
+/// Render an archetype headlessly, returning the paths written (in order). No terminal, no prompts:
+/// headless resolves every prompt from its default or a supplied answer, or errors if neither.
+pub fn render_headless(
+    source: &str,
+    destination: &Path,
+    answers: ContextMap,
+    switches: Vec<String>,
+    use_defaults: bool,
+) -> Result<Vec<String>, ArchetectError> {
+    let dest = Utf8PathBuf::from_path_buf(destination.to_path_buf())
+        .map_err(|_| ArchetectError::GeneralError("non-UTF-8 destination".into()))?;
+
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let handle = CapturingIoHandle {
+        writes: writes.clone(),
+        pending: Mutex::new(None),
+    };
+
+    let configuration = Configuration::default().with_headless(true);
+
+    let archetect = Archetect::builder()
+        .with_driver(handle)
+        .with_configuration(configuration)
+        .with_temp_layout()? // isolated cache/config/data — NOT the render destination
+        .build()?;
+
+    let archetype = archetect.new_archetype(source)?;
+
+    let mut ctx = RenderContext::new(dest, answers);
+    for switch in switches {
+        ctx = ctx.with_switch(switch);
+    }
+    if use_defaults {
+        ctx = ctx.with_use_defaults_all(true);
+    }
+
+    archetype.render(ctx)?; // ArchetypeError -> ArchetectError via #[from]
+
+    let writes = Arc::try_unwrap(writes)
+        .map(|m| m.into_inner().unwrap_or_default())
+        .unwrap_or_else(|arc| arc.lock().unwrap().clone());
+    Ok(writes)
+}
+
+/// A headless client handle: writes files/dirs to disk, records file paths, Acks each write, and
+/// logs everything else. Single-threaded lockstep — the engine calls `receive` immediately after
+/// each `send`. Headless renders never emit `PromptFor*`, so this never blocks on a prompt.
+#[derive(Debug)]
+struct CapturingIoHandle {
+    writes: Arc<Mutex<Vec<String>>>,
+    pending: Mutex<Option<ClientMessage>>,
+}
+
+impl ScriptIoHandle for CapturingIoHandle {
+    fn send(&self, message: ScriptMessage) -> Result<(), IoError> {
+        match message {
+            ScriptMessage::WriteDirectory(info) => {
+                let _ = std::fs::create_dir_all(&info.path);
+                *self.pending.lock().unwrap() = Some(ClientMessage::Ack);
+            }
+            ScriptMessage::WriteFile(info) => {
+                let path = PathBuf::from(&info.destination);
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let reply = match std::fs::write(&path, &info.contents) {
+                    Ok(()) => {
+                        self.writes.lock().unwrap().push(info.destination);
+                        ClientMessage::Ack
+                    }
+                    Err(e) => ClientMessage::Error(e.to_string()),
+                };
+                *self.pending.lock().unwrap() = Some(reply);
+            }
+            // Diagnostics: to stderr, keeping stdout clean for prova's JSON protocol.
+            ScriptMessage::LogWarn(m)
+            | ScriptMessage::LogError(m)
+            | ScriptMessage::CompleteError(m)
+            | ScriptMessage::Display(m) => eprintln!("{m}"),
+            _ => {} // Log{Trace,Debug,Info}, Print, CompleteSuccess, PromptFor* (never in headless)
+        }
+        Ok(())
+    }
+
+    fn receive(&self) -> Result<ClientMessage, IoError> {
+        self.pending
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or(IoError::ClientDisconnected)
+    }
+}
+
+/// Build a path-handle table: `{ path = "...", file(self, rel), dir(self, rel), read(self) }`. The
+/// `path` field is what prova's filesystem matchers read, so `t:expect(out:file("x")):exists()`
+/// works. `file`/`dir` return child handles; nesting composes.
+fn path_handle(lua: &Lua, path: String) -> mlua::Result<Table> {
+    let handle = lua.create_table()?;
+    handle.set("path", path)?;
+    handle.set(
+        "file",
+        lua.create_function(|lua, (this, rel): (Table, String)| {
+            let base: String = this.get("path")?;
+            path_handle(lua, join(&base, &rel))
+        })?,
+    )?;
+    handle.set(
+        "dir",
+        lua.create_function(|lua, (this, rel): (Table, String)| {
+            let base: String = this.get("path")?;
+            path_handle(lua, join(&base, &rel))
+        })?,
+    )?;
+    handle.set(
+        "read",
+        lua.create_function(|_, this: Table| {
+            let path: String = this.get("path")?;
+            std::fs::read_to_string(&path)
+                .map_err(|e| mlua::Error::RuntimeError(format!("read {path:?}: {e}")))
+        })?,
+    )?;
+    Ok(handle)
+}
+
+fn join(base: &str, rel: &str) -> String {
+    Path::new(base).join(rel).to_string_lossy().into_owned()
+}
+
+fn temp_destination() -> std::io::Result<PathBuf> {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let mut path = std::env::temp_dir();
+    path.push(format!(
+        "prova-render-{}-{}-{}",
+        std::process::id(),
+        nanos,
+        n
+    ));
+    std::fs::create_dir_all(&path)?;
+    Ok(path)
+}

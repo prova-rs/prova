@@ -10,3 +10,5 @@ path = "src/main.rs"
 
 [dependencies]
 prova-core = { path = "../prova-core" }
+# The flagship plugin: makes `archetect.render{...}` available in the standalone `prova` binary.
+prova-archetect = { path = "../prova-archetect" }

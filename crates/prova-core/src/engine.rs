@@ -46,14 +46,52 @@ use crate::model::{
 };
 
 /// Throughput knob (never semantic). Defaults to sequential until the resource scheduler exists.
-#[derive(Debug, Clone)]
+/// A plugin module: registers extra globals (e.g. an `archetect` table) into a fresh Lua state.
+/// Called once per state, on worker threads, so it must be `Send + Sync`. Built-in modules
+/// (`shell`, `fs`) are always installed; these are added by the host (CLI / an integration crate),
+/// keeping `prova-core` domain-agnostic.
+pub type Module = std::sync::Arc<dyn Fn(&Lua) -> mlua::Result<()> + Send + Sync>;
+
+#[derive(Clone)]
 pub struct RunConfig {
     pub concurrency: usize,
+    modules: Vec<Module>,
 }
 
 impl Default for RunConfig {
     fn default() -> Self {
-        RunConfig { concurrency: 1 }
+        RunConfig {
+            concurrency: 1,
+            modules: Vec::new(),
+        }
+    }
+}
+
+impl std::fmt::Debug for RunConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunConfig")
+            .field("concurrency", &self.concurrency)
+            .field("modules", &self.modules.len())
+            .finish()
+    }
+}
+
+impl RunConfig {
+    pub fn new(concurrency: usize) -> Self {
+        RunConfig {
+            concurrency,
+            modules: Vec::new(),
+        }
+    }
+
+    /// Register a plugin module — a `Fn(&Lua) -> Result<()>` run against every Lua state the run
+    /// creates. Use this to inject domain globals (e.g. `prova_archetect::install`).
+    pub fn with_module<F>(mut self, install: F) -> Self
+    where
+        F: Fn(&Lua) -> mlua::Result<()> + Send + Sync + 'static,
+    {
+        self.modules.push(std::sync::Arc::new(install));
+        self
     }
 }
 
@@ -574,10 +612,16 @@ impl UserData for Matcher {
     }
 }
 
-/// A `Value` interpreted as a filesystem path, if it is a string.
+/// A `Value` interpreted as a filesystem path: a string, or a handle table with a `path` field
+/// (as returned by `archetect.render(...)` — `t:expect(out:file("Cargo.toml")):exists()`).
 fn subject_path(v: &Value) -> Option<PathBuf> {
     match v {
         Value::String(s) => s.to_str().ok().map(|bs| PathBuf::from(&*bs)),
+        Value::Table(t) => t
+            .get::<Option<String>>("path")
+            .ok()
+            .flatten()
+            .map(PathBuf::from),
         _ => None,
     }
 }
@@ -639,7 +683,7 @@ fn display(v: &Value) -> String {
 // Setup
 // ---------------------------------------------------------------------------------------------
 
-fn build_lua(root_name: String) -> mlua::Result<(Lua, SharedCollector)> {
+fn build_lua(root_name: String, modules: &[Module]) -> mlua::Result<(Lua, SharedCollector)> {
     let col: SharedCollector = Rc::new(RefCell::new(Collector::new(root_name)));
     let lua = Lua::new();
     let prova = lua.create_table()?;
@@ -746,6 +790,11 @@ fn build_lua(root_name: String) -> mlua::Result<(Lua, SharedCollector)> {
 
     // First-party capability modules (`shell`, `fs`) as their own injected globals.
     crate::modules::install(&lua)?;
+
+    // Host-provided plugin modules (e.g. `archetect`), installed into every Lua state.
+    for install in modules {
+        install(&lua)?;
+    }
 
     Ok((lua, col))
 }
@@ -1430,7 +1479,7 @@ async fn run_plan(
 // Public entry points
 // ---------------------------------------------------------------------------------------------
 
-fn read_and_collect(path: &Path) -> mlua::Result<(Lua, SharedCollector)> {
+fn read_and_collect(path: &Path, modules: &[Module]) -> mlua::Result<(Lua, SharedCollector)> {
     let code = std::fs::read_to_string(path)
         .map_err(|e| mlua::Error::RuntimeError(format!("cannot read {}: {e}", path.display())))?;
     let stem = path
@@ -1438,7 +1487,7 @@ fn read_and_collect(path: &Path) -> mlua::Result<(Lua, SharedCollector)> {
         .and_then(|s| s.to_str())
         .unwrap_or("tests")
         .to_string();
-    let (lua, col) = build_lua(stem)?;
+    let (lua, col) = build_lua(stem, modules)?;
     lua.load(&code).set_name(path.to_string_lossy()).exec()?;
     Ok((lua, col))
 }
@@ -1474,7 +1523,7 @@ pub(crate) fn run_file_into(
     reporter: &mut dyn Reporter,
     config: &RunConfig,
 ) -> mlua::Result<Summary> {
-    let (lua, col) = read_and_collect(path)?;
+    let (lua, col) = read_and_collect(path, &config.modules)?;
     let (plan, state) = {
         let col = col.borrow();
         let plan = build_plan(&col)?;
@@ -1501,7 +1550,8 @@ pub(crate) fn run_file_into(
 
 /// Discovery: collect the test tree without executing (basis for a GUI/IDE model view).
 pub fn discover_path(path: &Path) -> mlua::Result<Vec<String>> {
-    let (_lua, col) = read_and_collect(path)?;
+    // Discovery only needs the built-in globals; plugin modules are for execution.
+    let (_lua, col) = read_and_collect(path, &[])?;
     let col = col.borrow();
     let plan = build_plan(&col)?;
     Ok(plan

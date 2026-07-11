@@ -11,7 +11,7 @@ use prova_core::{run_path_with, NullReporter, RunConfig};
 fn dependency_edges_serialize_under_concurrency() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/dag_serial.lua");
     let mut reporter = NullReporter;
-    let config = RunConfig { concurrency: 8 };
+    let config = RunConfig::new(8);
 
     let start = Instant::now();
     let summary = run_path_with(&path, &mut reporter, &config).expect("run dag_serial.lua");
