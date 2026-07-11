@@ -1,38 +1,147 @@
-//! The engine: inject the `prova` global, collect a node tree, then execute it **asynchronously**.
+//! The engine: inject `prova`, collect a node tree + fixture registry, then execute asynchronously.
 //!
-//! Async is foundational, not bolted on. Each test body is driven with `call_async`, so a body
-//! can `await` I/O (HTTP, shell, sleep) without blocking a thread; a per-run current-thread
-//! runtime drives many bodies **concurrently and cooperatively** on one Lua state. That single
-//! decision unlocks three things at once:
-//!   - real **timeouts** for I/O-bound hangs (cancel the future when the deadline elapses),
-//!   - **I/O concurrency** at the scale load/stress testing needs (thousands of in-flight awaits),
-//!   - a clean **definition → plan → execute** split so a future load driver reuses the same bodies.
+//! Async is foundational (bodies driven via `call_async`; many run concurrently on one Lua state).
+//! This increment adds the **fixture / scope / teardown machine**:
+//!   - `prova.fixture(name, scope, factory)` → a typed handle; `ctx:use(handle)` builds-or-caches.
+//!   - Scopes `test`/`file`/`suite` with per-scope caches; a fixture is built lazily on first use.
+//!   - `ctx:defer(fn)` registers LIFO teardown in the fixture's *own* scope; scopes tear down
+//!     inner→outer (test before file before suite), so dependencies outlive dependents.
+//!   - `ctx:tempdir()` — scratch dir auto-removed at scope end.
 //!
-//! (CPU-bound Lua hangs still need an mlua interrupt hook — marked below. True multi-core
-//! parallelism will use one Lua state per worker; this slice does cooperative single-state async.)
+//! Execution defaults to **sequential** (`concurrency = 1`): correct and deterministic for
+//! fixture-sharing tests. Parallelism is opt-in via `RunConfig`/`--jobs` and becomes safe once the
+//! resource scheduler lands. Fixture factories are called synchronously in this increment (async
+//! factories are a later step: the Lua API `ctx:use(handle)` is unchanged, only the Rust binding
+//! upgrades from a sync to an async method).
 
 use std::cell::RefCell;
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures::stream::StreamExt;
 use mlua::{Function, Lua, UserData, UserDataMethods, Value};
 
 use crate::model::{parse_duration, Event, NodeIx, Outcome, Params, Reporter, Summary, UnitOpts};
 
-/// How the executor spends concurrency. `--jobs` maps here; it is *throughput only*, never
-/// semantic (a flow is serial regardless; a group is parallelizable regardless).
+/// Throughput knob (never semantic). Defaults to sequential until the resource scheduler exists.
 #[derive(Debug, Clone)]
 pub struct RunConfig {
-    /// Max bodies polled concurrently on the (single) worker.
     pub concurrency: usize,
 }
 
 impl Default for RunConfig {
     fn default() -> Self {
-        RunConfig { concurrency: 16 }
+        RunConfig { concurrency: 1 }
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Scopes & fixtures
+// ---------------------------------------------------------------------------------------------
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ScopeKind {
+    Test,
+    File,
+    Suite,
+}
+
+impl ScopeKind {
+    fn rank(self) -> u8 {
+        match self {
+            ScopeKind::Test => 0,
+            ScopeKind::File => 1,
+            ScopeKind::Suite => 2,
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            ScopeKind::Test => "test",
+            ScopeKind::File => "file",
+            ScopeKind::Suite => "suite",
+        }
+    }
+    fn parse(s: &str) -> mlua::Result<Self> {
+        match s {
+            "test" => Ok(ScopeKind::Test),
+            "file" => Ok(ScopeKind::File),
+            "suite" => Ok(ScopeKind::Suite),
+            other => Err(mlua::Error::RuntimeError(format!(
+                "unknown fixture scope {other:?} (expected test|file|suite)"
+            ))),
+        }
+    }
+}
+
+fn parse_scope(v: Value) -> mlua::Result<ScopeKind> {
+    match v {
+        Value::String(s) => ScopeKind::parse(&s.to_string_lossy()),
+        Value::Table(t) => ScopeKind::parse(&t.get::<String>("scope")?),
+        _ => Err(mlua::Error::RuntimeError(
+            "fixture scope must be a string or an options table".into(),
+        )),
+    }
+}
+
+#[derive(Clone)]
+struct FixtureDef {
+    name: String,
+    scope: ScopeKind,
+    factory: Function,
+}
+
+/// Opaque handle returned by `prova.fixture`; carries the registry id `ctx:use` resolves.
+struct FixtureHandle {
+    id: usize,
+}
+impl UserData for FixtureHandle {}
+
+/// Live state for one scope instance: cached fixture values, LIFO teardowns, temp dirs.
+#[derive(Default)]
+struct ScopeState {
+    cache: HashMap<usize, Value>,
+    teardowns: Vec<Function>,
+    tempdirs: Vec<PathBuf>,
+}
+
+/// Shared across the whole run: the fixture registry plus the suite & file scope instances.
+struct RunState {
+    defs: Vec<FixtureDef>,
+    suite: Rc<RefCell<ScopeState>>,
+    file: Rc<RefCell<ScopeState>>,
+}
+
+fn teardown_scope(scope: &Rc<RefCell<ScopeState>>) {
+    let (teardowns, tempdirs) = {
+        let mut s = scope.borrow_mut();
+        (
+            std::mem::take(&mut s.teardowns),
+            std::mem::take(&mut s.tempdirs),
+        )
+    };
+    // LIFO: last registered runs first, so a fixture's cleanup runs before its dependencies'.
+    for f in teardowns.into_iter().rev() {
+        let _ = f.call::<()>(()); // TODO: surface teardown errors as findings
+    }
+    for dir in tempdirs.into_iter().rev() {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+fn make_tempdir() -> std::io::Result<PathBuf> {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let mut path = std::env::temp_dir();
+    path.push(format!("prova-{}-{}-{}", std::process::id(), nanos, n));
+    std::fs::create_dir_all(&path)?;
+    Ok(path)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -55,6 +164,7 @@ struct Node {
 
 struct Collector {
     nodes: Vec<Node>,
+    fixtures: Vec<FixtureDef>,
 }
 
 impl Collector {
@@ -68,6 +178,7 @@ impl Collector {
                 children: vec![],
                 body: None,
             }],
+            fixtures: vec![],
         }
     }
 
@@ -100,56 +211,7 @@ fn parse_opts(t: &mlua::Table) -> mlua::Result<UnitOpts> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Lua-facing builders
-// ---------------------------------------------------------------------------------------------
-
-struct GroupBuilder {
-    col: SharedCollector,
-    ix: NodeIx,
-}
-
-impl UserData for GroupBuilder {
-    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("test", |_, this, (name, a, b): (String, Value, Value)| {
-            let (opts, body) = split_opts_body(a, b)?;
-            this.col.borrow_mut().add(
-                this.ix,
-                Node {
-                    name,
-                    kind: NodeKind::Test,
-                    params: Params::default(),
-                    opts,
-                    children: vec![],
-                    body: Some(body),
-                },
-            );
-            Ok(())
-        });
-
-        methods.add_method("group", |lua, this, (name, body): (String, Function)| {
-            let gix = this.col.borrow_mut().add(
-                this.ix,
-                Node {
-                    name,
-                    kind: NodeKind::Group,
-                    params: Params::default(),
-                    opts: UnitOpts::default(),
-                    children: vec![],
-                    body: None,
-                },
-            );
-            let gb = lua.create_userdata(GroupBuilder {
-                col: this.col.clone(),
-                ix: gix,
-            })?;
-            body.call::<()>(gb)?;
-            Ok(())
-        });
-    }
-}
-
-// ---------------------------------------------------------------------------------------------
-// Test context + assertions
+// The context (`t` / `ctx`) — one type for test bodies and fixture factories
 // ---------------------------------------------------------------------------------------------
 
 #[derive(Default)]
@@ -159,14 +221,103 @@ struct TestRun {
     skip: Option<String>,
 }
 
-struct TestCtx {
+/// Injected into every body/factory. `own_scope` is the scope its `defer`/`tempdir` target and the
+/// floor for the scope-mismatch check; `test_scope` is the active test's scope instance.
+struct Ctx {
     run: Rc<RefCell<TestRun>>,
+    state: Rc<RunState>,
+    test_scope: Rc<RefCell<ScopeState>>,
+    own_scope: ScopeKind,
 }
 
-const SKIP_SENTINEL: &str = "__prova_skip__";
+impl Ctx {
+    fn scope_state(&self, kind: ScopeKind) -> Rc<RefCell<ScopeState>> {
+        match kind {
+            ScopeKind::Suite => self.state.suite.clone(),
+            ScopeKind::File => self.state.file.clone(),
+            ScopeKind::Test => self.test_scope.clone(),
+        }
+    }
+    fn own_scope_state(&self) -> Rc<RefCell<ScopeState>> {
+        self.scope_state(self.own_scope)
+    }
+}
 
-impl UserData for TestCtx {
+fn resolve_use(lua: &Lua, this: &Ctx, target: Value) -> mlua::Result<Value> {
+    let id = match &target {
+        Value::UserData(ud) => {
+            ud.borrow::<FixtureHandle>()
+                .map_err(|_| mlua::Error::RuntimeError("use() expects a fixture handle".into()))?
+                .id
+        }
+        Value::String(s) => {
+            let name = s.to_string_lossy();
+            this.state
+                .defs
+                .iter()
+                .position(|d| d.name == name)
+                .ok_or_else(|| mlua::Error::RuntimeError(format!("no fixture named {name:?}")))?
+        }
+        _ => {
+            return Err(mlua::Error::RuntimeError(
+                "use() expects a fixture handle or name".into(),
+            ))
+        }
+    };
+
+    let def = this.state.defs[id].clone();
+
+    // Scope compatibility: a fixture may only use fixtures of equal-or-broader scope.
+    if def.scope.rank() < this.own_scope.rank() {
+        return Err(mlua::Error::RuntimeError(format!(
+            "scope mismatch: {}-scoped fixture {:?} cannot be used by a {}-scoped fixture",
+            def.scope.label(),
+            def.name,
+            this.own_scope.label()
+        )));
+    }
+
+    let ss = this.scope_state(def.scope);
+    if let Some(v) = ss.borrow().cache.get(&id) {
+        return Ok(v.clone());
+    }
+
+    // Build lazily: a child context bound to the fixture's own scope.
+    let child = Ctx {
+        run: this.run.clone(),
+        state: this.state.clone(),
+        test_scope: this.test_scope.clone(),
+        own_scope: def.scope,
+    };
+    let child_ud = lua.create_userdata(child)?;
+    let value: Value = def.factory.call(child_ud)?;
+    ss.borrow_mut().cache.insert(id, value.clone());
+    Ok(value)
+}
+
+impl UserData for Ctx {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("use", |lua, this, target: Value| resolve_use(lua, this, target));
+
+        methods.add_method("defer", |_, this, f: Function| {
+            this.own_scope_state().borrow_mut().teardowns.push(f);
+            Ok(())
+        });
+
+        methods.add_method("tempdir", |_, this, ()| {
+            let path = make_tempdir()
+                .map_err(|e| mlua::Error::RuntimeError(format!("tempdir failed: {e}")))?;
+            let s = path.to_string_lossy().into_owned();
+            this.own_scope_state().borrow_mut().tempdirs.push(path);
+            Ok(s)
+        });
+
+        methods.add_method("log", |_, _this, msg: String| {
+            // stderr keeps stdout clean for the JSON protocol; will become a Log event later.
+            eprintln!("    · {msg}");
+            Ok(())
+        });
+
         methods.add_method(
             "expect",
             |lua, this, (subject, label): (Value, Option<String>)| {
@@ -183,10 +334,14 @@ impl UserData for TestCtx {
             this.run.borrow_mut().skip = Some(reason);
             Err(mlua::Error::RuntimeError(SKIP_SENTINEL.into()))
         });
-
-        methods.add_method("log", |_, _this, _msg: String| Ok(()));
     }
 }
+
+const SKIP_SENTINEL: &str = "__prova_skip__";
+
+// ---------------------------------------------------------------------------------------------
+// Matchers
+// ---------------------------------------------------------------------------------------------
 
 struct Matcher {
     subject: Value,
@@ -349,7 +504,7 @@ fn build_lua(root_name: String) -> mlua::Result<(Lua, SharedCollector)> {
                         body: Some(body),
                     },
                 );
-                Ok(()) // TODO: return a Test handle (seam for depends_on)
+                Ok(())
             })?,
         )?;
     }
@@ -378,9 +533,35 @@ fn build_lua(root_name: String) -> mlua::Result<(Lua, SharedCollector)> {
             })?,
         )?;
     }
+    {
+        let col = col.clone();
+        prova.set(
+            "fixture",
+            lua.create_function(move |lua, (name, a, b): (String, Value, Value)| {
+                let (scope, factory) = match (a, b) {
+                    (Value::Function(f), Value::Nil) => (ScopeKind::Test, f),
+                    (scope_val, Value::Function(f)) => (parse_scope(scope_val)?, f),
+                    _ => {
+                        return Err(mlua::Error::RuntimeError(
+                            "fixture(name, scope, factory)".into(),
+                        ))
+                    }
+                };
+                let id = {
+                    let mut c = col.borrow_mut();
+                    let id = c.fixtures.len();
+                    c.fixtures.push(FixtureDef {
+                        name,
+                        scope,
+                        factory,
+                    });
+                    id
+                };
+                lua.create_userdata(FixtureHandle { id })
+            })?,
+        )?;
+    }
 
-    // A minimal async primitive to prove the async spine end-to-end; real `http`/`shell`
-    // modules land as async modules the same way.
     prova.set(
         "sleep",
         lua.create_async_function(|_, millis: u64| async move {
@@ -391,6 +572,51 @@ fn build_lua(root_name: String) -> mlua::Result<(Lua, SharedCollector)> {
 
     lua.globals().set("prova", prova)?;
     Ok((lua, col))
+}
+
+struct GroupBuilder {
+    col: SharedCollector,
+    ix: NodeIx,
+}
+
+impl UserData for GroupBuilder {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("test", |_, this, (name, a, b): (String, Value, Value)| {
+            let (opts, body) = split_opts_body(a, b)?;
+            this.col.borrow_mut().add(
+                this.ix,
+                Node {
+                    name,
+                    kind: NodeKind::Test,
+                    params: Params::default(),
+                    opts,
+                    children: vec![],
+                    body: Some(body),
+                },
+            );
+            Ok(())
+        });
+
+        methods.add_method("group", |lua, this, (name, body): (String, Function)| {
+            let gix = this.col.borrow_mut().add(
+                this.ix,
+                Node {
+                    name,
+                    kind: NodeKind::Group,
+                    params: Params::default(),
+                    opts: UnitOpts::default(),
+                    children: vec![],
+                    body: None,
+                },
+            );
+            let gb = lua.create_userdata(GroupBuilder {
+                col: this.col.clone(),
+                ix: gix,
+            })?;
+            body.call::<()>(gb)?;
+            Ok(())
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -438,52 +664,61 @@ struct NodeResult {
     message: Option<String>,
 }
 
-async fn run_one(lua: &Lua, item: &PlanItem) -> NodeResult {
+async fn run_one(lua: &Lua, item: &PlanItem, state: &Rc<RunState>) -> NodeResult {
     let run = Rc::new(RefCell::new(TestRun::default()));
-    // Fresh, injected context per invocation — the re-runnable-body seam (retries/shrink/load).
-    let ctx = lua
-        .create_userdata(TestCtx { run: run.clone() })
-        .expect("create test context");
+    let test_scope = Rc::new(RefCell::new(ScopeState::default()));
+    let ctx = Ctx {
+        run: run.clone(),
+        state: state.clone(),
+        test_scope: test_scope.clone(),
+        own_scope: ScopeKind::Test,
+    };
+    let ctx_ud = lua.create_userdata(ctx).expect("create context");
 
     let start = Instant::now();
-    let call = item.body.call_async::<()>(ctx);
+    let call = item.body.call_async::<()>(ctx_ud);
 
-    // Deadline enforcement for the async (I/O) path: cancel the future when the budget elapses.
-    // CPU-bound Lua hangs would additionally need an mlua interrupt hook (future increment).
     let result = match item.timeout {
         Some(budget) => match tokio::time::timeout(budget, call).await {
             Ok(r) => r,
             Err(_elapsed) => {
+                let assertions = run.borrow().assertions;
+                teardown_scope(&test_scope); // teardown still runs after a timeout
                 return NodeResult {
                     path: item.path.clone(),
                     outcome: Outcome::Failed,
                     duration: start.elapsed(),
-                    assertions: run.borrow().assertions,
+                    assertions,
                     message: Some(format!("timed out after {budget:?}")),
                 };
             }
         },
         None => call.await,
     };
-
     let duration = start.elapsed();
-    let r = run.borrow();
-    let (outcome, message) = if r.skip.is_some() {
-        (Outcome::Skipped, r.skip.clone())
-    } else if let Err(err) = &result {
-        (
-            Outcome::Failed,
-            Some(r.failure.clone().unwrap_or_else(|| err.to_string())),
-        )
-    } else {
-        (Outcome::Passed, None)
+
+    let (outcome, message, assertions) = {
+        let r = run.borrow();
+        let (outcome, message) = if r.skip.is_some() {
+            (Outcome::Skipped, r.skip.clone())
+        } else if let Err(err) = &result {
+            (
+                Outcome::Failed,
+                Some(r.failure.clone().unwrap_or_else(|| err.to_string())),
+            )
+        } else {
+            (Outcome::Passed, None)
+        };
+        (outcome, message, r.assertions)
     };
+
+    teardown_scope(&test_scope);
 
     NodeResult {
         path: item.path.clone(),
         outcome,
         duration,
-        assertions: r.assertions,
+        assertions,
         message,
     }
 }
@@ -491,16 +726,16 @@ async fn run_one(lua: &Lua, item: &PlanItem) -> NodeResult {
 async fn run_plan(
     lua: &Lua,
     plan: &[PlanItem],
+    state: &Rc<RunState>,
     config: &RunConfig,
     reporter: &mut dyn Reporter,
     summary: &mut Summary,
 ) {
-    // Announce the known set up front (a frontend renders the tree before results arrive).
     for item in plan {
         reporter.event(&Event::NodeStarted { path: &item.path });
     }
 
-    let mut stream = futures::stream::iter(plan.iter().map(|item| run_one(lua, item)))
+    let mut stream = futures::stream::iter(plan.iter().map(|item| run_one(lua, item, state)))
         .buffer_unordered(config.concurrency.max(1));
 
     while let Some(result) = stream.next().await {
@@ -539,36 +774,44 @@ fn new_runtime() -> mlua::Result<tokio::runtime::Runtime> {
         .map_err(|e| mlua::Error::RuntimeError(format!("failed to start async runtime: {e}")))
 }
 
-/// Collect and run a test file with default config.
 pub fn run_path(path: &Path, reporter: &mut dyn Reporter) -> mlua::Result<Summary> {
     run_path_with(path, reporter, &RunConfig::default())
 }
 
-/// Collect and run a test file with explicit config.
 pub fn run_path_with(
     path: &Path,
     reporter: &mut dyn Reporter,
     config: &RunConfig,
 ) -> mlua::Result<Summary> {
     let (lua, col) = read_and_collect(path)?;
-    let col = col.borrow();
-    let mut plan = Vec::new();
-    build_plan(&col, 0, &mut Vec::new(), &mut plan);
+    let (plan, state) = {
+        let col = col.borrow();
+        let mut plan = Vec::new();
+        build_plan(&col, 0, &mut Vec::new(), &mut plan);
+        let state = Rc::new(RunState {
+            defs: col.fixtures.clone(),
+            suite: Rc::new(RefCell::new(ScopeState::default())),
+            file: Rc::new(RefCell::new(ScopeState::default())),
+        });
+        (plan, state)
+    };
 
     let rt = new_runtime()?;
     let mut summary = Summary::default();
     rt.block_on(async {
         let started = Instant::now();
         reporter.event(&Event::RunStarted);
-        run_plan(&lua, &plan, config, reporter, &mut summary).await;
+        run_plan(&lua, &plan, &state, config, reporter, &mut summary).await;
+        // Scopes tear down inner→outer: file, then suite (test scopes already torn down per-test).
+        teardown_scope(&state.file);
+        teardown_scope(&state.suite);
         summary.duration = started.elapsed();
         reporter.event(&Event::RunFinished { summary: &summary });
     });
     Ok(summary)
 }
 
-/// Discovery: collect the test tree **without executing** — the basis for a GUI/IDE that loads a
-/// file, shows the tree, and runs selectively. Returns each test's full path.
+/// Discovery: collect the test tree without executing (basis for a GUI/IDE model view).
 pub fn discover_path(path: &Path) -> mlua::Result<Vec<String>> {
     let (_lua, col) = read_and_collect(path)?;
     let col = col.borrow();

@@ -117,17 +117,23 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
 ## Current status (implemented)
 
 - Async collect→plan→execute for `prova.test` / `prova.group`; injected `prova` global.
+- **Fixtures + scopes + teardown**: `prova.fixture(name, scope, factory)` → typed handle;
+  `ctx:use(handle|name)` builds-or-caches; `test`/`file`/`suite` scopes with per-scope caches;
+  `ctx:defer` (LIFO); `ctx:tempdir` (auto-removed); scope-mismatch rejection; inner→outer teardown.
+  *(`examples/lifecycle_poc_test.lua` runs green, teardown order verified.)*
 - `t:expect` matchers (`equals`/`eq`/`is_true`/`is_false`/`is_nil`/`is_truthy`/`contains`,
-  `:never()`, optional label), `t:skip`, `t:log` (no-op).
-- Concurrent async execution (proven) + I/O timeouts via cancellation.
+  `:never()`, optional label), `t:skip`, `t:log`.
+- Concurrent async execution (proven) + I/O timeouts via cancellation. Default execution is
+  **sequential** (`concurrency = 1`) until the resource scheduler makes parallelism safe.
 - `Event`/`Reporter`/`MultiReporter`/`JsonReporter`; `discover_path`; CLI `--list` / `--format json`.
 
 ## Next increments
 
-1. **Fixtures + scopes + teardown** (`prova.fixture`, `ctx:use(handle)`, `ctx:defer`,
-   test/file/suite caching) — makes `lifecycle_poc_test.lua` run.
-2. **Flows** (`prova.flow`/`f:step`, shared context, cascade-skip; `flow` scope).
-3. **Units + `depends_on`** DAG; **resources** + the constraint-solving scheduler; per-worker states.
-4. **Modules**: async `fs`/`shell`/`http`; soft assertions; snapshots.
-5. **Selectors** (tag expressions, `--last-failed`, sharding), richer reporters (JUnit/TAP), and the
+1. **Flows** (`prova.flow`/`f:step`, shared context, cascade-skip; `flow` scope) — the `flow`
+   cache level slots into the existing scope machine.
+2. **Units + `depends_on`** DAG (skip-downstream); **resources** + the constraint-solving
+   scheduler; then safe parallelism + per-worker Lua states.
+3. **Async fixtures** (upgrade `ctx:use` to an async method so factories can `await`) and async
+   **modules**: `fs`/`shell`/`http`; soft assertions (`expect_all`); snapshots.
+4. **Selectors** (tag expressions, `--last-failed`, sharding), richer reporters (JUnit/TAP), and the
    **load executor**.
