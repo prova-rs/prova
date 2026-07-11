@@ -12,7 +12,7 @@ end)
 --------------------------------------------------------------------------------------------
 -- Flow: ordered steps sharing state. `read`/`delete` are skipped if `create` fails.
 --------------------------------------------------------------------------------------------
-assay.flow("order lifecycle", { tags = { "acceptance" }, resources = { "port:8080" } }, function(flow)
+assay.flow("order lifecycle", { tags = { "acceptance" }, requires = { "network" }, resources = { assay.port(8080) } }, function(flow)
   local base = flow:use(api)     -- flow-scoped fixture value
   local order                    -- shared across steps via closure
 

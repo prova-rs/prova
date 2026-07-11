@@ -122,9 +122,18 @@ function Matcher:matches_snapshot(name) end
 ---@field autouse? boolean               # run even when no test names it
 ---@field params? any[]                  # parametrize: one variant per element (see Context:param)
 
---- A resource token gating concurrency: a bare string is exclusive; `assay.shared(token)`
---- is a concurrent reader. Only enforced under `--jobs`.
----@alias assay.Resource string|assay.SharedResource
+--- An opaque, typed resource reference from `assay.port`/`assay.resource`/`assay.shared`.
+--- Prefer these constructors over magic-format strings like `"port:8080"` — the prefix in a
+--- bare string is a convention you can typo silently; a constructor cannot be.
+---@class assay.ResourceRef
+--- What a `resources` list accepts: a typed ref, or a bare string token for ad-hoc names.
+--- Bare strings are exclusive by default; wrap with `assay.shared` for a concurrent reader.
+---@alias assay.Resource assay.ResourceRef|string
+
+--- A capability a unit requires to run. Missing capability → the unit is SKIPPED (with a
+--- reason), never failed. A closed, validated set (plugins may register more); a typo like
+--- `"dcoker"` is rejected at collection time rather than silently ignored.
+---@alias assay.Capability "docker"|"network"|"offline"|"git"|"github"
 
 --- A handle to any schedulable unit — a `test`, `flow`, or `group`. Pass to `depends_on`.
 --- Units with no edge between them are mutually isolated and may run in parallel.
@@ -137,12 +146,11 @@ function Matcher:matches_snapshot(name) end
 --- A group handle returned by `assay.group`. One scheduling unit whose children run per the
 --- group's independent strategy.
 ---@class assay.Group
---- A shared (concurrent-reader) resource token, from `assay.shared`.
----@class assay.SharedResource
 
 --- Options shared by any schedulable unit (test/flow/group).
 ---@class assay.UnitOpts
----@field tags? string[]                 # selection tags (see `-m` expressions)
+---@field tags? string[]                 # selection tags (see `-m` expressions), free-form
+---@field requires? assay.Capability[]   # skip (not fail) if a capability is unavailable
 ---@field depends_on? assay.Unit[]       # skip this unit if any upstream failed/was skipped
 ---@field resources? assay.Resource[]    # resources this unit needs (concurrency gating)
 ---@field serial? boolean                # never run concurrently with anything (process-wide exclusive)
@@ -273,11 +281,23 @@ function assay.flow(name, opts, body) end
 ---@return assay.Group
 function assay.group(name, opts, body) end
 
----Mark a resource token as a concurrent reader (readers-writer semantics). Bare-string
----tokens are exclusive; wrap in `assay.shared` to allow concurrent holders.
+---A typed **exclusive** resource for a TCP port. Preferred over `"port:8080"` — validates the
+---number and can't be mistyped into an unrelated token.
+---@param number integer
+---@return assay.ResourceRef
+function assay.port(number) end
+
+---A typed **exclusive** resource for an arbitrary named token (a DB, an account, a path).
 ---@param token string
----@return assay.SharedResource
-function assay.shared(token) end
+---@return assay.ResourceRef
+function assay.resource(token) end
+
+---Mark a resource as a **concurrent reader** (readers-writer semantics): readers run together,
+---but an exclusive holder waits for all readers to release. Accepts a typed ref or a bare
+---string token.
+---@param resource assay.ResourceRef|string
+---@return assay.ResourceRef
+function assay.shared(resource) end
 
 ---Group tests for reporting. Labeling-only in v1 (does not introduce a new fixture scope).
 ---@param label string

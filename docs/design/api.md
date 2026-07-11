@@ -350,10 +350,39 @@ assay.test("boots on :8080",  { resources = { "port:8080" } },        function(t
 assay.test("reads shared db", { resources = { assay.shared("db") } }, function(t) ... end)  -- concurrent reader
 ```
 
-A bare token is **exclusive** (no two holders at once); `assay.shared(token)` is a concurrent
-reader (readers-writer over the token namespace); `{ serial = true }` is sugar for a
-process-wide exclusive. Declarations are inert at `--jobs 1` and enforced above it, so you
-declare once and scale out without touching tests.
+Prefer the **typed constructors** over magic-format strings: `assay.port(8080)` and
+`assay.resource("db")` instead of `"port:8080"`. A bare string is still accepted for ad-hoc
+tokens and is **exclusive** by default; `assay.shared(x)` makes any resource a concurrent
+reader; `{ serial = true }` is sugar for a process-wide exclusive. Declarations are inert at
+`--jobs 1` and enforced above it, so you declare once and scale out without touching tests.
+
+### Typed values vs. stringly-typed values
+
+A deliberate stance on where strings are allowed, because "stringly-typed" is a classic
+source of silent bugs:
+
+- **Closed sets used inline stay string-literal *unions*** (`scope: "test"|"flow"|"file"|"suite"`,
+  `order: "any"|"declared"`). LuaCATS types these as literal unions, so `lua-language-server`
+  autocompletes the options and flags a typo at edit time — the enum benefit without the
+  ceremony of importing a constants table, and the call site stays terse.
+- **Magic-format strings become typed constructors.** A token like `"port:8080"` hides a
+  `prefix:value` convention you can typo silently (`"prot:8080"` is a *valid but wrong*
+  exclusive token). `assay.port(8080)` / `assay.resource("db")` can't be — and `port` can
+  validate its number. Bare strings remain accepted for genuinely ad-hoc tokens.
+- **Closed sets tied to real behavior are validated aliases.** `requires` takes
+  `assay.Capability` (`"docker"|"network"|…`); a typo is rejected at collection time with a
+  did-you-mean, not silently ignored (which would make a gate vanish).
+- **Free-form sets stay strings.** `tags` and `ctx:skip(reason)` are open by definition.
+- **Assertions were never stringly-typed** — matchers are methods (`:equals()`, `:contains()`),
+  not `expect(x, "equals", y)`. Same principle, already applied.
+- **Durations stay strings** (`"30s"`, `"500ms"`) — a well-known, readable micro-format — but
+  are parsed strictly.
+
+The cross-cutting rule underneath all of this: **every closed-set string is parsed into a Rust
+enum at the mlua boundary and rejected at *collection time* with a helpful error** (valid
+values / nearest match). The Lua-side literal-union types catch typos while editing; the
+Rust-side parse guarantees a bad value fails loudly and early regardless of how it was written
+— never a silent misbehavior at runtime.
 
 ### Order within a group, and hardening
 
