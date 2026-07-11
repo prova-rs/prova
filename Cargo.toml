@@ -9,4 +9,5 @@ version = "0.0.0"
 
 [workspace.dependencies]
 # Match archetect's mlua: Lua 5.4, vendored so we don't depend on a system Lua.
-mlua = { version = "0.11", features = ["lua54", "vendored"] }
+# `serialize` powers serde<->Lua conversion (http `:json()` request/response bodies).
+mlua = { version = "0.11", features = ["lua54", "vendored", "serialize"] }

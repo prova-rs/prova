@@ -1,9 +1,10 @@
-//! First-party capability modules injected as globals alongside `prova`: `shell` and `fs`.
+//! First-party capability modules injected as globals alongside `prova`: `shell`, `fs`, and `http`.
 //!
 //! These are what make prova useful beyond testing itself — bring a system into existence and poke
-//! it. `shell.run` is async (child processes never block the worker); `fs` is synchronous (fast
-//! metadata/read ops). Both take context explicitly (no ambient cwd), preserving the isolation the
-//! design promises.
+//! it. `shell.run` and `http.*` are async (child processes / requests never block the worker);
+//! `fs` is synchronous (fast metadata/read ops). All take context explicitly (no ambient cwd),
+//! preserving the isolation the design promises. `http` is behind a default-on feature and is
+//! HTTP-only in v1 (an `https`/TLS feature can layer on later).
 
 use std::path::Path;
 use std::time::Instant;
@@ -12,10 +13,12 @@ use mlua::{Lua, Table, UserData, UserDataFields, UserDataMethods};
 
 use crate::model::parse_duration;
 
-/// Install the `shell` and `fs` module globals into `lua`.
+/// Install the `shell`, `fs` (and, with the `http` feature, `http`) module globals into `lua`.
 pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set("shell", make_shell(lua)?)?;
     lua.globals().set("fs", make_fs(lua)?)?;
+    #[cfg(feature = "http")]
+    lua.globals().set("http", http::make(lua)?)?;
     Ok(())
 }
 
@@ -211,4 +214,207 @@ fn make_fs(lua: &Lua) -> mlua::Result<Table> {
     )?;
 
     Ok(fs)
+}
+
+// ---------------------------------------------------------------------------------------------
+// http (async; HTTP-only in v1 — https lands behind a later `tls` feature)
+// ---------------------------------------------------------------------------------------------
+
+#[cfg(feature = "http")]
+mod http {
+    use std::time::{Duration, Instant};
+
+    use mlua::{
+        Function, Lua, LuaSerdeExt, Table, UserData, UserDataFields, UserDataMethods, Value,
+    };
+
+    use crate::model::parse_duration;
+
+    /// A response from the `http` module: `res.status`, `res.body`, `res.headers`, `res:json()`.
+    struct HttpResponse {
+        status: u16,
+        body: String,
+        headers: Vec<(String, String)>,
+    }
+
+    impl UserData for HttpResponse {
+        fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
+            fields.add_field_method_get("status", |_, this| Ok(this.status));
+            fields.add_field_method_get("body", |_, this| Ok(this.body.clone()));
+            fields.add_field_method_get("headers", |lua, this| {
+                let table = lua.create_table()?;
+                for (k, v) in &this.headers {
+                    table.set(k.clone(), v.clone())?;
+                }
+                Ok(table)
+            });
+        }
+        fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+            // Decode the body as JSON into a Lua value; raises on non-JSON.
+            methods.add_method("json", |lua, this, ()| {
+                let value: serde_json::Value = serde_json::from_str(&this.body).map_err(|e| {
+                    mlua::Error::RuntimeError(format!("response body is not JSON: {e}"))
+                })?;
+                lua.to_value(&value)
+            });
+        }
+    }
+
+    pub(crate) fn make(lua: &Lua) -> mlua::Result<Table> {
+        let http = lua.create_table()?;
+        http.set("get", method_fn(lua, reqwest::Method::GET)?)?;
+        http.set("post", method_fn(lua, reqwest::Method::POST)?)?;
+        http.set("put", method_fn(lua, reqwest::Method::PUT)?)?;
+        http.set("delete", method_fn(lua, reqwest::Method::DELETE)?)?;
+        http.set("wait_for", wait_for_fn(lua)?)?;
+        Ok(http)
+    }
+
+    /// An owned, Lua-free request spec, prepared synchronously so nothing borrows Lua across the
+    /// await.
+    struct Prepared {
+        method: reqwest::Method,
+        url: String,
+        headers: Vec<(String, String)>,
+        body: Option<Vec<u8>>,
+        timeout: Option<Duration>,
+    }
+
+    fn method_fn(lua: &Lua, method: reqwest::Method) -> mlua::Result<Function> {
+        lua.create_async_function(move |lua, (url, opts): (String, Option<Table>)| {
+            let prepared = prepare(&lua, method.clone(), url, opts);
+            async move {
+                let resp = send(prepared?).await?;
+                lua.create_userdata(resp)
+            }
+        })
+    }
+
+    fn prepare(
+        lua: &Lua,
+        method: reqwest::Method,
+        url: String,
+        opts: Option<Table>,
+    ) -> mlua::Result<Prepared> {
+        let mut headers = Vec::new();
+        let mut body = None;
+        let mut timeout = None;
+        if let Some(opts) = opts {
+            if let Some(hdrs) = opts.get::<Option<Table>>("headers")? {
+                for pair in hdrs.pairs::<String, String>() {
+                    let (k, v) = pair?;
+                    headers.push((k, v));
+                }
+            }
+            if let Some(json) = opts.get::<Option<Value>>("json")? {
+                let value: serde_json::Value = lua.from_value(json)?;
+                let encoded = serde_json::to_vec(&value).map_err(|e| {
+                    mlua::Error::RuntimeError(format!("http: encoding json body: {e}"))
+                })?;
+                headers.push(("content-type".into(), "application/json".into()));
+                body = Some(encoded);
+            } else if let Some(raw) = opts.get::<Option<String>>("body")? {
+                body = Some(raw.into_bytes());
+            }
+            timeout = opts
+                .get::<Option<String>>("timeout")?
+                .and_then(|s| parse_duration(&s));
+        }
+        Ok(Prepared {
+            method,
+            url,
+            headers,
+            body,
+            timeout,
+        })
+    }
+
+    async fn send(prepared: Prepared) -> mlua::Result<HttpResponse> {
+        let client = reqwest::Client::new();
+        let mut req = client.request(prepared.method, &prepared.url);
+        for (k, v) in prepared.headers {
+            req = req.header(k, v);
+        }
+        if let Some(body) = prepared.body {
+            req = req.body(body);
+        }
+        if let Some(timeout) = prepared.timeout {
+            req = req.timeout(timeout);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| mlua::Error::RuntimeError(format!("http request failed: {e}")))?;
+        let status = resp.status().as_u16();
+        let headers = resp
+            .headers()
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or_default().to_string()))
+            .collect();
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| mlua::Error::RuntimeError(format!("reading http response body: {e}")))?;
+        Ok(HttpResponse {
+            status,
+            body,
+            headers,
+        })
+    }
+
+    /// `http.wait_for(url, { status = 200, timeout = "30s", every = "500ms" })` — poll GET until the
+    /// endpoint returns the expected status or the deadline elapses. The boot-then-probe primitive.
+    fn wait_for_fn(lua: &Lua) -> mlua::Result<Function> {
+        lua.create_async_function(|lua, (url, opts): (String, Option<Table>)| {
+            let params = wait_params(&opts);
+            async move {
+                let (expected, timeout, every) = params?;
+                let deadline = Instant::now() + timeout;
+                loop {
+                    let prepared = Prepared {
+                        method: reqwest::Method::GET,
+                        url: url.clone(),
+                        headers: Vec::new(),
+                        body: None,
+                        timeout: Some(every),
+                    };
+                    if let Ok(resp) = send(prepared).await {
+                        if resp.status == expected {
+                            return lua.create_userdata(resp);
+                        }
+                    }
+                    if Instant::now() >= deadline {
+                        return Err(mlua::Error::RuntimeError(format!(
+                            "http.wait_for timed out after {timeout:?} waiting for {expected} at {url}"
+                        )));
+                    }
+                    tokio::time::sleep(every).await;
+                }
+            }
+        })
+    }
+
+    fn wait_params(opts: &Option<Table>) -> mlua::Result<(u16, Duration, Duration)> {
+        let mut status = 200;
+        let mut timeout = Duration::from_secs(30);
+        let mut every = Duration::from_millis(500);
+        if let Some(opts) = opts {
+            if let Some(s) = opts.get::<Option<u16>>("status")? {
+                status = s;
+            }
+            if let Some(t) = opts
+                .get::<Option<String>>("timeout")?
+                .and_then(|s| parse_duration(&s))
+            {
+                timeout = t;
+            }
+            if let Some(e) = opts
+                .get::<Option<String>>("every")?
+                .and_then(|s| parse_duration(&s))
+            {
+                every = e;
+            }
+        }
+        Ok((status, timeout, every))
+    }
 }

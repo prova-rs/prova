@@ -131,10 +131,14 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
   factory that awaits and chains through a fixture-uses-fixture edge.)*
 - **Capability modules** (`modules.rs`), injected as their own globals: **`shell.run(cmd, {cwd,
   env, timeout, check})`** (async via `tokio::process`; returns `{code, stdout, stderr, duration}` +
-  `:ok()`) and **`fs`** (`exists`/`read`/`write`/`remove_all`/`tempdir`/`glob`). Filesystem matchers
+  `:ok()`); **`fs`** (`exists`/`read`/`write`/`remove_all`/`tempdir`/`glob`); and **`http`**
+  (`get`/`post`/`put`/`delete`/`wait_for`; async via reqwest; response `.status`/`.body`/`.headers`
+  + `:json()`; `wait_for` is the boot-then-probe poll). Filesystem matchers
   `:exists()`/`:is_file()`/`:is_dir()` take a path-string **or handle-table** subject. This is the
-  slice that lets prova test a real rendered workspace. *(`examples/shell_fs_test.lua`: async fixture
-  builds a workspace via shell, tests assert with shell + fs.)*
+  slice that lets prova test a real rendered workspace and a running service.
+  *(`examples/shell_fs_test.lua`; `examples/http_probe_test.lua` boots a server + probes it.)*
+  `http` is feature-gated (default on) and HTTP-only in v1 — an `https`/rustls feature layers on
+  later; the rest of the stack needs no TLS.
 - **Plugin-module hook**: `RunConfig::with_module(Fn(&Lua) -> Result)` registers extra globals into
   every Lua state the run creates (built-ins `shell`/`fs` are always installed). This keeps
   `prova-core` domain-agnostic while letting the host inject capabilities — the plugin boundary the
@@ -192,10 +196,10 @@ The scheduler/lifecycle **spine is now complete** (collect → plan → deps →
 execute). The remaining increments pivot from engine to **product** — the capabilities that make
 prova useful beyond testing itself:
 
-1. **More capability + assertions** — the `http` module (`get`/`post`/`json`/`wait_for`) for
-   boot-and-probe service tests; soft assertions (`expect_all`), snapshots (`matches_snapshot`), and
-   `requires` (capability gating → skip, not fail). *(Async fixtures + `shell`/`fs` + the `archetect`
-   plugin — done.)*
+1. **Richer assertions + gating** — soft assertions (`expect_all`, collect all failures), snapshots
+   (`matches_snapshot`), more matchers (`is_one_of`, `matches`, `has_length`, numeric compares), and
+   `requires` (capability gating → skip, not fail). *(Async fixtures + `shell`/`fs`/`http` + the
+   `archetect` plugin — done.)*
 2. **Flow ergonomics**: `f:use(fixture)` builder sugar (currently flow-scoped fixtures are used via
    `t:use` inside steps); re-runnable flow bodies (re-invoke to get fresh closures) as the
    precondition for the **load executor** treating a flow as a reusable scenario.
