@@ -193,7 +193,9 @@ struct RunState {
     file: Rc<RefCell<ScopeState>>,
 }
 
-fn teardown_scope(scope: &Rc<RefCell<ScopeState>>) {
+/// Async so a `ctx:defer` callback can `await` (e.g. `proc:stop()` to kill a spawned process, or any
+/// async resource cleanup). Sync callbacks just complete immediately under `call_async`.
+async fn teardown_scope(scope: &Rc<RefCell<ScopeState>>) {
     let (teardowns, tempdirs) = {
         let mut s = scope.borrow_mut();
         (
@@ -203,7 +205,7 @@ fn teardown_scope(scope: &Rc<RefCell<ScopeState>>) {
     };
     // LIFO: last registered runs first, so a fixture's cleanup runs before its dependencies'.
     for f in teardowns.into_iter().rev() {
-        let _ = f.call::<()>(()); // TODO: surface teardown errors as findings
+        let _ = f.call_async::<()>(()).await; // TODO: surface teardown errors as findings
     }
     for dir in tempdirs.into_iter().rev() {
         let _ = std::fs::remove_dir_all(&dir);
@@ -1382,7 +1384,7 @@ async fn run_one(
             Ok(r) => r,
             Err(_elapsed) => {
                 let assertions = run.borrow().assertions;
-                teardown_scope(&test_scope); // teardown still runs after a timeout
+                teardown_scope(&test_scope).await; // teardown still runs after a timeout
                 return NodeResult {
                     path: item.path.clone(),
                     outcome: Outcome::Failed,
@@ -1411,7 +1413,7 @@ async fn run_one(
         (outcome, message, r.assertions)
     };
 
-    teardown_scope(&test_scope);
+    teardown_scope(&test_scope).await;
 
     NodeResult {
         path: item.path.clone(),
@@ -1450,7 +1452,7 @@ async fn run_flow(lua: &Lua, steps: &[PlanItem], state: &Rc<RunState>) -> Vec<No
         results.push(result);
     }
 
-    teardown_scope(&flow_scope);
+    teardown_scope(&flow_scope).await;
     results
 }
 
@@ -1710,8 +1712,8 @@ pub(crate) fn run_file_into(
         let started = Instant::now();
         run_plan(&lua, &plan, &state, config, reporter, &mut summary).await;
         // Scopes tear down inner→outer: file, then suite (test scopes already torn down per-test).
-        teardown_scope(&state.file);
-        teardown_scope(&state.suite);
+        teardown_scope(&state.file).await;
+        teardown_scope(&state.suite).await;
         summary.duration = started.elapsed();
     });
     Ok(summary)

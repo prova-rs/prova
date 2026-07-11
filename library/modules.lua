@@ -78,12 +78,36 @@ function ShellResult:ok() end
 ---@field timeout? string     # e.g. "120s"
 ---@field check? boolean      # if true, non-zero exit raises instead of returning
 
+--- A long-running process from `shell.spawn`. Prefer `ctx:defer(function() proc:stop() end)` so it
+--- is stopped during teardown; `stop`/`wait` are async.
+---@class prova.Process
+---@field pid integer|nil       # OS process id (nil if it could not be determined)
+local Process = {}
+--- Kill the process (SIGKILL) and reap it. Idempotent.
+function Process:stop() end
+--- Wait for the process to exit; returns its exit code (or nil if signalled / already reaped).
+---@return integer|nil
+function Process:wait() end
+--- Whether the process is still running (reaps it if it has already exited).
+---@return boolean
+function Process:running() end
+
+---@class prova.SpawnOpts
+---@field cwd? string
+---@field env? table<string,string>
+
 ---@class prova.shell
 shell = {}
 ---@param command string
 ---@param opts? prova.ShellOpts
 ---@return prova.ShellResult
 function shell.run(command, opts) end
+--- Start a long-running command in the background (a booted app, a mock server) and return a
+--- handle. stdout/stderr are discarded. Pair with `ctx:defer(function() proc:stop() end)`.
+---@param command string
+---@param opts? prova.SpawnOpts
+---@return prova.Process
+function shell.spawn(command, opts) end
 
 ------------------------------------------------------------------------------------------
 -- http (blocking in v1)

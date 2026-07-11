@@ -113,10 +113,21 @@ The core stays small; capability grows at the edges:
 | **Selectors** | plan filters | tag expressions, `--changed`, `--last-failed`, sharding |
 | **Executors** | alternate drivers over the plan | acceptance (once), **load/stress** (many, sustained) |
 
-A **`grpc` module** is a strong candidate next module: it fits the exact async-module shape `http`
-already uses (call a method, assert on the response), and archetect-core already carries a gRPC
-proto + fixtures to lean on. Reflection-based or `.proto`-driven method invocation with
-status/message matchers would extend prova into service-contract testing without touching the core.
+Planned modules that extend prova into a full acceptance stack (all behind this same boundary):
+
+- **`grpc`** (and later `graphql`) — the network-interface trio alongside `http`. Same async-module
+  shape (call a method, assert on the response); archetect-core already carries a gRPC proto +
+  fixtures to lean on. Reflection- or `.proto`-driven invocation with status/message matchers.
+- **`docker`** — **ephemeral dependencies, testcontainers-style**: `docker.run{image=..., ports=...,
+  wait=...}` starts a container as a scoped fixture, maps a random host port, waits for readiness,
+  and stops/removes it on (async) teardown — the same managed-lifecycle pattern `shell.spawn`
+  already establishes (`Process` → a `Container` handle). This is what lets a test stand up a real
+  Postgres/Kafka/etc. under the system-under-test. Pairs naturally with `requires` ("docker") gating
+  so the suite skips (not fails) where Docker is unavailable.
+
+The end-to-end arc the modules serve: **render the project → assert the layout → boot the app
+(`shell.spawn`) → spin up its dependencies (`docker`) → drive its network interfaces
+(`http`/`grpc`/`graphql`) → tear it all down** — one framework, no capability ceilings.
 
 The **load/stress** executor is the clearest payoff of these seams: a `flow` is already a reusable
 scenario; a load driver takes that scenario, runs it under a concurrency/duration/arrival profile
@@ -132,11 +143,14 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
   `ctx:use(handle|name)` builds-or-caches; `test`/`flow`/`file`/`suite` scopes with per-scope
   caches; `ctx:defer` (LIFO); `ctx:tempdir` (auto-removed); scope-mismatch rejection; inner→outer
   teardown. **`ctx:use` is async** — a factory can `await` (e.g. `shell.run`, a readiness poll);
-  recursion reenters through Lua, so no boxing. *(`lifecycle_poc_test.lua`; `async_fixture` proves a
-  factory that awaits and chains through a fixture-uses-fixture edge.)*
+  recursion reenters through Lua, so no boxing. **Teardown is async too** — a `ctx:defer` callback
+  can `await` (e.g. `proc:stop()`), reaped while the runtime is still alive. *(`lifecycle_poc_test`;
+  `async_fixture`; `service_lifecycle_test` boots a process and stops it on teardown, leak-free.)*
 - **Capability modules** (`modules.rs`), injected as their own globals: **`shell.run(cmd, {cwd,
   env, timeout, check})`** (async via `tokio::process`; returns `{code, stdout, stderr, duration}` +
-  `:ok()`); **`fs`** (`exists`/`read`/`write`/`remove_all`/`tempdir`/`glob`); and **`http`**
+  `:ok()`) and **`shell.spawn(cmd, {cwd, env})`** → a managed `Process` (`.pid`, `:running()`,
+  async `:stop()`/`:wait()`; `kill_on_drop` backstop) — the boot-the-app primitive; **`fs`**
+  (`exists`/`read`/`write`/`remove_all`/`tempdir`/`glob`); and **`http`**
   (`get`/`post`/`put`/`delete`/`wait_for`; async via reqwest; response `.status`/`.body`/`.headers`
   + `:json()`; `wait_for` is the boot-then-probe poll). Filesystem matchers
   `:exists()`/`:is_file()`/`:is_dir()` take a path-string **or handle-table** subject. This is the

@@ -46,6 +46,53 @@ impl UserData for ShellResult {
     }
 }
 
+/// A long-running process started by `shell.spawn` — the primitive for "boot the app, test it, stop
+/// it". `proc.pid`, `proc:running()`, `proc:stop()` (async), `proc:wait()` (async). `kill_on_drop`
+/// is a backstop, but the blessed pattern is `ctx:defer(function() proc:stop() end)` so the process
+/// is reaped during (async) teardown while the runtime is still alive.
+struct Process {
+    child: Option<tokio::process::Child>,
+    pid: Option<u32>,
+}
+
+impl UserData for Process {
+    fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
+        fields.add_field_method_get("pid", |_, this| Ok(this.pid));
+    }
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        // Kill (SIGKILL) and reap. Idempotent — a second stop, or stop after exit, is a no-op.
+        methods.add_async_method_mut("stop", |_, mut this, ()| async move {
+            if let Some(mut child) = this.child.take() {
+                let _ = child.kill().await;
+            }
+            Ok(())
+        });
+        // Wait for exit; returns the exit code (or nil if killed by a signal / already reaped).
+        methods.add_async_method_mut("wait", |_, mut this, ()| async move {
+            match this.child.take() {
+                Some(mut child) => {
+                    let status = child.wait().await.map_err(|e| {
+                        mlua::Error::RuntimeError(format!("process wait failed: {e}"))
+                    })?;
+                    Ok(status.code())
+                }
+                None => Ok(None),
+            }
+        });
+        // Is the process still running? Reaps it if it has already exited.
+        methods.add_method_mut("running", |_, this, ()| {
+            let running = match &mut this.child {
+                Some(child) => matches!(child.try_wait(), Ok(None)),
+                None => false,
+            };
+            if !running {
+                this.child = None;
+            }
+            Ok(running)
+        });
+    }
+}
+
 fn make_shell(lua: &Lua) -> mlua::Result<Table> {
     let shell = lua.create_table()?;
     shell.set(
@@ -98,6 +145,37 @@ fn make_shell(lua: &Lua) -> mlua::Result<Table> {
             lua.create_userdata(result)
         })?,
     )?;
+
+    // shell.spawn(cmd, { cwd, env }) → a Process handle for a long-running command (a booted app,
+    // a mock server). stdout/stderr are discarded in v1. Called inside prova's runtime, so the
+    // tokio process driver is available.
+    shell.set(
+        "spawn",
+        lua.create_function(|lua, (cmd, opts): (String, Option<Table>)| {
+            let cwd = opt_string(&opts, "cwd")?;
+            let env = opt_env(&opts)?;
+            let mut command = shell_command(&cmd);
+            if let Some(dir) = &cwd {
+                command.current_dir(dir);
+            }
+            for (k, v) in &env {
+                command.env(k, v);
+            }
+            command
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .kill_on_drop(true);
+            let child = command
+                .spawn()
+                .map_err(|e| mlua::Error::RuntimeError(format!("shell.spawn failed: {e}")))?;
+            let pid = child.id();
+            lua.create_userdata(Process {
+                child: Some(child),
+                pid,
+            })
+        })?,
+    )?;
+
     Ok(shell)
 }
 
