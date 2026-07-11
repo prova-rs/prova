@@ -4,11 +4,14 @@
 //!   prova <file.lua>                 run a file (human console output)
 //!   prova --format json <file.lua>   stream JSONL events (machine/GUI protocol)
 //!   prova --list <file.lua>          discover tests without running them
+//!   prova --jobs N <file.lua>        run up to N units concurrently (throughput only)
 
 use std::path::Path;
 use std::process::ExitCode;
 
-use prova_core::{discover_path, run_path, ConsoleReporter, JsonReporter, MultiReporter, Reporter};
+use prova_core::{
+    discover_path, run_path_with, ConsoleReporter, JsonReporter, MultiReporter, Reporter, RunConfig,
+};
 
 enum Format {
     Console,
@@ -18,15 +21,35 @@ enum Format {
 fn main() -> ExitCode {
     let mut format = Format::Console;
     let mut list = false;
+    let mut jobs: usize = 1;
     let mut file: Option<String> = None;
 
-    for arg in std::env::args().skip(1) {
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        // `--jobs`/`-j` takes a value, either `--jobs N` or `--jobs=N`.
+        let jobs_value = arg
+            .strip_prefix("--jobs=")
+            .or_else(|| arg.strip_prefix("-j="))
+            .map(str::to_string)
+            .or_else(|| {
+                (arg == "--jobs" || arg == "-j").then(|| args.next().unwrap_or_default())
+            });
+        if let Some(value) = jobs_value {
+            match value.parse::<usize>() {
+                Ok(n) if n >= 1 => jobs = n,
+                _ => {
+                    eprintln!("prova: --jobs expects a positive integer, got {value:?}");
+                    return ExitCode::from(2);
+                }
+            }
+            continue;
+        }
         match arg.as_str() {
             "--list" => list = true,
             "--format=json" => format = Format::Json,
             "--format=console" => format = Format::Console,
             "--json" => format = Format::Json,
-            other if other.starts_with("--") => {
+            other if other.starts_with('-') => {
                 eprintln!("prova: unknown flag {other}");
                 return ExitCode::from(2);
             }
@@ -35,7 +58,7 @@ fn main() -> ExitCode {
     }
 
     let Some(file) = file else {
-        eprintln!("usage: prova [--list] [--format json] <file.lua>");
+        eprintln!("usage: prova [--list] [--format json] [--jobs N] <file.lua>");
         return ExitCode::from(2);
     };
     let path = Path::new(&file);
@@ -62,7 +85,8 @@ fn main() -> ExitCode {
         ))])),
     };
 
-    match run_path(path, reporter.as_mut()) {
+    let config = RunConfig { concurrency: jobs };
+    match run_path_with(path, reporter.as_mut(), &config) {
         Ok(summary) if summary.is_success() => ExitCode::SUCCESS,
         Ok(_) => ExitCode::FAILURE,
         Err(err) => {

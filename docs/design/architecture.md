@@ -51,9 +51,9 @@ collect (run the .lua file)        →  Node arena (groups/flows/tests + fixture
 
 The **plan** is where strategy is resolved: a group flattens to its leaves (independent,
 parallelizable), a flow becomes one leaf whose steps are an ordered sub-run on one worker,
-`depends_on` becomes leaf edges that gate/order (resources — the scheduler's concurrency
-constraints — are next). Keeping the plan a distinct artifact is what lets a **load executor** be
-a drop-in alternative to the acceptance executor over the same leaves.
+`depends_on` becomes leaf edges that gate/order, and `resources` become the readers-writer
+constraints the scheduler co-schedules against. Keeping the plan a distinct artifact is what lets a
+**load executor** be a drop-in alternative to the acceptance executor over the same leaves.
 
 ## Timeouts (the three mechanisms)
 
@@ -140,19 +140,32 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
   not deps. Independent leaves run concurrently up to `concurrency`; an edge orders regardless of
   job count. *(`examples/depends_on_test.lua`: login→populate→journeys + transitive group-edge
   cascade; `dag_serial` proves a chain serializes under `concurrency = 8`.)*
+- **Resources + the concurrency scheduler**: typed constructors `prova.port(n)` /
+  `prova.resource(tok)` (exclusive) and `prova.shared(x)` (concurrent reader), plus bare-string
+  tokens (exclusive) and `{ serial = true }` (process-wide exclusive). Each leaf carries `reqs`
+  (own + inherited group resources); the scheduler holds a **readers-writer** `ResourceTable` and
+  launches a leaf only when its deps passed **and** its reqs are acquirable (reader waits for a
+  writer; writer waits for all). Acquisition is all-or-nothing per leaf, so no hold-and-wait → no
+  deadlock. `serial` is desugared to an exclusive hold on a reserved global token that every other
+  leaf reads (injected only when some leaf is serial). Declarations are **inert at `concurrency =
+  1`** and enforced above it — so raising `--jobs` is the throughput-only, surprise-free knob the
+  design promises. *(`examples/resources_test.lua`; `resources` tests prove exclusive holders
+  serialize (~80ms) while shared readers overlap (~40ms) under `concurrency = 8`.)* CLI: `--jobs N`
+  / `-j N`.
 - `t:expect` matchers (`equals`/`eq`/`is_true`/`is_false`/`is_nil`/`is_truthy`/`contains`,
   `:never()`, optional label), `t:skip`, `t:log`.
-- Concurrent async execution (proven) + I/O timeouts via cancellation. Default execution is
-  **sequential** (`concurrency = 1`) until the resource scheduler makes parallelism safe.
-- `Event`/`Reporter`/`MultiReporter`/`JsonReporter`; `discover_path`; CLI `--list` / `--format json`.
+- Concurrent async execution (proven) + I/O timeouts via cancellation + a readers-writer
+  **resource** scheduler (`prova.port`/`resource`/`shared`, `serial`) making `--jobs > 1` safe.
+  Default execution stays **sequential** (`concurrency = 1`); resource declarations are inert there.
+- `Event`/`Reporter`/`MultiReporter`/`JsonReporter`; `discover_path`; CLI `--list` / `--format json`
+  / `--jobs N`.
 
 ## Next increments
 
-1. **Resources + the concurrency scheduler**: `prova.port`/`resource`/`shared`/`serial` declare
-   external constraints; the scheduler co-schedules the parallelizable set so declared resources
-   don't collide. With the dependency DAG already in place, this is what makes raising `--jobs`
-   above 1 the *default*-safe knob it's designed to be, plus **per-worker Lua states** for true
-   multi-core. Also `requires` (capability gating → skip, not fail).
+1. **Per-worker Lua states** for true multi-core (N OS threads, each its own `mlua::Lua`; units
+   dispatched across workers, cooperative async within one) — the resource scheduler already makes
+   the *what-may-overlap* safe; this makes overlap actually use multiple cores. Also `requires`
+   (capability gating → skip, not fail).
 2. **Async fixtures** (upgrade `ctx:use` to an async method so factories can `await`) and async
    **modules**: `fs`/`shell`/`http`; soft assertions (`expect_all`); snapshots.
 3. **Flow ergonomics**: `f:use(fixture)` builder sugar (currently flow-scoped fixtures are used via

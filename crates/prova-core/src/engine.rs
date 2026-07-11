@@ -20,6 +20,12 @@
 //! cascade-skips (transitively). Independent leaves run concurrently up to `concurrency`; an edge
 //! orders and gates regardless of the job count — so this is the substrate for safe parallelism.
 //!
+//! And **resources** (`prova.port`/`resource`/`shared`, `serial`): each leaf carries `reqs`, and a
+//! readers-writer `ResourceTable` gates launches so a writer excludes all holders of a token while
+//! readers overlap. Acquisition is all-or-nothing per leaf (no hold-and-wait → no deadlock);
+//! `serial` desugars to an exclusive hold on a reserved global token every other leaf reads.
+//! Declarations are inert at `concurrency = 1` and enforced above it.
+//!
 //! Execution defaults to **sequential** (`concurrency = 1`): correct and deterministic for
 //! fixture-sharing tests. Parallelism is opt-in via `RunConfig`/`--jobs` and becomes safe once the
 //! resource scheduler lands. Fixture factories are called synchronously in this increment (async
@@ -36,7 +42,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use futures::stream::StreamExt;
 use mlua::{Function, Lua, UserData, UserDataMethods, Value};
 
-use crate::model::{parse_duration, Event, NodeIx, Outcome, Params, Reporter, Summary, UnitOpts};
+use crate::model::{
+    parse_duration, Event, NodeIx, Outcome, Params, Reporter, ResourceReq, Summary, UnitOpts,
+};
 
 /// Throughput knob (never semantic). Defaults to sequential until the resource scheduler exists.
 #[derive(Debug, Clone)]
@@ -122,6 +130,16 @@ struct UnitHandle {
     ix: NodeIx,
 }
 impl UserData for UnitHandle {}
+
+/// A typed resource reference from `prova.port`/`resource`/`shared`. Preferred over magic-format
+/// strings (`"port:8080"`) — a constructor validates and can't be typo'd into a wrong-but-valid
+/// token. A bare string in a `resources` list is accepted too and is exclusive by default.
+#[derive(Clone)]
+struct ResourceRef {
+    token: String,
+    shared: bool,
+}
+impl UserData for ResourceRef {}
 
 /// Live state for one scope instance: cached fixture values, LIFO teardowns, temp dirs.
 #[derive(Default)]
@@ -252,11 +270,46 @@ fn parse_opts(t: &mlua::Table) -> mlua::Result<UnitOpts> {
             })
             .collect::<mlua::Result<Vec<_>>>()?,
     };
+    let resources = match t.get::<Option<Vec<Value>>>("resources")? {
+        None => Vec::new(),
+        Some(vals) => vals
+            .into_iter()
+            .map(parse_resource)
+            .collect::<mlua::Result<Vec<_>>>()?,
+    };
+    let serial = t.get::<Option<bool>>("serial")?.unwrap_or(false);
     Ok(UnitOpts {
         timeout,
         tags,
         depends_on,
+        resources,
+        serial,
     })
+}
+
+/// A `resources` entry is a typed `ResourceRef` (exclusive or shared) or a bare string (an ad-hoc
+/// exclusive token). Anything else is a helpful error rather than a silent no-op.
+fn parse_resource(v: Value) -> mlua::Result<ResourceReq> {
+    match v {
+        Value::String(s) => Ok(ResourceReq {
+            token: s.to_string_lossy().to_string(),
+            shared: false,
+        }),
+        Value::UserData(ud) => ud
+            .borrow::<ResourceRef>()
+            .map(|r| ResourceReq {
+                token: r.token.clone(),
+                shared: r.shared,
+            })
+            .map_err(|_| {
+                mlua::Error::RuntimeError(
+                    "resources entries must be strings or prova.port/resource/shared refs".into(),
+                )
+            }),
+        _ => Err(mlua::Error::RuntimeError(
+            "resources entries must be strings or prova.port/resource/shared refs".into(),
+        )),
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -609,6 +662,37 @@ fn build_lua(root_name: String) -> mlua::Result<(Lua, SharedCollector)> {
         })?,
     )?;
 
+    // Typed resource constructors. `port`/`resource` are exclusive; `shared` promotes any ref (or a
+    // bare string token) to a concurrent reader.
+    prova.set(
+        "port",
+        lua.create_function(|lua, number: u64| {
+            lua.create_userdata(ResourceRef {
+                token: format!("port:{number}"),
+                shared: false,
+            })
+        })?,
+    )?;
+    prova.set(
+        "resource",
+        lua.create_function(|lua, token: String| {
+            lua.create_userdata(ResourceRef {
+                token,
+                shared: false,
+            })
+        })?,
+    )?;
+    prova.set(
+        "shared",
+        lua.create_function(|lua, v: Value| {
+            let req = parse_resource(v)?;
+            lua.create_userdata(ResourceRef {
+                token: req.token,
+                shared: true,
+            })
+        })?,
+    )?;
+
     lua.globals().set("prova", prova)?;
     Ok((lua, col))
 }
@@ -789,14 +873,26 @@ fn plan_item(node: &Node, ancestors: &[String]) -> PlanItem {
 
 /// One schedulable unit: a top-level `test` or a `flow` (a group is not a leaf — it expands to the
 /// leaves under it). `deps` are the leaf ids this leaf must wait for; a leaf is skipped if any of
-/// them failed or was skipped. `deps` already fold in **inherited** group-level `depends_on` and are
-/// expanded from unit handles to concrete leaves.
+/// them failed or was skipped. `deps` and `reqs` already fold in **inherited** group-level options.
 struct Leaf {
     unit: PlanUnit,
     /// Node-level dependencies (own `depends_on` + inherited from ancestor groups), pre-expansion.
     raw_deps: Vec<NodeIx>,
     /// Expanded leaf-id dependencies (filled by `expand_deps`).
     deps: Vec<usize>,
+    /// Resources this leaf holds while running (own + inherited; plus the injected global for
+    /// `serial`). The scheduler will not co-schedule two leaves whose reqs conflict.
+    reqs: Vec<ResourceReq>,
+    /// Process-wide exclusive (never concurrent with anything).
+    serial: bool,
+}
+
+/// Group-level options that flow down to every contained leaf: `depends_on`, `resources`, `serial`.
+#[derive(Clone, Default)]
+struct Inherited {
+    deps: Vec<NodeIx>,
+    resources: Vec<ResourceReq>,
+    serial: bool,
 }
 
 /// The executable plan: a flat list of leaves plus the leaf-level dependency DAG.
@@ -805,13 +901,14 @@ struct Plan {
 }
 
 /// Walk the tree, emitting a `Leaf` per test/flow and recording, for every node, which leaves live
-/// under it (so a `depends_on` on a group can expand to that group's leaves). `inherited` carries
-/// ancestor groups' `depends_on` down so a group-level dependency applies to each contained leaf.
+/// under it (so a `depends_on`/`resources` on a group can expand to that group's leaves).
+/// `inherited` carries ancestor groups' options down so a group-level declaration applies to each
+/// contained leaf.
 fn collect_leaves(
     col: &Collector,
     ix: NodeIx,
     ancestors: &mut Vec<String>,
-    inherited: &[NodeIx],
+    inherited: &Inherited,
     leaves: &mut Vec<Leaf>,
     node_leaves: &mut HashMap<NodeIx, Vec<usize>>,
 ) -> Vec<usize> {
@@ -822,8 +919,12 @@ fn collect_leaves(
             if named {
                 ancestors.push(format!("{}{}", node.name, node.params.suffix()));
             }
-            let mut child_inherited = inherited.to_vec();
-            child_inherited.extend(node.opts.depends_on.iter().copied());
+            let mut child_inherited = inherited.clone();
+            child_inherited.deps.extend(node.opts.depends_on.iter().copied());
+            child_inherited
+                .resources
+                .extend(node.opts.resources.iter().cloned());
+            child_inherited.serial |= node.opts.serial;
             let mut ids = Vec::new();
             for &child in &node.children {
                 ids.extend(collect_leaves(
@@ -860,14 +961,18 @@ fn collect_leaves(
     my_leaves
 }
 
-fn push_leaf(leaves: &mut Vec<Leaf>, unit: PlanUnit, node: &Node, inherited: &[NodeIx]) -> usize {
-    let mut raw_deps = inherited.to_vec();
+fn push_leaf(leaves: &mut Vec<Leaf>, unit: PlanUnit, node: &Node, inherited: &Inherited) -> usize {
+    let mut raw_deps = inherited.deps.clone();
     raw_deps.extend(node.opts.depends_on.iter().copied());
+    let mut reqs = inherited.resources.clone();
+    reqs.extend(node.opts.resources.iter().cloned());
     let id = leaves.len();
     leaves.push(Leaf {
         unit,
         raw_deps,
         deps: Vec::new(),
+        reqs,
+        serial: inherited.serial || node.opts.serial,
     });
     id
 }
@@ -927,6 +1032,10 @@ fn unit_name(leaf: &Leaf) -> &str {
     leaf.unit.leaf_paths().first().copied().unwrap_or("<unit>")
 }
 
+/// The reserved token that makes `serial` work: a serial leaf takes it exclusively while every
+/// other leaf takes it shared, so RW semantics alone enforce "never concurrent with anything".
+const SERIAL_TOKEN: &str = "__prova_serial__";
+
 fn build_plan(col: &Collector) -> mlua::Result<Plan> {
     let mut leaves = Vec::new();
     let mut node_leaves = HashMap::new();
@@ -934,7 +1043,7 @@ fn build_plan(col: &Collector) -> mlua::Result<Plan> {
         col,
         0,
         &mut Vec::new(),
-        &[],
+        &Inherited::default(),
         &mut leaves,
         &mut node_leaves,
     );
@@ -944,6 +1053,17 @@ fn build_plan(col: &Collector) -> mlua::Result<Plan> {
             "dependency cycle detected among units: {}",
             cycle.join(", ")
         )));
+    }
+    // Only pay the global-token cost when someone actually asked for serial execution. A serial
+    // leaf holds it exclusively; everyone else reads it, so a serial leaf waits for all others to
+    // drain and blocks new starts — exactly "process-wide exclusive".
+    if leaves.iter().any(|l| l.serial) {
+        for leaf in &mut leaves {
+            leaf.reqs.push(ResourceReq {
+                token: SERIAL_TOKEN.to_string(),
+                shared: !leaf.serial,
+            });
+        }
     }
     Ok(Plan { leaves })
 }
@@ -1105,10 +1225,56 @@ fn emit_finished(reporter: &mut dyn Reporter, summary: &mut Summary, results: &[
     }
 }
 
-/// Dependency-aware scheduler. A leaf runs once all its dependency leaves have resolved and all
-/// **passed**; if any dependency failed or was skipped, the leaf cascade-skips (transitively, since
-/// a skip is itself a resolved non-pass). Independent leaves run concurrently up to
-/// `config.concurrency`; with the default of 1 this is definition-order sequential.
+/// A readers-writer accounting table over resource tokens. Per token it tracks how many shared
+/// (reader) and exclusive (writer) holds are live. A reader may acquire when there is no writer; a
+/// writer may acquire only when there is neither reader nor writer. Acquisition is all-or-nothing
+/// per leaf (checked before any hold is taken), so no leaf ever holds-and-waits — hence no deadlock.
+#[derive(Default)]
+struct ResourceTable {
+    holders: HashMap<String, (u32, u32)>, // token -> (shared, exclusive)
+}
+
+impl ResourceTable {
+    fn can_acquire(&self, reqs: &[ResourceReq]) -> bool {
+        reqs.iter().all(|r| {
+            let (shared, exclusive) = self.holders.get(&r.token).copied().unwrap_or((0, 0));
+            if r.shared {
+                exclusive == 0
+            } else {
+                shared == 0 && exclusive == 0
+            }
+        })
+    }
+
+    fn acquire(&mut self, reqs: &[ResourceReq]) {
+        for r in reqs {
+            let entry = self.holders.entry(r.token.clone()).or_insert((0, 0));
+            if r.shared {
+                entry.0 += 1;
+            } else {
+                entry.1 += 1;
+            }
+        }
+    }
+
+    fn release(&mut self, reqs: &[ResourceReq]) {
+        for r in reqs {
+            if let Some(entry) = self.holders.get_mut(&r.token) {
+                if r.shared {
+                    entry.0 = entry.0.saturating_sub(1);
+                } else {
+                    entry.1 = entry.1.saturating_sub(1);
+                }
+            }
+        }
+    }
+}
+
+/// Dependency- and resource-aware scheduler. A leaf runs once all its dependency leaves have
+/// **passed** *and* its declared resources can be acquired (readers-writer); if any dependency
+/// failed or was skipped, the leaf cascade-skips (transitively). Independent, resource-compatible
+/// leaves run concurrently up to `config.concurrency`; with the default of 1 this is
+/// definition-order sequential and resource declarations are inert.
 async fn run_plan(
     lua: &Lua,
     plan: &Plan,
@@ -1122,6 +1288,7 @@ async fn run_plan(
     let concurrency = config.concurrency.max(1);
     let mut outcome: Vec<Option<Outcome>> = vec![None; n];
     let mut started = vec![false; n];
+    let mut resources = ResourceTable::default();
     let mut in_flight = futures::stream::FuturesUnordered::new();
 
     loop {
@@ -1158,7 +1325,8 @@ async fn run_plan(
             }
         }
 
-        // Launch runnable leaves (all deps passed) up to the concurrency limit.
+        // Launch runnable leaves — all deps passed and resources acquirable — up to the concurrency
+        // limit. A resource-blocked leaf is left for a later round (a completion frees its holds).
         for i in 0..n {
             if in_flight.len() >= concurrency {
                 break;
@@ -1166,13 +1334,18 @@ async fn run_plan(
             if started[i] || outcome[i].is_some() {
                 continue;
             }
-            if leaves[i].deps.iter().all(|&d| outcome[d] == Some(Outcome::Passed)) {
-                started[i] = true;
-                for path in leaves[i].unit.leaf_paths() {
-                    reporter.event(&Event::NodeStarted { path });
-                }
-                in_flight.push(async move { (i, run_unit(lua, &leaves[i].unit, state).await) });
+            if !leaves[i].deps.iter().all(|&d| outcome[d] == Some(Outcome::Passed)) {
+                continue;
             }
+            if !resources.can_acquire(&leaves[i].reqs) {
+                continue;
+            }
+            resources.acquire(&leaves[i].reqs);
+            started[i] = true;
+            for path in leaves[i].unit.leaf_paths() {
+                reporter.event(&Event::NodeStarted { path });
+            }
+            in_flight.push(async move { (i, run_unit(lua, &leaves[i].unit, state).await) });
         }
 
         if in_flight.is_empty() {
@@ -1180,6 +1353,7 @@ async fn run_plan(
         }
 
         let (i, results) = in_flight.next().await.expect("in_flight is non-empty");
+        resources.release(&leaves[i].reqs);
         outcome[i] = Some(unit_outcome(&results));
         emit_finished(reporter, summary, &results);
     }

@@ -42,6 +42,15 @@ impl Params {
     }
 }
 
+/// A declared need for an external resource, with readers-writer semantics. `shared = false` is an
+/// exclusive (writer) hold; `shared = true` is a concurrent reader. The scheduler uses these to
+/// co-schedule the parallelizable set so declared resources never collide.
+#[derive(Debug, Clone)]
+pub struct ResourceReq {
+    pub token: String,
+    pub shared: bool,
+}
+
 /// Per-unit options parsed from the Lua `opts` table.
 ///
 /// `timeout` is parsed and carried now (the plumbing) even though enforcement is a later
@@ -53,6 +62,11 @@ pub struct UnitOpts {
     /// Units this one depends on, as arena indices (resolved from `depends_on` handles). A unit is
     /// skipped (not failed) if any transitive dependency leaf failed or was skipped.
     pub depends_on: Vec<NodeIx>,
+    /// External resources this unit needs; the scheduler gates concurrency on them.
+    pub resources: Vec<ResourceReq>,
+    /// Process-wide exclusive: never run concurrently with anything (sugar for an exclusive hold on
+    /// a global token every other unit reads).
+    pub serial: bool,
 }
 
 /// Result totals for a run.
