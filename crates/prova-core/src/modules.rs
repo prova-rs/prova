@@ -1,10 +1,13 @@
-//! First-party capability modules injected as globals alongside `prova`: `shell`, `fs`, and `http`.
+//! First-party capability modules injected as globals alongside `prova`: `shell`, `fs`, `http`,
+//! and `docker`.
 //!
 //! These are what make prova useful beyond testing itself — bring a system into existence and poke
-//! it. `shell.run` and `http.*` are async (child processes / requests never block the worker);
-//! `fs` is synchronous (fast metadata/read ops). All take context explicitly (no ambient cwd),
-//! preserving the isolation the design promises. `http` is behind a default-on feature and is
-//! HTTP-only in v1 (an `https`/TLS feature can layer on later).
+//! it. `shell.run`/`shell.spawn`, `http.*`, and `docker.*` are async (child processes / requests /
+//! docker calls never block the worker); `fs` is synchronous (fast metadata/read ops). All take
+//! context explicitly (no ambient cwd), preserving the isolation the design promises. `http` is
+//! behind a default-on feature and is HTTP-only in v1 (an `https`/TLS feature can layer on later);
+//! `docker` shells out to the `docker` CLI, so tests that need it declare `requires = { "docker" }`
+//! to skip gracefully where the daemon is absent.
 
 use std::path::Path;
 use std::time::Instant;
@@ -13,10 +16,12 @@ use mlua::{Lua, Table, UserData, UserDataFields, UserDataMethods};
 
 use crate::model::parse_duration;
 
-/// Install the `shell`, `fs` (and, with the `http` feature, `http`) module globals into `lua`.
+/// Install the built-in module globals (`shell`, `fs`, `docker`, and — with the `http` feature —
+/// `http`) into `lua`.
 pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set("shell", make_shell(lua)?)?;
     lua.globals().set("fs", make_fs(lua)?)?;
+    lua.globals().set("docker", docker::make(lua)?)?;
     #[cfg(feature = "http")]
     lua.globals().set("http", http::make(lua)?)?;
     Ok(())
@@ -494,5 +499,250 @@ mod http {
             }
         }
         Ok((status, timeout, every))
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// docker (testcontainers-style ephemeral dependencies, via the `docker` CLI)
+// ---------------------------------------------------------------------------------------------
+
+mod docker {
+    use std::collections::HashMap;
+    use std::time::{Duration, Instant};
+
+    use mlua::{Function, Lua, Table, UserData, UserDataFields, UserDataMethods};
+
+    use crate::model::parse_duration;
+
+    /// A running container from `docker.run` — the testcontainers primitive. `c.id`,
+    /// `c:host_port(p)`, `c:endpoint(p)`, async `c:logs()`, `c:exec(cmd)`, `c:stop()`. Started with
+    /// `--rm`; `stop` force-removes it, and a `Drop` backstop removes it if a test forgot to. The
+    /// blessed pattern is `ctx:defer(function() c:stop() end)` so it is torn down (async teardown)
+    /// with the container still owned by the run.
+    struct Container {
+        id: String,
+        ports: HashMap<u16, u16>, // container port -> mapped host port
+        stopped: bool,
+    }
+
+    impl Drop for Container {
+        fn drop(&mut self) {
+            if !self.stopped {
+                // Best-effort, fire-and-forget: never leak a container even if cleanup was skipped.
+                let _ = std::process::Command::new("docker")
+                    .args(["rm", "-f", &self.id])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
+            }
+        }
+    }
+
+    impl UserData for Container {
+        fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
+            fields.add_field_method_get("id", |_, this| Ok(this.id.clone()));
+        }
+        fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+            // The host port a published container port maps to.
+            methods.add_method("host_port", |_, this, port: u16| {
+                this.ports.get(&port).copied().ok_or_else(|| {
+                    mlua::Error::RuntimeError(format!("container port {port} was not published"))
+                })
+            });
+            // Convenience: "127.0.0.1:<host_port>" for the published port.
+            methods.add_method("endpoint", |_, this, port: u16| {
+                this.ports
+                    .get(&port)
+                    .map(|hp| format!("127.0.0.1:{hp}"))
+                    .ok_or_else(|| {
+                        mlua::Error::RuntimeError(format!(
+                            "container port {port} was not published"
+                        ))
+                    })
+            });
+            methods.add_async_method("logs", |_, this, ()| {
+                let id = this.id.clone();
+                async move {
+                    let (_, out, err) = output(&["logs".into(), id]).await?;
+                    Ok(format!("{out}{err}"))
+                }
+            });
+            methods.add_async_method("exec", |_, this, cmd: String| {
+                let id = this.id.clone();
+                async move {
+                    let (code, stdout, stderr) =
+                        output(&["exec".into(), id, "sh".into(), "-c".into(), cmd]).await?;
+                    Ok((code, stdout, stderr))
+                }
+            });
+            // Force-remove the container. Idempotent.
+            methods.add_async_method_mut("stop", |_, mut this, ()| async move {
+                if !this.stopped {
+                    this.stopped = true;
+                    let _ = output(&["rm".into(), "-f".into(), this.id.clone()]).await;
+                }
+                Ok(())
+            });
+        }
+    }
+
+    pub(crate) fn make(lua: &Lua) -> mlua::Result<Table> {
+        let docker = lua.create_table()?;
+        docker.set("run", run_fn(lua)?)?;
+        Ok(docker)
+    }
+
+    fn run_fn(lua: &Lua) -> mlua::Result<Function> {
+        lua.create_async_function(|lua, opts: Table| {
+            // Extract everything synchronously (owned) up front — nothing borrows Lua across awaits.
+            let spec = Spec::from_table(&opts);
+            async move {
+                let spec = spec?;
+                let container = start(spec).await?;
+                lua.create_userdata(container)
+            }
+        })
+    }
+
+    struct Wait {
+        port: Option<u16>,
+        log: Option<String>,
+        timeout: Duration,
+        every: Duration,
+    }
+
+    struct Spec {
+        image: String,
+        ports: Vec<u16>,
+        env: Vec<(String, String)>,
+        wait: Option<Wait>,
+    }
+
+    impl Spec {
+        fn from_table(opts: &Table) -> mlua::Result<Spec> {
+            let image = opts.get::<Option<String>>("image")?.ok_or_else(|| {
+                mlua::Error::RuntimeError("docker.run requires an `image`".into())
+            })?;
+            let ports = opts.get::<Option<Vec<u16>>>("ports")?.unwrap_or_default();
+            let mut env = Vec::new();
+            if let Some(table) = opts.get::<Option<Table>>("env")? {
+                for pair in table.pairs::<String, String>() {
+                    let (k, v) = pair?;
+                    env.push((k, v));
+                }
+            }
+            let wait = match opts.get::<Option<Table>>("wait")? {
+                None => None,
+                Some(w) => Some(Wait {
+                    port: w.get::<Option<u16>>("port")?,
+                    log: w.get::<Option<String>>("log")?,
+                    timeout: w
+                        .get::<Option<String>>("timeout")?
+                        .and_then(|s| parse_duration(&s))
+                        .unwrap_or(Duration::from_secs(30)),
+                    every: w
+                        .get::<Option<String>>("every")?
+                        .and_then(|s| parse_duration(&s))
+                        .unwrap_or(Duration::from_millis(250)),
+                }),
+            };
+            Ok(Spec {
+                image,
+                ports,
+                env,
+                wait,
+            })
+        }
+    }
+
+    async fn start(spec: Spec) -> mlua::Result<Container> {
+        let mut args = vec!["run".into(), "-d".into(), "--rm".into()];
+        for port in &spec.ports {
+            args.push("-p".into());
+            args.push(format!("0:{port}")); // publish to a random host port
+        }
+        for (k, v) in &spec.env {
+            args.push("-e".into());
+            args.push(format!("{k}={v}"));
+        }
+        args.push(spec.image.clone());
+
+        let (code, stdout, stderr) = output(&args).await?;
+        if code != 0 {
+            return Err(mlua::Error::RuntimeError(format!(
+                "docker run failed for {:?}: {}",
+                spec.image,
+                stderr.trim()
+            )));
+        }
+        let id = stdout.trim().to_string();
+
+        // A container that fails partway is force-removed via Container::drop.
+        let mut container = Container {
+            id: id.clone(),
+            ports: HashMap::new(),
+            stopped: false,
+        };
+        for port in &spec.ports {
+            let (c, out, _) = output(&["port".into(), id.clone(), format!("{port}/tcp")]).await?;
+            if c == 0 {
+                if let Some(host_port) = parse_host_port(&out) {
+                    container.ports.insert(*port, host_port);
+                }
+            }
+        }
+
+        if let Some(wait) = spec.wait {
+            wait_ready(&container, &wait).await?;
+        }
+        Ok(container)
+    }
+
+    async fn wait_ready(container: &Container, wait: &Wait) -> mlua::Result<()> {
+        let deadline = Instant::now() + wait.timeout;
+        loop {
+            let ready = if let Some(port) = wait.port {
+                match container.ports.get(&port) {
+                    Some(&host_port) => tokio::net::TcpStream::connect(("127.0.0.1", host_port))
+                        .await
+                        .is_ok(),
+                    None => false,
+                }
+            } else if let Some(pattern) = &wait.log {
+                let (_, out, err) = output(&["logs".into(), container.id.clone()]).await?;
+                out.contains(pattern.as_str()) || err.contains(pattern.as_str())
+            } else {
+                true
+            };
+            if ready {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "docker.run: container {} not ready within {:?}",
+                    container.id, wait.timeout
+                )));
+            }
+            tokio::time::sleep(wait.every).await;
+        }
+    }
+
+    /// Run `docker <args>`, returning (exit code, stdout, stderr).
+    async fn output(args: &[String]) -> mlua::Result<(i32, String, String)> {
+        let out = tokio::process::Command::new("docker")
+            .args(args)
+            .output()
+            .await
+            .map_err(|e| mlua::Error::RuntimeError(format!("failed to run docker: {e}")))?;
+        Ok((
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        ))
+    }
+
+    /// Parse the host port from `docker port` output ("0.0.0.0:49154\n[::]:49154").
+    fn parse_host_port(out: &str) -> Option<u16> {
+        out.lines().next()?.rsplit(':').next()?.trim().parse().ok()
     }
 }

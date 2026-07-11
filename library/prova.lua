@@ -144,7 +144,7 @@ function Matcher:matches_snapshot(name) end
 --- A capability a unit requires to run. Missing capability → the unit is SKIPPED (with a
 --- reason), never failed. A closed, validated set (plugins may register more); a typo like
 --- `"dcoker"` is rejected at collection time rather than silently ignored.
----@alias prova.Capability "docker"|"network"|"offline"|"git"|"github"
+---@alias prova.Capability "docker"|"network"|"git"|"github"|string  # known caps autocomplete; any tool-on-PATH name also works
 
 --- A handle to any schedulable unit — a `test`, `flow`, or `group`. Pass to `depends_on`.
 --- Units with no edge between them are mutually isolated and may run in parallel.

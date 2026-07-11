@@ -313,12 +313,16 @@ fn parse_opts(t: &mlua::Table) -> mlua::Result<UnitOpts> {
             .collect::<mlua::Result<Vec<_>>>()?,
     };
     let serial = t.get::<Option<bool>>("serial")?.unwrap_or(false);
+    let requires = t
+        .get::<Option<Vec<String>>>("requires")?
+        .unwrap_or_default();
     Ok(UnitOpts {
         timeout,
         tags,
         depends_on,
         resources,
         serial,
+        requires,
     })
 }
 
@@ -1161,14 +1165,20 @@ struct Leaf {
     reqs: Vec<ResourceReq>,
     /// Process-wide exclusive (never concurrent with anything).
     serial: bool,
+    /// Capabilities this leaf needs (own + inherited); resolved into `precondition_skip`.
+    requires: Vec<String>,
+    /// If set, this leaf is skipped before it ever runs (an unmet `requires`), with this reason.
+    precondition_skip: Option<String>,
 }
 
-/// Group-level options that flow down to every contained leaf: `depends_on`, `resources`, `serial`.
+/// Group-level options that flow down to every contained leaf: `depends_on`, `resources`, `serial`,
+/// `requires`.
 #[derive(Clone, Default)]
 struct Inherited {
     deps: Vec<NodeIx>,
     resources: Vec<ResourceReq>,
     serial: bool,
+    requires: Vec<String>,
 }
 
 /// The executable plan: a flat list of leaves plus the leaf-level dependency DAG.
@@ -1203,6 +1213,9 @@ fn collect_leaves(
                 .resources
                 .extend(node.opts.resources.iter().cloned());
             child_inherited.serial |= node.opts.serial;
+            child_inherited
+                .requires
+                .extend(node.opts.requires.iter().cloned());
             let mut ids = Vec::new();
             for &child in &node.children {
                 ids.extend(collect_leaves(
@@ -1249,6 +1262,8 @@ fn push_leaf(leaves: &mut Vec<Leaf>, unit: PlanUnit, node: &Node, inherited: &In
     raw_deps.extend(node.opts.depends_on.iter().copied());
     let mut reqs = inherited.resources.clone();
     reqs.extend(node.opts.resources.iter().cloned());
+    let mut requires = inherited.requires.clone();
+    requires.extend(node.opts.requires.iter().cloned());
     let id = leaves.len();
     leaves.push(Leaf {
         unit,
@@ -1256,6 +1271,8 @@ fn push_leaf(leaves: &mut Vec<Leaf>, unit: PlanUnit, node: &Node, inherited: &In
         deps: Vec::new(),
         reqs,
         serial: inherited.serial || node.opts.serial,
+        requires,
+        precondition_skip: None,
     });
     id
 }
@@ -1348,7 +1365,59 @@ fn build_plan(col: &Collector) -> mlua::Result<Plan> {
             });
         }
     }
+    // Resolve `requires`: a leaf with an unavailable capability is pre-skipped (not failed).
+    // Detect each distinct capability once — some detectors shell out (e.g. `docker info`).
+    resolve_requires(&mut leaves);
     Ok(Plan { leaves })
+}
+
+/// Set `precondition_skip` on any leaf whose `requires` include an unavailable capability.
+fn resolve_requires(leaves: &mut [Leaf]) {
+    let mut cache: HashMap<String, bool> = HashMap::new();
+    for leaf in leaves.iter_mut() {
+        for cap in &leaf.requires {
+            let available = *cache
+                .entry(cap.clone())
+                .or_insert_with(|| capability_available(cap));
+            if !available {
+                leaf.precondition_skip = Some(format!("skipped: requires {cap:?} (unavailable)"));
+                break;
+            }
+        }
+    }
+}
+
+/// Is a capability available on this host? Known capabilities have detectors; anything else is
+/// treated as "a tool of that name on PATH" (so `requires = { "kubectl" }` just works). A missing
+/// capability never fails a test — it skips it, visibly.
+fn capability_available(name: &str) -> bool {
+    match name {
+        // The docker daemon must be reachable, not just the client installed.
+        "docker" => command_succeeds("docker", &["info"]),
+        "github" => std::env::var_os("GITHUB_TOKEN").is_some(),
+        // No cheap, reliable synchronous probe; assume present (a real offline mode is future work).
+        "network" | "internet" => true,
+        other => binary_on_path(other),
+    }
+}
+
+/// Run `program args...`, discarding output; true iff it exits 0. Used for daemon-liveness checks.
+fn command_succeeds(program: &str, args: &[&str]) -> bool {
+    std::process::Command::new(program)
+        .args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Is an executable named `name` on `PATH`?
+fn binary_on_path(name: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| dir.join(name).is_file())
 }
 
 struct NodeResult {
@@ -1575,8 +1644,9 @@ async fn run_plan(
     let mut in_flight = futures::stream::FuturesUnordered::new();
 
     loop {
-        // Cascade-skip to a fixpoint: any pending leaf whose deps are all resolved but not all
-        // passed is skipped without running. Looping catches transitive skips in one pass.
+        // Skip to a fixpoint: a leaf is skipped without running when it has an unmet `requires`
+        // (a precondition skip, independent of deps) or all its deps are resolved but not all passed
+        // (a cascade skip). Looping catches transitive skips in one pass.
         let mut changed = true;
         while changed {
             changed = false;
@@ -1584,18 +1654,23 @@ async fn run_plan(
                 if started[i] || outcome[i].is_some() {
                     continue;
                 }
-                if !leaves[i].deps.iter().all(|&d| outcome[d].is_some()) {
-                    continue;
-                }
-                if let Some(&blocker) = leaves[i]
-                    .deps
-                    .iter()
-                    .find(|&&d| outcome[d] != Some(Outcome::Passed))
-                {
-                    let reason = format!(
-                        "skipped: dependency {:?} did not pass",
-                        unit_name(&leaves[blocker])
-                    );
+                let reason = if let Some(reason) = &leaves[i].precondition_skip {
+                    Some(reason.clone())
+                } else if !leaves[i].deps.iter().all(|&d| outcome[d].is_some()) {
+                    None // deps not all resolved yet — decide later
+                } else {
+                    leaves[i]
+                        .deps
+                        .iter()
+                        .find(|&&d| outcome[d] != Some(Outcome::Passed))
+                        .map(|&blocker| {
+                            format!(
+                                "skipped: dependency {:?} did not pass",
+                                unit_name(&leaves[blocker])
+                            )
+                        })
+                };
+                if let Some(reason) = reason {
                     let results = skip_leaf(&leaves[i].unit, &reason);
                     for path in leaves[i].unit.leaf_paths() {
                         reporter.event(&Event::NodeStarted { path });

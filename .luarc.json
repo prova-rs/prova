@@ -12,7 +12,8 @@
     "fs",
     "shell",
     "http",
-    "archetect"
+    "archetect",
+    "docker"
   ],
   "completion.callSnippet": "Replace",
   "hint.enable": true

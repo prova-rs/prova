@@ -113,21 +113,18 @@ The core stays small; capability grows at the edges:
 | **Selectors** | plan filters | tag expressions, `--changed`, `--last-failed`, sharding |
 | **Executors** | alternate drivers over the plan | acceptance (once), **load/stress** (many, sustained) |
 
-Planned modules that extend prova into a full acceptance stack (all behind this same boundary):
+**`docker`** — ephemeral dependencies, testcontainers-style — is **built** (`docker.run` → a
+`Container`, the same managed-lifecycle pattern `shell.spawn`'s `Process` established), paired with
+`requires` gating so a suite skips where Docker is absent. Still planned:
 
 - **`grpc`** (and later `graphql`) — the network-interface trio alongside `http`. Same async-module
   shape (call a method, assert on the response); archetect-core already carries a gRPC proto +
   fixtures to lean on. Reflection- or `.proto`-driven invocation with status/message matchers.
-- **`docker`** — **ephemeral dependencies, testcontainers-style**: `docker.run{image=..., ports=...,
-  wait=...}` starts a container as a scoped fixture, maps a random host port, waits for readiness,
-  and stops/removes it on (async) teardown — the same managed-lifecycle pattern `shell.spawn`
-  already establishes (`Process` → a `Container` handle). This is what lets a test stand up a real
-  Postgres/Kafka/etc. under the system-under-test. Pairs naturally with `requires` ("docker") gating
-  so the suite skips (not fails) where Docker is unavailable.
 
-The end-to-end arc the modules serve: **render the project → assert the layout → boot the app
-(`shell.spawn`) → spin up its dependencies (`docker`) → drive its network interfaces
-(`http`/`grpc`/`graphql`) → tear it all down** — one framework, no capability ceilings.
+The end-to-end arc the modules serve is now real through the boot step and dependencies: **render
+the project → assert the layout → boot the app (`shell.spawn`) → spin up its dependencies
+(`docker`) → drive its network interfaces (`http`; `grpc`/`graphql` next) → tear it all down** —
+one framework, no capability ceilings.
 
 The **load/stress** executor is the clearest payoff of these seams: a `flow` is already a reusable
 scenario; a load driver takes that scenario, runs it under a concurrency/duration/arrival profile
@@ -157,7 +154,19 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
   slice that lets prova test a real rendered workspace and a running service.
   *(`examples/shell_fs_test.lua`; `examples/http_probe_test.lua` boots a server + probes it.)*
   `http` is feature-gated (default on) and HTTP-only in v1 — an `https`/rustls feature layers on
-  later; the rest of the stack needs no TLS.
+  later; the rest of the stack needs no TLS. Also **`docker`** (`docker.run{image, ports, env,
+  wait}` → a `Container`: `.id`, `:host_port(p)`/`:endpoint(p)`, async `:logs()`/`:exec(cmd)`/
+  `:stop()`) — testcontainers-style ephemeral deps via the `docker` CLI: `-d --rm`, publish to a
+  random host port, readiness wait (port TCP-connect or log-substring), force-remove on `:stop()`
+  with a `Drop` backstop so a container never leaks. *(`examples/docker_dependency_test.lua`.)*
+- **`requires` capability gating**: `opts.requires = { "docker", ... }` skips (does not fail) a unit
+  when a capability is unavailable, with a reason; the skip cascades to dependents. Detection:
+  `docker` → `docker info` succeeds, `github` → `GITHUB_TOKEN` set, else a tool of that name on
+  `PATH`. Resolved once per capability at plan time into a leaf `precondition_skip`; the scheduler's
+  skip-fixpoint handles it (independent of deps). Inherited from groups like `depends_on`. This is
+  what lets a docker suite degrade gracefully where Docker is absent. *(`tests/requires.rs`,
+  `tests/docker.rs` — the docker test runs a real container where docker is present, skips where
+  not; verified: 2 skipped, 0 failed with no daemon.)*
 - **Plugin-module hook**: `RunConfig::with_module(Fn(&Lua) -> Result)` registers extra globals into
   every Lua state the run creates (built-ins `shell`/`fs` are always installed). This keeps
   `prova-core` domain-agnostic while letting the host inject capabilities — the plugin boundary the
@@ -219,13 +228,15 @@ The scheduler/lifecycle **spine is now complete** (collect → plan → deps →
 execute). The remaining increments pivot from engine to **product** — the capabilities that make
 prova useful beyond testing itself:
 
-1. **Snapshots + gating** — snapshot assertions (`matches_snapshot`, `.snap` files +
-   `--update-snapshots`) and `requires` (capability gating → skip, not fail). *(The matcher surface +
-   soft `expect_all` — done.)*
-2. **Flow ergonomics**: `f:use(fixture)` builder sugar (currently flow-scoped fixtures are used via
+1. **`grpc` module** — the next network interface (archetect-core has a gRPC proto + fixtures to
+   lean on), then **`graphql`**. *(The matcher surface + soft `expect_all`, `docker` + `requires`
+   gating — done.)*
+2. **Snapshots** — `matches_snapshot`, `.snap` files + `--update-snapshots`.
+3. **Flow ergonomics**: `f:use(fixture)` builder sugar (currently flow-scoped fixtures are used via
    `t:use` inside steps); re-runnable flow bodies (re-invoke to get fresh closures) as the
-   precondition for the **load executor** treating a flow as a reusable scenario.
-3. **Selectors** (tag expressions, `--last-failed`, sharding), richer reporters (JUnit/TAP), and the
+   precondition for the **load executor** treating a flow as a reusable scenario; `test_each` +
+   parametrized fixtures (`ctx:param`).
+4. **Selectors** (tag expressions, `--last-failed`, sharding), richer reporters (JUnit/TAP), and the
    **load executor**.
-4. **Cross-worker `suite` fixtures**: a serialized once-guard for serializable values (the one open
+5. **Cross-worker `suite` fixtures**: a serialized once-guard for serializable values (the one open
    semantic from the multi-core step).

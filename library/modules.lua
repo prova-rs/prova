@@ -176,3 +176,49 @@ archetect = {}
 ---@param opts prova.RenderOpts
 ---@return prova.RenderResult
 function archetect.render(opts) end
+
+------------------------------------------------------------------------------------------
+-- docker (testcontainers-style ephemeral dependencies, via the docker CLI)
+------------------------------------------------------------------------------------------
+
+--- A running container from `docker.run`. Prefer `ctx:defer(function() c:stop() end)` so it is
+--- removed during teardown; `stop`/`logs`/`exec` are async.
+---@class prova.Container
+---@field id string
+local Container = {}
+--- The host port a published container port maps to.
+---@param container_port integer
+---@return integer
+function Container:host_port(container_port) end
+--- Convenience: "127.0.0.1:<host_port>" for a published container port.
+---@param container_port integer
+---@return string
+function Container:endpoint(container_port) end
+--- The container's combined stdout+stderr logs.
+---@return string
+function Container:logs() end
+--- Run a command inside the container (`sh -c`); returns (code, stdout, stderr).
+---@param command string
+---@return integer, string, string
+function Container:exec(command) end
+--- Force-remove the container. Idempotent.
+function Container:stop() end
+
+---@class prova.DockerWait
+---@field port? integer       # wait until this container port accepts a TCP connection
+---@field log? string         # wait until the logs contain this substring
+---@field timeout? string     # default "30s"
+---@field every? string       # poll interval, default "250ms"
+
+---@class prova.DockerRunOpts
+---@field image string
+---@field ports? integer[]              # container ports to publish to random host ports
+---@field env? table<string,string>
+---@field wait? prova.DockerWait        # readiness gate
+
+---@class prova.docker
+docker = {}
+--- Start a container (detached, `--rm`) and return a handle once it is ready.
+---@param opts prova.DockerRunOpts
+---@return prova.Container
+function docker.run(opts) end

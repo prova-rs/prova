@@ -67,6 +67,9 @@ pub struct UnitOpts {
     /// Process-wide exclusive: never run concurrently with anything (sugar for an exclusive hold on
     /// a global token every other unit reads).
     pub serial: bool,
+    /// Capabilities this unit needs (e.g. `"docker"`). If any is unavailable the unit is **skipped**
+    /// (not failed), with a reason — so a suite degrades gracefully where a dependency is missing.
+    pub requires: Vec<String>,
 }
 
 /// Result totals for a run.
