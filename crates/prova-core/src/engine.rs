@@ -255,15 +255,11 @@ fn parse_opts(t: &mlua::Table) -> mlua::Result<UnitOpts> {
         Some(vals) => vals
             .into_iter()
             .map(|v| match v {
-                Value::UserData(ud) => ud
-                    .borrow::<UnitHandle>()
-                    .map(|h| h.ix)
-                    .map_err(|_| {
-                        mlua::Error::RuntimeError(
-                            "depends_on entries must be unit handles from prova.test/flow/group"
-                                .into(),
-                        )
-                    }),
+                Value::UserData(ud) => ud.borrow::<UnitHandle>().map(|h| h.ix).map_err(|_| {
+                    mlua::Error::RuntimeError(
+                        "depends_on entries must be unit handles from prova.test/flow/group".into(),
+                    )
+                }),
                 _ => Err(mlua::Error::RuntimeError(
                     "depends_on entries must be unit handles from prova.test/flow/group".into(),
                 )),
@@ -407,7 +403,9 @@ fn resolve_use(lua: &Lua, this: &Ctx, target: Value) -> mlua::Result<Value> {
 
 impl UserData for Ctx {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("use", |lua, this, target: Value| resolve_use(lua, this, target));
+        methods.add_method("use", |lua, this, target: Value| {
+            resolve_use(lua, this, target)
+        });
 
         methods.add_method("defer", |_, this, f: Function| {
             this.own_scope_state()?.borrow_mut().teardowns.push(f);
@@ -493,26 +491,40 @@ impl UserData for Matcher {
         methods.add_method("equals", |_, this, other: Value| {
             let pass = values_equal(&this.subject, &other);
             this.record(pass, || {
-                format!("expected {}, got {}", display(&other), display(&this.subject))
+                format!(
+                    "expected {}, got {}",
+                    display(&other),
+                    display(&this.subject)
+                )
             })
         });
         methods.add_method("eq", |_, this, other: Value| {
             let pass = values_equal(&this.subject, &other);
             this.record(pass, || {
-                format!("expected {}, got {}", display(&other), display(&this.subject))
+                format!(
+                    "expected {}, got {}",
+                    display(&other),
+                    display(&this.subject)
+                )
             })
         });
         methods.add_method("is_true", |_, this, ()| {
             let pass = matches!(this.subject, Value::Boolean(true));
-            this.record(pass, || format!("expected true, got {}", display(&this.subject)))
+            this.record(pass, || {
+                format!("expected true, got {}", display(&this.subject))
+            })
         });
         methods.add_method("is_false", |_, this, ()| {
             let pass = matches!(this.subject, Value::Boolean(false));
-            this.record(pass, || format!("expected false, got {}", display(&this.subject)))
+            this.record(pass, || {
+                format!("expected false, got {}", display(&this.subject))
+            })
         });
         methods.add_method("is_nil", |_, this, ()| {
             let pass = matches!(this.subject, Value::Nil);
-            this.record(pass, || format!("expected nil, got {}", display(&this.subject)))
+            this.record(pass, || {
+                format!("expected nil, got {}", display(&this.subject))
+            })
         });
         methods.add_method("is_truthy", |_, this, ()| {
             let pass = truthy(&this.subject);
@@ -709,10 +721,13 @@ impl UserData for GroupBuilder {
             lua.create_userdata(UnitHandle { ix })
         });
 
-        methods.add_method("group", |lua, this, (name, a, b): (String, Value, Value)| {
-            let ix = register_group(lua, &this.col, this.ix, name, a, b)?;
-            lua.create_userdata(UnitHandle { ix })
-        });
+        methods.add_method(
+            "group",
+            |lua, this, (name, a, b): (String, Value, Value)| {
+                let ix = register_group(lua, &this.col, this.ix, name, a, b)?;
+                lua.create_userdata(UnitHandle { ix })
+            },
+        );
 
         methods.add_method("flow", |lua, this, (name, a, b): (String, Value, Value)| {
             let ix = register_flow(lua, &this.col, this.ix, name, a, b)?;
@@ -920,7 +935,9 @@ fn collect_leaves(
                 ancestors.push(format!("{}{}", node.name, node.params.suffix()));
             }
             let mut child_inherited = inherited.clone();
-            child_inherited.deps.extend(node.opts.depends_on.iter().copied());
+            child_inherited
+                .deps
+                .extend(node.opts.depends_on.iter().copied());
             child_inherited
                 .resources
                 .extend(node.opts.resources.iter().cloned());
@@ -953,7 +970,12 @@ fn collect_leaves(
             vec![id]
         }
         NodeKind::Test => {
-            let id = push_leaf(leaves, PlanUnit::Test(plan_item(node, ancestors)), node, inherited);
+            let id = push_leaf(
+                leaves,
+                PlanUnit::Test(plan_item(node, ancestors)),
+                node,
+                inherited,
+            );
             vec![id]
         }
     };
@@ -1334,7 +1356,11 @@ async fn run_plan(
             if started[i] || outcome[i].is_some() {
                 continue;
             }
-            if !leaves[i].deps.iter().all(|&d| outcome[d] == Some(Outcome::Passed)) {
+            if !leaves[i]
+                .deps
+                .iter()
+                .all(|&d| outcome[d] == Some(Outcome::Passed))
+            {
                 continue;
             }
             if !resources.can_acquire(&leaves[i].reqs) {
@@ -1392,6 +1418,21 @@ pub fn run_path_with(
     reporter: &mut dyn Reporter,
     config: &RunConfig,
 ) -> mlua::Result<Summary> {
+    reporter.event(&Event::RunStarted);
+    let summary = run_file_into(path, reporter, config)?;
+    reporter.event(&Event::RunFinished { summary: &summary });
+    Ok(summary)
+}
+
+/// Run a single file end to end, emitting **only node-level events** (no `RunStarted`/`RunFinished`)
+/// so a suite coordinator can own the run-level events across many files. Creates its own Lua state
+/// and Tokio runtime, so it is self-contained on whatever thread (worker) calls it — the basis for
+/// per-worker-Lua-state parallelism across files.
+pub(crate) fn run_file_into(
+    path: &Path,
+    reporter: &mut dyn Reporter,
+    config: &RunConfig,
+) -> mlua::Result<Summary> {
     let (lua, col) = read_and_collect(path)?;
     let (plan, state) = {
         let col = col.borrow();
@@ -1408,13 +1449,11 @@ pub fn run_path_with(
     let mut summary = Summary::default();
     rt.block_on(async {
         let started = Instant::now();
-        reporter.event(&Event::RunStarted);
         run_plan(&lua, &plan, &state, config, reporter, &mut summary).await;
         // Scopes tear down inner→outer: file, then suite (test scopes already torn down per-test).
         teardown_scope(&state.file);
         teardown_scope(&state.suite);
         summary.duration = started.elapsed();
-        reporter.event(&Event::RunFinished { summary: &summary });
     });
     Ok(summary)
 }

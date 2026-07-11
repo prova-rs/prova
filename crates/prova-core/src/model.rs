@@ -241,13 +241,22 @@ pub fn event_to_json(event: &Event) -> serde_json::Value {
 pub fn parse_duration(s: &str) -> Option<Duration> {
     let s = s.trim();
     if let Some(x) = s.strip_suffix("ms") {
-        return x.trim().parse::<f64>().ok().map(Duration::from_secs_f64).map(|d| d / 1000);
+        return x
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .map(Duration::from_secs_f64)
+            .map(|d| d / 1000);
     }
     if let Some(x) = s.strip_suffix('s') {
         return x.trim().parse::<f64>().ok().map(Duration::from_secs_f64);
     }
     if let Some(x) = s.strip_suffix('m') {
-        return x.trim().parse::<f64>().ok().map(|m| Duration::from_secs_f64(m * 60.0));
+        return x
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .map(|m| Duration::from_secs_f64(m * 60.0));
     }
     s.parse::<f64>().ok().map(Duration::from_secs_f64)
 }

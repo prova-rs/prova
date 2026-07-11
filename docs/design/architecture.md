@@ -31,12 +31,15 @@
   This is the k6/JS event-loop model and is ideal for the **I/O-bound concurrency** that
   acceptance flows and load tests need. *(Built; proven: two 40 ms sleeps complete in ~45 ms wall,
   not ~80 ms.)*
-- **Per-worker states for multi-core (later).** True CPU parallelism needs more than one thread,
-  and an `mlua::Lua` is best kept to one thread. The plan: **N workers = N OS threads, each with its
-  own Lua state**, units dispatched across workers; within a worker, cooperative async as above.
-  This composes with the container model — a `flow` is one unit pinned to one worker; independent
-  units distribute. `--jobs` sets worker/concurrency counts and is **throughput-only, never
-  semantic**.
+- **Per-worker states for multi-core (built).** True CPU parallelism needs more than one thread,
+  and an `mlua::Lua` is best kept to one thread — and its `Function` bodies are `!Send`, so a body
+  collected on one state cannot run on another. The realized design: **N workers = N OS threads,
+  each with its own Lua state**, with the **file** as the dispatched unit — a worker loads a file
+  into its own state and runs it end to end with the in-file scheduler; within a worker, cooperative
+  async as above. Files run in parallel; `--jobs` sets the worker count and is **throughput-only,
+  never semantic**. *(Built in `suite.rs`; proven: two CPU-bound files run ~1.8× faster at `--jobs
+  2` than `--jobs 1`.)* Intra-file unit dispatch across workers is a possible future refinement, but
+  the file boundary is the clean one under `!Send`.
 - **`!Send` is fine.** Bodies, contexts, and fixtures are `Rc`/`RefCell` (single-thread). We use
   `FuturesUnordered`/`buffer_unordered` (poll-in-place, no `spawn`), so nothing needs `Send`.
   Cross-worker sharing (a `suite` fixture) will be an explicit, serialized handoff, not implicit.
@@ -157,19 +160,25 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
 - Concurrent async execution (proven) + I/O timeouts via cancellation + a readers-writer
   **resource** scheduler (`prova.port`/`resource`/`shared`, `serial`) making `--jobs > 1` safe.
   Default execution stays **sequential** (`concurrency = 1`); resource declarations are inert there.
-- `Event`/`Reporter`/`MultiReporter`/`JsonReporter`; `discover_path`; CLI `--list` / `--format json`
-  / `--jobs N`.
+- **Multi-file suite runner** (`suite.rs`): `discover_files` finds `*_test.lua` / `*.test.lua`;
+  `run_suite` runs them across a pool of **per-worker Lua states** (true multi-core across files) —
+  one file, or `--jobs 1`, stays inline single-state. Workers stream owned node events back to a
+  single coordinator/reporter. Known limitation: a cross-file `suite` fixture is per-worker under
+  `--jobs > 1` (a Lua value can't cross `!Send` states; a serialized once-guard is future work).
+- `Event`/`Reporter`/`MultiReporter`/`JsonReporter`; `discover_path`; CLI takes files **or
+  directories**, `--list` / `--format json` / `--jobs N`.
 
-## Next increments
+The scheduler/lifecycle **spine is now complete** (collect → plan → deps → resources → multi-core
+execute). The remaining increments pivot from engine to **product** — the capabilities that make
+prova useful beyond testing itself:
 
-1. **Per-worker Lua states** for true multi-core (N OS threads, each its own `mlua::Lua`; units
-   dispatched across workers, cooperative async within one) — the resource scheduler already makes
-   the *what-may-overlap* safe; this makes overlap actually use multiple cores. Also `requires`
-   (capability gating → skip, not fail).
-2. **Async fixtures** (upgrade `ctx:use` to an async method so factories can `await`) and async
-   **modules**: `fs`/`shell`/`http`; soft assertions (`expect_all`); snapshots.
-3. **Flow ergonomics**: `f:use(fixture)` builder sugar (currently flow-scoped fixtures are used via
+1. **Async fixtures + async modules** — upgrade `ctx:use` to an async method so factories can
+   `await`, then land the first real capability modules (`fs`/`shell`/`http`) plus soft assertions
+   (`expect_all`) and snapshots. Also `requires` (capability gating → skip, not fail).
+2. **Flow ergonomics**: `f:use(fixture)` builder sugar (currently flow-scoped fixtures are used via
    `t:use` inside steps); re-runnable flow bodies (re-invoke to get fresh closures) as the
    precondition for the **load executor** treating a flow as a reusable scenario.
-4. **Selectors** (tag expressions, `--last-failed`, sharding), richer reporters (JUnit/TAP), and the
+3. **Selectors** (tag expressions, `--last-failed`, sharding), richer reporters (JUnit/TAP), and the
    **load executor**.
+4. **Cross-worker `suite` fixtures**: a serialized once-guard for serializable values (the one open
+   semantic from the multi-core step).

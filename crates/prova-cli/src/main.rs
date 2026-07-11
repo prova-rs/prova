@@ -6,11 +6,12 @@
 //!   prova --list <file.lua>          discover tests without running them
 //!   prova --jobs N <file.lua>        run up to N units concurrently (throughput only)
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use prova_core::{
-    discover_path, run_path_with, ConsoleReporter, JsonReporter, MultiReporter, Reporter, RunConfig,
+    discover_files, discover_path, run_suite, ConsoleReporter, JsonReporter, MultiReporter,
+    Reporter, RunConfig,
 };
 
 enum Format {
@@ -22,7 +23,7 @@ fn main() -> ExitCode {
     let mut format = Format::Console;
     let mut list = false;
     let mut jobs: usize = 1;
-    let mut file: Option<String> = None;
+    let mut paths: Vec<String> = Vec::new();
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -31,9 +32,7 @@ fn main() -> ExitCode {
             .strip_prefix("--jobs=")
             .or_else(|| arg.strip_prefix("-j="))
             .map(str::to_string)
-            .or_else(|| {
-                (arg == "--jobs" || arg == "-j").then(|| args.next().unwrap_or_default())
-            });
+            .or_else(|| (arg == "--jobs" || arg == "-j").then(|| args.next().unwrap_or_default()));
         if let Some(value) = jobs_value {
             match value.parse::<usize>() {
                 Ok(n) if n >= 1 => jobs = n,
@@ -53,29 +52,46 @@ fn main() -> ExitCode {
                 eprintln!("prova: unknown flag {other}");
                 return ExitCode::from(2);
             }
-            other => file = Some(other.to_string()),
+            other => paths.push(other.to_string()),
         }
     }
 
-    let Some(file) = file else {
-        eprintln!("usage: prova [--list] [--format json] [--jobs N] <file.lua>");
+    if paths.is_empty() {
+        eprintln!("usage: prova [--list] [--format json] [--jobs N] <file-or-dir>...");
         return ExitCode::from(2);
-    };
-    let path = Path::new(&file);
+    }
+
+    // Expand each argument (a file or a directory) into concrete test files.
+    let mut files: Vec<PathBuf> = Vec::new();
+    for arg in &paths {
+        match discover_files(Path::new(arg)) {
+            Ok(found) => files.extend(found),
+            Err(err) => {
+                eprintln!("prova: {arg}: {err}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    if files.is_empty() {
+        eprintln!("prova: no test files found (looked for *_test.lua / *.test.lua)");
+        return ExitCode::from(2);
+    }
 
     if list {
-        return match discover_path(path) {
-            Ok(paths) => {
-                for p in paths {
-                    println!("{p}");
+        for file in &files {
+            match discover_path(file) {
+                Ok(node_paths) => {
+                    for p in node_paths {
+                        println!("{p}");
+                    }
                 }
-                ExitCode::SUCCESS
+                Err(err) => {
+                    eprintln!("prova: {}: {err}", file.display());
+                    return ExitCode::from(2);
+                }
             }
-            Err(err) => {
-                eprintln!("prova: {err}");
-                ExitCode::from(2)
-            }
-        };
+        }
+        return ExitCode::SUCCESS;
     }
 
     let mut reporter: Box<dyn Reporter> = match format {
@@ -86,7 +102,7 @@ fn main() -> ExitCode {
     };
 
     let config = RunConfig { concurrency: jobs };
-    match run_path_with(path, reporter.as_mut(), &config) {
+    match run_suite(&files, reporter.as_mut(), &config) {
         Ok(summary) if summary.is_success() => ExitCode::SUCCESS,
         Ok(_) => ExitCode::FAILURE,
         Err(err) => {

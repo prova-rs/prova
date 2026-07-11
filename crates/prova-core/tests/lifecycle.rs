@@ -6,8 +6,8 @@ use prova_core::{run_path, NullReporter};
 /// fixture-to-fixture dependencies, lazy caching, and LIFO / inner-scope-first teardown.
 #[test]
 fn runs_the_lifecycle_poc_example() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/lifecycle_poc_test.lua");
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/lifecycle_poc_test.lua");
     assert!(path.exists(), "example not found at {}", path.display());
 
     let mut reporter = NullReporter;
