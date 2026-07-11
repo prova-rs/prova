@@ -5,4 +5,10 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-mlua.workspace = true
+mlua = { workspace = true, features = ["async"] }
+# Async from the ground up: a per-run current-thread runtime drives many concurrent Lua
+# coroutines cooperatively (I/O-bound concurrency for load/stress; real timeouts via cancellation).
+tokio = { version = "1", features = ["rt", "time", "macros"] }
+futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
+# Structured, streaming output for machine consumers (CI, and a future GUI/IDE frontend).
+serde_json = "1"

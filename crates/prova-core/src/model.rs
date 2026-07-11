@@ -5,6 +5,7 @@
 //! console reporter, a JUnit writer, and a load-metrics aggregator all consume execution
 //! without the executor knowing about any of them.
 
+use std::io::Write;
 use std::time::Duration;
 
 /// Index into the collection arena.
@@ -136,6 +137,86 @@ impl Reporter for ConsoleReporter {
             }
             _ => {}
         }
+    }
+}
+
+/// Fan-out reporter: drive any number of sinks from one event stream. This is the plugin
+/// surface for output — console + JUnit + a GUI socket can all run at once.
+#[derive(Default)]
+pub struct MultiReporter {
+    pub sinks: Vec<Box<dyn Reporter>>,
+}
+
+impl MultiReporter {
+    pub fn new(sinks: Vec<Box<dyn Reporter>>) -> Self {
+        Self { sinks }
+    }
+    pub fn push(&mut self, sink: Box<dyn Reporter>) {
+        self.sinks.push(sink);
+    }
+}
+
+impl Reporter for MultiReporter {
+    fn event(&mut self, event: &Event) {
+        for sink in &mut self.sinks {
+            sink.event(event);
+        }
+    }
+}
+
+/// Streaming machine protocol: one JSON object per line (JSONL). This is what a CI parser or a
+/// GUI/IDE frontend consumes to render a live, model-aware view of the run.
+pub struct JsonReporter<W: Write> {
+    writer: W,
+}
+
+impl<W: Write> JsonReporter<W> {
+    pub fn new(writer: W) -> Self {
+        Self { writer }
+    }
+}
+
+impl<W: Write> Reporter for JsonReporter<W> {
+    fn event(&mut self, event: &Event) {
+        let _ = writeln!(self.writer, "{}", event_to_json(event));
+    }
+}
+
+fn outcome_str(o: Outcome) -> &'static str {
+    match o {
+        Outcome::Passed => "passed",
+        Outcome::Failed => "failed",
+        Outcome::Skipped => "skipped",
+    }
+}
+
+/// Serialize an event to a stable JSON shape (the wire protocol for frontends).
+pub fn event_to_json(event: &Event) -> serde_json::Value {
+    use serde_json::json;
+    match event {
+        Event::RunStarted => json!({ "type": "run_started" }),
+        Event::NodeStarted { path } => json!({ "type": "node_started", "path": path }),
+        Event::NodeFinished {
+            path,
+            outcome,
+            duration,
+            assertions,
+            message,
+        } => json!({
+            "type": "node_finished",
+            "path": path,
+            "outcome": outcome_str(*outcome),
+            "durationMs": duration.as_secs_f64() * 1000.0,
+            "assertions": assertions,
+            "message": message,
+        }),
+        Event::RunFinished { summary } => json!({
+            "type": "run_finished",
+            "passed": summary.passed,
+            "failed": summary.failed,
+            "skipped": summary.skipped,
+            "durationMs": summary.duration.as_secs_f64() * 1000.0,
+        }),
     }
 }
 

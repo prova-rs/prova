@@ -8,5 +8,7 @@
 mod engine;
 pub mod model;
 
-pub use engine::run_path;
-pub use model::{ConsoleReporter, Event, NullReporter, Outcome, Reporter, Summary};
+pub use engine::{discover_path, run_path, run_path_with, RunConfig};
+pub use model::{
+    ConsoleReporter, Event, JsonReporter, MultiReporter, NullReporter, Outcome, Reporter, Summary,
+};

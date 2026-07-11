@@ -1,24 +1,39 @@
-//! The engine: inject the `prova` global, collect a node tree, then execute it.
+//! The engine: inject the `prova` global, collect a node tree, then execute it **asynchronously**.
 //!
-//! Design seams honored here (features come later, the shape does not):
-//!  - **definition ≠ execution**: `Node`s are collected first; a separate pass *runs* them, so a
-//!    different driver (load/stress) could run the same bodies differently.
-//!  - **re-runnable, context-injected bodies**: a test body is an `mlua::Function` we can call
-//!    with a freshly-built context — the precondition for retries, shrinking, and load loops.
-//!  - **params in identity**: every node carries `Params` (empty for now) folded into its path.
-//!  - **deadline seam**: `UnitOpts::timeout` is parsed and carried; where enforcement will hook
-//!    in is marked in `run_node`.
+//! Async is foundational, not bolted on. Each test body is driven with `call_async`, so a body
+//! can `await` I/O (HTTP, shell, sleep) without blocking a thread; a per-run current-thread
+//! runtime drives many bodies **concurrently and cooperatively** on one Lua state. That single
+//! decision unlocks three things at once:
+//!   - real **timeouts** for I/O-bound hangs (cancel the future when the deadline elapses),
+//!   - **I/O concurrency** at the scale load/stress testing needs (thousands of in-flight awaits),
+//!   - a clean **definition → plan → execute** split so a future load driver reuses the same bodies.
+//!
+//! (CPU-bound Lua hangs still need an mlua interrupt hook — marked below. True multi-core
+//! parallelism will use one Lua state per worker; this slice does cooperative single-state async.)
 
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use futures::stream::StreamExt;
 use mlua::{Function, Lua, UserData, UserDataMethods, Value};
 
-use crate::model::{
-    parse_duration, Event, NodeIx, Outcome, Params, Reporter, Summary, UnitOpts,
-};
+use crate::model::{parse_duration, Event, NodeIx, Outcome, Params, Reporter, Summary, UnitOpts};
+
+/// How the executor spends concurrency. `--jobs` maps here; it is *throughput only*, never
+/// semantic (a flow is serial regardless; a group is parallelizable regardless).
+#[derive(Debug, Clone)]
+pub struct RunConfig {
+    /// Max bodies polled concurrently on the (single) worker.
+    pub concurrency: usize,
+}
+
+impl Default for RunConfig {
+    fn default() -> Self {
+        RunConfig { concurrency: 16 }
+    }
+}
 
 // ---------------------------------------------------------------------------------------------
 // Collection model
@@ -33,7 +48,6 @@ struct Node {
     name: String,
     kind: NodeKind,
     params: Params,
-    #[allow(dead_code)] // carried for selection/reporting increments
     opts: UnitOpts,
     children: Vec<NodeIx>,
     body: Option<Function>,
@@ -67,7 +81,6 @@ impl Collector {
 
 type SharedCollector = Rc<RefCell<Collector>>;
 
-/// Accept either `(name, fn)` or `(name, opts, fn)`.
 fn split_opts_body(a: Value, b: Value) -> mlua::Result<(UnitOpts, Function)> {
     match (a, b) {
         (Value::Function(f), Value::Nil) => Ok((UnitOpts::default(), f)),
@@ -90,8 +103,6 @@ fn parse_opts(t: &mlua::Table) -> mlua::Result<UnitOpts> {
 // Lua-facing builders
 // ---------------------------------------------------------------------------------------------
 
-/// The builder handed to a `prova.group(name, function(g) ... end)` body. It exposes `test`/
-/// `group` — and deliberately no shared-state mechanism (see the group/flow design).
 struct GroupBuilder {
     col: SharedCollector,
     ix: NodeIx,
@@ -138,11 +149,9 @@ impl UserData for GroupBuilder {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Test context + assertions (injected into each test body)
+// Test context + assertions
 // ---------------------------------------------------------------------------------------------
 
-/// Accumulates what happened during one test invocation. Interior-mutable so `t`/matchers can
-/// record while the body runs; read back by the executor afterward.
 #[derive(Default)]
 struct TestRun {
     assertions: usize,
@@ -150,7 +159,6 @@ struct TestRun {
     skip: Option<String>,
 }
 
-/// The `t` handed to a test body. (Colon-methods, matching the DSL: `t:expect`, `t:skip`.)
 struct TestCtx {
     run: Rc<RefCell<TestRun>>,
 }
@@ -159,26 +167,27 @@ const SKIP_SENTINEL: &str = "__prova_skip__";
 
 impl UserData for TestCtx {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("expect", |lua, this, (subject, label): (Value, Option<String>)| {
-            lua.create_userdata(Matcher {
-                subject,
-                label,
-                negated: false,
-                run: this.run.clone(),
-            })
-        });
+        methods.add_method(
+            "expect",
+            |lua, this, (subject, label): (Value, Option<String>)| {
+                lua.create_userdata(Matcher {
+                    subject,
+                    label,
+                    negated: false,
+                    run: this.run.clone(),
+                })
+            },
+        );
 
         methods.add_method("skip", |_, this, reason: String| -> mlua::Result<()> {
             this.run.borrow_mut().skip = Some(reason);
             Err(mlua::Error::RuntimeError(SKIP_SENTINEL.into()))
         });
 
-        // No-op in the POC; kept so bodies can call it without erroring.
         methods.add_method("log", |_, _this, _msg: String| Ok(()));
     }
 }
 
-/// A fluent matcher. Terminal matchers record into `TestRun` and raise on failure (hard assert).
 struct Matcher {
     subject: Value,
     label: Option<String>,
@@ -193,7 +202,11 @@ impl Matcher {
         if raw_pass ^ self.negated {
             return Ok(());
         }
-        let prefix = self.label.as_ref().map(|l| format!("{l}: ")).unwrap_or_default();
+        let prefix = self
+            .label
+            .as_ref()
+            .map(|l| format!("{l}: "))
+            .unwrap_or_default();
         let neg = if self.negated { "not: " } else { "" };
         let msg = format!("{prefix}{neg}{}", detail());
         r.failure = Some(msg.clone());
@@ -245,7 +258,11 @@ impl UserData for Matcher {
         methods.add_method("contains", |_, this, needle: Value| {
             let pass = contains(&this.subject, &needle);
             this.record(pass, || {
-                format!("expected {} to contain {}", display(&this.subject), display(&needle))
+                format!(
+                    "expected {} to contain {}",
+                    display(&this.subject),
+                    display(&needle)
+                )
             })
         });
     }
@@ -307,7 +324,7 @@ fn display(v: &Value) -> String {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Collection + execution
+// Setup
 // ---------------------------------------------------------------------------------------------
 
 fn build_lua(root_name: String) -> mlua::Result<(Lua, SharedCollector)> {
@@ -322,7 +339,7 @@ fn build_lua(root_name: String) -> mlua::Result<(Lua, SharedCollector)> {
             lua.create_function(move |_, (name, a, b): (String, Value, Value)| {
                 let (opts, body) = split_opts_body(a, b)?;
                 col.borrow_mut().add(
-                    0, // the file's implicit root group
+                    0,
                     Node {
                         name,
                         kind: NodeKind::Test,
@@ -362,92 +379,147 @@ fn build_lua(root_name: String) -> mlua::Result<(Lua, SharedCollector)> {
         )?;
     }
 
-    // Injected as a global — no `require` needed.
+    // A minimal async primitive to prove the async spine end-to-end; real `http`/`shell`
+    // modules land as async modules the same way.
+    prova.set(
+        "sleep",
+        lua.create_async_function(|_, millis: u64| async move {
+            tokio::time::sleep(Duration::from_millis(millis)).await;
+            Ok(())
+        })?,
+    )?;
+
     lua.globals().set("prova", prova)?;
     Ok((lua, col))
 }
 
-#[allow(clippy::too_many_arguments)]
-fn run_node(
-    col: &Collector,
-    ix: NodeIx,
-    lua: &Lua,
-    ancestors: &mut Vec<String>,
-    reporter: &mut dyn Reporter,
-    summary: &mut Summary,
-) {
+// ---------------------------------------------------------------------------------------------
+// Plan (definition → plan → execute)
+// ---------------------------------------------------------------------------------------------
+
+struct PlanItem {
+    path: String,
+    body: Function,
+    timeout: Option<Duration>,
+}
+
+fn build_plan(col: &Collector, ix: NodeIx, ancestors: &mut Vec<String>, out: &mut Vec<PlanItem>) {
     let node = &col.nodes[ix];
     match node.kind {
         NodeKind::Group => {
-            let is_named = node.name.is_empty() == false && ix != 0;
-            if is_named {
+            let named = ix != 0 && !node.name.is_empty();
+            if named {
                 ancestors.push(format!("{}{}", node.name, node.params.suffix()));
             }
             for &child in &node.children {
-                run_node(col, child, lua, ancestors, reporter, summary);
+                build_plan(col, child, ancestors, out);
             }
-            if is_named {
+            if named {
                 ancestors.pop();
             }
         }
         NodeKind::Test => {
             let mut path = ancestors.clone();
             path.push(format!("{}{}", node.name, node.params.suffix()));
-            let path = path.join(" › ");
-
-            reporter.event(&Event::NodeStarted { path: &path });
-
-            let run = Rc::new(RefCell::new(TestRun::default()));
-            // Fresh context per invocation — the re-runnable-body seam.
-            let ctx = lua
-                .create_userdata(TestCtx { run: run.clone() })
-                .expect("create test context");
-            let body = node.body.clone().expect("test node has a body");
-
-            // Deadline seam: `node.opts.timeout` would arm an mlua interrupt hook +
-            // deadline-aware I/O here in a later increment.
-            let start = Instant::now();
-            let result = body.call::<()>(ctx);
-            let duration = start.elapsed();
-
-            let run = run.borrow();
-            let (outcome, message) = if run.skip.is_some() {
-                (Outcome::Skipped, run.skip.clone())
-            } else if let Err(err) = &result {
-                let msg = run
-                    .failure
-                    .clone()
-                    .unwrap_or_else(|| lua_error_message(err));
-                (Outcome::Failed, Some(msg))
-            } else {
-                (Outcome::Passed, None)
-            };
-
-            summary.tally(outcome);
-            reporter.event(&Event::NodeFinished {
-                path: &path,
-                outcome,
-                duration,
-                assertions: run.assertions,
-                message: message.as_deref(),
+            out.push(PlanItem {
+                path: path.join(" › "),
+                body: node.body.clone().expect("test node has a body"),
+                timeout: node.opts.timeout,
             });
         }
     }
 }
 
-/// Turn a raw Lua error (e.g. a runtime error thrown by non-assertion code) into a message.
-fn lua_error_message(err: &mlua::Error) -> String {
-    let s = err.to_string();
-    if s.contains(SKIP_SENTINEL) {
-        // Shouldn't reach here (skip is handled via the run flag), but be defensive.
-        "skipped".into()
+struct NodeResult {
+    path: String,
+    outcome: Outcome,
+    duration: Duration,
+    assertions: usize,
+    message: Option<String>,
+}
+
+async fn run_one(lua: &Lua, item: &PlanItem) -> NodeResult {
+    let run = Rc::new(RefCell::new(TestRun::default()));
+    // Fresh, injected context per invocation — the re-runnable-body seam (retries/shrink/load).
+    let ctx = lua
+        .create_userdata(TestCtx { run: run.clone() })
+        .expect("create test context");
+
+    let start = Instant::now();
+    let call = item.body.call_async::<()>(ctx);
+
+    // Deadline enforcement for the async (I/O) path: cancel the future when the budget elapses.
+    // CPU-bound Lua hangs would additionally need an mlua interrupt hook (future increment).
+    let result = match item.timeout {
+        Some(budget) => match tokio::time::timeout(budget, call).await {
+            Ok(r) => r,
+            Err(_elapsed) => {
+                return NodeResult {
+                    path: item.path.clone(),
+                    outcome: Outcome::Failed,
+                    duration: start.elapsed(),
+                    assertions: run.borrow().assertions,
+                    message: Some(format!("timed out after {budget:?}")),
+                };
+            }
+        },
+        None => call.await,
+    };
+
+    let duration = start.elapsed();
+    let r = run.borrow();
+    let (outcome, message) = if r.skip.is_some() {
+        (Outcome::Skipped, r.skip.clone())
+    } else if let Err(err) = &result {
+        (
+            Outcome::Failed,
+            Some(r.failure.clone().unwrap_or_else(|| err.to_string())),
+        )
     } else {
-        s
+        (Outcome::Passed, None)
+    };
+
+    NodeResult {
+        path: item.path.clone(),
+        outcome,
+        duration,
+        assertions: r.assertions,
+        message,
     }
 }
 
-/// Collect and run a Lua test file, driving `reporter` with the event stream.
-pub fn run_path(path: &Path, reporter: &mut dyn Reporter) -> mlua::Result<Summary> {
+async fn run_plan(
+    lua: &Lua,
+    plan: &[PlanItem],
+    config: &RunConfig,
+    reporter: &mut dyn Reporter,
+    summary: &mut Summary,
+) {
+    // Announce the known set up front (a frontend renders the tree before results arrive).
+    for item in plan {
+        reporter.event(&Event::NodeStarted { path: &item.path });
+    }
+
+    let mut stream = futures::stream::iter(plan.iter().map(|item| run_one(lua, item)))
+        .buffer_unordered(config.concurrency.max(1));
+
+    while let Some(result) = stream.next().await {
+        summary.tally(result.outcome);
+        reporter.event(&Event::NodeFinished {
+            path: &result.path,
+            outcome: result.outcome,
+            duration: result.duration,
+            assertions: result.assertions,
+            message: result.message.as_deref(),
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Public entry points
+// ---------------------------------------------------------------------------------------------
+
+fn read_and_collect(path: &Path) -> mlua::Result<(Lua, SharedCollector)> {
     let code = std::fs::read_to_string(path)
         .map_err(|e| mlua::Error::RuntimeError(format!("cannot read {}: {e}", path.display())))?;
     let stem = path
@@ -455,21 +527,52 @@ pub fn run_path(path: &Path, reporter: &mut dyn Reporter) -> mlua::Result<Summar
         .and_then(|s| s.to_str())
         .unwrap_or("tests")
         .to_string();
-
     let (lua, col) = build_lua(stem)?;
-    // Collection phase: running the file registers nodes into the arena.
     lua.load(&code).set_name(path.to_string_lossy()).exec()?;
+    Ok((lua, col))
+}
 
-    // Execution phase.
+fn new_runtime() -> mlua::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .map_err(|e| mlua::Error::RuntimeError(format!("failed to start async runtime: {e}")))
+}
+
+/// Collect and run a test file with default config.
+pub fn run_path(path: &Path, reporter: &mut dyn Reporter) -> mlua::Result<Summary> {
+    run_path_with(path, reporter, &RunConfig::default())
+}
+
+/// Collect and run a test file with explicit config.
+pub fn run_path_with(
+    path: &Path,
+    reporter: &mut dyn Reporter,
+    config: &RunConfig,
+) -> mlua::Result<Summary> {
+    let (lua, col) = read_and_collect(path)?;
     let col = col.borrow();
-    let mut summary = Summary::default();
-    let started = Instant::now();
-    reporter.event(&Event::RunStarted);
-    let mut ancestors = Vec::new();
-    run_node(&col, 0, &lua, &mut ancestors, reporter, &mut summary);
-    summary.duration = started.elapsed();
-    reporter.event(&Event::RunFinished { summary: &summary });
+    let mut plan = Vec::new();
+    build_plan(&col, 0, &mut Vec::new(), &mut plan);
 
-    let _ = Duration::ZERO; // keep Duration import used regardless of feature flags
+    let rt = new_runtime()?;
+    let mut summary = Summary::default();
+    rt.block_on(async {
+        let started = Instant::now();
+        reporter.event(&Event::RunStarted);
+        run_plan(&lua, &plan, config, reporter, &mut summary).await;
+        summary.duration = started.elapsed();
+        reporter.event(&Event::RunFinished { summary: &summary });
+    });
     Ok(summary)
+}
+
+/// Discovery: collect the test tree **without executing** — the basis for a GUI/IDE that loads a
+/// file, shows the tree, and runs selectively. Returns each test's full path.
+pub fn discover_path(path: &Path) -> mlua::Result<Vec<String>> {
+    let (_lua, col) = read_and_collect(path)?;
+    let col = col.borrow();
+    let mut plan = Vec::new();
+    build_plan(&col, 0, &mut Vec::new(), &mut plan);
+    Ok(plan.into_iter().map(|item| item.path).collect())
 }
