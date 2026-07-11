@@ -1,0 +1,12 @@
+[package]
+name = "prova-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "prova"
+path = "src/main.rs"
+
+[dependencies]
+prova-core = { path = "../prova-core" }

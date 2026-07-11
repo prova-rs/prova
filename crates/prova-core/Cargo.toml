@@ -1,0 +1,8 @@
+[package]
+name = "prova-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mlua.workspace = true
