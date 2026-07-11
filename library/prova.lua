@@ -250,7 +250,7 @@ prova = {}
 ---Returns a typed handle; pass it to `ctx:use(handle)` so the value type flows through.
 ---@generic T
 ---@param name string
----@param scope "test"|"file"|"suite"|prova.FixtureOpts
+---@param scope "test"|"flow"|"file"|"suite"|prova.FixtureOpts
 ---@param factory fun(ctx: prova.Context): T
 ---@param opts? prova.FixtureOpts        # when `scope` is a bare string, extra opts (e.g. params)
 ---@return prova.Fixture<T>

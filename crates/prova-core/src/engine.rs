@@ -8,6 +8,11 @@
 //!     inner→outer (test before file before suite), so dependencies outlive dependents.
 //!   - `ctx:tempdir()` — scratch dir auto-removed at scope end.
 //!
+//! It also adds **flows** (`prova.flow` / `g:flow`, `f:step`): a flow is one scheduling unit
+//! (`PlanUnit::Flow`) whose steps run serially in declared order, sharing closure upvalues and a
+//! `flow`-scope instance; once a step fails the rest cascade-skip. Flows parallelize with sibling
+//! units like any other unit.
+//!
 //! Execution defaults to **sequential** (`concurrency = 1`): correct and deterministic for
 //! fixture-sharing tests. Parallelism is opt-in via `RunConfig`/`--jobs` and becomes safe once the
 //! resource scheduler lands. Fixture factories are called synchronously in this increment (async
@@ -45,6 +50,7 @@ impl Default for RunConfig {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ScopeKind {
     Test,
+    Flow,
     File,
     Suite,
 }
@@ -53,13 +59,15 @@ impl ScopeKind {
     fn rank(self) -> u8 {
         match self {
             ScopeKind::Test => 0,
-            ScopeKind::File => 1,
-            ScopeKind::Suite => 2,
+            ScopeKind::Flow => 1,
+            ScopeKind::File => 2,
+            ScopeKind::Suite => 3,
         }
     }
     fn label(self) -> &'static str {
         match self {
             ScopeKind::Test => "test",
+            ScopeKind::Flow => "flow",
             ScopeKind::File => "file",
             ScopeKind::Suite => "suite",
         }
@@ -67,10 +75,11 @@ impl ScopeKind {
     fn parse(s: &str) -> mlua::Result<Self> {
         match s {
             "test" => Ok(ScopeKind::Test),
+            "flow" => Ok(ScopeKind::Flow),
             "file" => Ok(ScopeKind::File),
             "suite" => Ok(ScopeKind::Suite),
             other => Err(mlua::Error::RuntimeError(format!(
-                "unknown fixture scope {other:?} (expected test|file|suite)"
+                "unknown fixture scope {other:?} (expected test|flow|file|suite)"
             ))),
         }
     }
@@ -150,6 +159,7 @@ fn make_tempdir() -> std::io::Result<PathBuf> {
 
 enum NodeKind {
     Group,
+    Flow,
     Test,
 }
 
@@ -222,23 +232,30 @@ struct TestRun {
 }
 
 /// Injected into every body/factory. `own_scope` is the scope its `defer`/`tempdir` target and the
-/// floor for the scope-mismatch check; `test_scope` is the active test's scope instance.
+/// floor for the scope-mismatch check; `test_scope` is the active test/step scope instance;
+/// `flow_scope` is the enclosing flow's scope instance (present only inside a flow).
 struct Ctx {
     run: Rc<RefCell<TestRun>>,
     state: Rc<RunState>,
     test_scope: Rc<RefCell<ScopeState>>,
+    flow_scope: Option<Rc<RefCell<ScopeState>>>,
     own_scope: ScopeKind,
 }
 
 impl Ctx {
-    fn scope_state(&self, kind: ScopeKind) -> Rc<RefCell<ScopeState>> {
-        match kind {
+    fn scope_state(&self, kind: ScopeKind) -> mlua::Result<Rc<RefCell<ScopeState>>> {
+        Ok(match kind {
             ScopeKind::Suite => self.state.suite.clone(),
             ScopeKind::File => self.state.file.clone(),
+            ScopeKind::Flow => self.flow_scope.clone().ok_or_else(|| {
+                mlua::Error::RuntimeError(
+                    "flow-scoped fixture used outside a flow (flow scope is only valid inside a `prova.flow`)".into(),
+                )
+            })?,
             ScopeKind::Test => self.test_scope.clone(),
-        }
+        })
     }
-    fn own_scope_state(&self) -> Rc<RefCell<ScopeState>> {
+    fn own_scope_state(&self) -> mlua::Result<Rc<RefCell<ScopeState>>> {
         self.scope_state(self.own_scope)
     }
 }
@@ -277,7 +294,7 @@ fn resolve_use(lua: &Lua, this: &Ctx, target: Value) -> mlua::Result<Value> {
         )));
     }
 
-    let ss = this.scope_state(def.scope);
+    let ss = this.scope_state(def.scope)?;
     if let Some(v) = ss.borrow().cache.get(&id) {
         return Ok(v.clone());
     }
@@ -287,6 +304,7 @@ fn resolve_use(lua: &Lua, this: &Ctx, target: Value) -> mlua::Result<Value> {
         run: this.run.clone(),
         state: this.state.clone(),
         test_scope: this.test_scope.clone(),
+        flow_scope: this.flow_scope.clone(),
         own_scope: def.scope,
     };
     let child_ud = lua.create_userdata(child)?;
@@ -300,7 +318,7 @@ impl UserData for Ctx {
         methods.add_method("use", |lua, this, target: Value| resolve_use(lua, this, target));
 
         methods.add_method("defer", |_, this, f: Function| {
-            this.own_scope_state().borrow_mut().teardowns.push(f);
+            this.own_scope_state()?.borrow_mut().teardowns.push(f);
             Ok(())
         });
 
@@ -308,7 +326,7 @@ impl UserData for Ctx {
             let path = make_tempdir()
                 .map_err(|e| mlua::Error::RuntimeError(format!("tempdir failed: {e}")))?;
             let s = path.to_string_lossy().into_owned();
-            this.own_scope_state().borrow_mut().tempdirs.push(path);
+            this.own_scope_state()?.borrow_mut().tempdirs.push(path);
             Ok(s)
         });
 
@@ -452,11 +470,9 @@ fn contains(subject: &Value, needle: &Value) -> bool {
             _ => false,
         },
         Value::Table(t) => {
-            for pair in t.clone().pairs::<Value, Value>() {
-                if let Ok((_, v)) = pair {
-                    if values_equal(&v, needle) {
-                        return true;
-                    }
+            for (_, v) in t.clone().pairs::<Value, Value>().flatten() {
+                if values_equal(&v, needle) {
+                    return true;
                 }
             }
             false
@@ -530,6 +546,15 @@ fn build_lua(root_name: String) -> mlua::Result<(Lua, SharedCollector)> {
                 })?;
                 body.call::<()>(gb)?;
                 Ok(())
+            })?,
+        )?;
+    }
+    {
+        let col = col.clone();
+        prova.set(
+            "flow",
+            lua.create_function(move |lua, (name, body): (String, Function)| {
+                register_flow(lua, &col, 0, name, body)
             })?,
         )?;
     }
@@ -616,6 +641,68 @@ impl UserData for GroupBuilder {
             body.call::<()>(gb)?;
             Ok(())
         });
+
+        methods.add_method("flow", |lua, this, (name, body): (String, Function)| {
+            register_flow(lua, &this.col, this.ix, name, body)
+        });
+    }
+}
+
+/// Register a `flow` node under `parent` and run its builder body to collect the ordered steps.
+/// The body runs once at collection time; its closures share upvalues (the flow's context bag),
+/// so `local x` captured across steps is genuinely shared state — the flow's one blessed way to
+/// carry built-up context, which a `group` structurally cannot express.
+fn register_flow(
+    lua: &Lua,
+    col: &SharedCollector,
+    parent: NodeIx,
+    name: String,
+    body: Function,
+) -> mlua::Result<()> {
+    let fix = col.borrow_mut().add(
+        parent,
+        Node {
+            name,
+            kind: NodeKind::Flow,
+            params: Params::default(),
+            opts: UnitOpts::default(),
+            children: vec![],
+            body: None,
+        },
+    );
+    let fb = lua.create_userdata(FlowBuilder {
+        col: col.clone(),
+        ix: fix,
+    })?;
+    body.call::<()>(fb)?;
+    Ok(())
+}
+
+/// Builds a flow's ordered steps. Only exposes `step` — no nested groups, no unordered children —
+/// because a flow's contract is *sequence*. Shared context is carried by closure upvalues, so the
+/// builder needs no state-bag method.
+struct FlowBuilder {
+    col: SharedCollector,
+    ix: NodeIx,
+}
+
+impl UserData for FlowBuilder {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("step", |_, this, (name, a, b): (String, Value, Value)| {
+            let (opts, body) = split_opts_body(a, b)?;
+            this.col.borrow_mut().add(
+                this.ix,
+                Node {
+                    name,
+                    kind: NodeKind::Test,
+                    params: Params::default(),
+                    opts,
+                    children: vec![],
+                    body: Some(body),
+                },
+            );
+            Ok(())
+        });
     }
 }
 
@@ -629,7 +716,34 @@ struct PlanItem {
     timeout: Option<Duration>,
 }
 
-fn build_plan(col: &Collector, ix: NodeIx, ancestors: &mut Vec<String>, out: &mut Vec<PlanItem>) {
+/// A scheduling atom. Independent units may run concurrently (`buffer_unordered`); a flow's steps
+/// are serial *within* the unit but the flow parallelizes with its siblings like any other unit.
+enum PlanUnit {
+    Test(PlanItem),
+    Flow { steps: Vec<PlanItem> },
+}
+
+impl PlanUnit {
+    /// Every reported leaf path in this unit (a test is one; a flow is one per step).
+    fn leaf_paths(&self) -> Vec<&str> {
+        match self {
+            PlanUnit::Test(item) => vec![item.path.as_str()],
+            PlanUnit::Flow { steps } => steps.iter().map(|s| s.path.as_str()).collect(),
+        }
+    }
+}
+
+fn plan_item(node: &Node, ancestors: &[String]) -> PlanItem {
+    let mut path = ancestors.to_vec();
+    path.push(format!("{}{}", node.name, node.params.suffix()));
+    PlanItem {
+        path: path.join(" › "),
+        body: node.body.clone().expect("test/step node has a body"),
+        timeout: node.opts.timeout,
+    }
+}
+
+fn build_plan(col: &Collector, ix: NodeIx, ancestors: &mut Vec<String>, out: &mut Vec<PlanUnit>) {
     let node = &col.nodes[ix];
     match node.kind {
         NodeKind::Group => {
@@ -644,14 +758,18 @@ fn build_plan(col: &Collector, ix: NodeIx, ancestors: &mut Vec<String>, out: &mu
                 ancestors.pop();
             }
         }
+        NodeKind::Flow => {
+            ancestors.push(format!("{}{}", node.name, node.params.suffix()));
+            let steps = node
+                .children
+                .iter()
+                .map(|&c| plan_item(&col.nodes[c], ancestors))
+                .collect();
+            ancestors.pop();
+            out.push(PlanUnit::Flow { steps });
+        }
         NodeKind::Test => {
-            let mut path = ancestors.clone();
-            path.push(format!("{}{}", node.name, node.params.suffix()));
-            out.push(PlanItem {
-                path: path.join(" › "),
-                body: node.body.clone().expect("test node has a body"),
-                timeout: node.opts.timeout,
-            });
+            out.push(PlanUnit::Test(plan_item(node, ancestors)));
         }
     }
 }
@@ -664,13 +782,19 @@ struct NodeResult {
     message: Option<String>,
 }
 
-async fn run_one(lua: &Lua, item: &PlanItem, state: &Rc<RunState>) -> NodeResult {
+async fn run_one(
+    lua: &Lua,
+    item: &PlanItem,
+    state: &Rc<RunState>,
+    flow_scope: Option<Rc<RefCell<ScopeState>>>,
+) -> NodeResult {
     let run = Rc::new(RefCell::new(TestRun::default()));
     let test_scope = Rc::new(RefCell::new(ScopeState::default()));
     let ctx = Ctx {
         run: run.clone(),
         state: state.clone(),
         test_scope: test_scope.clone(),
+        flow_scope,
         own_scope: ScopeKind::Test,
     };
     let ctx_ud = lua.create_userdata(ctx).expect("create context");
@@ -723,30 +847,78 @@ async fn run_one(lua: &Lua, item: &PlanItem, state: &Rc<RunState>) -> NodeResult
     }
 }
 
+/// A flow is one unit: its steps run serially, in order, on one worker, sharing a `flow`-scope
+/// instance. Once a step fails, the remaining steps **cascade-skip** (skip, not fail) with the
+/// failing step named. A self-`skip` does not cascade — skip is not failure. The flow scope tears
+/// down after the last step (each step's `test` scope having already torn down per-step).
+async fn run_flow(lua: &Lua, steps: &[PlanItem], state: &Rc<RunState>) -> Vec<NodeResult> {
+    let flow_scope = Rc::new(RefCell::new(ScopeState::default()));
+    let mut results = Vec::with_capacity(steps.len());
+    let mut cascade: Option<String> = None;
+
+    for step in steps {
+        if let Some(reason) = &cascade {
+            results.push(NodeResult {
+                path: step.path.clone(),
+                outcome: Outcome::Skipped,
+                duration: Duration::ZERO,
+                assertions: 0,
+                message: Some(reason.clone()),
+            });
+            continue;
+        }
+        let result = run_one(lua, step, state, Some(flow_scope.clone())).await;
+        if result.outcome == Outcome::Failed {
+            let failed = step_name(&step.path);
+            cascade = Some(format!("skipped: earlier step {failed:?} failed"));
+        }
+        results.push(result);
+    }
+
+    teardown_scope(&flow_scope);
+    results
+}
+
+/// The last path segment — the step's own name, for the cascade-skip message.
+fn step_name(path: &str) -> &str {
+    path.rsplit(" › ").next().unwrap_or(path)
+}
+
+async fn run_unit(lua: &Lua, unit: &PlanUnit, state: &Rc<RunState>) -> Vec<NodeResult> {
+    match unit {
+        PlanUnit::Test(item) => vec![run_one(lua, item, state, None).await],
+        PlanUnit::Flow { steps } => run_flow(lua, steps, state).await,
+    }
+}
+
 async fn run_plan(
     lua: &Lua,
-    plan: &[PlanItem],
+    plan: &[PlanUnit],
     state: &Rc<RunState>,
     config: &RunConfig,
     reporter: &mut dyn Reporter,
     summary: &mut Summary,
 ) {
-    for item in plan {
-        reporter.event(&Event::NodeStarted { path: &item.path });
+    for unit in plan {
+        for path in unit.leaf_paths() {
+            reporter.event(&Event::NodeStarted { path });
+        }
     }
 
-    let mut stream = futures::stream::iter(plan.iter().map(|item| run_one(lua, item, state)))
+    let mut stream = futures::stream::iter(plan.iter().map(|unit| run_unit(lua, unit, state)))
         .buffer_unordered(config.concurrency.max(1));
 
-    while let Some(result) = stream.next().await {
-        summary.tally(result.outcome);
-        reporter.event(&Event::NodeFinished {
-            path: &result.path,
-            outcome: result.outcome,
-            duration: result.duration,
-            assertions: result.assertions,
-            message: result.message.as_deref(),
-        });
+    while let Some(results) = stream.next().await {
+        for result in results {
+            summary.tally(result.outcome);
+            reporter.event(&Event::NodeFinished {
+                path: &result.path,
+                outcome: result.outcome,
+                duration: result.duration,
+                assertions: result.assertions,
+                message: result.message.as_deref(),
+            });
+        }
     }
 }
 
@@ -817,5 +989,8 @@ pub fn discover_path(path: &Path) -> mlua::Result<Vec<String>> {
     let col = col.borrow();
     let mut plan = Vec::new();
     build_plan(&col, 0, &mut Vec::new(), &mut plan);
-    Ok(plan.into_iter().map(|item| item.path).collect())
+    Ok(plan
+        .iter()
+        .flat_map(|unit| unit.leaf_paths().into_iter().map(String::from))
+        .collect())
 }

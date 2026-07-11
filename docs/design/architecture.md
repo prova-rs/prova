@@ -116,11 +116,18 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
 
 ## Current status (implemented)
 
-- Async collect→plan→execute for `prova.test` / `prova.group`; injected `prova` global.
+- Async collect→plan→execute for `prova.test` / `prova.group` / `prova.flow`; injected `prova`
+  global.
 - **Fixtures + scopes + teardown**: `prova.fixture(name, scope, factory)` → typed handle;
-  `ctx:use(handle|name)` builds-or-caches; `test`/`file`/`suite` scopes with per-scope caches;
-  `ctx:defer` (LIFO); `ctx:tempdir` (auto-removed); scope-mismatch rejection; inner→outer teardown.
-  *(`examples/lifecycle_poc_test.lua` runs green, teardown order verified.)*
+  `ctx:use(handle|name)` builds-or-caches; `test`/`flow`/`file`/`suite` scopes with per-scope
+  caches; `ctx:defer` (LIFO); `ctx:tempdir` (auto-removed); scope-mismatch rejection; inner→outer
+  teardown. *(`examples/lifecycle_poc_test.lua` runs green, teardown order verified.)*
+- **Flows**: `prova.flow(name, body)` / `g:flow(...)` register a `Flow` node; `f:step(name, fn)`
+  declares ordered steps. A flow is **one scheduling unit** (`PlanUnit::Flow`): steps run serially
+  in declared order, sharing closure upvalues (the flow context bag) and a `flow`-scope instance;
+  once a step fails the rest **cascade-skip** (skip, not fail; a self-`skip` does not cascade); the
+  flow scope tears down after the last step. Flows parallelize with sibling units.
+  *(`examples/flow_poc_test.lua` runs green: shared upvalue, shared flow-fixture, cascade proven.)*
 - `t:expect` matchers (`equals`/`eq`/`is_true`/`is_false`/`is_nil`/`is_truthy`/`contains`,
   `:never()`, optional label), `t:skip`, `t:log`.
 - Concurrent async execution (proven) + I/O timeouts via cancellation. Default execution is
@@ -129,11 +136,13 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
 
 ## Next increments
 
-1. **Flows** (`prova.flow`/`f:step`, shared context, cascade-skip; `flow` scope) — the `flow`
-   cache level slots into the existing scope machine.
-2. **Units + `depends_on`** DAG (skip-downstream); **resources** + the constraint-solving
-   scheduler; then safe parallelism + per-worker Lua states.
-3. **Async fixtures** (upgrade `ctx:use` to an async method so factories can `await`) and async
+1. **Units + `depends_on`** DAG (skip-downstream); **resources** + the constraint-solving
+   scheduler; then safe parallelism + per-worker Lua states. (`prova.test`/`flow`/`group` return
+   handles; `depends_on` gates on pass/fail only, does not transfer state.)
+2. **Async fixtures** (upgrade `ctx:use` to an async method so factories can `await`) and async
    **modules**: `fs`/`shell`/`http`; soft assertions (`expect_all`); snapshots.
+3. **Flow ergonomics**: `f:use(fixture)` builder sugar (currently flow-scoped fixtures are used via
+   `t:use` inside steps); re-runnable flow bodies (re-invoke to get fresh closures) as the
+   precondition for the **load executor** treating a flow as a reusable scenario.
 4. **Selectors** (tag expressions, `--last-failed`, sharding), richer reporters (JUnit/TAP), and the
    **load executor**.
