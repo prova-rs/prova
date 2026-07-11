@@ -4,7 +4,7 @@
 --- Proves: the three scopes cache correctly (suite built once, file once, test every time),
 --- fixture-to-fixture dependencies resolve, and teardown runs LIFO / inner-scope-first.
 
-local assay = require("assay")
+-- `assay` and the fs/shell/http modules are injected globals — no require needed.
 
 -- suite-scoped: constructed once for the whole run, torn down last.
 local suite_dir = assay.fixture("suite_dir", "suite", function(ctx)

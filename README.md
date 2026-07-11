@@ -10,7 +10,7 @@ shell + HTTP + filesystem assertions, with **fixtures** holding setup and teardo
 together.
 
 ```lua
-local assay = require("assay")
+-- `assay` and the fs/shell/http/archetect modules are injected globals — no require needed.
 
 assay.fixture("project", "file", function(ctx)
   return archetect.render{

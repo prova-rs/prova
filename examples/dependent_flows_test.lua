@@ -5,8 +5,6 @@
 --- are isolated among themselves unless an edge says otherwise, and that a failed upstream
 --- SKIPS (not fails) everything downstream. No real endpoints; illustrative of the model.
 
-local assay = require("assay")
-
 local api = assay.fixture("api_base", "suite", function(ctx)
   return "http://localhost:8080"
 end)

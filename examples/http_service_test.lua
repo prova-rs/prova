@@ -4,8 +4,6 @@
 --- long-running process via ctx:defer, http.wait_for for boot-then-probe, and table-driven
 --- tests. This is the black-box acceptance layer the framework is built for.
 
-local assay = require("assay")
-
 -- Parametrized suite fixture: the whole file's tests run once per toolchain.
 local toolchain = assay.fixture("toolchain", "suite", function(ctx)
   return { name = ctx:param() }

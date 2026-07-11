@@ -2,8 +2,6 @@
 --- depends_on (DAG edge, skip-downstream-on-failure), and resource-gated concurrency.
 --- No archetect/network; illustrative of the execution model, not runnable yet.
 
-local assay = require("assay")
-
 -- A fixture the flow will build once for its whole lifetime (flow scope).
 local api = assay.fixture("api_base", "suite", function(ctx)
   return "http://localhost:8080"

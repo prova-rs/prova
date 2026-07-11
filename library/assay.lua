@@ -228,8 +228,11 @@ function GroupBuilder:before_all(fn) end
 ---@param fn fun()
 function GroupBuilder:after_all(fn) end
 
+--- The `assay` table is **injected as a global by the runtime** — no `require` needed, just
+--- like the `fs`/`shell`/`http`/`archetect` modules. `require("assay")` is still supported
+--- (and returns this same table) for anyone who prefers an explicit import.
 ---@class assay
-local assay = {}
+assay = {}
 
 ---Declare a fixture: a named factory producing a value, with optional scoped teardown and
 ---dependencies. `scope` may be a string ("test"|"file"|"suite") or a full options table.

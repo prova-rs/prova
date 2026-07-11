@@ -54,9 +54,11 @@ idioms (no decorators, no parameter-name reflection).
 
 ### Declaring a fixture
 
-```lua
-local assay = require("assay")
+The runtime injects `assay` and the module globals (`fs`, `shell`, `http`, `archetect`) into
+every test file — **no `require` is needed**. (`require("assay")` still works and returns the
+same table, for anyone who prefers an explicit import.)
 
+```lua
 -- assay.fixture(name, scope, factory)
 -- scope: "test" (default) | "file" | "suite"
 assay.fixture("workspace", "file", function(ctx)

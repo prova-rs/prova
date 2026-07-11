@@ -4,8 +4,6 @@
 --- Demonstrates: file-scoped fixtures (render once, assert many), fixture-to-fixture
 --- dependency, soft assertions, and shelling out against the rendered project.
 
-local assay = require("assay")
-
 -- A scratch workspace, one per file. Auto-cleaned when the file's tests finish.
 local workspace = assay.fixture("workspace", "file", function(ctx)
   return ctx:tempdir()
