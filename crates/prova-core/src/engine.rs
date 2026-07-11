@@ -39,7 +39,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures::stream::StreamExt;
-use mlua::{Function, Lua, UserData, UserDataMethods, Value};
+use mlua::{Function, Lua, Table, UserData, UserDataMethods, Value};
 
 use crate::model::{
     parse_duration, Event, NodeIx, Outcome, Params, Reporter, ResourceReq, Summary, UnitOpts,
@@ -354,6 +354,10 @@ struct TestRun {
     assertions: usize,
     failure: Option<String>,
     skip: Option<String>,
+    /// Inside `t:expect_all(...)`, a failed assertion is collected here instead of aborting, so the
+    /// block reports *every* failure. `soft` is the active flag; `soft_failures` accumulates.
+    soft: bool,
+    soft_failures: Vec<String>,
 }
 
 /// Injected into every body/factory. `own_scope` is the scope its `defer`/`tempdir` target and the
@@ -489,6 +493,32 @@ impl UserData for Ctx {
             this.run.borrow_mut().skip = Some(reason);
             Err(mlua::Error::RuntimeError(SKIP_SENTINEL.into()))
         });
+
+        // Soft assertions: run `body` collecting every failed assertion instead of aborting on the
+        // first, then fail once with all of them. Reports every missing file, not just the first.
+        methods.add_method("expect_all", |_, this, body: Function| {
+            let prev = {
+                let mut r = this.run.borrow_mut();
+                std::mem::replace(&mut r.soft, true)
+            };
+            let outcome = body.call::<()>(());
+            let failures = {
+                let mut r = this.run.borrow_mut();
+                r.soft = prev;
+                std::mem::take(&mut r.soft_failures)
+            };
+            outcome?; // propagate a real error (or a `skip`) raised inside the block
+            if failures.is_empty() {
+                return Ok(());
+            }
+            let combined = format!(
+                "{} soft assertion(s) failed:\n    - {}",
+                failures.len(),
+                failures.join("\n    - ")
+            );
+            this.run.borrow_mut().failure = Some(combined.clone());
+            Err(mlua::Error::RuntimeError(combined))
+        });
     }
 }
 
@@ -519,8 +549,14 @@ impl Matcher {
             .unwrap_or_default();
         let neg = if self.negated { "not: " } else { "" };
         let msg = format!("{prefix}{neg}{}", detail());
-        r.failure = Some(msg.clone());
-        Err(mlua::Error::RuntimeError(msg))
+        if r.soft {
+            // Inside `expect_all`: collect and keep going.
+            r.soft_failures.push(msg);
+            Ok(())
+        } else {
+            r.failure = Some(msg.clone());
+            Err(mlua::Error::RuntimeError(msg))
+        }
     }
 }
 
@@ -609,6 +645,87 @@ impl UserData for Matcher {
                 format!("expected {} to be a directory", display(&this.subject))
             })
         });
+        methods.add_method("is_empty", |_, this, ()| {
+            let pass = path_is_empty(&this.subject);
+            this.record(pass, || {
+                format!("expected {} to be empty", display(&this.subject))
+            })
+        });
+
+        methods.add_method("is_falsy", |_, this, ()| {
+            let pass = !truthy(&this.subject);
+            this.record(pass, || {
+                format!("expected a falsy value, got {}", display(&this.subject))
+            })
+        });
+
+        // Lua-pattern match on a string subject (delegates to Lua's `string.find`).
+        methods.add_method("matches", |lua, this, pattern: String| {
+            let (pass, subject) = match &this.subject {
+                Value::String(s) => {
+                    let subject = s.to_str()?.to_string();
+                    let find: mlua::Function = lua.globals().get::<Table>("string")?.get("find")?;
+                    let found: Value = find.call((subject.clone(), pattern.clone()))?;
+                    (!matches!(found, Value::Nil), subject)
+                }
+                other => (false, display(other)),
+            };
+            this.record(pass, || {
+                format!("expected {subject:?} to match pattern {pattern:?}")
+            })
+        });
+
+        methods.add_method("has_length", |_, this, n: i64| {
+            let len = value_length(&this.subject);
+            this.record(len == Some(n), || match len {
+                Some(l) => format!("expected length {n}, got {l}"),
+                None => format!(
+                    "expected a string/table of length {n}, got {}",
+                    display(&this.subject)
+                ),
+            })
+        });
+
+        methods.add_method("is_one_of", |_, this, options: Table| {
+            let mut pass = false;
+            for item in options.sequence_values::<Value>() {
+                if values_equal(&this.subject, &item?) {
+                    pass = true;
+                    break;
+                }
+            }
+            this.record(pass, || {
+                format!(
+                    "expected {} to be one of the given options",
+                    display(&this.subject)
+                )
+            })
+        });
+
+        methods.add_method("gt", |_, this, n: f64| {
+            let pass = as_number(&this.subject).is_some_and(|x| x > n);
+            this.record(pass, || {
+                format!("expected {} > {n}", display(&this.subject))
+            })
+        });
+        methods.add_method("gte", |_, this, n: f64| {
+            let pass = as_number(&this.subject).is_some_and(|x| x >= n);
+            this.record(pass, || {
+                format!("expected {} >= {n}", display(&this.subject))
+            })
+        });
+        methods.add_method("lt", |_, this, n: f64| {
+            let pass = as_number(&this.subject).is_some_and(|x| x < n);
+            this.record(pass, || {
+                format!("expected {} < {n}", display(&this.subject))
+            })
+        });
+        methods.add_method("lte", |_, this, n: f64| {
+            let pass = as_number(&this.subject).is_some_and(|x| x <= n);
+            this.record(pass, || {
+                format!("expected {} <= {n}", display(&this.subject))
+            })
+        });
     }
 }
 
@@ -644,7 +761,59 @@ fn values_equal(a: &Value, b: &Value) -> bool {
             (*x as f64) == *y
         }
         (Value::String(x), Value::String(y)) => x.to_string_lossy() == y.to_string_lossy(),
+        (Value::Table(x), Value::Table(y)) => tables_equal(x, y),
         _ => false,
+    }
+}
+
+/// Deep table equality: same set of keys, values recursively equal. (Cyclic tables are not guarded
+/// — test data is expected to be acyclic.)
+fn tables_equal(x: &Table, y: &Table) -> bool {
+    let mut x_keys = 0;
+    for pair in x.clone().pairs::<Value, Value>() {
+        let Ok((key, xv)) = pair else { return false };
+        x_keys += 1;
+        match y.get::<Value>(key) {
+            Ok(yv) if values_equal(&xv, &yv) => {}
+            _ => return false,
+        }
+    }
+    // Equal key counts (with every x-key matched in y) means no extra keys on either side.
+    let y_keys = y.clone().pairs::<Value, Value>().count();
+    x_keys == y_keys
+}
+
+fn as_number(v: &Value) -> Option<f64> {
+    match v {
+        Value::Integer(i) => Some(*i as f64),
+        Value::Number(n) => Some(*n),
+        _ => None,
+    }
+}
+
+/// Length of a string (bytes, matching Lua `#`) or a table (sequence length).
+fn value_length(v: &Value) -> Option<i64> {
+    match v {
+        Value::String(s) => Some(s.as_bytes().len() as i64),
+        Value::Table(t) => Some(t.raw_len() as i64),
+        _ => None,
+    }
+}
+
+/// `is_empty` on a path subject: an empty directory, or a zero-byte file. A non-path (or missing
+/// path) is not empty.
+fn path_is_empty(v: &Value) -> bool {
+    let Some(path) = subject_path(v) else {
+        return false;
+    };
+    if path.is_dir() {
+        std::fs::read_dir(&path)
+            .map(|mut entries| entries.next().is_none())
+            .unwrap_or(false)
+    } else {
+        std::fs::metadata(&path)
+            .map(|m| m.len() == 0)
+            .unwrap_or(false)
     }
 }
 

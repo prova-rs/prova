@@ -107,11 +107,16 @@ The core stays small; capability grows at the edges:
 
 | Surface | Extends by | Examples |
 |---|---|---|
-| **Modules** | async Lua modules registered into the runtime | `fs`, `shell`, `http`, `archetect`, later `grpc`, `container`, `db` |
+| **Modules** | async Lua modules registered into the runtime (via `RunConfig::with_module`) | `fs`, `shell`, `http`, `archetect`, later `grpc`, `container`, `db` |
 | **Matchers** | new terminal checks on the matcher | domain assertions, snapshots |
 | **Reporters** | new `Reporter` sinks | JUnit, TAP, GUI socket, load metrics |
 | **Selectors** | plan filters | tag expressions, `--changed`, `--last-failed`, sharding |
 | **Executors** | alternate drivers over the plan | acceptance (once), **load/stress** (many, sustained) |
+
+A **`grpc` module** is a strong candidate next module: it fits the exact async-module shape `http`
+already uses (call a method, assert on the response), and archetect-core already carries a gRPC
+proto + fixtures to lean on. Reflection-based or `.proto`-driven method invocation with
+status/message matchers would extend prova into service-contract testing without touching the core.
 
 The **load/stress** executor is the clearest payoff of these seams: a `flow` is already a reusable
 scenario; a load driver takes that scenario, runs it under a concurrency/duration/arrival profile
@@ -179,8 +184,12 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
   design promises. *(`examples/resources_test.lua`; `resources` tests prove exclusive holders
   serialize (~80ms) while shared readers overlap (~40ms) under `concurrency = 8`.)* CLI: `--jobs N`
   / `-j N`.
-- `t:expect` matchers (`equals`/`eq`/`is_true`/`is_false`/`is_nil`/`is_truthy`/`contains`,
-  `:never()`, optional label), `t:skip`, `t:log`.
+- **Assertions**: `t:expect(subject, label?)` → matchers `equals`/`eq` (**deep** for tables),
+  `is_true`/`is_false`/`is_nil`/`is_truthy`/`is_falsy`, `contains`, `matches` (Lua pattern),
+  `has_length`, `is_one_of`, `gt`/`gte`/`lt`/`lte`, and filesystem `exists`/`is_file`/`is_dir`/
+  `is_empty` (path-string or handle-table subject); `:never()` negates; optional `label`. **Soft
+  assertions** via `t:expect_all(fn)` — collect every failure in the block and fail once with all of
+  them (not just the first). Plus `t:skip`, `t:log`. *(`testdata/assertions*.lua`.)*
 - Concurrent async execution (proven) + I/O timeouts via cancellation + a readers-writer
   **resource** scheduler (`prova.port`/`resource`/`shared`, `serial`) making `--jobs > 1` safe.
   Default execution stays **sequential** (`concurrency = 1`); resource declarations are inert there.
@@ -196,10 +205,9 @@ The scheduler/lifecycle **spine is now complete** (collect → plan → deps →
 execute). The remaining increments pivot from engine to **product** — the capabilities that make
 prova useful beyond testing itself:
 
-1. **Richer assertions + gating** — soft assertions (`expect_all`, collect all failures), snapshots
-   (`matches_snapshot`), more matchers (`is_one_of`, `matches`, `has_length`, numeric compares), and
-   `requires` (capability gating → skip, not fail). *(Async fixtures + `shell`/`fs`/`http` + the
-   `archetect` plugin — done.)*
+1. **Snapshots + gating** — snapshot assertions (`matches_snapshot`, `.snap` files +
+   `--update-snapshots`) and `requires` (capability gating → skip, not fail). *(The matcher surface +
+   soft `expect_all` — done.)*
 2. **Flow ergonomics**: `f:use(fixture)` builder sugar (currently flow-scoped fixtures are used via
    `t:use` inside steps); re-runnable flow bodies (re-invoke to get fresh closures) as the
    precondition for the **load executor** treating a flow as a reusable scenario.
