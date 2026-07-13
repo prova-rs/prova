@@ -683,6 +683,36 @@ impl UserData for Matcher {
             })
         });
 
+        // The signature archetype check: every file under a rendered tree (a path string, or a
+        // tree/dir handle with a `path`) must be free of leftover template markers — no `{{`, `{%`,
+        // or `{#` in file *contents* or *path segments*. GitHub Actions `${{ … }}` expressions are
+        // legitimately present in rendered workflows, so they are excluded. Tedious to hand-roll
+        // (glob every file, read, scan); one call here.
+        methods.add_method("is_fully_rendered", |_, this, ()| {
+            let offenders = match subject_path(&this.subject) {
+                Some(p) => unrendered_markers(&p),
+                None => vec!["subject is not a path or tree handle".to_string()],
+            };
+            let pass = offenders.is_empty();
+            this.record(pass, || {
+                let shown = offenders
+                    .iter()
+                    .take(10)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n    ");
+                let more = if offenders.len() > 10 {
+                    format!("\n    … and {} more", offenders.len() - 10)
+                } else {
+                    String::new()
+                };
+                format!(
+                    "expected {} to be fully rendered, but found unrendered template markers:\n    {shown}{more}",
+                    display(&this.subject)
+                )
+            })
+        });
+
         methods.add_method("is_falsy", |_, this, ()| {
             let pass = !truthy(&this.subject);
             this.record(pass, || {
@@ -846,6 +876,68 @@ fn path_is_empty(v: &Value) -> bool {
             .map(|m| m.len() == 0)
             .unwrap_or(false)
     }
+}
+
+/// Byte index of the first unrendered jinja marker (`{{`, `{%`, `{#`) in `s` that is *not* part of a
+/// GitHub Actions `${{ … }}` expression (i.e. not immediately preceded by `$`). `None` if clean.
+fn first_marker(s: &str) -> Option<usize> {
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i + 1 < b.len() {
+        if b[i] == b'{' && matches!(b[i + 1], b'{' | b'%' | b'#') {
+            let preceded_by_dollar = i > 0 && b[i - 1] == b'$';
+            if !preceded_by_dollar {
+                return Some(i);
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Every leftover-template-marker offender under `root` — an unrendered `{{`/`{%`/`{#` in a file's
+/// contents (reported as `relpath:line: snippet`) or in a path segment (`relpath (unrendered path
+/// segment)`). Binary/unreadable files are skipped. A missing `root` is itself an offender.
+fn unrendered_markers(root: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    if !root.exists() {
+        return vec![format!("{}: path does not exist", root.display())];
+    }
+    let scan_file = |path: &Path, rel: &Path, out: &mut Vec<String>| {
+        if let Ok(contents) = std::fs::read_to_string(path) {
+            if let Some(idx) = first_marker(&contents) {
+                let line = contents[..idx].matches('\n').count() + 1;
+                let snippet: String = contents[idx..].lines().next().unwrap_or("").trim().chars().take(60).collect();
+                out.push(format!("{}:{line}: {snippet}", rel.display()));
+            }
+        }
+    };
+    if root.is_file() {
+        scan_file(root, Path::new(root.file_name().unwrap_or_default()), &mut out);
+        return out;
+    }
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let rel = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+            // An unrendered *name* (only the segment's own name, so a bad parent isn't re-reported
+            // for every child).
+            if first_marker(&entry.file_name().to_string_lossy()).is_some() {
+                out.push(format!("{} (unrendered path segment)", rel.display()));
+            }
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.is_file() {
+                scan_file(&path, &rel, &mut out);
+            }
+        }
+    }
+    out.sort();
+    out
 }
 
 fn contains(subject: &Value, needle: &Value) -> bool {

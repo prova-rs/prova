@@ -120,6 +120,10 @@ function Matcher:exists() end
 function Matcher:is_file() end
 function Matcher:is_dir() end
 function Matcher:is_empty() end
+--- Assert a rendered tree (a tree/dir handle, or a path string) has no leftover template markers —
+--- no `{{`, `{%`, or `{#` in any file's contents or path segments. GitHub Actions `${{ … }}`
+--- expressions are excluded. The signature archetype check.
+function Matcher:is_fully_rendered() end
 ---Compare against a stored snapshot (`prova test --update-snapshots` to rewrite).
 ---@param name? string  # optional named snapshot
 function Matcher:matches_snapshot(name) end

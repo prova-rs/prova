@@ -5,6 +5,27 @@
 > North Star, plus what a fresh session needs to resume. Read the auto-memory `prova-test-framework`
 > first (it has every commit + gotcha); then skim `architecture.md`'s "Current status" and this file.
 
+## The concrete mission (why prova exists)
+
+The real target is the **[p6m-archetypes](https://github.com/p6m-archetypes)** org — ~140 untested
+Archetect **v3 (Lua)** archetypes: `{rust,java,golang,python,typescript,dotnet}` × `{grpc,rest,graphql}`
+services, each with `persistence` (Postgres/MySQL), `cache` (Redis), and `messaging` (Kafka/Pulsar)
+options, composed from a dozen remote library archetypes. There is already a **Python/pytest harness**
+([`archetype-test-harness`](https://github.com/p6m-archetypes/archetype-test-harness)) doing the easy
+tier declaratively (`tests/manifest.yaml`: expected files, no leftover `{{ }}`, yaml globs, build
+steps). **Prova must be *wholly better*: match that ergonomics on the easy tier, and make the hard
+tier — provision real deps, boot the generated service, drive its gRPC/REST/GraphQL, assert DB/state —
+*possible* at all** (which the declarative harness structurally cannot do).
+
+**Verified (2026-07-12):** prova renders a real p6m archetype (`rust-grpc-service-archetype@dev`, 44
+files, 12 composed libs) **headlessly in-process** and asserts its layout + `is_fully_rendered`.
+**Rule:** every archetype must render headlessly; a prompt with no answer and no default **errors out**
+(archetect-core already enforces this — `"Headless mode: no answer or default for 'X'"` — and
+prova-archetect inherits it; never a hang).
+
+Each generated project even ships a **conditional `docker-compose.yml`** declaring exactly the runtime
+resources its answers imply (postgres/mysql/redis/kafka/pulsar) — the hard tier's spec, handed to us.
+
 ## The North Star (the target scenario)
 
 A batteries-included, native black-box acceptance harness that can:
@@ -163,7 +184,7 @@ exactly the "batteries-included, no capability ceilings" pitch. Implemented in `
 - **Container/DB readiness = retry the real thing**, not `pg_isready`/port-open (init restarts).
 - **Docker `:exec` needs a shell in the image** (`sh -c`); `traefik/whoami` is `FROM scratch`.
 - Feature flags: `http`, `db`, `docker` are default-on; the crate builds with `--no-default-features`.
-- **Verify every change:** `cargo test` (35 tests, some Docker/cargo-gated), `cargo clippy --all-targets`
+- **Verify every change:** `cargo test` (36 tests, some Docker/cargo-gated), `cargo clippy --all-targets`
   (zero warnings), `lua-language-server --check "$(pwd)"` (LuaLS-clean), and run touched
   `examples/*.lua` via the CLI. Keep the LuaCATS stub (`library/`) in lockstep with the runtime.
 

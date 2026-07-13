@@ -39,9 +39,9 @@ prova.describe("rust-cli archetype", function()
     t:expect(cargo, "Cargo.toml [package] name"):contains('name = "widget"')
   end)
 
-  prova.test("has no leftover template markers", function(t)
-    local main = t:use(project):file("src/main.rs"):read()
-    t:expect(main):never():contains("{{")
+  prova.test("has no leftover template markers anywhere", function(t)
+    -- One call scans every file (contents + path segments) for unrendered jinja markers.
+    t:expect(t:use(project)):is_fully_rendered()
   end)
 
   prova.test("compiles cleanly", { timeout = "180s", tags = { "build" }, requires = { "cargo" } }, function(t)

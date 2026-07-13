@@ -72,7 +72,7 @@ prova.describe("rust-cli archetype", function()
   end)
 
   prova.test("has no leftover template markers", function(t)
-    t:expect(t:use(project):file("src/main.rs"):read()):never():contains("{{")
+    t:expect(t:use(project)):is_fully_rendered()
   end)
 
   prova.test("compiles cleanly", { timeout = "180s", requires = { "cargo" } }, function(t)

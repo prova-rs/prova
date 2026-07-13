@@ -241,7 +241,10 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
 - **Assertions**: `t:expect(subject, label?)` → matchers `equals`/`eq` (**deep** for tables),
   `is_true`/`is_false`/`is_nil`/`is_truthy`/`is_falsy`, `contains`, `matches` (Lua pattern),
   `has_length`, `is_one_of`, `gt`/`gte`/`lt`/`lte`, and filesystem `exists`/`is_file`/`is_dir`/
-  `is_empty` (path-string or handle-table subject); `:never()` negates; optional `label`. **Soft
+  `is_empty`, plus **`is_fully_rendered`** — the signature archetype check: scans every file under a
+  rendered tree (contents + path segments) for leftover jinja markers (`{{`/`{%`/`{#`), excluding
+  GitHub `${{ … }}`, and fails listing the offenders (path-string or handle-table subject); `:never()`
+  negates; optional `label`. **Soft
   assertions** via `t:expect_all(fn)` — collect every failure in the block and fail once with all of
   them (not just the first). Plus `t:skip`, `t:log`. *(`testdata/assertions*.lua`.)*
 - Concurrent async execution (proven) + I/O timeouts via cancellation + a readers-writer
