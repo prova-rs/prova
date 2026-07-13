@@ -1742,8 +1742,11 @@ fn resolve_requires(leaves: &mut [Leaf]) {
 /// capability never fails a test — it skips it, visibly.
 fn capability_available(name: &str) -> bool {
     match name {
-        // The docker daemon must be reachable, not just the client installed.
-        "docker" => command_succeeds("docker", &["info"]),
+        // The docker daemon must be reachable, not just the client installed. Retry a few times: a
+        // single `docker info` can transiently fail when the daemon is momentarily busy (heavy
+        // container churn — e.g. many container tests tearing down at once), which would otherwise
+        // skip a whole test spuriously. This resolves once per run (memoized), so the cost is bounded.
+        "docker" => command_succeeds_retry("docker", &["info"], 3),
         "github" => std::env::var_os("GITHUB_TOKEN").is_some(),
         // No cheap, reliable synchronous probe; assume present (a real offline mode is future work).
         "network" | "internet" => true,
@@ -1760,6 +1763,21 @@ fn command_succeeds(program: &str, args: &[&str]) -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+/// `command_succeeds`, retried up to `attempts` times with a short backoff — for a daemon-liveness
+/// probe that can hiccup transiently. Succeeds on the first passing attempt (so when the daemon is
+/// healthy there is no delay); only a genuinely-absent daemon pays the full backoff.
+fn command_succeeds_retry(program: &str, args: &[&str], attempts: u32) -> bool {
+    for attempt in 0..attempts {
+        if command_succeeds(program, args) {
+            return true;
+        }
+        if attempt + 1 < attempts {
+            std::thread::sleep(Duration::from_millis(300));
+        }
+    }
+    false
 }
 
 /// Is an executable named `name` on `PATH`?
