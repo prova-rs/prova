@@ -28,10 +28,6 @@ prova.group("containerized whoami", { requires = { "docker" } }, function(g)
   g:test("publishes a real host port", function(t)
     t:expect(t:use(service):host_port(80)):gt(1024)
   end)
-
-  g:test("exec runs a command inside the container", function(t)
-    local code, stdout = t:use(service):exec("echo hello-from-container")
-    t:expect(code):equals(0)
-    t:expect(stdout):contains("hello-from-container")
-  end)
 end)
+-- (`:exec` runs `sh -c` in the container, so it needs a shell in the image — traefik/whoami is
+--  FROM scratch and has none. Use an image like alpine/busybox to demo `:exec`.)
