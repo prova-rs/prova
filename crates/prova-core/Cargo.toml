@@ -49,8 +49,10 @@ serde_yaml_ng = { version = "0.10.0", optional = true }
 serde = { version = "1", optional = true }
 
 [features]
-default = ["http", "db", "docker", "grpc", "yaml"]
+default = ["http", "db", "docker", "grpc", "graphql", "yaml"]
 http = ["dep:reqwest"]
+# GraphQL over HTTP (POST { query, variables } → { data, errors }); shares reqwest with `http`.
+graphql = ["dep:reqwest"]
 db = ["dep:sqlx"]
 docker = ["dep:bollard"]
 grpc = [

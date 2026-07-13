@@ -18,6 +18,7 @@
     "docker",
     "db",
     "grpc",
+    "graphql",
     "yaml"
   ],
   "completion.callSnippet": "Replace",

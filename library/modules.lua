@@ -415,3 +415,39 @@ function yaml.parse(text) end
 ---@param text string
 ---@return any[]
 function yaml.parse_all(text) end
+
+------------------------------------------------------------------------------------------
+-- graphql (POST { query, variables } → { data, errors } over HTTP — the third transport)
+------------------------------------------------------------------------------------------
+
+--- A GraphQL client bound to one endpoint (queries and mutations share the transport).
+---@class prova.GraphqlClient
+local GraphqlClient = {}
+--- Run a query/mutation and return its `data`. Raises if the response carries GraphQL `errors`.
+---@param query string
+---@param variables? table
+---@return any data
+function GraphqlClient:query(query, variables) end
+--- Like `query`, but never raises: returns `{ data, errors, status }` so a test can assert on
+--- GraphQL errors (mirrors grpc's `call_status`). `data`/`errors` are nil when absent/null.
+---@param query string
+---@param variables? table
+---@return prova.GraphqlResult
+function GraphqlClient:execute(query, variables) end
+
+---@class prova.GraphqlResult
+---@field status integer
+---@field data? any
+---@field errors? table[]
+
+---@class prova.GraphqlClientOpts
+---@field url string
+---@field headers? table<string,string>
+---@field timeout? string
+
+---@class prova.graphql
+graphql = {}
+--- Build a GraphQL client for one endpoint.
+---@param opts prova.GraphqlClientOpts
+---@return prova.GraphqlClient
+function graphql.client(opts) end

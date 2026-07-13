@@ -107,7 +107,7 @@ The core stays small; capability grows at the edges:
 
 | Surface | Extends by | Examples |
 |---|---|---|
-| **Modules** | async Lua modules registered into the runtime (via `RunConfig::with_module`) | `fs`, `shell`, `http`, `grpc`, `docker`, `db`, `archetect`, later `graphql` |
+| **Modules** | async Lua modules registered into the runtime (via `RunConfig::with_module`) | `fs`, `net`, `shell`, `http`, `grpc`, `graphql`, `docker`, `db`, `yaml`, `archetect` |
 | **Matchers** | new terminal checks on the matcher | domain assertions, snapshots |
 | **Reporters** | new `Reporter` sinks | JUnit, TAP, GUI socket, load metrics |
 | **Selectors** | plan filters | tag expressions, `--changed`, `--last-failed`, sharding |
@@ -119,11 +119,11 @@ The core stays small; capability grows at the edges:
 dynamic, reflection-driven client (no `grpcurl`, no `.proto` files), the same async-module shape as
 `http` (call a method, assert on the response/status). Still planned:
 
-- **`graphql`** — the last network interface alongside `http`/`grpc`. Same async-module shape.
+- The network-interface trio is complete: **`http`** (REST, + `http.client`), **`grpc`** (native/dynamic), **`graphql`** (`graphql.client` with `query`/`execute`).
 
 The end-to-end arc the modules serve is now real through the network-drive step: **render the
 project → assert the layout → boot the app (`shell.spawn`) → spin up its dependencies (`docker`) →
-drive its network interfaces (`http`/`grpc`; `graphql` next) → tear it all down** — one framework,
+drive its network interfaces (`http`/`grpc`/`graphql`) → tear it all down** — one framework,
 no capability ceilings.
 
 The **load/stress** executor is the clearest payoff of these seams: a `flow` is already a reusable
@@ -289,9 +289,10 @@ The scheduler/lifecycle **spine is now complete** (collect → plan → deps →
 execute). The remaining increments pivot from engine to **product** — the capabilities that make
 prova useful beyond testing itself:
 
-1. **`graphql` module** — the last network interface. *(The `grpc` module — native/dynamic via
-   reflection + `prost-reflect`, verified against a real reflection server — is done, as is the `db`
-   module (sqlx `Any`, real Postgres) and the `bollard` swap for Docker.)*
+1. **Resource modules** — Redis (`cache`), Kafka/Pulsar (`messaging`), S3/Azure-blob (object storage):
+   the remaining archetype resource types, as `docker`-provisioned ephemeral deps + thin client
+   modules. *(The network-interface trio `http`/`grpc`/`graphql` is done; `db` covers Postgres/MySQL;
+   `net.free_port` and `http.client` landed.)*
 2. **Snapshots** — `matches_snapshot`, `.snap` files + `--update-snapshots`.
 5. **Flow ergonomics**: `f:use(fixture)` builder sugar (currently flow-scoped fixtures are used via
    `t:use` inside steps); re-runnable flow bodies (re-invoke to get fresh closures) as the
