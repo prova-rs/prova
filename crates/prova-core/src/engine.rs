@@ -203,11 +203,24 @@ struct ScopeState {
     tempdirs: Vec<PathBuf>,
 }
 
-/// Shared across the whole run: the fixture registry plus the suite & file scope instances.
+/// Shared across the whole suite run: the fixture registry, the one suite-scope instance, and a lazy
+/// **per-file** scope instance (a suite may load several files into one state, and each gets its own
+/// `Scope.File`). A single file just has one entry (index 0).
 struct RunState {
     defs: Vec<FixtureDef>,
     suite: Rc<RefCell<ScopeState>>,
-    file: Rc<RefCell<ScopeState>>,
+    files: RefCell<HashMap<usize, Rc<RefCell<ScopeState>>>>,
+}
+
+impl RunState {
+    /// The `Scope.File` instance for file `idx`, created on first use.
+    fn file_scope(&self, idx: usize) -> Rc<RefCell<ScopeState>> {
+        self.files
+            .borrow_mut()
+            .entry(idx)
+            .or_insert_with(|| Rc::new(RefCell::new(ScopeState::default())))
+            .clone()
+    }
 }
 
 /// Async so a `ctx:defer` callback can `await` (e.g. `proc:stop()` to kill a spawned process, or any
@@ -262,6 +275,9 @@ struct Node {
     /// A `test_each` case, delivered to the body as its second argument and as `t.case`. `None` for
     /// ordinary tests (the body simply ignores the extra nil argument).
     case: Option<Value>,
+    /// Index of the source file this node was collected from (a suite may load several files into one
+    /// state). Set by `Collector::add`; drives per-file `Scope.File`. Always 0 for a single file.
+    file: usize,
 }
 
 struct Collector {
@@ -271,6 +287,9 @@ struct Collector {
     /// `group`/`flow`). `prova.describe` pushes its labeling group so bare declarations inside its
     /// body nest under it (dynamic scoping); everything pops back to the file root (index 0).
     parent_stack: Vec<NodeIx>,
+    /// The index of the file currently being loaded (a suite loads several files into one collector).
+    /// Every node added while this is set records it, so `Scope.File` can reset per file.
+    current_file: usize,
 }
 
 impl Collector {
@@ -284,13 +303,16 @@ impl Collector {
                 children: vec![],
                 body: None,
                 case: None,
+                file: 0,
             }],
             fixtures: vec![],
             parent_stack: vec![0],
+            current_file: 0,
         }
     }
 
-    fn add(&mut self, parent: NodeIx, node: Node) -> NodeIx {
+    fn add(&mut self, parent: NodeIx, mut node: Node) -> NodeIx {
+        node.file = self.current_file; // stamp every node with the file being loaded
         let ix = self.nodes.len();
         self.nodes.push(node);
         self.nodes[parent].children.push(ix);
@@ -408,6 +430,9 @@ struct Ctx {
     run: Rc<RefCell<TestRun>>,
     state: Rc<RunState>,
     test_scope: Rc<RefCell<ScopeState>>,
+    /// This test's file scope instance (`Scope.File`) — its file's, so it is shared across the file's
+    /// tests but distinct per file within a suite.
+    file_scope: Rc<RefCell<ScopeState>>,
     flow_scope: Option<Rc<RefCell<ScopeState>>>,
     own_scope: ScopeKind,
     /// The `test_each` case for this test, exposed as `t.case` (also passed as the body's 2nd arg).
@@ -419,7 +444,7 @@ impl Ctx {
     fn scope_state(&self, kind: ScopeKind) -> mlua::Result<Rc<RefCell<ScopeState>>> {
         Ok(match kind {
             ScopeKind::Suite => self.state.suite.clone(),
-            ScopeKind::File => self.state.file.clone(),
+            ScopeKind::File => self.file_scope.clone(),
             ScopeKind::Flow => self.flow_scope.clone().ok_or_else(|| {
                 mlua::Error::RuntimeError(
                     "flow-scoped fixture used outside a flow (flow scope is only valid inside a `prova.flow`)".into(),
@@ -481,6 +506,7 @@ async fn resolve_use(lua: &Lua, this: &Ctx, target: Value) -> mlua::Result<Value
         run: this.run.clone(),
         state: this.state.clone(),
         test_scope: this.test_scope.clone(),
+        file_scope: this.file_scope.clone(),
         flow_scope: this.flow_scope.clone(),
         own_scope: def.scope,
         case: None,
@@ -1278,6 +1304,7 @@ fn register_test(
             children: vec![],
             body: Some(body),
             case,
+            file: 0,
         },
     ))
 }
@@ -1381,6 +1408,7 @@ fn register_group(
             children: vec![],
             body: None,
             case: None,
+            file: 0,
         },
     );
     let gb = lua.create_userdata(GroupBuilder {
@@ -1410,6 +1438,7 @@ fn register_describe(col: &SharedCollector, label: String, body: Function) -> ml
                 children: vec![],
                 body: None,
                 case: None,
+                file: 0,
             },
         )
     };
@@ -1443,6 +1472,7 @@ fn register_flow(
             children: vec![],
             body: None,
             case: None,
+            file: 0,
         },
     );
     let fb = lua.create_userdata(FlowBuilder {
@@ -1475,6 +1505,7 @@ impl UserData for FlowBuilder {
                     children: vec![],
                     body: Some(body),
                     case: None,
+                    file: 0,
                 },
             );
             Ok(())
@@ -1491,6 +1522,8 @@ struct PlanItem {
     body: Function,
     timeout: Option<Duration>,
     case: Option<Value>,
+    /// Source file index — selects this item's `Scope.File` instance.
+    file: usize,
 }
 
 /// A scheduling atom. Independent units may run concurrently (`buffer_unordered`); a flow's steps
@@ -1518,6 +1551,7 @@ fn plan_item(node: &Node, ancestors: &[String]) -> PlanItem {
         body: node.body.clone().expect("test/step node has a body"),
         timeout: node.opts.timeout,
         case: node.case.clone(),
+        file: node.file,
     }
 }
 
@@ -1833,6 +1867,7 @@ async fn run_one(
         run: run.clone(),
         state: state.clone(),
         test_scope: test_scope.clone(),
+        file_scope: state.file_scope(item.file),
         flow_scope,
         own_scope: ScopeKind::Test,
         case: item.case.clone(),
@@ -2164,13 +2199,78 @@ pub(crate) fn run_file_into(
     config: &RunConfig,
 ) -> mlua::Result<Summary> {
     let (lua, col) = read_and_collect(path, &config.modules)?;
+    execute_collected(&lua, &col, reporter, config)
+}
+
+/// Run a **suite** — several files loaded into one Lua state so `Scope.Suite` fixtures are shared
+/// live across them (built once, torn down once). An optional `setup` file (a `suite.lua`) runs first
+/// and is where suite-scoped fixtures live; each member `file` then loads under its own file-group
+/// (so report paths show the file and `Scope.File` is per-file). A one-file suite with no setup is
+/// exactly `run_file_into` — the singleton case — so nothing changes for ungrouped files.
+pub(crate) fn run_suite_files(
+    name: &str,
+    setup: Option<&Path>,
+    files: &[PathBuf],
+    reporter: &mut dyn Reporter,
+    config: &RunConfig,
+) -> mlua::Result<Summary> {
+    if setup.is_none() && files.len() == 1 {
+        return run_file_into(&files[0], reporter, config);
+    }
+
+    let (lua, col) = build_lua(name.to_string(), &config.modules)?;
+
+    // Setup file (fixtures only) runs at the suite level (file index 0).
+    if let Some(setup) = setup {
+        let code = std::fs::read_to_string(setup).map_err(|e| {
+            mlua::Error::RuntimeError(format!("cannot read {}: {e}", setup.display()))
+        })?;
+        lua.load(&code).set_name(setup.to_string_lossy()).exec()?;
+    }
+
+    // Each member file loads under a file-group node, with its own file index (1-based).
+    for (i, file) in files.iter().enumerate() {
+        let idx = i + 1;
+        let stem = file
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("file")
+            .to_string();
+        {
+            let mut c = col.borrow_mut();
+            c.current_file = idx;
+            let fg = c.add(0, group_node(stem));
+            c.parent_stack.push(fg);
+        }
+        let code = std::fs::read_to_string(file).map_err(|e| {
+            mlua::Error::RuntimeError(format!("cannot read {}: {e}", file.display()))
+        })?;
+        lua.load(&code).set_name(file.to_string_lossy()).exec()?;
+        {
+            let mut c = col.borrow_mut();
+            c.parent_stack.pop();
+            c.current_file = 0;
+        }
+    }
+
+    execute_collected(&lua, &col, reporter, config)
+}
+
+/// Build plan → run → tear down (every file scope, then the suite). Shared by the single-file and
+/// multi-file loaders once the collector is populated.
+fn execute_collected(
+    lua: &Lua,
+    col: &SharedCollector,
+    reporter: &mut dyn Reporter,
+    config: &RunConfig,
+) -> mlua::Result<Summary> {
     let (plan, state) = {
         let col = col.borrow();
         let plan = build_plan(&col)?;
         let state = Rc::new(RunState {
             defs: col.fixtures.clone(),
             suite: Rc::new(RefCell::new(ScopeState::default())),
-            file: Rc::new(RefCell::new(ScopeState::default())),
+            files: RefCell::new(HashMap::new()),
         });
         (plan, state)
     };
@@ -2179,13 +2279,36 @@ pub(crate) fn run_file_into(
     let mut summary = Summary::default();
     rt.block_on(async {
         let started = Instant::now();
-        run_plan(&lua, &plan, &state, config, reporter, &mut summary).await;
-        // Scopes tear down inner→outer: file, then suite (test scopes already torn down per-test).
-        teardown_scope(&state.file).await;
+        run_plan(lua, &plan, &state, config, reporter, &mut summary).await;
+        // Scopes tear down inner→outer: every file scope, then the suite (test scopes already torn
+        // down per-test).
+        teardown_file_scopes(&state).await;
         teardown_scope(&state.suite).await;
         summary.duration = started.elapsed();
     });
     Ok(summary)
+}
+
+/// An empty labeling `Group` node (a file-group). `file`/parent are set by `add`.
+fn group_node(name: String) -> Node {
+    Node {
+        name,
+        kind: NodeKind::Group,
+        params: Params::default(),
+        opts: UnitOpts::default(),
+        children: vec![],
+        body: None,
+        case: None,
+        file: 0,
+    }
+}
+
+/// Tear down every per-file `Scope.File` instance (a suite may have several).
+async fn teardown_file_scopes(state: &RunState) {
+    let scopes: Vec<_> = state.files.borrow().values().cloned().collect();
+    for scope in scopes {
+        teardown_scope(&scope).await;
+    }
 }
 
 /// Discovery: collect the test tree without executing (basis for a GUI/IDE model view).

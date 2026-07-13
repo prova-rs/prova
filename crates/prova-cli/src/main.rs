@@ -13,13 +13,13 @@
 
 mod manifest;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode;
 
 use manifest::Manifest;
 use prova_core::{
-    discover_files, discover_path, run_suite, ConsoleReporter, JsonReporter, MultiReporter,
-    Reporter, RunConfig,
+    discover_path, discover_suites, run_suites, ConsoleReporter, JsonReporter, MultiReporter,
+    Reporter, RunConfig, Suite,
 };
 
 enum Format {
@@ -109,24 +109,26 @@ fn main() -> ExitCode {
         }
     };
 
-    // Expand each path (a file or a directory) into concrete test files.
-    let mut files: Vec<PathBuf> = Vec::new();
+    // Expand each path (a file or a directory) into suites: a directory with a `suite.lua` is one
+    // suite (its files share a state, so `Scope.Suite` fixtures are shared); every other file is a
+    // singleton suite. `--jobs` then parallelizes across suites.
+    let mut suites: Vec<Suite> = Vec::new();
     for arg in &paths {
-        match discover_files(Path::new(arg)) {
-            Ok(found) => files.extend(found),
+        match discover_suites(Path::new(arg)) {
+            Ok(found) => suites.extend(found),
             Err(err) => {
                 eprintln!("prova: {arg}: {err}");
                 return ExitCode::from(2);
             }
         }
     }
-    if files.is_empty() {
+    if suites.is_empty() {
         eprintln!("prova: no test files found (looked for *_test.lua / *.test.lua)");
         return ExitCode::from(2);
     }
 
     if list {
-        for file in &files {
+        for file in suites.iter().flat_map(|s| &s.files) {
             match discover_path(file) {
                 Ok(node_paths) => node_paths.iter().for_each(|p| println!("{p}")),
                 Err(err) => {
@@ -147,7 +149,7 @@ fn main() -> ExitCode {
 
     // The standalone `prova` binary ships the archetect plugin, so `archetect.render{...}` works.
     let config = RunConfig::new(jobs).with_module(prova_archetect::install);
-    match run_suite(&files, reporter.as_mut(), &config) {
+    match run_suites(&suites, reporter.as_mut(), &config) {
         Ok(summary) if summary.is_success() => ExitCode::SUCCESS,
         Ok(_) => ExitCode::FAILURE,
         Err(err) => {

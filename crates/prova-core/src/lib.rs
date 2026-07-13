@@ -14,4 +14,4 @@ pub use engine::{discover_path, run_path, run_path_with, Module, RunConfig};
 pub use model::{
     ConsoleReporter, Event, JsonReporter, MultiReporter, NullReporter, Outcome, Reporter, Summary,
 };
-pub use suite::{discover_files, run_suite};
+pub use suite::{discover_files, discover_suites, run_suite, run_suites, Suite};

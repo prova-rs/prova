@@ -18,8 +18,37 @@ use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::engine::{run_file_into, RunConfig};
+use crate::engine::{run_suite_files, RunConfig};
 use crate::model::{Event, Outcome, Reporter, Summary};
+
+/// A **suite**: files that share one Lua state (so `Scope.Suite` fixtures are built once and shared
+/// across them). `setup` is an optional `suite.lua` run first (where suite-scoped fixtures live). A
+/// lone ungrouped file is a *singleton* suite — one file, no setup — which behaves exactly as before.
+#[derive(Clone)]
+pub struct Suite {
+    pub name: String,
+    pub setup: Option<PathBuf>,
+    pub files: Vec<PathBuf>,
+}
+
+impl Suite {
+    fn singleton(file: PathBuf) -> Suite {
+        let name = file
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("tests")
+            .to_string();
+        Suite {
+            name,
+            setup: None,
+            files: vec![file],
+        }
+    }
+
+    fn run(&self, reporter: &mut dyn Reporter, config: &RunConfig) -> mlua::Result<Summary> {
+        run_suite_files(&self.name, self.setup.as_deref(), &self.files, reporter, config)
+    }
+}
 
 /// Owned counterpart of a node-level `Event`, so results can cross the worker→coordinator channel
 /// (the borrowed `Event<'a>` cannot be sent). The coordinator reconstructs an `Event` from these to
@@ -82,6 +111,51 @@ pub fn discover_files(root: &Path) -> std::io::Result<Vec<PathBuf>> {
     Ok(out)
 }
 
+/// Group the tree under `root` into suites: a directory containing a `suite.lua` becomes one suite
+/// owning **all** the `*_test.lua` files in its subtree (with `suite.lua` as setup); every other test
+/// file is its own singleton suite. A plain file argument is a singleton suite. Sorted for
+/// determinism.
+pub fn discover_suites(root: &Path) -> std::io::Result<Vec<Suite>> {
+    if root.is_file() {
+        return Ok(vec![Suite::singleton(root.to_path_buf())]);
+    }
+    let mut suites = Vec::new();
+    collect_suites(root, &mut suites)?;
+    suites.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(suites)
+}
+
+fn collect_suites(dir: &Path, out: &mut Vec<Suite>) -> std::io::Result<()> {
+    let setup = dir.join("suite.lua");
+    if setup.is_file() {
+        // The whole subtree is one suite, sharing suite.lua's fixtures.
+        let files = discover_files(dir)?;
+        if !files.is_empty() {
+            let name = dir
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("suite")
+                .to_string();
+            out.push(Suite {
+                name,
+                setup: Some(setup),
+                files,
+            });
+        }
+        return Ok(());
+    }
+    // No suite.lua here: recurse into subdirs; ungrouped test files become singleton suites.
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            collect_suites(&path, out)?;
+        } else if is_test_file(&path) {
+            out.push(Suite::singleton(path));
+        }
+    }
+    Ok(())
+}
+
 fn is_test_file(path: &Path) -> bool {
     match path.file_name().and_then(|n| n.to_str()) {
         Some(name) => name.ends_with("_test.lua") || name.ends_with(".test.lua"),
@@ -112,13 +186,26 @@ pub fn run_suite(
     reporter: &mut dyn Reporter,
     config: &RunConfig,
 ) -> mlua::Result<Summary> {
+    let suites: Vec<Suite> = files.iter().cloned().map(Suite::singleton).collect();
+    run_suites(&suites, reporter, config)
+}
+
+/// Run a set of suites and stream results to `reporter`. Emits one `RunStarted`/`RunFinished` for the
+/// whole run; per-file node events flow through in between. **`--jobs` = concurrent suites**: one
+/// suite, or `concurrency == 1`, runs inline; otherwise a pool of worker threads (each its own Lua
+/// state) runs suites in parallel. Files *within* a suite share that suite's one state.
+pub fn run_suites(
+    suites: &[Suite],
+    reporter: &mut dyn Reporter,
+    config: &RunConfig,
+) -> mlua::Result<Summary> {
     let started = Instant::now();
     reporter.event(&Event::RunStarted);
 
-    let mut summary = if config.concurrency <= 1 || files.len() <= 1 {
-        run_sequential(files, reporter, config)
+    let mut summary = if config.concurrency <= 1 || suites.len() <= 1 {
+        run_sequential(suites, reporter, config)
     } else {
-        run_pooled(files, reporter, config)
+        run_pooled(suites, reporter, config)
     };
 
     summary.duration = started.elapsed();
@@ -126,45 +213,43 @@ pub fn run_suite(
     Ok(summary)
 }
 
-/// Files run one after another on this thread; node events go straight to the real reporter.
-fn run_sequential(files: &[PathBuf], reporter: &mut dyn Reporter, config: &RunConfig) -> Summary {
+/// Suites run one after another on this thread; node events go straight to the real reporter.
+fn run_sequential(suites: &[Suite], reporter: &mut dyn Reporter, config: &RunConfig) -> Summary {
     let mut summary = Summary::default();
-    for file in files {
-        match run_file_into(file, reporter, config) {
+    for suite in suites {
+        match suite.run(reporter, config) {
             Ok(s) => {
                 summary.passed += s.passed;
                 summary.failed += s.failed;
                 summary.skipped += s.skipped;
             }
-            Err(err) => report_file_error(reporter, &mut summary, file, &err.to_string()),
+            Err(err) => report_suite_error(reporter, &mut summary, suite, &err.to_string()),
         }
     }
     summary
 }
 
-/// A pool of worker threads, each with its own Lua state, draining a shared file queue. The
+/// A pool of worker threads, each with its own Lua state, draining a shared **suite** queue. The
 /// coordinator (this thread) forwards their owned events to the real reporter and tallies.
-fn run_pooled(files: &[PathBuf], reporter: &mut dyn Reporter, config: &RunConfig) -> Summary {
-    let workers = config.concurrency.min(files.len()).max(1);
-    let queue: Arc<Mutex<VecDeque<PathBuf>>> =
-        Arc::new(Mutex::new(files.iter().cloned().collect()));
+fn run_pooled(suites: &[Suite], reporter: &mut dyn Reporter, config: &RunConfig) -> Summary {
+    let workers = config.concurrency.min(suites.len()).max(1);
+    let queue: Arc<Mutex<VecDeque<Suite>>> = Arc::new(Mutex::new(suites.iter().cloned().collect()));
     let (tx, rx) = channel::<OwnedEvent>();
 
     let mut handles = Vec::with_capacity(workers);
     for _ in 0..workers {
         let queue = queue.clone();
         let tx = tx.clone();
-        // Each file runs with in-file concurrency = jobs (cooperative I/O overlap within the file);
-        // file-level parallelism is the worker pool itself.
+        // Suite-level parallelism is the worker pool; within a suite, cooperative async as before.
         let config = config.clone();
         handles.push(std::thread::spawn(move || {
             let mut sink = ChannelReporter { tx };
             loop {
                 let next = queue.lock().expect("queue mutex").pop_front();
-                let Some(file) = next else { break };
-                if let Err(err) = run_file_into(&file, &mut sink, &config) {
-                    // Surface a collection/load error as a synthetic failed node for this file.
-                    let path = file.to_string_lossy();
+                let Some(suite) = next else { break };
+                if let Err(err) = suite.run(&mut sink, &config) {
+                    // Surface a collection/load error as a synthetic failed node for the suite.
+                    let path = suite.name.clone();
                     let message = err.to_string();
                     sink.event(&Event::NodeStarted { path: &path });
                     sink.event(&Event::NodeFinished {
@@ -216,17 +301,16 @@ fn forward(reporter: &mut dyn Reporter, summary: &mut Summary, event: OwnedEvent
     }
 }
 
-fn report_file_error(
+fn report_suite_error(
     reporter: &mut dyn Reporter,
     summary: &mut Summary,
-    file: &Path,
+    suite: &Suite,
     message: &str,
 ) {
-    let path = file.to_string_lossy();
-    reporter.event(&Event::NodeStarted { path: &path });
+    reporter.event(&Event::NodeStarted { path: &suite.name });
     summary.tally(Outcome::Failed);
     reporter.event(&Event::NodeFinished {
-        path: &path,
+        path: &suite.name,
         outcome: Outcome::Failed,
         duration: Duration::ZERO,
         assertions: 0,
