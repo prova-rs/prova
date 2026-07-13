@@ -104,6 +104,11 @@ jobs:
       # Release gate: tests must pass before a draft release is created or any
       # platform build runs. A red test therefore cannot produce a published
       # release, regardless of branch protection or which commit was tagged.
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Enable Rust Dependency Caching
         uses: Swatinem/rust-cache@v2
 
@@ -161,6 +166,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ env.VERSION }}
+
+      # `pulsar`'s build script needs protoc on PATH; runner images don't ship it.
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Enable Rust Dependency Caching
         uses: Swatinem/rust-cache@v2

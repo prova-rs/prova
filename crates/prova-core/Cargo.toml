@@ -56,15 +56,25 @@ redis = { version = "1.3.0", default-features = false, features = ["tokio-comp"]
 # variants are async-std-only). We connect plaintext in v1; token/TLS auth is a later opts addition.
 # `tokio-runtime` only (no compression/oauth2) to stay as light as pulsar allows. Feature-gated.
 pulsar = { version = "6.8.0", default-features = false, features = ["tokio-runtime"], optional = true }
-# The `kafka` module — a thin async produce/consume client (rdkafka). rdkafka-sys vendors librdkafka
-# and builds it from source with the C toolchain (cc/make; no cmake), STATICALLY linking it — so the
-# runtime binary stays self-contained (the build-time C compile is a CI concern). No SSL/SASL features
-# → no openssl. Plaintext only in v1. Feature-gated (default on).
-rdkafka = { version = "0.39.0", default-features = false, features = ["tokio"], optional = true }
 # The `s3` module — a thin object-storage client (put/get/list/delete) for asserting on an S3/MinIO
 # dependency. rust-s3 with rustls (pure-Rust, statically links — no openssl, static-binary friendly;
 # also enables real HTTPS S3 later). Feature-gated (default on).
 rust-s3 = { version = "0.37.2", default-features = false, features = ["tokio-rustls-tls", "tags", "fail-on-err"], optional = true }
+
+# The `kafka` module — a thin async produce/consume client (rdkafka). rdkafka-sys vendors librdkafka
+# and builds it from source, STATICALLY linking it — so the runtime binary stays self-contained (the
+# build-time C compile is a CI concern). No SSL/SASL features → no openssl. Plaintext only in v1.
+# Feature-gated (default on).
+#
+# The build path differs by platform, hence two tables: librdkafka's default build is an autotools
+# `configure` shell script, which MSVC runners cannot execute (os error 193 — "not a valid Win32
+# application"). `cmake-build` swaps in its CMake path, which is the supported way to build it on
+# Windows. Unix keeps the lighter cc/make path so a laptop build needs no cmake.
+[target.'cfg(not(windows))'.dependencies]
+rdkafka = { version = "0.39.0", default-features = false, features = ["tokio"], optional = true }
+
+[target.'cfg(windows)'.dependencies]
+rdkafka = { version = "0.39.0", default-features = false, features = ["tokio", "cmake-build"], optional = true }
 
 [features]
 default = ["http", "db", "docker", "grpc", "graphql", "yaml", "redis", "pulsar", "kafka", "s3"]

@@ -20,6 +20,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # `pulsar`'s build script compiles .proto files and needs protoc on PATH. Runner images
+      # do not ship it (a dev laptop usually has it via brew/apt, which is exactly how this
+      # dependency stays invisible until CI).
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Enable Rust Dependency Caching
         uses: Swatinem/rust-cache@v2
 
