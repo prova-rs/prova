@@ -494,6 +494,28 @@ impl UserData for Ctx {
             Ok(())
         });
 
+        // ctx:manage(resource) — tie a resource's lifecycle to this scope: on teardown, call its
+        // `stop()` (containers, processes) or `close()` (connections). Returns the resource, so
+        // `local pg = ctx:manage(docker.run{...})` both provisions and registers cleanup in one line.
+        // Sugar over `ctx:defer`, which remains for anything custom.
+        methods.add_method("manage", |lua, this, resource: Value| {
+            // Build the teardown closure with the resource captured as an upvalue; it resolves the
+            // right method (stop/close) at teardown and awaits it (teardown runs async).
+            let teardown: Function = lua
+                .load(
+                    "local r = ...\n\
+                     if (type(r) ~= 'userdata' and type(r) ~= 'table') or not (r.stop or r.close) then\n\
+                       error('ctx:manage: resource has no stop() or close() method', 2)\n\
+                     end\n\
+                     return function()\n\
+                       if r.stop then return r:stop() else return r:close() end\n\
+                     end",
+                )
+                .call(resource.clone())?;
+            this.own_scope_state()?.borrow_mut().teardowns.push(teardown);
+            Ok(resource)
+        });
+
         methods.add_method("tempdir", |_, this, ()| {
             let path = make_tempdir()
                 .map_err(|e| mlua::Error::RuntimeError(format!("tempdir failed: {e}")))?;
@@ -1068,6 +1090,52 @@ fn build_lua(root_name: String, modules: &[Module]) -> mlua::Result<(Lua, Shared
         lua.create_async_function(|_, millis: u64| async move {
             tokio::time::sleep(Duration::from_millis(millis)).await;
             Ok(())
+        })?,
+    )?;
+
+    // prova.retry(fn, { timeout = "30s", every = "500ms", message? }) — call `fn` until it returns a
+    // truthy value (raising is treated as "not yet"), or the deadline elapses. Returns the value.
+    // Replaces the hand-rolled `for _=1,N do pcall(...) sleep end` readiness loop; the common case is
+    // waiting for a freshly-provisioned dependency to accept connections.
+    prova.set(
+        "retry",
+        lua.create_async_function(|_, (f, opts): (Function, Option<Table>)| async move {
+            let mut timeout = Duration::from_secs(30);
+            let mut every = Duration::from_millis(500);
+            let mut message: Option<String> = None;
+            if let Some(opts) = &opts {
+                if let Some(t) = opts
+                    .get::<Option<String>>("timeout")?
+                    .and_then(|s| parse_duration(&s))
+                {
+                    timeout = t;
+                }
+                if let Some(e) = opts
+                    .get::<Option<String>>("every")?
+                    .and_then(|s| parse_duration(&s))
+                {
+                    every = e;
+                }
+                message = opts.get::<Option<String>>("message")?;
+            }
+            let deadline = Instant::now() + timeout;
+            let mut last_err: Option<String> = None;
+            loop {
+                match f.call_async::<Value>(()).await {
+                    Ok(v) if truthy(&v) => return Ok(v),
+                    Ok(_) => {}
+                    Err(e) => last_err = Some(e.to_string()),
+                }
+                if Instant::now() >= deadline {
+                    let base = message
+                        .unwrap_or_else(|| format!("prova.retry: condition not met within {timeout:?}"));
+                    return Err(mlua::Error::RuntimeError(match last_err {
+                        Some(e) => format!("{base} (last error: {e})"),
+                        None => base,
+                    }));
+                }
+                tokio::time::sleep(every).await;
+            }
         })?,
     )?;
 

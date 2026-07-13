@@ -4,26 +4,20 @@
 --- `$1` placeholders — the query surface is identical.
 
 local pg = prova.fixture("pg", "file", function(ctx)
-  local c = docker.run{
+  -- `ctx:manage` ties the container's lifecycle to the fixture scope (stopped on teardown) — no
+  -- `ctx:defer(function() c:stop() end)` closure.
+  local c = ctx:manage(docker.run{
     image = "postgres:16-alpine",
     env = { POSTGRES_PASSWORD = "secret", POSTGRES_DB = "orders" },
     ports = { 5432 },
     wait = { port = 5432, timeout = "60s" },
-  }
-  ctx:defer(function() c:stop() end)
+  })
 
-  -- Postgres restarts once during first-boot init, so port-open (and even pg_isready) can
-  -- false-positive. The robust readiness gate is to retry the real connection until it holds.
+  -- Postgres restarts once during first-boot init, so port-open (even pg_isready) can false-positive.
+  -- `prova.retry` gates on the real connection actually holding — no hand-rolled loop.
   local url = "postgres://postgres:secret@127.0.0.1:" .. c:host_port(5432) .. "/orders"
-  local conn
-  for _ = 1, 60 do
-    local ok, result = pcall(db.connect, url)
-    if ok then conn = result break end
-    prova.sleep(500)
-  end
-  assert(conn, "postgres never accepted connections in time")
-  ctx:defer(function() conn:close() end)
-  return conn
+  return ctx:manage(prova.retry(function() return db.connect(url) end,
+    { timeout = "30s", message = "postgres never accepted connections" }))
 end)
 
 prova.group("postgres", { requires = { "docker" } }, function(g)

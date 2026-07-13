@@ -7,12 +7,11 @@
 --- up a real Postgres/Kafka/etc. under the system-under-test.
 
 local service = prova.fixture("service", "file", function(ctx)
-  local c = docker.run{
+  local c = ctx:manage(docker.run{
     image = "traefik/whoami",              -- tiny public HTTP echo on :80
     ports = { 80 },                        -- published to a random host port
     wait = { port = 80, timeout = "60s" }, -- ready when the port accepts connections
-  }
-  ctx:defer(function() c:stop() end)       -- removed during async teardown
+  })                                       -- ctx:manage → removed during async teardown
   return c
 end)
 

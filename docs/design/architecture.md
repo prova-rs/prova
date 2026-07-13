@@ -149,8 +149,15 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
   caches; `ctx:defer` (LIFO); `ctx:tempdir` (auto-removed); scope-mismatch rejection; inner→outer
   teardown. **`ctx:use` is async** — a factory can `await` (e.g. `shell.run`, a readiness poll);
   recursion reenters through Lua, so no boxing. **Teardown is async too** — a `ctx:defer` callback
-  can `await` (e.g. `proc:stop()`), reaped while the runtime is still alive. *(`lifecycle_poc_test`;
+  can `await` (e.g. `proc:stop()`), reaped while the runtime is still alive. **`ctx:manage(resource)`**
+  is the ergonomic form: it ties a resource's lifecycle to the scope (auto `stop()`/`close()` on
+  teardown) and returns it, so `local pg = ctx:manage(docker.run{...})` provisions + registers cleanup
+  in one line — no `ctx:defer(function() x:stop() end)` closure. *(`lifecycle_poc_test`;
   `async_fixture`; `service_lifecycle_test` boots a process and stops it on teardown, leak-free.)*
+- **Readiness without ceremony**: `prova.retry(fn, { timeout, every, message })` calls `fn` until it
+  returns truthy (a raise = "not yet") or the deadline elapses, returning the value — replacing the
+  hand-rolled `for _=1,N do pcall(...) sleep end` loop (`local conn = prova.retry(function() return
+  db.connect(url) end)`). *(`testdata/ergonomics.lua`.)*
 - **Capability modules** (`modules.rs`), injected as their own globals: **`shell.run(cmd, {cwd,
   env, timeout, check})`** (async via `tokio::process`; returns `{code, stdout, stderr, duration}` +
   `:ok()`) and **`shell.spawn(cmd, {cwd, env})`** → a managed `Process` (`.pid`, `:running()`,

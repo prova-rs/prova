@@ -31,6 +31,14 @@ function Context:use(fixture) end
 ---@param fn fun()
 function Context:defer(fn) end
 
+---Tie a resource's lifecycle to the current scope: on teardown, call its `stop()` (containers,
+---processes) or `close()` (connections). Returns the resource, so it composes inline:
+---`local pg = ctx:manage(docker.run{...})`. Sugar over `defer` — use `defer` for custom teardown.
+---@generic T
+---@param resource T
+---@return T
+function Context:manage(resource) end
+
 ---Create a scratch directory that is removed automatically when the current scope ends.
 ---@return string path
 function Context:tempdir() end
@@ -327,6 +335,20 @@ function prova.describe(label, body) end
 ---primitive, mainly for tests and boot-then-probe waits; prefer `http.wait_for` for readiness polls.
 ---@param millis integer
 function prova.sleep(millis) end
+
+---@class prova.RetryOpts
+---@field timeout? string    # overall deadline (default "30s")
+---@field every? string      # interval between attempts (default "500ms")
+---@field message? string    # error message on timeout
+
+---Call `fn` repeatedly until it returns a truthy value (a raised error counts as "not ready"), or
+---the deadline elapses. Returns the value. The readiness primitive — replaces the hand-rolled
+---`for _=1,N do pcall(...) sleep end` loop: `local conn = prova.retry(function() return db.connect(url) end)`.
+---@generic T
+---@param fn fun(): T
+---@param opts? prova.RetryOpts
+---@return T
+function prova.retry(fn, opts) end
 
 ---@param fn fun(t: prova.TestContext)
 function prova.before_each(fn) end

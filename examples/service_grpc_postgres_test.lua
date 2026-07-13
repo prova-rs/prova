@@ -32,36 +32,31 @@ end)
 local service = prova.fixture("service", "file", function(ctx)
   local dir = ctx:use(project):dir("inventory-service").path
 
-  local pg = docker.run{
+  local pg = ctx:manage(docker.run{
     image = "postgres:16-alpine",
     env = { POSTGRES_USER = "dev", POSTGRES_PASSWORD = "dev", POSTGRES_DB = "inventory_service" },
     ports = { 5432 },
     wait = { port = 5432, timeout = "60s" },
-  }
-  ctx:defer(function() pg:stop() end)
+  })
   local db_url = "postgres://dev:dev@127.0.0.1:" .. pg:host_port(5432) .. "/inventory_service"
 
-  -- Postgres restarts once at first-boot init; retry a real connection until it holds before the
+  -- Postgres restarts once at first-boot init; wait for a real connection to hold before the
   -- service (which connects once and exits on failure) tries.
-  for _ = 1, 60 do
-    if pcall(db.connect, db_url) then break end
-    prova.sleep(500)
-  end
+  ctx:manage(prova.retry(function() return db.connect(db_url) end, { timeout = "30s" }))
 
   local build = shell.run("cargo build", { cwd = dir, timeout = "600s" })
   assert(build:ok(), "service failed to build:\n" .. build.stderr)
 
   -- Boot the built binary wired to Postgres via the service's own env config (figment APP_* / __).
   local port = net.free_port()
-  local proc = shell.spawn(dir .. "/target/debug/inventory-service", {
+  ctx:manage(shell.spawn(dir .. "/target/debug/inventory-service", {
     cwd = dir,
     env = {
       APP_PERSISTENCE__URL = db_url,
       APP_SERVER__PORT = tostring(port),
       APP_SERVER__MANAGEMENT_PORT = tostring(port + 1),
     },
-  })
-  ctx:defer(function() proc:stop() end)
+  }))
 
   local addr = "127.0.0.1:" .. port
   grpc.wait_for(addr, { timeout = "30s" })  -- the service only answers if it connected to Postgres
@@ -81,8 +76,7 @@ prova.group("inventory gRPC service (Postgres)", { requires = { "docker", "cargo
 
   g:test("ran its migrations against that same Postgres", function(t)
     local svc = t:use(service)
-    local conn = db.connect(svc.db_url)
-    t:defer(function() conn:close() end)
+    local conn = t:manage(db.connect(svc.db_url))
     -- prova queries the very database the service is wired to — cross-service state assertion.
     t:expect(conn:query_value("SELECT count(*) FROM _sqlx_migrations WHERE success")):gte(1)
   end)

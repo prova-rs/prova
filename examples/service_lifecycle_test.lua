@@ -13,8 +13,7 @@ local service = prova.fixture("service", "file", function(ctx)
   fs.write(root .. "/index.json", '{"status":"ok","name":"orders"}')
 
   local port = 8988
-  local proc = shell.spawn("python3 -m http.server " .. port .. " --directory " .. root)
-  ctx:defer(function() proc:stop() end)   -- killed during (async) teardown while the runtime lives
+  local proc = ctx:manage(shell.spawn("python3 -m http.server " .. port .. " --directory " .. root))
 
   local base = "http://127.0.0.1:" .. port
   http.wait_for(base .. "/health", { status = 200, timeout = "10s", every = "100ms" })

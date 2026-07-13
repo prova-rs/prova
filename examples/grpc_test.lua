@@ -7,12 +7,11 @@
 --- back to tables. grpcbin speaks the older v1alpha reflection protocol, exercising prova's fallback.
 
 local server = prova.fixture("grpcbin", "file", function(ctx)
-  local c = docker.run{
+  local c = ctx:manage(docker.run{
     image = "moul/grpcbin",
     ports = { 9000 },
     wait = { port = 9000, timeout = "60s" },
-  }
-  ctx:defer(function() c:stop() end)
+  })
 
   local addr = "127.0.0.1:" .. c:host_port(9000)
   grpc.wait_for(addr, { timeout = "30s" })
