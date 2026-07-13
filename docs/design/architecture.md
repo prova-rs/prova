@@ -230,6 +230,12 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
   locally or CI-provided/live services just by switching profile. A composite GitHub Action
   (`ci/action.yml`) + example workflow (`ci/example-workflow.yml`) run it in CI. *(Manifest
   parse/resolve unit-tested in `prova-cli`.)*
+- **Self-tests (dogfooding)**: prova acceptance-tests **itself** — `crates/prova-cli/selftest/`
+  `*_test.lua` invoke the real `prova` binary (via `shell`) against inner fixtures and assert on exit
+  codes + output (tally, `--list`, `--format json`, error paths, manifest profiles + env). Driven by
+  `tests/selftest.rs` (`prova` → runs `*_test.lua` → each shells to `prova` → asserts). This is
+  black-box coverage of the assembled CLI the library tests can't reach — and it already caught a
+  real bug (the CLI advertised `--format json` but only parsed `--format=json`; fixed).
 
 The scheduler/lifecycle **spine is now complete** (collect → plan → deps → resources → multi-core
 execute). The remaining increments pivot from engine to **product** — the capabilities that make

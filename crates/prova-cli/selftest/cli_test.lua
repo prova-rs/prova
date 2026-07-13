@@ -1,0 +1,51 @@
+--- Prova testing Prova: acceptance-test the `prova` CLI by invoking the real binary against inner
+--- fixtures and asserting on exit codes and output. The launcher (tests/selftest.rs) sets
+--- `PROVA_BIN` (the built binary) and `PROVA_FIXTURES` (this dir's fixtures).
+
+local prova_bin = assert(os.getenv("PROVA_BIN"), "PROVA_BIN not set")
+local fixtures = assert(os.getenv("PROVA_FIXTURES"), "PROVA_FIXTURES not set")
+
+local function run(args)
+  return shell.run(prova_bin .. " " .. args)
+end
+
+prova.test("a passing suite exits 0 and reports the tally", function(t)
+  local r = run(fixtures .. "/passing.lua")
+  t:expect(r.code):equals(0)
+  t:expect(r.stdout):contains("2 passed")
+  t:expect(r.stdout):contains("0 failed")
+end)
+
+prova.test("a suite with a failure exits 1", function(t)
+  local r = run(fixtures .. "/mixed.lua")
+  t:expect(r.code):equals(1)
+  t:expect(r.stdout):contains("1 passed")
+  t:expect(r.stdout):contains("1 failed")
+  t:expect(r.stdout):contains("1 skipped")
+end)
+
+prova.test("--list discovers tests without running them", function(t)
+  local r = run("--list " .. fixtures .. "/passing.lua")
+  t:expect(r.code):equals(0)
+  t:expect(r.stdout):contains("adds numbers")
+  t:expect(r.stdout):contains("compares strings")
+end)
+
+prova.test("--format json emits the JSONL event protocol", function(t)
+  local r = run("--format json " .. fixtures .. "/passing.lua")
+  t:expect(r.code):equals(0)
+  t:expect(r.stdout):contains('"type":"node_finished"')
+  t:expect(r.stdout):contains('"outcome":"passed"')
+end)
+
+prova.test("an unknown flag is a usage error (exit 2)", function(t)
+  local r = run("--definitely-not-a-flag")
+  t:expect(r.code):equals(2)
+end)
+
+prova.test("no test files found is an error (exit 2)", function(t)
+  local empty = fs.tempdir()
+  local r = run(empty)
+  t:expect(r.code):equals(2)
+  t:expect(r.stderr):contains("no test files")
+end)

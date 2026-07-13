@@ -72,10 +72,21 @@ fn main() -> ExitCode {
             manifest_path = Some(v);
             continue;
         }
+        // `--format json` and `--format=json` both work.
+        if let Some(v) = value_flag(&arg, &mut args, &["--format"]) {
+            match v.as_str() {
+                "json" => cli_format = Some(Format::Json),
+                "console" => cli_format = Some(Format::Console),
+                other => {
+                    eprintln!("prova: unknown format {other:?} (expected console|json)");
+                    return ExitCode::from(2);
+                }
+            }
+            continue;
+        }
         match arg.as_str() {
             "--list" => list = true,
-            "--format=json" | "--json" => cli_format = Some(Format::Json),
-            "--format=console" => cli_format = Some(Format::Console),
+            "--json" => cli_format = Some(Format::Json),
             other if other.starts_with('-') => {
                 eprintln!("prova: unknown flag {other}");
                 return ExitCode::from(2);
