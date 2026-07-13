@@ -79,7 +79,20 @@ The **spine and most capabilities are done**. Twelve+ increments, each with prov
   round-trip** (`docker.run{postgres}` + `db.connect` + query) — the North Star data layer, leak-free.
 
 **North Star arc status:** render ✅ · assert layout ✅ · boot app (`shell.spawn`) ✅ · provision deps
-(`docker`) ✅ · drive HTTP ✅ · **query DB ✅** · **drive gRPC ✅** · Pulsar ⛔ · full assembly ⛔.
+(`docker`) ✅ · drive HTTP ✅ · **query DB ✅** · **drive gRPC ✅** · **single-service assembly ✅** ·
+Pulsar ⛔ · cross-service assembly ⛔.
+
+**CAPSTONE PROVEN (2026-07-12):** the hard tier, end-to-end through prova against a **real** archetype
+(`examples/service_grpc_postgres_test.lua`): render `rust-grpc-service-archetype@dev` with
+`persistence=PostgreSQL` → `docker.run` Postgres → `cargo build` (~15s warm) → `shell.spawn` the binary
+wired via `APP_PERSISTENCE__URL`/`APP_SERVER__PORT` → `grpc.wait_for` → `grpc.call_status` the service
+→ `db.connect` the *same* Postgres and assert migrations ran. **31.8s, green, leak-free** (async
+`ctx:defer` stops the container + process). This is the tier the pytest manifest structurally cannot
+express — and it **exposed that the archetype is a scaffold** (methods return `Unimplemented`, migration
+empty): *prova running the service is what reveals "renders + compiles" was hiding a hollow service.*
+As the archetype grows real CRUD the assertion tightens (`Unimplemented` → `Ok` → real row round-trip)
+— the test is the executable spec. (Known: service port hardcoded 50551; a `net.free_port()` helper is
+the clean fix.)
 
 ## Sequenced plan
 

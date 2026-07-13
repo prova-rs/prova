@@ -309,3 +309,11 @@ to assert cross-service state. Every ingredient is a module behind the plugin bo
 `http`/`grpc` (drive), `db` (assert state) — composed by fixtures and gated by `requires`. The same
 suite can instead point at a **dev Kubernetes cluster** (skip the containers, set endpoints via a
 manifest profile's `env`) — local, CI, and environment testing from one description.
+
+**Single-service assembly is proven** (`examples/service_grpc_postgres_test.lua`): a real p6m
+`rust-grpc-service-archetype@dev` rendered with Postgres, built, booted against a `docker.run` Postgres,
+and driven over gRPC (`grpc.call_status`) while `db.connect` cross-checks the same database — 31.8s,
+green, leak-free. It also demonstrates prova's forcing-function value: *running* the service exposed
+that the archetype is a scaffold (methods `Unimplemented`, empty migration) — something "renders +
+compiles" hides. The remaining gap to the full North Star is the second service + Pulsar + cross-service
+assertions, which are more of the same composition.
