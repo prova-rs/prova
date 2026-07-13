@@ -12,6 +12,7 @@
   "diagnostics.globals": [
     "fs",
     "shell",
+    "net",
     "http",
     "archetect",
     "docker",

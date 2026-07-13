@@ -52,7 +52,7 @@ local service = prova.fixture("service", "file", function(ctx)
   assert(build:ok(), "service failed to build:\n" .. build.stderr)
 
   -- Boot the built binary wired to Postgres via the service's own env config (figment APP_* / __).
-  local port = 50551
+  local port = net.free_port()
   local proc = shell.spawn(dir .. "/target/debug/inventory-service", {
     cwd = dir,
     env = {

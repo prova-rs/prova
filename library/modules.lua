@@ -34,6 +34,17 @@ function Tree:dir(rel) end
 function Tree:tree() end
 
 ------------------------------------------------------------------------------------------
+-- net
+------------------------------------------------------------------------------------------
+
+---@class prova.net
+net = {}
+--- An OS-assigned free TCP port on 127.0.0.1 — for a locally `shell.spawn`ed app that needs a
+--- dynamic port (a container gets its random host port from `docker.run` instead).
+---@return integer
+function net.free_port() end
+
+------------------------------------------------------------------------------------------
 -- fs
 ------------------------------------------------------------------------------------------
 

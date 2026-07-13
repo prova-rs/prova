@@ -22,6 +22,7 @@ use crate::model::parse_duration;
 pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set("shell", make_shell(lua)?)?;
     lua.globals().set("fs", make_fs(lua)?)?;
+    lua.globals().set("net", make_net(lua)?)?;
     #[cfg(feature = "docker")]
     lua.globals().set("docker", docker::make(lua)?)?;
     #[cfg(feature = "http")]
@@ -305,6 +306,34 @@ fn make_fs(lua: &Lua) -> mlua::Result<Table> {
     )?;
 
     Ok(fs)
+}
+
+// ---------------------------------------------------------------------------------------------
+// net
+// ---------------------------------------------------------------------------------------------
+
+fn make_net(lua: &Lua) -> mlua::Result<Table> {
+    let net = lua.create_table()?;
+
+    // net.free_port() → an OS-assigned free TCP port on 127.0.0.1. Bind to :0, read the assigned
+    // port, and release it. The classic use is a dynamic port for a locally `shell.spawn`ed app (a
+    // container gets its random host port from `docker.run` instead). There is an inherent race —
+    // the port is free *now*, not guaranteed still free when the app binds — but in practice the
+    // window is tiny and this is the standard approach.
+    net.set(
+        "free_port",
+        lua.create_function(|_, ()| {
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+                .map_err(|e| mlua::Error::RuntimeError(format!("net.free_port: {e}")))?;
+            let port = listener
+                .local_addr()
+                .map_err(|e| mlua::Error::RuntimeError(format!("net.free_port: {e}")))?
+                .port();
+            Ok(port)
+        })?,
+    )?;
+
+    Ok(net)
 }
 
 // ---------------------------------------------------------------------------------------------
