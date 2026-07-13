@@ -256,3 +256,50 @@ db = {}
 ---@param url string
 ---@return prova.Connection
 function db.connect(url) end
+
+------------------------------------------------------------------------------------------
+-- grpc (native dynamic client via server reflection; no `grpcurl`, no `.proto` files)
+------------------------------------------------------------------------------------------
+
+--- A connected gRPC client from `grpc.connect`. It learned the server's schema at connect time via
+--- gRPC Server Reflection, so calls take a plain request table and return a response table — no
+--- generated code. Methods are async; the server must have reflection enabled. Plaintext-only in v1.
+---@class prova.GrpcClient
+local GrpcClient = {}
+--- Invoke a unary method (`"package.Service/Method"`), raising on a non-OK gRPC status.
+---@param method string
+---@param request? table
+---@return table response
+function GrpcClient:call(method, request) end
+--- Like `call`, but never raises: returns `{ ok, code, message, response }` so a test can assert on
+--- the gRPC status code (e.g. `"NotFound"`, `"InvalidArgument"`). `response` is nil unless `ok`.
+---@param method string
+---@param request? table
+---@return prova.GrpcStatus
+function GrpcClient:call_status(method, request) end
+
+---@class prova.GrpcStatus
+---@field ok boolean
+---@field code string          # gRPC status code name, e.g. "Ok" | "NotFound" | "InvalidArgument"
+---@field message string
+---@field response? table
+
+---@class prova.GrpcConnectOpts
+---@field timeout? string      # per-call deadline, e.g. "30s"
+
+---@class prova.GrpcWaitOpts
+---@field timeout? string      # overall deadline (default "30s")
+---@field every? string        # poll interval (default "500ms")
+
+---@class prova.grpc
+grpc = {}
+--- Connect to a gRPC server at `addr` (`"host:port"` or `"http://host:port"`), performing reflection
+--- once to discover its services. Must be called inside a fixture or test body (it is async).
+---@param addr string
+---@param opts? prova.GrpcConnectOpts
+---@return prova.GrpcClient
+function grpc.connect(addr, opts) end
+--- Poll until the server answers a reflection request or the timeout elapses (boot-then-probe).
+---@param addr string
+---@param opts? prova.GrpcWaitOpts
+function grpc.wait_for(addr, opts) end

@@ -107,7 +107,7 @@ The core stays small; capability grows at the edges:
 
 | Surface | Extends by | Examples |
 |---|---|---|
-| **Modules** | async Lua modules registered into the runtime (via `RunConfig::with_module`) | `fs`, `shell`, `http`, `archetect`, later `grpc`, `container`, `db` |
+| **Modules** | async Lua modules registered into the runtime (via `RunConfig::with_module`) | `fs`, `shell`, `http`, `grpc`, `docker`, `db`, `archetect`, later `graphql` |
 | **Matchers** | new terminal checks on the matcher | domain assertions, snapshots |
 | **Reporters** | new `Reporter` sinks | JUnit, TAP, GUI socket, load metrics |
 | **Selectors** | plan filters | tag expressions, `--changed`, `--last-failed`, sharding |
@@ -115,16 +115,16 @@ The core stays small; capability grows at the edges:
 
 **`docker`** — ephemeral dependencies, testcontainers-style — is **built** (`docker.run` → a
 `Container`, the same managed-lifecycle pattern `shell.spawn`'s `Process` established), paired with
-`requires` gating so a suite skips where Docker is absent. Still planned:
+`requires` gating so a suite skips where Docker is absent. **`grpc`** is now built too — a native,
+dynamic, reflection-driven client (no `grpcurl`, no `.proto` files), the same async-module shape as
+`http` (call a method, assert on the response/status). Still planned:
 
-- **`grpc`** (and later `graphql`) — the network-interface trio alongside `http`. Same async-module
-  shape (call a method, assert on the response); archetect-core already carries a gRPC proto +
-  fixtures to lean on. Reflection- or `.proto`-driven invocation with status/message matchers.
+- **`graphql`** — the last network interface alongside `http`/`grpc`. Same async-module shape.
 
-The end-to-end arc the modules serve is now real through the boot step and dependencies: **render
-the project → assert the layout → boot the app (`shell.spawn`) → spin up its dependencies
-(`docker`) → drive its network interfaces (`http`; `grpc`/`graphql` next) → tear it all down** —
-one framework, no capability ceilings.
+The end-to-end arc the modules serve is now real through the network-drive step: **render the
+project → assert the layout → boot the app (`shell.spawn`) → spin up its dependencies (`docker`) →
+drive its network interfaces (`http`/`grpc`; `graphql` next) → tear it all down** — one framework,
+no capability ceilings.
 
 The **load/stress** executor is the clearest payoff of these seams: a `flow` is already a reusable
 scenario; a load driver takes that scenario, runs it under a concurrency/duration/arrival profile
@@ -170,6 +170,18 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
   surface over SQLite;* ***`examples/db_postgres_test.lua` + `tests/db_postgres.rs` run the identical
   API against a real Postgres in an ephemeral `docker.run{postgres}` container*** *— the North Star
   data layer, gated by `requires` so it skips without a daemon.)*
+- **`grpc` module** — a **native, dynamic** gRPC client (no `grpcurl` binary, no `.proto` files, no
+  codegen): `grpc.connect(addr)` performs **gRPC Server Reflection** once to learn the server's
+  schema, then `client:call("pkg.Service/Method", req_table)` builds the request message from the Lua
+  table against the fetched descriptors, invokes it, and decodes the reply to a table;
+  `client:call_status(...)` returns `{ok, code, message, response}` for status-code assertions;
+  `grpc.wait_for(addr)` is the boot-then-probe poll. Built on `tonic` + `prost-reflect`'s
+  `DynamicMessage` with a generic tonic codec; reflection negotiates v1, falling back to the older
+  v1alpha many servers still speak. Plaintext-only in v1 (matching `http`'s no-TLS stance);
+  feature-gated `grpc` (default on). Chosen over shelling to `grpcurl` to preserve prova's
+  single-self-contained-binary promise. *(`examples/grpc_test.lua` + `tests/grpc.rs` run the three
+  round-trips — unary, field echo, and a `NotFound` status — against a real reflection-enabled server
+  (`moul/grpcbin`) in an ephemeral container, gated by `requires` so it skips without a daemon.)*
 - **`requires` capability gating**: `opts.requires = { "docker", ... }` skips (does not fail) a unit
   when a capability is unavailable, with a reason; the skip cascades to dependents. Detection:
   `docker` → `docker info` succeeds, `github` → `GITHUB_TOKEN` set, else a tool of that name on
@@ -252,9 +264,9 @@ The scheduler/lifecycle **spine is now complete** (collect → plan → deps →
 execute). The remaining increments pivot from engine to **product** — the capabilities that make
 prova useful beyond testing itself:
 
-1. **`grpc` module** (then **`graphql`**) — the next network interface (archetect-core has a gRPC
-   proto + fixtures to lean on). *(The `db` module — sqlx `Any`, verified against real Postgres — and
-   the `bollard` swap for Docker are done.)*
+1. **`graphql` module** — the last network interface. *(The `grpc` module — native/dynamic via
+   reflection + `prost-reflect`, verified against a real reflection server — is done, as is the `db`
+   module (sqlx `Any`, real Postgres) and the `bollard` swap for Docker.)*
 2. **Snapshots** — `matches_snapshot`, `.snap` files + `--update-snapshots`.
 5. **Flow ergonomics**: `f:use(fixture)` builder sugar (currently flow-scoped fixtures are used via
    `t:use` inside steps); re-runnable flow bodies (re-invoke to get fresh closures) as the

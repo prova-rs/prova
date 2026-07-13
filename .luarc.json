@@ -14,7 +14,8 @@
     "http",
     "archetect",
     "docker",
-    "db"
+    "db",
+    "grpc"
   ],
   "completion.callSnippet": "Replace",
   "hint.enable": true

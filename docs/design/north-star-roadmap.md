@@ -39,27 +39,36 @@ The **spine and most capabilities are done**. Twelve+ increments, each with prov
   round-trip** (`docker.run{postgres}` + `db.connect` + query) — the North Star data layer, leak-free.
 
 **North Star arc status:** render ✅ · assert layout ✅ · boot app (`shell.spawn`) ✅ · provision deps
-(`docker`) ✅ · drive HTTP ✅ · **query DB ✅** · drive gRPC ⛔ (next) · Pulsar ⛔ · full assembly ⛔.
+(`docker`) ✅ · drive HTTP ✅ · **query DB ✅** · **drive gRPC ✅** · Pulsar ⛔ · full assembly ⛔.
 
 ## Sequenced plan
 
 ### Phase 1 — Finish the interfaces & authoring ergonomics
 
-**1. `grpc` module** — the last leg of the network-interface trio (`http` done).
-- *Design decision to make first:* dynamic invocation strategy. Two viable v1 paths:
-  - **(a) shell-out to `grpcurl`** (mirrors how `docker` started): `grpc.call(addr, "pkg.Svc/Method", json)`
-    → shell `grpcurl -plaintext -d <json> <addr> <method>`, parse JSON reply. Fast; `requires`-gate
-    on `"grpcurl"`. Good v1; swap to native later (the bollard lesson: ship, then upgrade).
-  - **(b) native reflection** via `tonic` + `tonic-reflection` + `prost-reflect`: connect, fetch the
-    server's `FileDescriptorSet` over reflection, build dynamic request messages from Lua tables,
-    invoke, decode reply to Lua. Batteries-included/no-CLI, but meaningfully more code.
-  - *Recommendation:* start with (a) to unblock the North Star quickly, note the native path. Keep the
-    Lua surface identical either way so it's a clean internal swap (as `docker`→bollard was).
-- *Lua surface (proposed):* `grpc.connect(addr)` → `Client`; `client:call("pkg.Svc/Method", req_table)`
-  → response table; maybe `client:call_status(...)` for error-code assertions. Feature-gate `grpc`.
-- *Verify:* stand up a containerized gRPC server (archetect-core has a gRPC proto + fixtures at
-  `archetect-core/tests/grpc/`; or a tiny public grpc echo image) via `docker.run`, call it, assert.
-  Gate the test on `requires` (grpcurl and/or docker) so it skips cleanly.
+**1. `grpc` module — DONE (native, not grpcurl).** The roadmap penciled in grpcurl (option a) as the
+quick unblock, but building it in natively (option b) was chosen to preserve prova's
+single-self-contained-binary promise — shelling to `grpcurl` would put a `requires`-shaped hole in
+exactly the "batteries-included, no capability ceilings" pitch. Implemented in `modules.rs` `mod grpc`
+(feature `grpc`, default-on, `prova-core` still builds `--no-default-features`):
+- `grpc.connect(addr, {timeout})` → `Client`; performs **gRPC Server Reflection once** to build a
+  `prost_reflect::DescriptorPool` for every advertised service (skips `grpc.reflection.*`).
+- `client:call("pkg.Svc/Method", req_table)` → response table (raises on non-OK status);
+  `client:call_status(...)` → `{ok, code, message, response}` for status-code assertions;
+  `grpc.wait_for(addr, {timeout, every})` = boot-then-probe.
+- **How it works:** Lua table → `serde_json::Value` → `DynamicMessage::deserialize(input_desc)`; a
+  generic tonic **codec over `DynamicMessage`** (encoder prost-encodes, decoder merges into an empty
+  message of the output descriptor) does the unary call via `tonic::client::Grpc::unary`; reply
+  `DynamicMessage` → serde_json (`skip_default_fields(false)`) → Lua. Reflection **negotiates v1,
+  falls back to v1alpha** (a macro generates the per-version list/file-fetch pair).
+- **Deps (first-class in `prova-core`, versions tracked to archetect-core so the lockfile dedupes to a
+  single build):** `tonic` 0.14 (`default-features=false`, `["channel"]`), `tonic-reflection` 0.14
+  (`default-features=false`), `prost`/`prost-types` 0.14, `prost-reflect` 0.16 (`serde`). Plaintext-
+  only in v1 (matching `http`). **Not transitive** — prova-core stays domain-agnostic (no archetect
+  edge); the tonic/prost tree merely happened to already be compiled via `prova-archetect`.
+- *Verified:* `examples/grpc_test.lua` + `tests/grpc.rs` — three round-trips (unary SayHello, DummyUnary
+  field echo, a `NotFound` via `call_status`) against a real reflection server (`moul/grpcbin`, which
+  speaks **v1alpha** — exercises the fallback) in an ephemeral container, `requires{docker}`-gated so
+  it skips cleanly without a daemon. Clippy + LuaLS clean.
 
 **2. Flow ergonomics + parametrization** — graduates the 4 `examples/aspirational/` files and is
    needed to express real multi-service suites tersely. Four sub-features (all have LuaLS stubs
@@ -133,7 +142,7 @@ The **spine and most capabilities are done**. Twelve+ increments, each with prov
 - **Container/DB readiness = retry the real thing**, not `pg_isready`/port-open (init restarts).
 - **Docker `:exec` needs a shell in the image** (`sh -c`); `traefik/whoami` is `FROM scratch`.
 - Feature flags: `http`, `db`, `docker` are default-on; the crate builds with `--no-default-features`.
-- **Verify every change:** `cargo test` (28 tests, some Docker-gated), `cargo clippy --all-targets`
+- **Verify every change:** `cargo test` (29 tests, some Docker-gated), `cargo clippy --all-targets`
   (zero warnings), `lua-language-server --check "$(pwd)"` (LuaLS-clean), and run touched
   `examples/*.lua` via the CLI. Keep the LuaCATS stub (`library/`) in lockstep with the runtime.
 

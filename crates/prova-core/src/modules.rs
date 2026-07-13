@@ -28,6 +28,8 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set("http", http::make(lua)?)?;
     #[cfg(feature = "db")]
     lua.globals().set("db", db::make(lua)?)?;
+    #[cfg(feature = "grpc")]
+    lua.globals().set("grpc", grpc::make(lua)?)?;
     Ok(())
 }
 
@@ -1102,5 +1104,411 @@ mod db {
             return Ok(Value::String(lua.create_string(b)?));
         }
         Ok(Value::Nil)
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// grpc (async; native — no `grpcurl` binary. Plaintext-only in v1, like http.)
+// ---------------------------------------------------------------------------------------------
+
+// A *dynamic* gRPC client: it learns the server's schema at runtime via gRPC Server Reflection
+// (so tests need no `.proto` files and no codegen), builds request messages from Lua tables against
+// the fetched descriptors, invokes with a generic tonic codec over `DynamicMessage`, and decodes the
+// reply back to a Lua table. This keeps prova a single self-contained binary — the whole point of
+// going native instead of shelling out to `grpcurl`. The server must have reflection enabled; if it
+// doesn't, `grpc.connect` fails with a clear message (a proto-file path mode can layer on later).
+#[cfg(feature = "grpc")]
+mod grpc {
+    use std::collections::HashMap;
+    use std::time::{Duration, Instant};
+
+    use mlua::{Lua, LuaSerdeExt, Table, UserData, UserDataMethods, Value};
+    use prost::Message as _;
+    use prost_reflect::{DescriptorPool, DynamicMessage, MessageDescriptor, SerializeOptions};
+    use prost_types::FileDescriptorProto;
+    use tonic::codec::{Codec, DecodeBuf, Decoder, EncodeBuf, Encoder};
+    use tonic::codegen::http::uri::PathAndQuery;
+    use tonic::transport::Channel;
+    use tonic::{Request, Status};
+
+    use crate::model::parse_duration;
+
+    fn err(msg: impl Into<String>) -> mlua::Error {
+        mlua::Error::RuntimeError(msg.into())
+    }
+
+    pub(crate) fn make(lua: &Lua) -> mlua::Result<Table> {
+        let grpc = lua.create_table()?;
+        // grpc.connect(addr, { timeout = "30s" }) → a Client (reflection is performed here, once).
+        grpc.set(
+            "connect",
+            lua.create_async_function(|lua, (addr, opts): (String, Option<Table>)| async move {
+                let timeout = opt_duration(&opts, "timeout")?;
+                let channel = connect_channel(&addr).await?;
+                let pool = build_pool(&channel).await?;
+                lua.create_userdata(Client {
+                    channel,
+                    pool,
+                    timeout,
+                })
+            })?,
+        )?;
+        // grpc.wait_for(addr, { timeout = "30s", every = "500ms" }) — poll until the server answers a
+        // reflection ListServices (boot-then-probe, mirroring http.wait_for).
+        grpc.set(
+            "wait_for",
+            lua.create_async_function(|_, (addr, opts): (String, Option<Table>)| async move {
+                let timeout = opt_duration(&opts, "timeout")?.unwrap_or(Duration::from_secs(30));
+                let every = opt_duration(&opts, "every")?.unwrap_or(Duration::from_millis(500));
+                let deadline = Instant::now() + timeout;
+                loop {
+                    if let Ok(channel) = connect_channel(&addr).await {
+                        if list_services(&channel).await.is_ok() {
+                            return Ok(());
+                        }
+                    }
+                    if Instant::now() >= deadline {
+                        return Err(err(format!(
+                            "grpc.wait_for timed out after {timeout:?} waiting for {addr}"
+                        )));
+                    }
+                    tokio::time::sleep(every).await;
+                }
+            })?,
+        )?;
+        Ok(grpc)
+    }
+
+    /// A connected client bound to one server. `client:call(method, req)` returns the response as a
+    /// table; `client:call_status(method, req)` returns `{ ok, code, message, response }` so a test
+    /// can assert on gRPC status codes (e.g. `NotFound`, `InvalidArgument`) without raising.
+    struct Client {
+        channel: Channel,
+        pool: DescriptorPool,
+        timeout: Option<Duration>,
+    }
+
+    impl UserData for Client {
+        fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+            methods.add_async_method(
+                "call",
+                |lua, this, (method, req): (String, Option<Value>)| async move {
+                    let input = build_request(&lua, &this.pool, &method, req)?;
+                    match invoke(&this.channel, &this.pool, &method, input, this.timeout).await {
+                        Ok(msg) => response_to_lua(&lua, &msg),
+                        Err(status) => Err(err(format!(
+                            "grpc call {method} failed: {} ({})",
+                            status.message(),
+                            status.code()
+                        ))),
+                    }
+                },
+            );
+            methods.add_async_method(
+                "call_status",
+                |lua, this, (method, req): (String, Option<Value>)| async move {
+                    let input = build_request(&lua, &this.pool, &method, req)?;
+                    let out = lua.create_table()?;
+                    match invoke(&this.channel, &this.pool, &method, input, this.timeout).await {
+                        Ok(msg) => {
+                            out.set("ok", true)?;
+                            out.set("code", "Ok")?;
+                            out.set("message", "")?;
+                            out.set("response", response_to_lua(&lua, &msg)?)?;
+                        }
+                        Err(status) => {
+                            out.set("ok", false)?;
+                            out.set("code", format!("{:?}", status.code()))?;
+                            out.set("message", status.message().to_string())?;
+                            out.set("response", Value::Nil)?;
+                        }
+                    }
+                    Ok(out)
+                },
+            );
+        }
+    }
+
+    async fn connect_channel(addr: &str) -> mlua::Result<Channel> {
+        // Accept "host:port" or a full "http://host:port"; plaintext only in v1.
+        let uri = if addr.contains("://") {
+            addr.to_string()
+        } else {
+            format!("http://{addr}")
+        };
+        Channel::from_shared(uri)
+            .map_err(|e| err(format!("grpc: invalid address {addr:?}: {e}")))?
+            .connect()
+            .await
+            .map_err(|e| err(format!("grpc: could not connect to {addr}: {e}")))
+    }
+
+    /// Turn a Lua request table into a wire-ready `DynamicMessage` for `method`'s input type.
+    fn build_request(
+        lua: &Lua,
+        pool: &DescriptorPool,
+        method: &str,
+        req: Option<Value>,
+    ) -> mlua::Result<DynamicMessage> {
+        let desc = method_descriptor(pool, method)?;
+        let json: serde_json::Value = match req {
+            Some(v) => lua.from_value(v)?,
+            None => serde_json::Value::Object(Default::default()),
+        };
+        DynamicMessage::deserialize(desc.input(), &json)
+            .map_err(|e| err(format!("grpc: building request for {method}: {e}")))
+    }
+
+    /// Serialize a response message to a Lua table. `skip_default_fields(false)` keeps zero/empty
+    /// fields present so assertions can see the full message shape.
+    fn response_to_lua(lua: &Lua, msg: &DynamicMessage) -> mlua::Result<Value> {
+        let opts = SerializeOptions::new().skip_default_fields(false);
+        let value = msg
+            .serialize_with_options(serde_json::value::Serializer, &opts)
+            .map_err(|e| err(format!("grpc: decoding response: {e}")))?;
+        lua.to_value(&value)
+    }
+
+    fn method_descriptor(
+        pool: &DescriptorPool,
+        method: &str,
+    ) -> mlua::Result<prost_reflect::MethodDescriptor> {
+        // Accept "pkg.Service/Method" or "/pkg.Service/Method".
+        let trimmed = method.trim_start_matches('/');
+        let (service, method_name) = trimmed.rsplit_once('/').ok_or_else(|| {
+            err(format!(
+                "grpc: method must be \"package.Service/Method\", got {method:?}"
+            ))
+        })?;
+        let svc = pool.get_service_by_name(service).ok_or_else(|| {
+            err(format!(
+                "grpc: service {service:?} not found via reflection (known: {})",
+                pool.services()
+                    .map(|s| s.full_name().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        })?;
+        let method = svc.methods().find(|m| m.name() == method_name);
+        method.ok_or_else(|| err(format!("grpc: method {method_name:?} not found on {service}")))
+    }
+
+    async fn invoke(
+        channel: &Channel,
+        pool: &DescriptorPool,
+        method: &str,
+        input: DynamicMessage,
+        timeout: Option<Duration>,
+    ) -> Result<DynamicMessage, Status> {
+        let desc = method_descriptor(pool, method).map_err(|e| Status::internal(e.to_string()))?;
+        let path: PathAndQuery = format!("/{}/{}", desc.parent_service().full_name(), desc.name())
+            .parse()
+            .map_err(|e| Status::internal(format!("grpc: bad method path: {e}")))?;
+        let mut grpc = tonic::client::Grpc::new(channel.clone());
+        grpc.ready()
+            .await
+            .map_err(|e| Status::unavailable(format!("grpc: service not ready: {e}")))?;
+        let codec = DynCodec {
+            output: desc.output(),
+        };
+        let mut request = Request::new(input);
+        if let Some(t) = timeout {
+            request.set_timeout(t);
+        }
+        let resp = grpc.unary(request, path, codec).await?;
+        Ok(resp.into_inner())
+    }
+
+    // A tonic codec that speaks `DynamicMessage` on both ends: the encoder just prost-encodes the
+    // request; the decoder builds an empty message of the known output type and merges the reply
+    // bytes into it. This is the whole trick that lets one client call any method dynamically.
+    #[derive(Clone)]
+    struct DynCodec {
+        output: MessageDescriptor,
+    }
+
+    impl Codec for DynCodec {
+        type Encode = DynamicMessage;
+        type Decode = DynamicMessage;
+        type Encoder = DynEncoder;
+        type Decoder = DynDecoder;
+        fn encoder(&mut self) -> DynEncoder {
+            DynEncoder
+        }
+        fn decoder(&mut self) -> DynDecoder {
+            DynDecoder {
+                output: self.output.clone(),
+            }
+        }
+    }
+
+    struct DynEncoder;
+    impl Encoder for DynEncoder {
+        type Item = DynamicMessage;
+        type Error = Status;
+        fn encode(&mut self, item: DynamicMessage, dst: &mut EncodeBuf<'_>) -> Result<(), Status> {
+            item.encode(dst)
+                .map_err(|e| Status::internal(format!("grpc: encoding request: {e}")))
+        }
+    }
+
+    struct DynDecoder {
+        output: MessageDescriptor,
+    }
+    impl Decoder for DynDecoder {
+        type Item = DynamicMessage;
+        type Error = Status;
+        fn decode(&mut self, src: &mut DecodeBuf<'_>) -> Result<Option<DynamicMessage>, Status> {
+            let mut msg = DynamicMessage::new(self.output.clone());
+            msg.merge(src)
+                .map_err(|e| Status::internal(format!("grpc: decoding response: {e}")))?;
+            Ok(Some(msg))
+        }
+    }
+
+    // -- reflection ---------------------------------------------------------------------------
+
+    #[derive(Clone, Copy)]
+    enum Rv {
+        V1,
+        V1alpha,
+    }
+
+    /// Build a descriptor pool for every service the server advertises, via reflection. Negotiates
+    /// the reflection protocol version (v1, falling back to the older v1alpha many servers still use).
+    async fn build_pool(channel: &Channel) -> mlua::Result<DescriptorPool> {
+        let (services, rv) = list_services_negotiated(channel).await?;
+        let mut files: HashMap<String, FileDescriptorProto> = HashMap::new();
+        for service in &services {
+            // The reflection service describes itself; skip it — we only want the app's schema.
+            if service.starts_with("grpc.reflection.") {
+                continue;
+            }
+            let raw = files_for_symbol(channel, rv, service)
+                .await
+                .map_err(|e| err(format!("grpc: reflecting {service}: {} ({})", e.message(), e.code())))?;
+            for bytes in raw {
+                let fdp = FileDescriptorProto::decode(bytes.as_slice())
+                    .map_err(|e| err(format!("grpc: decoding file descriptor: {e}")))?;
+                let name = fdp.name().to_string();
+                files.entry(name).or_insert(fdp);
+            }
+        }
+        let mut pool = DescriptorPool::new();
+        pool.add_file_descriptor_protos(files.into_values())
+            .map_err(|e| err(format!("grpc: building descriptor pool: {e}")))?;
+        Ok(pool)
+    }
+
+    /// Try to list services over v1; if the server hasn't implemented v1 reflection, retry v1alpha.
+    async fn list_services_negotiated(channel: &Channel) -> mlua::Result<(Vec<String>, Rv)> {
+        match list_services_v1(channel).await {
+            Ok(s) => Ok((s, Rv::V1)),
+            Err(status) if status.code() == tonic::Code::Unimplemented => {
+                let s = list_services_v1alpha(channel).await.map_err(|e| {
+                    err(format!(
+                        "grpc: server reflection (v1alpha) failed: {} ({})",
+                        e.message(),
+                        e.code()
+                    ))
+                })?;
+                Ok((s, Rv::V1alpha))
+            }
+            Err(status) => Err(err(format!(
+                "grpc: server reflection failed ({}). The server must enable gRPC reflection for \
+                 prova's dynamic client. {}",
+                status.code(),
+                status.message()
+            ))),
+        }
+    }
+
+    /// Version-agnostic `list_services` used by `wait_for` (v1, then v1alpha).
+    async fn list_services(channel: &Channel) -> mlua::Result<Vec<String>> {
+        list_services_negotiated(channel).await.map(|(s, _)| s)
+    }
+
+    async fn files_for_symbol(
+        channel: &Channel,
+        rv: Rv,
+        symbol: &str,
+    ) -> Result<Vec<Vec<u8>>, Status> {
+        match rv {
+            Rv::V1 => files_for_symbol_v1(channel, symbol).await,
+            Rv::V1alpha => files_for_symbol_v1alpha(channel, symbol).await,
+        }
+    }
+
+    // The two reflection protocol versions have structurally identical messages under different
+    // module paths; this macro generates the list/file-fetch pair for each so the orchestration above
+    // stays version-agnostic.
+    macro_rules! reflection_ops {
+        ($modpath:ident, $list_fn:ident, $files_fn:ident) => {
+            async fn $list_fn(channel: &Channel) -> Result<Vec<String>, Status> {
+                use tonic_reflection::pb::$modpath::{
+                    server_reflection_client::ServerReflectionClient,
+                    server_reflection_request::MessageRequest,
+                    server_reflection_response::MessageResponse, ServerReflectionRequest,
+                };
+                let mut client = ServerReflectionClient::new(channel.clone());
+                let req = ServerReflectionRequest {
+                    host: String::new(),
+                    message_request: Some(MessageRequest::ListServices(String::new())),
+                };
+                let stream = futures::stream::iter(std::iter::once(req));
+                let mut inner = client.server_reflection_info(stream).await?.into_inner();
+                let mut out = Vec::new();
+                while let Some(resp) = inner.message().await? {
+                    match resp.message_response {
+                        Some(MessageResponse::ListServicesResponse(list)) => {
+                            out.extend(list.service.into_iter().map(|s| s.name));
+                        }
+                        Some(MessageResponse::ErrorResponse(e)) => {
+                            return Err(Status::new(tonic::Code::from(e.error_code), e.error_message));
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(out)
+            }
+
+            async fn $files_fn(channel: &Channel, symbol: &str) -> Result<Vec<Vec<u8>>, Status> {
+                use tonic_reflection::pb::$modpath::{
+                    server_reflection_client::ServerReflectionClient,
+                    server_reflection_request::MessageRequest,
+                    server_reflection_response::MessageResponse, ServerReflectionRequest,
+                };
+                let mut client = ServerReflectionClient::new(channel.clone());
+                let req = ServerReflectionRequest {
+                    host: String::new(),
+                    message_request: Some(MessageRequest::FileContainingSymbol(symbol.to_string())),
+                };
+                let stream = futures::stream::iter(std::iter::once(req));
+                let mut inner = client.server_reflection_info(stream).await?.into_inner();
+                let mut out = Vec::new();
+                while let Some(resp) = inner.message().await? {
+                    match resp.message_response {
+                        Some(MessageResponse::FileDescriptorResponse(fdr)) => {
+                            out.extend(fdr.file_descriptor_proto);
+                        }
+                        Some(MessageResponse::ErrorResponse(e)) => {
+                            return Err(Status::new(tonic::Code::from(e.error_code), e.error_message));
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(out)
+            }
+        };
+    }
+
+    reflection_ops!(v1, list_services_v1, files_for_symbol_v1);
+    reflection_ops!(v1alpha, list_services_v1alpha, files_for_symbol_v1alpha);
+
+    fn opt_duration(opts: &Option<Table>, key: &str) -> mlua::Result<Option<Duration>> {
+        Ok(match opts {
+            Some(t) => t.get::<Option<String>>(key)?.and_then(|s| parse_duration(&s)),
+            None => None,
+        })
     }
 }

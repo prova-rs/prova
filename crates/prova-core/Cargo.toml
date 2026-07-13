@@ -31,9 +31,27 @@ sqlx = { version = "0.8", optional = true, default-features = false, features = 
 # The `docker` module — the typed Docker daemon client (bollard), not CLI-shelling: structured
 # errors, log streams, exec, port inspection. Feature-gated (default on).
 bollard = { version = "0.18", optional = true }
+# The `grpc` module — a *native*, dynamic gRPC client (no `grpcurl` on PATH). It discovers the
+# server's schema at runtime via gRPC Server Reflection (`tonic-reflection`'s client), builds request
+# messages from Lua tables against the fetched descriptors (`prost-reflect`'s `DynamicMessage`), and
+# invokes with a generic tonic codec. Versions track archetect-core's tonic/prost (0.14) so the
+# workspace lockfile dedupes to a single build. Plaintext-only in v1 (local/CI containers), matching
+# `http`'s no-TLS stance. Feature-gated (default on); `prova-core` still builds `--no-default-features`.
+tonic = { version = "0.14", default-features = false, features = ["channel"], optional = true }
+tonic-reflection = { version = "0.14", default-features = false, optional = true }
+prost = { version = "0.14", optional = true }
+prost-types = { version = "0.14", optional = true }
+prost-reflect = { version = "0.16.5", features = ["serde"], optional = true }
 
 [features]
-default = ["http", "db", "docker"]
+default = ["http", "db", "docker", "grpc"]
 http = ["dep:reqwest"]
 db = ["dep:sqlx"]
 docker = ["dep:bollard"]
+grpc = [
+    "dep:tonic",
+    "dep:tonic-reflection",
+    "dep:prost",
+    "dep:prost-types",
+    "dep:prost-reflect",
+]
