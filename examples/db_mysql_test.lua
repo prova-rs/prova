@@ -3,7 +3,7 @@
 --- Requires docker; skips gracefully otherwise. Note the only backend differences are the recipe call
 --- and MySQL's `?` placeholders.
 
-local my = prova.fixture("mysql", "file", function(ctx)
+local my = prova.fixture("mysql", Scope.File, function(ctx)
   return db.mysql(ctx, { database = "orders" }).conn
 end)
 

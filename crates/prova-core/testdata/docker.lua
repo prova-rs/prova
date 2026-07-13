@@ -1,7 +1,7 @@
 -- A containerized dependency as a fixture: started on first use, stopped on (async) teardown.
 -- Gated by `requires = { "docker" }` on the group, so where docker is absent these SKIP (and the
 -- fixture, being lazy, never starts a container).
-local whoami = prova.fixture("whoami", "file", function(ctx)
+local whoami = prova.fixture("whoami", Scope.File, function(ctx)
   local c = docker.run{
     image = "traefik/whoami",       -- tiny public image; HTTP echo on :80
     ports = { 80 },                 -- publish to a random host port

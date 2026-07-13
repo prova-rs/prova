@@ -18,7 +18,7 @@ local ANSWERS = {
 }
 
 -- Render once (headless), shared across the suite.
-local project = prova.fixture("project", "file", function(ctx)
+local project = prova.fixture("project", Scope.File, function(ctx)
   return archetect.render{
     source = "https://github.com/p6m-archetypes/rust-grpc-service-archetype.git#dev",
     answers = ANSWERS,
@@ -29,7 +29,7 @@ end)
 
 -- Provision Postgres, build the service, and boot it wired to the container. Returns the gRPC address
 -- and the DB URL (so tests can cross-check the very database the service is using).
-local service = prova.fixture("service", "file", function(ctx)
+local service = prova.fixture("service", Scope.File, function(ctx)
   local dir = ctx:use(project):dir("inventory-service").path
 
   local pg = ctx:manage(docker.run{

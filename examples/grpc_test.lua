@@ -6,7 +6,7 @@
 --- runtime via gRPC Server Reflection, builds requests from plain Lua tables, and decodes replies
 --- back to tables. grpcbin speaks the older v1alpha reflection protocol, exercising prova's fallback.
 
-local server = prova.fixture("grpcbin", "file", function(ctx)
+local server = prova.fixture("grpcbin", Scope.File, function(ctx)
   local c = ctx:manage(docker.run{
     image = "moul/grpcbin",
     ports = { 9000 },

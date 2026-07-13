@@ -7,7 +7,7 @@
 local greeting = "crates/prova-archetect/tests/fixtures/greeting"  -- local archetype (relative to CWD)
 
 -- A file-scoped fixture: render once, share the tree handle across the tests below.
-local rendered = prova.fixture("rendered", "file", function(ctx)
+local rendered = prova.fixture("rendered", Scope.File, function(ctx)
   return archetect.render{
     source = greeting,
     destination = ctx:tempdir(),

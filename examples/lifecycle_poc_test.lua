@@ -7,7 +7,7 @@
 -- `prova` and the fs/shell/http modules are injected globals — no require needed.
 
 -- suite-scoped: constructed once for the whole run, torn down last.
-local suite_dir = prova.fixture("suite_dir", "suite", function(ctx)
+local suite_dir = prova.fixture("suite_dir", Scope.Suite, function(ctx)
   local dir = ctx:tempdir()
   ctx:log("suite_dir built: " .. dir)
   ctx:defer(function() ctx:log("suite_dir torn down") end)
@@ -15,7 +15,7 @@ local suite_dir = prova.fixture("suite_dir", "suite", function(ctx)
 end)
 
 -- file-scoped: one instance per test file; depends on the suite fixture.
-local db = prova.fixture("db", "file", function(ctx)
+local db = prova.fixture("db", Scope.File, function(ctx)
   local root = ctx:use(suite_dir)              -- root : string
   ctx:log("db opened under " .. root)
   ctx:defer(function() ctx:log("db closed") end)
@@ -24,7 +24,7 @@ end)
 
 -- test-scoped (default): fresh for every test. Mutates the shared file-scoped db so we can
 -- observe that test-scoped teardown restores state while the file-scoped value persists.
-local conn = prova.fixture("conn", "test", function(ctx)
+local conn = prova.fixture("conn", Scope.Test, function(ctx)
   local database = ctx:use(db)                 -- database : table (same instance across tests in this file)
   database.open_connections = database.open_connections + 1
   ctx:defer(function() database.open_connections = database.open_connections - 1 end)

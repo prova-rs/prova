@@ -5,7 +5,7 @@
 --- file-scoped fixture serves a temp dir in the background, waits for health with http.wait_for,
 --- and tears the server down at file end. This is the boot-then-probe acceptance pattern.
 
-local server = prova.fixture("server", "file", function(ctx)
+local server = prova.fixture("server", Scope.File, function(ctx)
   local root = ctx:tempdir()
   fs.write(root .. "/health", "ok")
   fs.write(root .. "/index.json", '{"status":"ok","name":"demo"}')

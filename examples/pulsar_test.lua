@@ -2,7 +2,7 @@
 --- container. Run from the repo root: `prova examples/pulsar_test.lua`. Requires docker; skips
 --- otherwise. Pulsar standalone is a heavy image and slow to start (tens of seconds on a cold pull).
 
-local mq = prova.fixture("pulsar", "file", function(ctx)
+local mq = prova.fixture("pulsar", Scope.File, function(ctx)
   return pulsar.container(ctx).client
 end)
 

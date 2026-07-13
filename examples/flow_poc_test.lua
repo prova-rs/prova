@@ -8,7 +8,7 @@
 -- A flow-scoped fixture: built on first use inside the flow, shared by every step, torn down
 -- after the flow's last step. `test` scope inside a flow means per-step, so this is the level
 -- at which built-up flow state lives as a *fixture* (vs. a raw closure upvalue).
-local ledger = prova.fixture("ledger", "flow", function(ctx)
+local ledger = prova.fixture("ledger", Scope.Flow, function(ctx)
   ctx:log("ledger opened")
   ctx:defer(function() ctx:log("ledger closed") end)
   return { entries = {} }

@@ -124,25 +124,42 @@ impl ScopeKind {
             ScopeKind::Suite => "suite",
         }
     }
-    fn parse(s: &str) -> mlua::Result<Self> {
-        match s {
-            "test" => Ok(ScopeKind::Test),
-            "flow" => Ok(ScopeKind::Flow),
-            "file" => Ok(ScopeKind::File),
-            "suite" => Ok(ScopeKind::Suite),
-            other => Err(mlua::Error::RuntimeError(format!(
-                "unknown fixture scope {other:?} (expected test|flow|file|suite)"
-            ))),
-        }
+}
+
+/// A typed fixture-scope value — the members of the `Scope` global (`Scope.Test`/`Scope.Flow`/
+/// `Scope.File`/`Scope.Suite`). This is the only way to name a scope; discoverable and typo-safe.
+#[derive(Clone, Copy)]
+struct ScopeRef {
+    kind: ScopeKind,
+}
+
+impl UserData for ScopeRef {
+    fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
+        fields.add_field_method_get("scope", |_, this| Ok(this.kind.label()));
     }
+}
+
+/// Build the `Scope` global — the typed scope constants.
+fn make_scope_global(lua: &Lua) -> mlua::Result<Table> {
+    let t = lua.create_table()?;
+    t.set("Test", ScopeRef { kind: ScopeKind::Test })?;
+    t.set("Flow", ScopeRef { kind: ScopeKind::Flow })?;
+    t.set("File", ScopeRef { kind: ScopeKind::File })?;
+    t.set("Suite", ScopeRef { kind: ScopeKind::Suite })?;
+    Ok(t)
 }
 
 fn parse_scope(v: Value) -> mlua::Result<ScopeKind> {
     match v {
-        Value::String(s) => ScopeKind::parse(&s.to_string_lossy()),
-        Value::Table(t) => ScopeKind::parse(&t.get::<String>("scope")?),
+        Value::UserData(ud) => ud.borrow::<ScopeRef>().map(|r| r.kind).map_err(|_| {
+            mlua::Error::RuntimeError(
+                "fixture scope must be a Scope value: Scope.Test / Scope.Flow / Scope.File / Scope.Suite"
+                    .into(),
+            )
+        }),
         _ => Err(mlua::Error::RuntimeError(
-            "fixture scope must be a string or an options table".into(),
+            "fixture scope must be a Scope value: Scope.Test / Scope.Flow / Scope.File / Scope.Suite"
+                .into(),
         )),
     }
 }
@@ -1184,6 +1201,9 @@ fn build_lua(root_name: String, modules: &[Module]) -> mlua::Result<(Lua, Shared
     )?;
 
     lua.globals().set("prova", prova)?;
+
+    // The typed fixture-scope constants: `Scope.Test` / `Scope.Flow` / `Scope.File` / `Scope.Suite`.
+    lua.globals().set("Scope", make_scope_global(&lua)?)?;
 
     // First-party capability modules (`shell`, `fs`) as their own injected globals.
     crate::modules::install(&lua)?;

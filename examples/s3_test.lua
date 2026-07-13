@@ -1,7 +1,7 @@
 --- The `s3` object-storage client + `s3.container` recipe against a REAL MinIO (S3-compatible) in an
 --- ephemeral container. Run from the repo root: `prova examples/s3_test.lua`. Requires docker.
 
-local store = prova.fixture("s3", "file", function(ctx)
+local store = prova.fixture("s3", Scope.File, function(ctx)
   return s3.container(ctx).bucket
 end)
 

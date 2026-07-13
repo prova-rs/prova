@@ -1,6 +1,6 @@
 -- SQLite (embedded, no server): proves the general `db` API. Postgres/MySQL use the SAME calls —
 -- only the connect URL scheme differs. A test-scoped fixture gives each test a fresh database.
-local conn = prova.fixture("conn", "test", function(ctx)
+local conn = prova.fixture("conn", Scope.Test, function(ctx)
   local path = ctx:tempdir() .. "/test.db"
   local c = db.connect("sqlite://" .. path .. "?mode=rwc")
   c:execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, score REAL, active BOOLEAN)")

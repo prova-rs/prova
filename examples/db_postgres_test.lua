@@ -3,7 +3,7 @@
 --- where it is unavailable. Note the only difference from the SQLite example is the connect URL and
 --- `$1` placeholders — the query surface is identical.
 
-local pg = prova.fixture("pg", "file", function(ctx)
+local pg = prova.fixture("pg", Scope.File, function(ctx)
   -- The `db.postgres` recipe folds the whole dance — provision an ephemeral container, wait for it to
   -- actually accept connections, open a managed connection — into one line. Returns { url, conn,
   -- container }; here we just want the connection.

@@ -52,7 +52,7 @@ function archetect.verify(spec)
   local timeout = spec.timeout or "600s"
 
   -- Render once (headless by default); every check below shares this output.
-  local rendered = prova.fixture(label .. ":render", "file", function(ctx)
+  local rendered = prova.fixture(label .. ":render", Scope.File, function(ctx)
     return archetect.render{
       source = spec.source,
       answers = spec.answers,

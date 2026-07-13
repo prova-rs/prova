@@ -6,7 +6,7 @@
 --- drive it over its network interface → remove it on (async) teardown. This is how a test stands
 --- up a real Postgres/Kafka/etc. under the system-under-test.
 
-local service = prova.fixture("service", "file", function(ctx)
+local service = prova.fixture("service", Scope.File, function(ctx)
   local c = ctx:manage(docker.run{
     image = "traefik/whoami",              -- tiny public HTTP echo on :80
     ports = { 80 },                        -- published to a random host port

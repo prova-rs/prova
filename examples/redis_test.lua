@@ -1,7 +1,7 @@
 --- The `redis` client + the `redis.container` recipe against a REAL Redis in an ephemeral container.
 --- Run from the repo root: `prova examples/redis_test.lua`. Requires docker; skips otherwise.
 
-local cache = prova.fixture("redis", "file", function(ctx)
+local cache = prova.fixture("redis", Scope.File, function(ctx)
   return redis.container(ctx).conn
 end)
 

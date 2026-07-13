@@ -52,7 +52,7 @@ fn rust_cli_archetype_renders_and_builds_or_skips() {
 const TEMPLATE: &str = r#"
 local src = [[__SRC__]]
 
-local project = prova.fixture("project", "file", function(ctx)
+local project = prova.fixture("project", Scope.File, function(ctx)
   return archetect.render{ source = src, answers = { project_name = "widget", description = "a demo cli" }, destination = ctx:tempdir(), defaults = true }
 end)
 

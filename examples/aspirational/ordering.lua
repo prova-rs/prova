@@ -3,7 +3,7 @@
 --- No archetect/network; illustrative of the execution model, not runnable yet.
 
 -- A fixture the flow will build once for its whole lifetime (flow scope).
-local api = prova.fixture("api_base", "suite", function(ctx)
+local api = prova.fixture("api_base", Scope.Suite, function(ctx)
   return "http://localhost:8080"
 end)
 

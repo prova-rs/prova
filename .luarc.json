@@ -23,7 +23,8 @@
     "redis",
     "pulsar",
     "kafka",
-    "s3"
+    "s3",
+    "Scope"
   ],
   "completion.callSnippet": "Replace",
   "hint.enable": true

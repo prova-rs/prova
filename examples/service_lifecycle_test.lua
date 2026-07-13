@@ -6,7 +6,7 @@
 --- This is the shape of a real service acceptance test; swap the python server for your built
 --- binary (`shell.spawn("./target/release/app")`) and the rest is unchanged.
 
-local service = prova.fixture("service", "file", function(ctx)
+local service = prova.fixture("service", Scope.File, function(ctx)
   -- Stand-in "service": a static server over a temp dir. In a real test this is your app.
   local root = ctx:tempdir()
   fs.write(root .. "/health", "ok")

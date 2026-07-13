@@ -3,7 +3,7 @@
 --- skips otherwise. The recipe uses a fixed host port (Kafka advertises a reachable listener), so
 --- only one kafka.container runs per host at a time.
 
-local mq = prova.fixture("kafka", "file", function(ctx)
+local mq = prova.fixture("kafka", Scope.File, function(ctx)
   return kafka.container(ctx).client
 end)
 

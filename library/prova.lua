@@ -146,8 +146,8 @@ function Matcher:matches_snapshot(name) end
 -- Registration API
 ------------------------------------------------------------------------------------------
 
+--- Reserved for future fixture options (parametrization). Scope is a `Scope` value, not an option.
 ---@class prova.FixtureOpts
----@field scope? "test"|"flow"|"file"|"suite"   # default "test"; `flow` only valid inside a flow
 ---@field autouse? boolean               # run even when no test names it
 ---@field params? any[]                  # parametrize: one variant per element (see Context:param)
 
@@ -263,16 +263,33 @@ function GroupBuilder:after_all(fn) end
 ---@class prova
 prova = {}
 
----Declare a fixture: a named factory producing a value, with optional scoped teardown and
----dependencies. `scope` may be a string ("test"|"file"|"suite") or a full options table.
----Returns a typed handle; pass it to `ctx:use(handle)` so the value type flows through.
+---Declare a fixture: a named factory producing a value, with scoped teardown and dependencies.
+---`scope` is a `Scope` value (`Scope.Test`/`Scope.Flow`/`Scope.File`/`Scope.Suite`); omit it for
+---`Scope.Test`. Returns a typed handle; pass it to `ctx:use(handle)` so the value type flows through.
 ---@generic T
+---@overload fun(name: string, factory: fun(ctx: prova.Context): T): prova.Fixture<T>
 ---@param name string
----@param scope "test"|"flow"|"file"|"suite"|prova.FixtureOpts
+---@param scope prova.ScopeRef
 ---@param factory fun(ctx: prova.Context): T
----@param opts? prova.FixtureOpts        # when `scope` is a bare string, extra opts (e.g. params)
+---@param opts? prova.FixtureOpts   # reserved for parametrization (not yet implemented)
 ---@return prova.Fixture<T>
 function prova.fixture(name, scope, factory, opts) end
+
+--- An opaque fixture-scope value — a member of the `Scope` global.
+---@class prova.ScopeRef
+---@field scope string   # the scope name ("test"|"flow"|"file"|"suite")
+
+--- Typed fixture-scope constants (the `scope` argument to `prova.fixture`):
+---  * `Scope.Test`  — rebuilt fresh for each test (the default).
+---  * `Scope.Flow`  — built once per `prova.flow`, shared across its steps.
+---  * `Scope.File`  — built once per file, shared across the file's tests.
+---  * `Scope.Suite` — built once per run.
+---@class prova.Scope
+---@field Test prova.ScopeRef
+---@field Flow prova.ScopeRef
+---@field File prova.ScopeRef
+---@field Suite prova.ScopeRef
+Scope = {}
 
 -- The top-level `prova.test`/`test_each`/`flow`/`group` register into the file's implicit
 -- group (the independent strategy). Inside an explicit group, use the `GroupBuilder` methods.

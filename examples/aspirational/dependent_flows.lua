@@ -5,12 +5,12 @@
 --- are isolated among themselves unless an edge says otherwise, and that a failed upstream
 --- SKIPS (not fails) everything downstream. No real endpoints; illustrative of the model.
 
-local api = prova.fixture("api_base", "suite", function(ctx)
+local api = prova.fixture("api_base", Scope.Suite, function(ctx)
   return "http://localhost:8080"
 end)
 
 -- Shared account state flows through this fixture, NOT through depends_on edges.
-local account = prova.fixture("account", "suite", function(ctx)
+local account = prova.fixture("account", Scope.Suite, function(ctx)
   return { id = nil, token = nil }             -- populated by the login/populate flows
 end)
 

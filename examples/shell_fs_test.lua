@@ -6,7 +6,7 @@
 
 -- A file-scoped fixture whose factory AWAITS shell.run — built once, shared by every test below,
 -- torn down (temp dir removed) after the file.
-local workspace = prova.fixture("workspace", "file", function(ctx)
+local workspace = prova.fixture("workspace", Scope.File, function(ctx)
   local dir = ctx:tempdir()
   shell.run("mkdir -p src && printf 'fn main() {}\\n' > src/main.rs", { cwd = dir, check = true })
   return dir

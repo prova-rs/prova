@@ -145,8 +145,9 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
   `GroupBuilder:describe` is the builder form. Labeling only — no new fixture scope.
   *(`testdata/describe.lua`. Used by `examples/rust_cli_test.lua`.)*
 - **Fixtures + scopes + teardown**: `prova.fixture(name, scope, factory)` → typed handle;
-  `ctx:use(handle|name)` builds-or-caches; `test`/`flow`/`file`/`suite` scopes with per-scope
-  caches; `ctx:defer` (LIFO); `ctx:tempdir` (auto-removed); scope-mismatch rejection; inner→outer
+  `ctx:use(handle|name)` builds-or-caches; scope is a **typed `Scope` value** (`Scope.Test` default /
+  `Scope.Flow` / `Scope.File` / `Scope.Suite` — no magic strings) with per-scope caches; `ctx:defer`
+  (LIFO); `ctx:tempdir` (auto-removed); scope-mismatch rejection; inner→outer
   teardown. **`ctx:use` is async** — a factory can `await` (e.g. `shell.run`, a readiness poll);
   recursion reenters through Lua, so no boxing. **Teardown is async too** — a `ctx:defer` callback
   can `await` (e.g. `proc:stop()`), reaped while the runtime is still alive. **`ctx:manage(resource)`**

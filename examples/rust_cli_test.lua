@@ -7,12 +7,12 @@
 --- build is offline and fast; the build step is `requires`-gated on cargo so it skips where absent.
 
 -- A scratch workspace, one per file. Auto-cleaned when the file's tests finish.
-local workspace = prova.fixture("workspace", "file", function(ctx)
+local workspace = prova.fixture("workspace", Scope.File, function(ctx)
   return ctx:tempdir()
 end)
 
 -- Render the archetype once for the whole file. Every test below shares this output.
-local project = prova.fixture("project", "file", function(ctx)
+local project = prova.fixture("project", Scope.File, function(ctx)
   return archetect.render{
     source = "examples/fixtures/rust-cli",  -- local archetype, relative to CWD
     answers = { project_name = "widget", description = "a demo cli" },
