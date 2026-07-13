@@ -23,6 +23,20 @@ use prova_core::{
     MultiReporter, Reporter, RunConfig, Suite,
 };
 
+const HELP: &str = "\
+usage:
+  prova <file-or-dir>...    run the given files/dirs
+  prova                     run the suite declared in ./prova.toml
+
+options:
+  -p, --profile NAME        run a profile from the manifest
+      --manifest PATH       use a specific manifest (default ./prova.toml)
+      --format console|json output format (--json is shorthand)
+  -j, --jobs N              run up to N units concurrently
+      --list                discover tests without running them
+  -V, --version             print version
+  -h, --help                print this help";
+
 enum Format {
     Console,
     Json,
@@ -88,6 +102,14 @@ fn main() -> ExitCode {
         match arg.as_str() {
             "--list" => list = true,
             "--json" => cli_format = Some(Format::Json),
+            "--version" | "-V" => {
+                println!("prova {}", env!("CARGO_PKG_VERSION"));
+                return ExitCode::SUCCESS;
+            }
+            "--help" | "-h" => {
+                println!("{HELP}");
+                return ExitCode::SUCCESS;
+            }
             other if other.starts_with('-') => {
                 eprintln!("prova: unknown flag {other}");
                 return ExitCode::from(2);

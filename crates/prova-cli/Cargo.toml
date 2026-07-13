@@ -1,8 +1,16 @@
 [package]
 name = "prova-cli"
+description = "The `prova` command-line test runner."
+keywords = ["testing", "acceptance-testing", "lua", "cli"]
+readme = "../../README.md"
+
 version.workspace = true
+authors.workspace = true
+documentation.workspace = true
 edition.workspace = true
+homepage.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [[bin]]
 name = "prova"

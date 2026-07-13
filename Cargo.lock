@@ -2902,7 +2902,7 @@ checksum = "95067976aca6421a523e491fce939a3e65249bac4b977adee0ee9771568e8aa3"
 
 [[package]]
 name = "prova-archetect"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "archetect-api",
  "archetect-core",
@@ -2913,7 +2913,7 @@ dependencies = [
 
 [[package]]
 name = "prova-cli"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "prova-archetect",
  "prova-core",
@@ -2923,7 +2923,7 @@ dependencies = [
 
 [[package]]
 name = "prova-core"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "bollard",
  "futures",

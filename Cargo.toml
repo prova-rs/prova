@@ -3,9 +3,14 @@ resolver = "2"
 members = ["crates/prova-core", "crates/prova-cli", "crates/prova-archetect"]
 
 [workspace.package]
+authors = ["Jimmie Fulton <jimmie.fulton@gmail.com>"]
+description = "A programmable, language-agnostic black box acceptance-test runner."
+documentation = "https://prova-rs.github.io"
 edition = "2021"
+homepage = "https://prova-rs.github.io"
 license = "MIT"
-version = "0.0.0"
+repository = "https://github.com/prova-rs/prova"
+version = "0.1.0"
 
 [workspace.dependencies]
 # Match archetect's mlua: Lua 5.4, vendored so we don't depend on a system Lua.

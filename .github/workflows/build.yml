@@ -1,0 +1,34 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - '**'
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}
+    strategy:
+      # Surface every platform's failure in one run rather than cancelling siblings.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enable Rust Dependency Caching
+        uses: Swatinem/rust-cache@v2
+
+      # Prova's default features vendor and compile C libraries from source (mlua/Lua,
+      # librdkafka). Building all three release platforms on every push means a
+      # platform-specific toolchain break surfaces here, not at release time — release.yml
+      # builds the same matrix and a red leg there blocks the Homebrew tap update.
+      - name: Build
+        run: cargo build
+
+      - name: Test
+        run: cargo test

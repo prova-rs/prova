@@ -328,8 +328,8 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
   sets `paths`/`jobs`/`format`/`env`. CLI flags override the manifest; explicit path args bypass it.
   The `env` table is applied before the run, so the *same* suite targets ephemeral containers
   locally or CI-provided/live services just by switching profile. A composite GitHub Action
-  (`ci/action.yml`) + example workflow (`ci/example-workflow.yml`) run it in CI. *(Manifest
-  parse/resolve unit-tested in `prova-cli`.)*
+  ([`prova-rs/run-action`](https://github.com/prova-rs/run-action)) installs a released binary and
+  runs the suite in CI. *(Manifest parse/resolve unit-tested in `prova-cli`.)*
 - **Self-tests (dogfooding)**: prova acceptance-tests **itself** — `crates/prova-cli/selftest/`
   `*_test.lua` invoke the real `prova` binary (via `shell`) against inner fixtures and assert on exit
   codes + output (tally, `--list`, `--format json`, error paths, manifest profiles + env). Driven by

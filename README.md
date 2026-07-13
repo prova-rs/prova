@@ -29,6 +29,23 @@ prova.test("compiles cleanly", function(t)
 end)
 ```
 
+## Install
+
+```shell
+brew tap prova-rs/tap
+brew install prova
+```
+
+Or download a binary for your platform from [Releases](https://github.com/prova-rs/prova/releases)
+(linux-x86_64, linux-arm64, macos-arm64, windows-x86_64 + a Windows installer). In CI, use
+[`prova-rs/run-action`](https://github.com/prova-rs/run-action):
+
+```yaml
+- uses: prova-rs/run-action@v1
+  with:
+    profile: ci
+```
+
 ## Why it exists
 
 The existing language-agnostic testers are either **single-domain** (Hurl → HTTP, Bats →

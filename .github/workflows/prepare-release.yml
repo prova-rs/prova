@@ -1,0 +1,73 @@
+name: Prepare Release
+
+# Convenience "easy button" that bumps the workspace version and pushes a
+# `vX.Y.Z` tag. Pushing that tag triggers release.yml (the actual build/publish).
+#
+# Run this from the branch you want to release (`main` for the current line).
+#
+# This decouples the version bump from the build: the bump + tag happen here, the
+# tag push is what release.yml listens for. You can also skip this workflow and
+# tag manually.
+
+on:
+  workflow_dispatch:
+    inputs:
+      level:
+        description: "Version Bump Level"
+        type: choice
+        required: false
+        default: patch
+        options:
+          - major
+          - minor
+          - patch
+
+permissions: write-all
+concurrency:
+  # Scope per branch so preparing a release on separate lines can run independently.
+  group: prepare-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  COMMIT_USER: github-actions
+  COMMIT_EMAIL: github-actions@users.noreply.github.com
+
+jobs:
+  prepare:
+    name: Bump & Tag
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install cargo-workspaces
+        uses: baptiste0928/cargo-install@v3
+        with:
+          crate: cargo-workspaces
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Push the bump commit + tag with a PAT instead of the default
+          # GITHUB_TOKEN: pushes made with GITHUB_TOKEN never trigger other
+          # workflows (GitHub's recursion guard), so the tag would not start
+          # release.yml.
+          token: ${{ secrets.REPOSITORY_DISPATCH_TOKEN }}
+
+      - name: Bump Version & Push Tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "${COMMIT_USER}"
+          git config user.email "${COMMIT_EMAIL}"
+          # Bump on whatever branch this workflow was dispatched from.
+          # cargo-workspaces commits "Release vX.Y.Z", creates a single `vX.Y.Z`
+          # tag, and pushes both the commit and the tag. The pushed tag then
+          # triggers release.yml.
+          #
+          # The commit message must NOT contain [skip ci]: GitHub applies skip
+          # markers in the head commit to every push event that references it —
+          # including the tag push — which silently suppresses release.yml.
+          cargo workspaces version "${{ inputs.level }}" -y \
+            --allow-branch "${GITHUB_REF_NAME}" \
+            -m "Release %v" \
+            --no-individual-tags \
+            --force '*'
