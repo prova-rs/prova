@@ -206,11 +206,11 @@ local GroupBuilder = {}
 ---@param factory fun(t: prova.TestContext)
 ---@return prova.Test
 function GroupBuilder:test(name, opts, factory) end
---- Table-driven tests within this group.
+--- Table-driven tests within this group: one test per case, names filled from `{placeholder}`s.
 ---@param name_template string
 ---@param cases table[]
 ---@param factory fun(t: prova.TestContext, case: table)
----@return prova.Test
+---@return prova.Test[]
 function GroupBuilder:test_each(name_template, cases, factory) end
 --- Declare a flow (ordered sequence) as a child unit of this group.
 ---@overload fun(self: prova.GroupBuilder, name: string, body: fun(flow: prova.FlowBuilder)): prova.Flow
@@ -267,12 +267,13 @@ function prova.fixture(name, scope, factory, opts) end
 ---@return prova.Test
 function prova.test(name, opts, factory) end
 
----Declare a table-driven test: one test per case. `{placeholders}` in `name_template` are
----filled from each case table.
+---Declare a table-driven test: one test per case. `{placeholder}`s in `name_template` are filled
+---from each case table; the case reaches the body as its second argument and as `t.case`. Returns
+---the list of generated test handles (any usable in `depends_on`).
 ---@param name_template string
 ---@param cases table[]
 ---@param factory fun(t: prova.TestContext, case: table)
----@return prova.Test
+---@return prova.Test[]
 function prova.test_each(name_template, cases, factory) end
 
 ---Declare a flow: an ordered sequence of steps sharing the flow's scope. Steps run in order

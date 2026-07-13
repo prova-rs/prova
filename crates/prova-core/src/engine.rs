@@ -39,7 +39,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures::stream::StreamExt;
-use mlua::{Function, Lua, Table, UserData, UserDataMethods, Value};
+use mlua::{Function, Lua, Table, UserData, UserDataFields, UserDataMethods, Value};
 
 use crate::model::{
     parse_duration, Event, NodeIx, Outcome, Params, Reporter, ResourceReq, Summary, UnitOpts,
@@ -242,6 +242,9 @@ struct Node {
     opts: UnitOpts,
     children: Vec<NodeIx>,
     body: Option<Function>,
+    /// A `test_each` case, delivered to the body as its second argument and as `t.case`. `None` for
+    /// ordinary tests (the body simply ignores the extra nil argument).
+    case: Option<Value>,
 }
 
 struct Collector {
@@ -259,6 +262,7 @@ impl Collector {
                 opts: UnitOpts::default(),
                 children: vec![],
                 body: None,
+                case: None,
             }],
             fixtures: vec![],
         }
@@ -379,6 +383,9 @@ struct Ctx {
     test_scope: Rc<RefCell<ScopeState>>,
     flow_scope: Option<Rc<RefCell<ScopeState>>>,
     own_scope: ScopeKind,
+    /// The `test_each` case for this test, exposed as `t.case` (also passed as the body's 2nd arg).
+    /// `None` (→ `nil`) for ordinary tests and for fixture factory contexts.
+    case: Option<Value>,
 }
 
 impl Ctx {
@@ -449,6 +456,7 @@ async fn resolve_use(lua: &Lua, this: &Ctx, target: Value) -> mlua::Result<Value
         test_scope: this.test_scope.clone(),
         flow_scope: this.flow_scope.clone(),
         own_scope: def.scope,
+        case: None,
     };
     let child_ud = lua.create_userdata(child)?;
     let value: Value = def.factory.call_async(child_ud).await?;
@@ -457,6 +465,13 @@ async fn resolve_use(lua: &Lua, this: &Ctx, target: Value) -> mlua::Result<Value
 }
 
 impl UserData for Ctx {
+    fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
+        // `t.case` — the current `test_each` case (nil for ordinary tests).
+        fields.add_field_method_get("case", |_, this| {
+            Ok(this.case.clone().unwrap_or(Value::Nil))
+        });
+    }
+
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         // Async so fixture factories (and test bodies) can `await` while a fixture is built.
         methods.add_async_method("use", |lua, this, target: Value| {
@@ -868,9 +883,20 @@ fn build_lua(root_name: String, modules: &[Module]) -> mlua::Result<(Lua, Shared
         prova.set(
             "test",
             lua.create_function(move |lua, (name, a, b): (String, Value, Value)| {
-                let ix = register_test(&col, 0, name, a, b)?;
+                let ix = register_test(&col, 0, name, a, b, None)?;
                 lua.create_userdata(UnitHandle { ix })
             })?,
+        )?;
+    }
+    {
+        let col = col.clone();
+        prova.set(
+            "test_each",
+            lua.create_function(
+                move |lua, (name, cases, factory): (String, Table, Function)| {
+                    register_test_each(lua, &col, 0, name, cases, factory)
+                },
+            )?,
         )?;
     }
     {
@@ -982,9 +1008,16 @@ struct GroupBuilder {
 impl UserData for GroupBuilder {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("test", |lua, this, (name, a, b): (String, Value, Value)| {
-            let ix = register_test(&this.col, this.ix, name, a, b)?;
+            let ix = register_test(&this.col, this.ix, name, a, b, None)?;
             lua.create_userdata(UnitHandle { ix })
         });
+
+        methods.add_method(
+            "test_each",
+            |lua, this, (name, cases, factory): (String, Table, Function)| {
+                register_test_each(lua, &this.col, this.ix, name, cases, factory)
+            },
+        );
 
         methods.add_method(
             "group",
@@ -1002,12 +1035,14 @@ impl UserData for GroupBuilder {
 }
 
 /// Register a leaf `test`/`step` node under `parent`; returns its arena index (the unit handle id).
+/// `case` is the `test_each` case value (`None` for an ordinary test).
 fn register_test(
     col: &SharedCollector,
     parent: NodeIx,
     name: String,
     a: Value,
     b: Value,
+    case: Option<Value>,
 ) -> mlua::Result<NodeIx> {
     let (opts, body) = split_opts_body(a, b)?;
     Ok(col.borrow_mut().add(
@@ -1019,8 +1054,87 @@ fn register_test(
             opts,
             children: vec![],
             body: Some(body),
+            case,
         },
     ))
+}
+
+/// Register one `test` per entry in `cases` (a 1-based sequence of case tables), all sharing the
+/// same `factory` body. Each generated test carries its own case (delivered as the body's second
+/// argument and as `t.case`), and its name is `name_template` with `{key}` placeholders filled from
+/// the case. Returns a sequence of the generated unit handles (usable in `depends_on`).
+fn register_test_each(
+    lua: &Lua,
+    col: &SharedCollector,
+    parent: NodeIx,
+    name_template: String,
+    cases: Table,
+    factory: Function,
+) -> mlua::Result<Table> {
+    let handles = lua.create_table()?;
+    for i in 1..=cases.raw_len() {
+        let case: Value = cases.get(i)?;
+        let name = render_case_name(&name_template, &case)?;
+        let ix = register_test(
+            col,
+            parent,
+            name,
+            Value::Function(factory.clone()),
+            Value::Nil,
+            Some(case),
+        )?;
+        handles.push(lua.create_userdata(UnitHandle { ix })?)?;
+    }
+    Ok(handles)
+}
+
+/// Fill `{key}` placeholders in a `test_each` name template from the case table. An unknown key (or a
+/// non-table case) leaves the `{key}` literal in place rather than failing — the name is cosmetic.
+fn render_case_name(template: &str, case: &Value) -> mlua::Result<String> {
+    let tbl = match case {
+        Value::Table(t) => Some(t.clone()),
+        _ => None,
+    };
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        match after.find('}') {
+            Some(close) => {
+                let key = &after[..close];
+                let replaced = match &tbl {
+                    Some(t) => match t.get::<Value>(key)? {
+                        Value::Nil => format!("{{{key}}}"),
+                        other => value_to_string(&other),
+                    },
+                    None => format!("{{{key}}}"),
+                };
+                out.push_str(&replaced);
+                rest = &after[close + 1..];
+            }
+            None => {
+                // Unbalanced brace: emit the rest verbatim.
+                out.push('{');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
+/// A scalar Lua value rendered for a test name. Non-scalars (tables/functions) are unlikely in a name
+/// placeholder; render them as `?` rather than erroring.
+fn value_to_string(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.to_string_lossy().to_string(),
+        Value::Integer(i) => i.to_string(),
+        Value::Number(n) => n.to_string(),
+        Value::Boolean(b) => b.to_string(),
+        Value::Nil => String::new(),
+        _ => "?".to_string(),
+    }
 }
 
 /// Register a `group` node under `parent` and run its builder body to collect child units.
@@ -1043,6 +1157,7 @@ fn register_group(
             opts,
             children: vec![],
             body: None,
+            case: None,
         },
     );
     let gb = lua.create_userdata(GroupBuilder {
@@ -1076,6 +1191,7 @@ fn register_flow(
             opts,
             children: vec![],
             body: None,
+            case: None,
         },
     );
     let fb = lua.create_userdata(FlowBuilder {
@@ -1107,6 +1223,7 @@ impl UserData for FlowBuilder {
                     opts,
                     children: vec![],
                     body: Some(body),
+                    case: None,
                 },
             );
             Ok(())
@@ -1122,6 +1239,7 @@ struct PlanItem {
     path: String,
     body: Function,
     timeout: Option<Duration>,
+    case: Option<Value>,
 }
 
 /// A scheduling atom. Independent units may run concurrently (`buffer_unordered`); a flow's steps
@@ -1148,6 +1266,7 @@ fn plan_item(node: &Node, ancestors: &[String]) -> PlanItem {
         path: path.join(" › "),
         body: node.body.clone().expect("test/step node has a body"),
         timeout: node.opts.timeout,
+        case: node.case.clone(),
     }
 }
 
@@ -1436,17 +1555,21 @@ async fn run_one(
 ) -> NodeResult {
     let run = Rc::new(RefCell::new(TestRun::default()));
     let test_scope = Rc::new(RefCell::new(ScopeState::default()));
+    // The case is delivered both as `t.case` and as the body's second argument, so `fn(t, case)`
+    // and `fn(t)` (ignoring the trailing nil) both work.
+    let case_arg = item.case.clone().unwrap_or(Value::Nil);
     let ctx = Ctx {
         run: run.clone(),
         state: state.clone(),
         test_scope: test_scope.clone(),
         flow_scope,
         own_scope: ScopeKind::Test,
+        case: item.case.clone(),
     };
     let ctx_ud = lua.create_userdata(ctx).expect("create context");
 
     let start = Instant::now();
-    let call = item.body.call_async::<()>(ctx_ud);
+    let call = item.body.call_async::<()>((ctx_ud, case_arg));
 
     let result = match item.timeout {
         Some(budget) => match tokio::time::timeout(budget, call).await {

@@ -136,6 +136,10 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
 - Async collect→plan→execute for `prova.test` / `prova.group` / `prova.flow`; injected `prova`
   global. All three (and the builder variants) accept an optional `opts` table and return unit
   handles for `depends_on`.
+- **Table-driven tests**: `prova.test_each(name_tmpl, cases, fn)` (and `GroupBuilder:test_each`)
+  generate one test per case, filling `{placeholder}`s in the name from the case; the case reaches
+  the body as its second argument *and* as `t.case` (an optional `case` threaded through
+  `Node → PlanItem → Ctx`, so `fn(t, case)` and plain `fn(t)` both work). *(`testdata/test_each.lua`.)*
 - **Fixtures + scopes + teardown**: `prova.fixture(name, scope, factory)` → typed handle;
   `ctx:use(handle|name)` builds-or-caches; `test`/`flow`/`file`/`suite` scopes with per-scope
   caches; `ctx:defer` (LIFO); `ctx:tempdir` (auto-removed); scope-mismatch rejection; inner→outer

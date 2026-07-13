@@ -73,8 +73,14 @@ exactly the "batteries-included, no capability ceilings" pitch. Implemented in `
 **2. Flow ergonomics + parametrization** — graduates the 4 `examples/aspirational/` files and is
    needed to express real multi-service suites tersely. Four sub-features (all have LuaLS stubs
    already; the engine doesn't implement them yet):
-   - **`prova.test_each(name_tmpl, cases, fn)`** — one test per case; fill `{placeholders}` in the
-     name from the case table; body is `fn(t, case)`; set `t.case`. Self-contained; do this first.
+   - **`prova.test_each(name_tmpl, cases, fn)` — DONE.** One test per case; `{placeholder}`s in the
+     name filled from the case; the case reaches the body as its 2nd arg *and* as `t.case`; returns
+     the list of generated handles. Top-level + `GroupBuilder:test_each`. Implemented by threading an
+     optional `case: Value` through `Node → PlanItem → Ctx` (no per-test Lua wrapper): `run_one`
+     passes `(ctx, case)` so `fn(t, case)` and plain `fn(t)` (ignoring the trailing nil) both work,
+     and `Ctx` exposes `t.case` via a field getter. Name templating = `render_case_name` (unknown key
+     or non-table case leaves the `{key}` literal). *(`testdata/test_each.lua` + `tests/test_each.rs`:
+     8 tests green, names substituted, `t.case`==arg, plain test unaffected.)*
    - **`ctx:param()` + `{ params = {...} }` on `prova.fixture`** — parametrized fixtures: one variant
      per param, multiplying dependent tests. Touches fixture resolution (variant identity in the
      scope cache keyed by param).
@@ -142,7 +148,7 @@ exactly the "batteries-included, no capability ceilings" pitch. Implemented in `
 - **Container/DB readiness = retry the real thing**, not `pg_isready`/port-open (init restarts).
 - **Docker `:exec` needs a shell in the image** (`sh -c`); `traefik/whoami` is `FROM scratch`.
 - Feature flags: `http`, `db`, `docker` are default-on; the crate builds with `--no-default-features`.
-- **Verify every change:** `cargo test` (29 tests, some Docker-gated), `cargo clippy --all-targets`
+- **Verify every change:** `cargo test` (31 tests, some Docker-gated), `cargo clippy --all-targets`
   (zero warnings), `lua-language-server --check "$(pwd)"` (LuaLS-clean), and run touched
   `examples/*.lua` via the CLI. Keep the LuaCATS stub (`library/`) in lockstep with the runtime.
 
