@@ -15,6 +15,10 @@
 //! jobs = 8
 //! [profiles.ci.env]
 //! CI = "true"
+//!
+//! [suites.grpc]                 # an explicit suite: these files share one state (Scope.Suite)
+//! paths = ["services/grpc"]     # (a directory's own `suite.lua` is the zero-config alternative)
+//! setup = "services/grpc/suite.lua"
 //! ```
 
 use std::collections::BTreeMap;
@@ -22,13 +26,25 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 
 /// A parsed `prova.toml`. The `[run]` table is the default profile; `[profiles.<name>]` tables are
-/// overlays selected with `--profile <name>`.
+/// overlays selected with `--profile <name>`. `[suites.<name>]` tables declare explicit suites for
+/// grouping that doesn't match the directory tree (a directory's `suite.lua` is the zero-config path).
 #[derive(Debug, Deserialize, Default)]
 pub struct Manifest {
     #[serde(default)]
     pub run: Profile,
     #[serde(default)]
     pub profiles: BTreeMap<String, Profile>,
+    #[serde(default)]
+    pub suites: BTreeMap<String, SuiteDecl>,
+}
+
+/// An explicitly-declared suite: its `paths` are discovered into one suite (sharing an optional
+/// `setup` `suite.lua`). Requires/env belong in the setup file (`suite.config`) / `[run.env]`.
+#[derive(Debug, Deserialize, Default, Clone, PartialEq)]
+pub struct SuiteDecl {
+    #[serde(default)]
+    pub paths: Vec<String>,
+    pub setup: Option<String>,
 }
 
 /// One run profile. Every field is optional so a profile can override just what it needs.
@@ -49,6 +65,8 @@ pub struct Resolved {
     pub jobs: Option<usize>,
     pub format: Option<String>,
     pub env: BTreeMap<String, String>,
+    /// Explicitly-declared suites (`[suites.*]`), run in addition to `paths`.
+    pub suites: BTreeMap<String, SuiteDecl>,
 }
 
 impl Manifest {
@@ -91,6 +109,7 @@ impl Manifest {
             jobs,
             format,
             env,
+            suites: self.suites.clone(),
         })
     }
 }
@@ -135,8 +154,32 @@ paths = ["tests/smoke"]
                 jobs: Some(4),
                 format: Some("console".into()),
                 env: env(&[("LOG", "info")]),
+                suites: BTreeMap::new(),
             }
         );
+    }
+
+    #[test]
+    fn declares_explicit_suites() {
+        let m = Manifest::parse(
+            r#"
+[run]
+paths = ["tests"]
+
+[suites.grpc]
+paths = ["services/grpc"]
+setup = "services/grpc/suite.lua"
+
+[suites.rest]
+paths = ["services/rest"]
+"#,
+        )
+        .unwrap();
+        let r = m.resolve(None).unwrap();
+        assert_eq!(r.suites.len(), 2);
+        assert_eq!(r.suites["grpc"].paths, vec!["services/grpc".to_string()]);
+        assert_eq!(r.suites["grpc"].setup.as_deref(), Some("services/grpc/suite.lua"));
+        assert_eq!(r.suites["rest"].setup, None);
     }
 
     #[test]

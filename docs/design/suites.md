@@ -41,13 +41,12 @@ behaviour exactly — files parallelize, and within a one-file suite `Scope.Suit
    live, colocated with the files that use them. This is the blessed, discoverable form.
 
 2. **`prova.toml` manifest (explicit / cross-cutting).** For grouping that doesn't match the directory
-   tree, or per-suite `jobs`/`env`/`requires`:
+   tree — the declared `paths` are discovered into one suite, sharing an optional `setup` file. (A
+   suite's `requires` live in its `setup` via `suite.config`; run-wide `env` in `[run.env]`.)
    ```toml
    [suites.grpc]
-   paths = ["services/grpc/**/*_test.lua"]
-   setup = "services/grpc/suite.lua"   # optional
-   requires = ["docker"]
-   env = { RUST_LOG = "info" }
+   paths = ["services/grpc"]
+   setup = "services/grpc/suite.lua"   # optional; where the suite's Scope.Suite fixtures + config live
    ```
 
 3. **Implicit singletons.** Everything else — each ungrouped `*_test.lua` is a one-file suite.
@@ -109,7 +108,7 @@ file changes.
 suite teardown; `discover_suites` groups by the `suite.lua` convention (+ singletons); the CLI runs
 suites. `suite.config{ name, requires }` gates a whole suite. `examples/suite/` provisions ONE Postgres
 in a `Scope.Suite` fixture and shares it across two files (`b_read_test` sees the row `a_create_test`
-inserted) — verified real, one container, torn down once. Remaining: manifest `[suites.*]` (below, #5).
+inserted) — verified real, one container, torn down once. **Manifest `[suites.*]` also landed** — an explicit suite with `paths` + `setup`, CLI-verified. All five plan steps are built.
 
 ## Implementation plan (incremental)
 

@@ -13,13 +13,14 @@
 
 mod manifest;
 
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use manifest::Manifest;
+use manifest::{Manifest, SuiteDecl};
 use prova_core::{
-    discover_path, discover_suites, run_suites, ConsoleReporter, JsonReporter, MultiReporter,
-    Reporter, RunConfig, Suite,
+    discover_files, discover_path, discover_suites, run_suites, ConsoleReporter, JsonReporter,
+    MultiReporter, Reporter, RunConfig, Suite,
 };
 
 enum Format {
@@ -96,11 +97,12 @@ fn main() -> ExitCode {
     }
 
     // Resolve the run: explicit path args bypass the manifest; otherwise read prova.toml.
-    let (paths, jobs, format) = if !explicit_paths.is_empty() {
+    let (paths, jobs, format, declared) = if !explicit_paths.is_empty() {
         (
             explicit_paths,
             cli_jobs.unwrap_or(1),
             cli_format.unwrap_or(Format::Console),
+            BTreeMap::new(),
         )
     } else {
         match resolve_from_manifest(manifest_path, profile, cli_jobs, cli_format) {
@@ -109,10 +111,31 @@ fn main() -> ExitCode {
         }
     };
 
-    // Expand each path (a file or a directory) into suites: a directory with a `suite.lua` is one
-    // suite (its files share a state, so `Scope.Suite` fixtures are shared); every other file is a
-    // singleton suite. `--jobs` then parallelizes across suites.
+    // Build the suites to run: first any explicit `[suites.*]` from the manifest (each groups its
+    // discovered files under one name + optional setup), then the plain paths — a directory with a
+    // `suite.lua` is one suite (files share a state → shared `Scope.Suite`), every other file a
+    // singleton. `--jobs` parallelizes across suites.
     let mut suites: Vec<Suite> = Vec::new();
+    for (name, decl) in &declared {
+        let mut files = Vec::new();
+        for p in &decl.paths {
+            match discover_files(Path::new(p)) {
+                Ok(found) => files.extend(found),
+                Err(err) => {
+                    eprintln!("prova: suite {name:?}: {p}: {err}");
+                    return ExitCode::from(2);
+                }
+            }
+        }
+        files.sort();
+        if !files.is_empty() {
+            suites.push(Suite {
+                name: name.clone(),
+                setup: decl.setup.as_ref().map(PathBuf::from),
+                files,
+            });
+        }
+    }
     for arg in &paths {
         match discover_suites(Path::new(arg)) {
             Ok(found) => suites.extend(found),
@@ -160,13 +183,14 @@ fn main() -> ExitCode {
 }
 
 /// Read `prova.toml` (or `--manifest`), overlay `--profile`, apply env, and merge CLI overrides.
-/// Returns (paths, jobs, format) or an exit code on error.
+/// Returns (paths, jobs, format, declared-suites) or an exit code on error.
+#[allow(clippy::type_complexity)]
 fn resolve_from_manifest(
     manifest_path: Option<String>,
     profile: Option<String>,
     cli_jobs: Option<usize>,
     cli_format: Option<Format>,
-) -> Result<(Vec<String>, usize, Format), ExitCode> {
+) -> Result<(Vec<String>, usize, Format, BTreeMap<String, SuiteDecl>), ExitCode> {
     let explicit_manifest = manifest_path.is_some();
     let path = manifest_path.unwrap_or_else(|| "prova.toml".to_string());
 
@@ -192,8 +216,8 @@ fn resolve_from_manifest(
         eprintln!("prova: {e}");
         ExitCode::from(2)
     })?;
-    if resolved.paths.is_empty() {
-        eprintln!("prova: manifest {path:?} defines no paths to run");
+    if resolved.paths.is_empty() && resolved.suites.is_empty() {
+        eprintln!("prova: manifest {path:?} defines no paths or suites to run");
         return Err(ExitCode::from(2));
     }
 
@@ -214,5 +238,5 @@ fn resolve_from_manifest(
             }
         },
     };
-    Ok((resolved.paths, jobs, format))
+    Ok((resolved.paths, jobs, format, resolved.suites))
 }
