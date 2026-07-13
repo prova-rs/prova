@@ -107,7 +107,7 @@ The core stays small; capability grows at the edges:
 
 | Surface | Extends by | Examples |
 |---|---|---|
-| **Modules** | async Lua modules registered into the runtime (via `RunConfig::with_module`) | `fs`, `net`, `shell`, `http`, `grpc`, `graphql`, `docker`, `db`, `redis`, `pulsar`, `kafka`, `yaml`, `archetect` |
+| **Modules** | async Lua modules registered into the runtime (via `RunConfig::with_module`) | `fs`, `net`, `shell`, `http`, `grpc`, `graphql`, `docker`, `db`, `redis`, `pulsar`, `kafka`, `s3`, `yaml`, `archetect` |
 | **Matchers** | new terminal checks on the matcher | domain assertions, snapshots |
 | **Reporters** | new `Reporter` sinks | JUnit, TAP, GUI socket, load metrics |
 | **Selectors** | plan filters | tag expressions, `--changed`, `--last-failed`, sharding |
@@ -175,9 +175,16 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
   C toolchain — no cmake, no runtime .so; the build cost is a CI concern, the *binary stays
   self-contained* — the guiding priority); no SSL/SASL features → no openssl. *(`examples/kafka_test.lua`,
   verified against real Apache Kafka KRaft.)*
+- **`s3` module** — a thin object-storage client: `s3.connect{ endpoint, bucket, access_key,
+  secret_key, create? }` → `put`/`get`/`exists`/`list`/`delete`. rust-s3 with **rustls** (pure-Rust,
+  statically linked — no openssl — and real HTTPS S3 works too), path-style addressing. Enough to
+  assert on an object an app wrote. *(`examples/s3_test.lua`, verified against real MinIO.)*
 - **`docker.run{ command }`** — override the image CMD (a string, whitespace-split, or a list), needed
   by images like Pulsar's (`bin/pulsar standalone`). **`docker.run{ ports = { { container, host } } }`**
   — a *fixed* host port (else random), needed by Kafka (it advertises a listener clients must reach).
+- **The resource matrix is complete** — DB (`db`: Postgres/MySQL/SQLite), cache (`redis`), messaging
+  (`pulsar`, `kafka`), object storage (`s3`) — every archetype resource type has a client + a
+  `*.container`/`db.*` recipe, each verified against a real container and leak-free.
 - **Resource recipes** (testcontainers-style): `db.postgres` / `db.mysql` / `redis.container` /
   `pulsar.container` / `kafka.container` `(ctx, opts?)` fold provision-container + wait-ready + connect +
   manage into one call, returning `{ url|brokers, conn|client, container }`. Lua sugar over

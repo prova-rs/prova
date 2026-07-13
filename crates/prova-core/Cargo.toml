@@ -61,9 +61,13 @@ pulsar = { version = "6.8.0", default-features = false, features = ["tokio-runti
 # runtime binary stays self-contained (the build-time C compile is a CI concern). No SSL/SASL features
 # → no openssl. Plaintext only in v1. Feature-gated (default on).
 rdkafka = { version = "0.39.0", default-features = false, features = ["tokio"], optional = true }
+# The `s3` module — a thin object-storage client (put/get/list/delete) for asserting on an S3/MinIO
+# dependency. rust-s3 with rustls (pure-Rust, statically links — no openssl, static-binary friendly;
+# also enables real HTTPS S3 later). Feature-gated (default on).
+rust-s3 = { version = "0.37.2", default-features = false, features = ["tokio-rustls-tls", "tags", "fail-on-err"], optional = true }
 
 [features]
-default = ["http", "db", "docker", "grpc", "graphql", "yaml", "redis", "pulsar", "kafka"]
+default = ["http", "db", "docker", "grpc", "graphql", "yaml", "redis", "pulsar", "kafka", "s3"]
 http = ["dep:reqwest"]
 # GraphQL over HTTP (POST { query, variables } → { data, errors }); shares reqwest with `http`.
 graphql = ["dep:reqwest"]
@@ -80,3 +84,4 @@ yaml = ["dep:serde_yaml_ng", "dep:serde"]
 redis = ["dep:redis"]
 pulsar = ["dep:pulsar"]
 kafka = ["dep:rdkafka"]
+s3 = ["dep:rust-s3"]

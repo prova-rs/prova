@@ -1745,8 +1745,10 @@ fn capability_available(name: &str) -> bool {
         // The docker daemon must be reachable, not just the client installed. Retry a few times: a
         // single `docker info` can transiently fail when the daemon is momentarily busy (heavy
         // container churn — e.g. many container tests tearing down at once), which would otherwise
-        // skip a whole test spuriously. This resolves once per run (memoized), so the cost is bounded.
-        "docker" => command_succeeds_retry("docker", &["info"], 3),
+        // skip a whole test spuriously. This resolves once per run (memoized), so the cost is bounded;
+        // a genuinely-absent daemon fails fast (connection-refused is instant), so the retry budget is
+        // paid mostly as backoff sleeps only when the daemon is present-but-busy.
+        "docker" => command_succeeds_retry("docker", &["info"], 8),
         "github" => std::env::var_os("GITHUB_TOKEN").is_some(),
         // No cheap, reliable synchronous probe; assume present (a real offline mode is future work).
         "network" | "internet" => true,

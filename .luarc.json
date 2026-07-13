@@ -22,7 +22,8 @@
     "yaml",
     "redis",
     "pulsar",
-    "kafka"
+    "kafka",
+    "s3"
   ],
   "completion.callSnippet": "Replace",
   "hint.enable": true
