@@ -1,0 +1,6 @@
+prova.test("would run if the capability were present", function(t)
+  t:expect(true):is_true()
+end)
+prova.test("also gated by the suite requirement", function(t)
+  t:expect(1):equals(1)
+end)

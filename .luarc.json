@@ -24,7 +24,8 @@
     "pulsar",
     "kafka",
     "s3",
-    "Scope"
+    "Scope",
+    "suite"
   ],
   "completion.callSnippet": "Replace",
   "hint.enable": true

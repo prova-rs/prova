@@ -31,15 +31,16 @@
   This is the k6/JS event-loop model and is ideal for the **I/O-bound concurrency** that
   acceptance flows and load tests need. *(Built; proven: two 40 ms sleeps complete in ~45 ms wall,
   not ~80 ms.)*
-- **Per-worker states for multi-core (built).** True CPU parallelism needs more than one thread,
-  and an `mlua::Lua` is best kept to one thread — and its `Function` bodies are `!Send`, so a body
-  collected on one state cannot run on another. The realized design: **N workers = N OS threads,
-  each with its own Lua state**, with the **file** as the dispatched unit — a worker loads a file
-  into its own state and runs it end to end with the in-file scheduler; within a worker, cooperative
-  async as above. Files run in parallel; `--jobs` sets the worker count and is **throughput-only,
-  never semantic**. *(Built in `suite.rs`; proven: two CPU-bound files run ~1.8× faster at `--jobs
-  2` than `--jobs 1`.)* Intra-file unit dispatch across workers is a possible future refinement, but
-  the file boundary is the clean one under `!Send`.
+- **Per-worker states for multi-core, dispatched by *suite* (built).** True CPU parallelism needs
+  more than one thread, and an `mlua::Lua` is best kept to one thread — and its `Function` bodies are
+  `!Send`, so a body collected on one state cannot run on another. The realized design: **N workers =
+  N OS threads, each with its own Lua state**, with the **suite** as the dispatched unit — a worker
+  loads a suite (its `suite.lua` setup + all member files) into one state and runs it end to end;
+  within a worker, cooperative async as above. **An ungrouped file is a singleton suite**, so the
+  default is exactly per-file parallelism. Grouping files into a suite (a directory's `suite.lua`)
+  makes them share one state — which is what makes `Scope.Suite` a live cached value across the files,
+  no serialization. Suites run in parallel; `--jobs` sets the worker count (concurrent *suites*) and
+  is **throughput-only, never semantic**. *(Built in `suite.rs`; see [`suites.md`](suites.md).)*
 - **`!Send` is fine.** Bodies, contexts, and fixtures are `Rc`/`RefCell` (single-thread). We use
   `FuturesUnordered`/`buffer_unordered` (poll-in-place, no `spawn`), so nothing needs `Send`.
   Cross-worker sharing (a `suite` fixture) will be an explicit, serialized handoff, not implicit.

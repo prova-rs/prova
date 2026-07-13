@@ -102,6 +102,15 @@ file changes.
   fires after the suite's last test, in the suite state — no leaks, no double-provisioning.
 - A suite that `requires` an unmet capability skips **all** its files (cascade), reported once.
 
+## Status (2026-07-13)
+
+**Built and tested.** A file-index is threaded through `Node → PlanItem → Ctx` (per-file `Scope.File`);
+`run_suite_files` loads a suite's setup + members into one state and runs a combined plan with one
+suite teardown; `discover_suites` groups by the `suite.lua` convention (+ singletons); the CLI runs
+suites. `suite.config{ name, requires }` gates a whole suite. `examples/suite/` provisions ONE Postgres
+in a `Scope.Suite` fixture and shares it across two files (`b_read_test` sees the row `a_create_test`
+inserted) — verified real, one container, torn down once. Remaining: manifest `[suites.*]` (below, #5).
+
 ## Implementation plan (incremental)
 
 1. **Suite model + discovery.** A `Suite { name, files: Vec<PathBuf>, setup: Option<PathBuf> }`.

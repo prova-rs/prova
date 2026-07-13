@@ -1231,6 +1231,28 @@ fn build_lua(root_name: String, modules: &[Module]) -> mlua::Result<(Lua, Shared
     // The typed fixture-scope constants: `Scope.Test` / `Scope.Flow` / `Scope.File` / `Scope.Suite`.
     lua.globals().set("Scope", make_scope_global(&lua)?)?;
 
+    // `suite.config{ name?, requires? }` — configure the current suite (used in a `suite.lua` setup
+    // file). `requires` gates the whole suite: it folds into the root node so every test inherits it,
+    // and an unmet capability skips all the suite's files cleanly (skip, not fail).
+    {
+        let col = col.clone();
+        let suite = lua.create_table()?;
+        suite.set(
+            "config",
+            lua.create_function(move |_, opts: Table| {
+                let mut c = col.borrow_mut();
+                if let Some(name) = opts.get::<Option<String>>("name")? {
+                    c.nodes[0].name = name;
+                }
+                if let Some(reqs) = opts.get::<Option<Vec<String>>>("requires")? {
+                    c.nodes[0].opts.requires.extend(reqs);
+                }
+                Ok(())
+            })?,
+        )?;
+        lua.globals().set("suite", suite)?;
+    }
+
     // First-party capability modules (`shell`, `fs`) as their own injected globals.
     crate::modules::install(&lua)?;
 

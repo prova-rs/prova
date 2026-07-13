@@ -283,13 +283,25 @@ function prova.fixture(name, scope, factory, opts) end
 ---  * `Scope.Test`  — rebuilt fresh for each test (the default).
 ---  * `Scope.Flow`  — built once per `prova.flow`, shared across its steps.
 ---  * `Scope.File`  — built once per file, shared across the file's tests.
----  * `Scope.Suite` — built once per run.
+---  * `Scope.Suite` — built once per suite (a group of files sharing one state; see `suite.lua`).
 ---@class prova.Scope
 ---@field Test prova.ScopeRef
 ---@field Flow prova.ScopeRef
 ---@field File prova.ScopeRef
 ---@field Suite prova.ScopeRef
 Scope = {}
+
+---@class prova.SuiteConfig
+---@field name? string          # display name for the suite (default: the directory name)
+---@field requires? string[]    # capabilities gating the whole suite — unmet → every file skips
+
+--- Configure the current suite — call in a `suite.lua` file (a directory's `suite.lua` groups its
+--- `*_test.lua` into one suite that shares a Lua state, so `Scope.Suite` fixtures are built once and
+--- shared across the files). Test files reference the suite's fixtures by name, e.g. `t:use("db")`.
+---@class prova.suite
+suite = {}
+---@param config prova.SuiteConfig
+function suite.config(config) end
 
 -- The top-level `prova.test`/`test_each`/`flow`/`group` register into the file's implicit
 -- group (the independent strategy). Inside an explicit group, use the `GroupBuilder` methods.

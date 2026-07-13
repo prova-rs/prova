@@ -1,16 +1,16 @@
-//! The suite runner: discover many test files and run them across a pool of worker threads, each
-//! with **its own Lua state** — the realization of true multi-core parallelism.
+//! The suite runner: discover **suites** and run them across a pool of worker threads, each with
+//! **its own Lua state** — true multi-core parallelism, with the *suite* as the dispatched unit.
 //!
-//! Why per-*file* workers rather than per-*unit*: `mlua::Lua` (and the `Function` bodies collected
-//! from a file) are `!Send`, so a body collected on one Lua state cannot execute on another thread.
-//! The file is therefore the natural thread boundary — each worker loads a file into its own state
-//! and runs it end to end with the in-file scheduler (deps, resources, cooperative async). Files run
-//! in parallel; within a file, everything is as before.
+//! `mlua::Lua` (and the `Function` bodies collected from a file) are `!Send`, so a body collected on
+//! one state cannot execute on another thread. The unit of one state is therefore the **suite**: a
+//! directory's `suite.lua` groups its `*_test.lua` into a suite whose files load into one state, so
+//! `Scope.Suite` fixtures are live cached values shared across them (no cross-VM serialization). An
+//! ungrouped file is a *singleton* suite — one file, no setup — so the default is exactly per-file
+//! parallelism, unchanged. Suites run in parallel; within a suite, cooperative async as before.
 //!
-//! Scope consequences: `file` scope is naturally per-file (correct). A cross-file `suite` fixture
-//! becomes per-worker under `--jobs > 1`, since a Lua value cannot cross `!Send` states — the
-//! documented open question (a serialized once-guard for serializable values is future work). A
-//! single file, or `--jobs 1`, preserves the exact prior single-state semantics.
+//! `discover_suites` builds the grouping; `run_suites` dispatches (inline for one suite / `--jobs 1`,
+//! else a worker pool draining a suite queue). The per-state loading + combined plan + per-file
+//! `Scope.File` reset + one suite teardown live in `engine::run_suite_files`.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
