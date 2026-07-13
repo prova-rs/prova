@@ -107,7 +107,7 @@ The core stays small; capability grows at the edges:
 
 | Surface | Extends by | Examples |
 |---|---|---|
-| **Modules** | async Lua modules registered into the runtime (via `RunConfig::with_module`) | `fs`, `net`, `shell`, `http`, `grpc`, `graphql`, `docker`, `db`, `redis`, `yaml`, `archetect` |
+| **Modules** | async Lua modules registered into the runtime (via `RunConfig::with_module`) | `fs`, `net`, `shell`, `http`, `grpc`, `graphql`, `docker`, `db`, `redis`, `pulsar`, `yaml`, `archetect` |
 | **Matchers** | new terminal checks on the matcher | domain assertions, snapshots |
 | **Reporters** | new `Reporter` sinks | JUnit, TAP, GUI socket, load metrics |
 | **Selectors** | plan filters | tag expressions, `--changed`, `--last-failed`, sharding |
@@ -162,12 +162,28 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
   `get`/`set`/`del`/`exists`/`incr`/`expire`/`ping` and a generic `command(...)` escape hatch. Enough
   to assert on a cache dependency (a key the app set, a counter). redis-rs, no TLS, feature-gated
   `redis` (default on). *(`examples/redis_test.lua`, verified against real Redis.)*
+- **`pulsar` module** — a thin async messaging client: `pulsar.connect(url)` → `produce(topic, msg)`
+  (awaits the send receipt) and `consume(topic, { subscription, max, timeout, shared })` → a list of
+  message strings (reads from the earliest offset so produce-then-consume in one test is reliable).
+  apache pulsar-rs on tokio; **note**: unlike the other clients, pulsar always links a TLS backend
+  (native-tls/openssl) — the only tokio-compatible option — so this one pulls system openssl. Plaintext
+  connect in v1. feature-gated `pulsar` (default on). *(`examples/pulsar_test.lua`, verified against a
+  real Pulsar standalone.)*
+- **`docker.run{ command }`** — override the image CMD (a string, whitespace-split, or a list), needed
+  by images like Pulsar's (`bin/pulsar standalone`).
 - **Resource recipes** (testcontainers-style): `db.postgres(ctx, opts?)` / `db.mysql(ctx, opts?)` /
-  `redis.container(ctx, opts?)` fold provision-container + wait-ready + connect + manage into one call,
-  returning `{ url, conn, container }`. Lua sugar over `docker`/`prova.retry`/client/`ctx:manage` (a
-  prova-core prelude); `requires{docker}`-gateable. *(`examples/db_postgres_test.lua` fixture is now
-  one line; `db_mysql_test.lua`; `redis_test.lua`; verified against real Postgres + MySQL + Redis,
-  leak-free.)*
+  `redis.container(ctx, opts?)` / `pulsar.container(ctx, opts?)` fold provision-container + wait-ready +
+  connect + manage into one call, returning `{ url, conn|client, container }`. Lua sugar over
+  `docker`/`prova.retry`/client/`ctx:manage` (a prova-core prelude); `requires{docker}`-gateable.
+  *(`examples/db_postgres_test.lua` fixture is now one line; `db_mysql_test.lua`; `redis_test.lua`;
+  `pulsar_test.lua`; verified against real Postgres + MySQL + Redis + Pulsar, leak-free.)*
+- **Deferred: an environment / TLS+auth arc.** Every client connects **plaintext** in v1 — right for
+  the local/CI ephemeral-container mission, but they can't reach a *secured* remote endpoint (a dev k8s
+  cluster / cloud broker with TLS + tokens/mTLS/OAuth2). This is a deliberate, additive gap: each
+  crate supports TLS behind a feature, and the `connect(url, opts?)`/`client{...}` signatures already
+  take opts, so a coherent `tls`+credentials pass across `http`→https / `db` / `redis` / `grpc` /
+  `pulsar` / `kafka` slots in without breaking callers — to be built when environment testing (the
+  "point at a dev cluster" variation) is on the table.
 - **Capability modules** (`modules.rs`), injected as their own globals: **`shell.run(cmd, {cwd,
   env, timeout, check})`** (async via `tokio::process`; returns `{code, stdout, stderr, duration}` +
   `:ok()`) and **`shell.spawn(cmd, {cwd, env})`** → a managed `Process` (`.pid`, `:running()`,

@@ -50,9 +50,15 @@ serde = { version = "1", optional = true }
 # The `redis` module — a thin async client (get/set/del/exists/incr/ping + a generic `command`) for
 # asserting on a cache dependency. No TLS in v1 (local/CI containers). Feature-gated (default on).
 redis = { version = "1.3.0", default-features = false, features = ["tokio-comp"], optional = true }
+# The `pulsar` module — a thin async produce/consume client for asserting on a messaging dependency.
+# apache pulsar-rs on the tokio runtime. Unlike the other clients, pulsar always links a TLS backend;
+# the tokio path uses native-tls (system openssl) — the only tokio-compatible option (its rustls
+# variants are async-std-only). We connect plaintext in v1; token/TLS auth is a later opts addition.
+# `tokio-runtime` only (no compression/oauth2) to stay as light as pulsar allows. Feature-gated.
+pulsar = { version = "6.8.0", default-features = false, features = ["tokio-runtime"], optional = true }
 
 [features]
-default = ["http", "db", "docker", "grpc", "graphql", "yaml", "redis"]
+default = ["http", "db", "docker", "grpc", "graphql", "yaml", "redis", "pulsar"]
 http = ["dep:reqwest"]
 # GraphQL over HTTP (POST { query, variables } → { data, errors }); shares reqwest with `http`.
 graphql = ["dep:reqwest"]
@@ -67,3 +73,4 @@ grpc = [
 ]
 yaml = ["dep:serde_yaml_ng", "dep:serde"]
 redis = ["dep:redis"]
+pulsar = ["dep:pulsar"]

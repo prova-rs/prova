@@ -20,7 +20,8 @@
     "grpc",
     "graphql",
     "yaml",
-    "redis"
+    "redis",
+    "pulsar"
   ],
   "completion.callSnippet": "Replace",
   "hint.enable": true

@@ -308,6 +308,7 @@ function Container:stop() end
 
 ---@class prova.DockerRunOpts
 ---@field image string
+---@field command? string|string[]      # override the image CMD ("bin/pulsar standalone" or a list)
 ---@field ports? integer[]              # container ports to publish to random host ports
 ---@field env? table<string,string>
 ---@field wait? prova.DockerWait        # readiness gate
@@ -547,3 +548,54 @@ graphql = {}
 ---@param opts prova.GraphqlClientOpts
 ---@return prova.GraphqlClient
 function graphql.client(opts) end
+
+------------------------------------------------------------------------------------------
+-- pulsar (a thin produce/consume messaging client + an ephemeral-container recipe)
+------------------------------------------------------------------------------------------
+
+--- A Pulsar client from `pulsar.connect`. Methods are async; `ctx:manage(client)` for teardown.
+--- Plaintext only in v1 (no TLS/token auth — local/CI brokers).
+---@class prova.PulsarClient
+local PulsarClient = {}
+--- Produce a string message to a topic; awaits the broker's send receipt.
+---@param topic string
+---@param message string
+function PulsarClient:produce(topic, message) end
+--- Consume messages from a topic (reads from the earliest offset). Collects up to `max` messages
+--- arriving within `timeout`; returns them as a list of strings.
+---@param topic string
+---@param opts? prova.PulsarConsumeOpts
+---@return string[]
+function PulsarClient:consume(topic, opts) end
+--- No-op (the client drops with the handle); present for `ctx:manage` symmetry.
+function PulsarClient:close() end
+
+---@class prova.PulsarConsumeOpts
+---@field subscription? string   # subscription name (default "prova")
+---@field max? integer           # stop after this many messages (default 10)
+---@field timeout? string        # collection window (default "10s")
+---@field shared? boolean        # Shared subscription instead of Exclusive
+
+---@class prova.PulsarRecipeOpts
+---@field image? string          # full image ref; overrides tag
+---@field tag? string            # image tag (default "3.3.1")
+---@field timeout? string        # readiness deadline (default "120s"; standalone is slow to start)
+
+--- A provisioned ephemeral Pulsar: a connected (managed) client, its URL, and the container.
+---@class prova.PulsarResource
+---@field url string
+---@field client prova.PulsarClient
+---@field container prova.Container
+
+---@class prova.pulsar
+pulsar = {}
+--- Connect to a Pulsar broker by URL (`pulsar://host:port`). Async; call in a fixture/test body.
+---@param url string
+---@return prova.PulsarClient
+function pulsar.connect(url) end
+--- Provision an ephemeral Pulsar standalone in a container, wait for it, and return a connected
+--- managed client — the messaging counterpart to `db.postgres`. Requires `docker` at call time.
+---@param ctx prova.Context
+---@param opts? prova.PulsarRecipeOpts
+---@return prova.PulsarResource
+function pulsar.container(ctx, opts) end
