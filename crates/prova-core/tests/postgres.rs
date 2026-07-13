@@ -13,15 +13,14 @@ fn docker_available() -> bool {
         .unwrap_or(false)
 }
 
-/// The `db` module against a REAL Postgres in an ephemeral container — the same API verified with
-/// SQLite (tests/db.rs), differing only in the connect URL. Runs for real where docker is present,
-/// skips (via `requires`) where it is absent. Either way, nothing fails.
+/// The `postgres` module against a REAL Postgres in an ephemeral container — the same API verified
+/// with SQLite (tests/sqlite.rs), differing only in the namespace and URL. Runs for real where
+/// docker is present, skips (via `requires`) where it is absent. Either way, nothing fails.
 #[test]
-fn db_module_queries_real_postgres_or_skips() {
-    let path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/db_postgres_test.lua");
+fn postgres_module_queries_real_postgres_or_skips() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/postgres_test.lua");
     let mut reporter = NullReporter;
-    let summary = run_path(&path, &mut reporter).expect("run db_postgres_test.lua");
+    let summary = run_path(&path, &mut reporter).expect("run postgres_test.lua");
 
     assert_eq!(
         summary.failed, 0,

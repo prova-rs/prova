@@ -378,7 +378,7 @@ function prova.sleep(millis) end
 
 ---Call `fn` repeatedly until it returns a truthy value (a raised error counts as "not ready"), or
 ---the deadline elapses. Returns the value. The readiness primitive — replaces the hand-rolled
----`for _=1,N do pcall(...) sleep end` loop: `local conn = prova.retry(function() return db.connect(url) end)`.
+---`for _=1,N do pcall(...) sleep end` loop: `local conn = prova.retry(function() return postgres.client(url) end)`.
 ---@generic T
 ---@param fn fun(): T
 ---@param opts? prova.RetryOpts

@@ -2,7 +2,7 @@
 --- ephemeral container. Run from the repo root: `prova examples/s3_test.lua`. Requires docker.
 
 local store = prova.fixture("s3", Scope.File, function(ctx)
-  return s3.container(ctx).bucket
+  return s3.container(ctx).client
 end)
 
 prova.group("s3", { requires = { "docker" } }, function(g)

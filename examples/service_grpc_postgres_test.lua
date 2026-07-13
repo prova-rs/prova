@@ -42,7 +42,7 @@ local service = prova.fixture("service", Scope.File, function(ctx)
 
   -- Postgres restarts once at first-boot init; wait for a real connection to hold before the
   -- service (which connects once and exits on failure) tries.
-  ctx:manage(prova.retry(function() return db.connect(db_url) end, { timeout = "30s" }))
+  ctx:manage(prova.retry(function() return postgres.client(db_url) end, { timeout = "30s" }))
 
   local build = shell.run("cargo build", { cwd = dir, timeout = "600s" })
   assert(build:ok(), "service failed to build:\n" .. build.stderr)
@@ -66,7 +66,7 @@ end)
 prova.group("inventory gRPC service (Postgres)", { requires = { "docker", "cargo" } }, function(g)
   g:test("boots against real Postgres and serves its gRPC API", function(t)
     local svc = t:use(service)
-    local client = grpc.connect(svc.addr)
+    local client = grpc.client(svc.addr)
     -- Reaching a reflection-built client at all proves the service booted — which required a live
     -- Postgres connection. The method is reachable; today the scaffold answers Unimplemented.
     local res = client:call_status("inventory_service.InventoryService/CreateInventory",
@@ -76,7 +76,7 @@ prova.group("inventory gRPC service (Postgres)", { requires = { "docker", "cargo
 
   g:test("ran its migrations against that same Postgres", function(t)
     local svc = t:use(service)
-    local conn = t:manage(db.connect(svc.db_url))
+    local conn = t:manage(postgres.client(svc.db_url))
     -- prova queries the very database the service is wired to — cross-service state assertion.
     t:expect(conn:query_value("SELECT count(*) FROM _sqlx_migrations WHERE success")):gte(1)
   end)

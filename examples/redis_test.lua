@@ -2,7 +2,7 @@
 --- Run from the repo root: `prova examples/redis_test.lua`. Requires docker; skips otherwise.
 
 local cache = prova.fixture("redis", Scope.File, function(ctx)
-  return redis.container(ctx).conn
+  return redis.container(ctx).client
 end)
 
 prova.group("redis", { requires = { "docker" } }, function(g)

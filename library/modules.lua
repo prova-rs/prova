@@ -321,12 +321,13 @@ docker = {}
 function docker.run(opts) end
 
 ------------------------------------------------------------------------------------------
--- db (one general query API over Postgres/MySQL/SQLite via sqlx's Any driver)
+-- postgres / mysql / sqlite (one namespace per engine, one generic Connection via sqlx Any)
 ------------------------------------------------------------------------------------------
 
---- A database connection from `db.connect`. Backend chosen by URL scheme, so one API covers
---- Postgres/MySQL/SQLite. Methods are async; pair with `ctx:manage(conn)` to close it on teardown.
---- Use the backend's own placeholder syntax in SQL (`$1` for Postgres, `?` for MySQL/SQLite).
+--- A database connection from `postgres.client` / `mysql.client` / `sqlite.client` — all three
+--- engines return this same type. Methods are async; pair with `ctx:manage(conn)` to close it on
+--- teardown. Use the backend's own placeholder syntax in SQL (`$1` for Postgres, `?` for
+--- MySQL/SQLite).
 ---@class prova.Connection
 local Connection = {}
 --- Run a statement (INSERT/UPDATE/DDL); returns the number of rows affected.
@@ -347,15 +348,8 @@ function Connection:query_value(sql, params) end
 --- Close the connection pool.
 function Connection:close() end
 
----@class prova.db
-db = {}
---- Connect by URL: `postgres://…`, `mysql://…`, or `sqlite://<path>?mode=rwc`.
----@param url string
----@return prova.Connection
-function db.connect(url) end
-
---- Options for the `db.postgres`/`db.mysql` recipes. All optional (sensible defaults).
----@class prova.DbRecipeOpts
+--- Options for the `postgres.container`/`mysql.container` recipes. All optional (sensible defaults).
+---@class prova.SqlContainerOpts
 ---@field user? string           # default "prova"
 ---@field password? string       # default "prova"
 ---@field database? string       # default "prova"
@@ -364,31 +358,52 @@ function db.connect(url) end
 ---@field root_password? string  # MySQL only, default "root"
 ---@field timeout? string        # readiness deadline
 
---- A provisioned ephemeral database: an open (managed) connection, its URL, and the container.
----@class prova.DbResource
+--- A provisioned ephemeral database — the standard resource shape: an open (managed) client, the
+--- URL that reaches it, and the underlying container.
+---@class prova.SqlResource
+---@field client prova.Connection
 ---@field url string
----@field conn prova.Connection
 ---@field container prova.Container
 
+---@class prova.postgres
+postgres = {}
+--- Attach to a running Postgres by URL (`postgres://user:pass@host:port/db`).
+---@param url string
+---@return prova.Connection
+function postgres.client(url) end
 --- Provision an ephemeral Postgres in a container, wait until it accepts connections, and return an
---- open managed connection — the whole `docker.run` + retry + `db.connect` + `ctx:manage` dance in one
---- call. Requires the `docker` module at call time (`requires = { "docker" }` to skip gracefully).
+--- open managed client — the whole `docker.run` + retry + `postgres.client` + `ctx:manage` dance in
+--- one call. Requires the `docker` module at call time (`requires = { "docker" }` to skip gracefully).
 ---@param ctx prova.Context
----@param opts? prova.DbRecipeOpts
----@return prova.DbResource
-function db.postgres(ctx, opts) end
+---@param opts? prova.SqlContainerOpts
+---@return prova.SqlResource
+function postgres.container(ctx, opts) end
 
---- Provision an ephemeral MySQL the same way as `db.postgres`.
+---@class prova.mysql
+mysql = {}
+--- Attach to a running MySQL by URL (`mysql://user:pass@host:port/db`).
+---@param url string
+---@return prova.Connection
+function mysql.client(url) end
+--- Provision an ephemeral MySQL the same way as `postgres.container`.
 ---@param ctx prova.Context
----@param opts? prova.DbRecipeOpts
----@return prova.DbResource
-function db.mysql(ctx, opts) end
+---@param opts? prova.SqlContainerOpts
+---@return prova.SqlResource
+function mysql.container(ctx, opts) end
+
+---@class prova.sqlite
+sqlite = {}
+--- Open a SQLite database by URL (`sqlite://<path>?mode=rwc`, or `sqlite::memory:`). Nothing to
+--- provision — there is no `sqlite.container`.
+---@param url string
+---@return prova.Connection
+function sqlite.client(url) end
 
 ------------------------------------------------------------------------------------------
 -- redis (a thin cache client + an ephemeral-container recipe)
 ------------------------------------------------------------------------------------------
 
---- A Redis connection from `redis.connect`. Methods are async; `ctx:manage(conn)` for teardown.
+--- A Redis connection from `redis.client`. Methods are async; `ctx:manage(conn)` for teardown.
 ---@class prova.RedisConnection
 local RedisConnection = {}
 --- Get a key's value, or nil if it does not exist.
@@ -426,27 +441,27 @@ function RedisConnection:command(...) end
 --- No-op (the connection drops with the handle); present for `ctx:manage` symmetry.
 function RedisConnection:close() end
 
----@class prova.RedisRecipeOpts
+---@class prova.RedisContainerOpts
 ---@field image? string      # full image ref; overrides tag
 ---@field tag? string        # image tag (default "7-alpine")
 ---@field timeout? string    # readiness deadline
 
---- A provisioned ephemeral Redis: an open (managed) connection, its URL, and the container.
+--- A provisioned ephemeral Redis — the standard resource shape.
 ---@class prova.RedisResource
+---@field client prova.RedisConnection
 ---@field url string
----@field conn prova.RedisConnection
 ---@field container prova.Container
 
 ---@class prova.redis
 redis = {}
---- Connect to a Redis by URL (`redis://host:port`). Async; call in a fixture/test body.
+--- Attach to a running Redis by URL (`redis://host:port`). Async; call in a fixture/test body.
 ---@param url string
 ---@return prova.RedisConnection
-function redis.connect(url) end
---- Provision an ephemeral Redis in a container, wait for it, and return an open managed connection —
---- the counterpart to `db.postgres`. Requires the `docker` module at call time.
+function redis.client(url) end
+--- Provision an ephemeral Redis in a container, wait for it, and return an open managed client —
+--- the counterpart to `postgres.container`. Requires the `docker` module at call time.
 ---@param ctx prova.Context
----@param opts? prova.RedisRecipeOpts
+---@param opts? prova.RedisContainerOpts
 ---@return prova.RedisResource
 function redis.container(ctx, opts) end
 
@@ -454,7 +469,7 @@ function redis.container(ctx, opts) end
 -- grpc (native dynamic client via server reflection; no `grpcurl`, no `.proto` files)
 ------------------------------------------------------------------------------------------
 
---- A connected gRPC client from `grpc.connect`. It learned the server's schema at connect time via
+--- A connected gRPC client from `grpc.client`. It learned the server's schema at connect time via
 --- gRPC Server Reflection, so calls take a plain request table and return a response table — no
 --- generated code. Methods are async; the server must have reflection enabled. Plaintext-only in v1.
 ---@class prova.GrpcClient
@@ -477,7 +492,7 @@ function GrpcClient:call_status(method, request) end
 ---@field message string
 ---@field response? table
 
----@class prova.GrpcConnectOpts
+---@class prova.GrpcClientOpts
 ---@field timeout? string      # per-call deadline, e.g. "30s"
 
 ---@class prova.GrpcWaitOpts
@@ -486,12 +501,12 @@ function GrpcClient:call_status(method, request) end
 
 ---@class prova.grpc
 grpc = {}
---- Connect to a gRPC server at `addr` (`"host:port"` or `"http://host:port"`), performing reflection
---- once to discover its services. Must be called inside a fixture or test body (it is async).
+--- A client for the gRPC server at `addr` (`"host:port"` or `"http://host:port"`), performing
+--- reflection once to discover its services. Must be called inside a fixture or test body (async).
 ---@param addr string
----@param opts? prova.GrpcConnectOpts
+---@param opts? prova.GrpcClientOpts
 ---@return prova.GrpcClient
-function grpc.connect(addr, opts) end
+function grpc.client(addr, opts) end
 --- Poll until the server answers a reflection request or the timeout elapses (boot-then-probe).
 ---@param addr string
 ---@param opts? prova.GrpcWaitOpts
@@ -553,7 +568,7 @@ function graphql.client(opts) end
 -- pulsar (a thin produce/consume messaging client + an ephemeral-container recipe)
 ------------------------------------------------------------------------------------------
 
---- A Pulsar client from `pulsar.connect`. Methods are async; `ctx:manage(client)` for teardown.
+--- A Pulsar client from `pulsar.client`. Methods are async; `ctx:manage(client)` for teardown.
 --- Plaintext only in v1 (no TLS/token auth — local/CI brokers).
 ---@class prova.PulsarClient
 local PulsarClient = {}
@@ -576,27 +591,27 @@ function PulsarClient:close() end
 ---@field timeout? string        # collection window (default "10s")
 ---@field shared? boolean        # Shared subscription instead of Exclusive
 
----@class prova.PulsarRecipeOpts
+---@class prova.PulsarContainerOpts
 ---@field image? string          # full image ref; overrides tag
 ---@field tag? string            # image tag (default "3.3.1")
 ---@field timeout? string        # readiness deadline (default "120s"; standalone is slow to start)
 
---- A provisioned ephemeral Pulsar: a connected (managed) client, its URL, and the container.
+--- A provisioned ephemeral Pulsar — the standard resource shape.
 ---@class prova.PulsarResource
----@field url string
 ---@field client prova.PulsarClient
+---@field url string
 ---@field container prova.Container
 
 ---@class prova.pulsar
 pulsar = {}
---- Connect to a Pulsar broker by URL (`pulsar://host:port`). Async; call in a fixture/test body.
+--- Attach to a running Pulsar broker by URL (`pulsar://host:port`). Async; call in a fixture/test body.
 ---@param url string
 ---@return prova.PulsarClient
-function pulsar.connect(url) end
+function pulsar.client(url) end
 --- Provision an ephemeral Pulsar standalone in a container, wait for it, and return a connected
---- managed client — the messaging counterpart to `db.postgres`. Requires `docker` at call time.
+--- managed client — the messaging counterpart to `postgres.container`. Requires `docker` at call time.
 ---@param ctx prova.Context
----@param opts? prova.PulsarRecipeOpts
+---@param opts? prova.PulsarContainerOpts
 ---@return prova.PulsarResource
 function pulsar.container(ctx, opts) end
 
@@ -604,7 +619,7 @@ function pulsar.container(ctx, opts) end
 -- kafka (a thin produce/consume messaging client + an ephemeral-container recipe)
 ------------------------------------------------------------------------------------------
 
---- A Kafka client from `kafka.connect`. Methods are async; `ctx:manage(client)` for teardown.
+--- A Kafka client from `kafka.client`. Methods are async; `ctx:manage(client)` for teardown.
 --- Plaintext only in v1 (no SSL/SASL).
 ---@class prova.KafkaClient
 local KafkaClient = {}
@@ -626,28 +641,28 @@ function KafkaClient:close() end
 ---@field max? integer           # stop after this many messages (default 10)
 ---@field timeout? string        # collection window (default "15s")
 
----@class prova.KafkaRecipeOpts
+---@class prova.KafkaContainerOpts
 ---@field image? string          # full image ref; overrides tag
 ---@field tag? string            # image tag (default "3.9.0", apache/kafka)
 ---@field port? integer          # fixed host port (default 9092; Kafka advertises a reachable listener)
 ---@field timeout? string        # readiness deadline
 
---- A provisioned ephemeral Kafka: a connected (managed) client, its bootstrap brokers, the container.
+--- A provisioned ephemeral Kafka — the standard resource shape (`url` is the bootstrap string).
 ---@class prova.KafkaResource
----@field brokers string
 ---@field client prova.KafkaClient
+---@field url string             # bootstrap brokers, e.g. "127.0.0.1:9092"
 ---@field container prova.Container
 
 ---@class prova.kafka
 kafka = {}
---- Connect to Kafka bootstrap brokers (`host:port`). Async; verifies connectivity. Call in a body.
+--- Attach to Kafka bootstrap brokers (`host:port`). Async; verifies connectivity. Call in a body.
 ---@param brokers string
 ---@return prova.KafkaClient
-function kafka.connect(brokers) end
+function kafka.client(brokers) end
 --- Provision an ephemeral single-node Kafka (KRaft) and return a connected managed client. Uses a
 --- FIXED host port (Kafka advertises a reachable listener), so one per host at a time. Requires docker.
 ---@param ctx prova.Context
----@param opts? prova.KafkaRecipeOpts
+---@param opts? prova.KafkaContainerOpts
 ---@return prova.KafkaResource
 function kafka.container(ctx, opts) end
 
@@ -655,7 +670,7 @@ function kafka.container(ctx, opts) end
 -- s3 (a thin object-storage client + an ephemeral MinIO recipe)
 ------------------------------------------------------------------------------------------
 
---- An S3/MinIO bucket client from `s3.connect`. Methods are async; `ctx:manage(bucket)` for teardown.
+--- An S3/MinIO bucket client from `s3.client`. Methods are async; `ctx:manage(bucket)` for teardown.
 --- Path-style addressing; rustls (so real HTTPS S3 works too).
 ---@class prova.S3Bucket
 local S3Bucket = {}
@@ -681,15 +696,15 @@ function S3Bucket:list(prefix) end
 --- No-op (present for `ctx:manage` symmetry).
 function S3Bucket:close() end
 
----@class prova.S3ConnectOpts
----@field endpoint string        # e.g. "http://127.0.0.1:9000"
+---@class prova.S3ClientOpts
+---@field url string             # endpoint, e.g. "http://127.0.0.1:9000"
 ---@field bucket string
 ---@field access_key? string
 ---@field secret_key? string
 ---@field region? string         # default "us-east-1"
 ---@field create? boolean        # create the bucket (idempotent) — also acts as a readiness probe
 
----@class prova.S3RecipeOpts
+---@class prova.S3ContainerOpts
 ---@field image? string          # full image ref; overrides tag
 ---@field tag? string            # image tag (default "latest", minio/minio)
 ---@field bucket? string         # bucket to create (default "prova")
@@ -697,23 +712,23 @@ function S3Bucket:close() end
 ---@field secret_key? string     # default "minioadmin"
 ---@field timeout? string        # readiness deadline
 
---- A provisioned ephemeral object store: a bucket client, endpoint, credentials, and the container.
+--- A provisioned ephemeral object store — the standard resource shape plus credentials.
 ---@class prova.S3Resource
----@field endpoint string
----@field bucket prova.S3Bucket
+---@field client prova.S3Bucket
+---@field url string             # endpoint URL
 ---@field container prova.Container
 ---@field access_key string
 ---@field secret_key string
 
 ---@class prova.s3
 s3 = {}
---- Connect to an S3/MinIO bucket. Async; call in a fixture/test body.
----@param opts prova.S3ConnectOpts
+--- Attach to an S3/MinIO bucket. Async; call in a fixture/test body.
+---@param opts prova.S3ClientOpts
 ---@return prova.S3Bucket
-function s3.connect(opts) end
+function s3.client(opts) end
 --- Provision an ephemeral MinIO, create a bucket, and return a bucket client — the object-storage
---- counterpart to `db.postgres`. Requires the `docker` module at call time.
+--- counterpart to `postgres.container`. Requires the `docker` module at call time.
 ---@param ctx prova.Context
----@param opts? prova.S3RecipeOpts
+---@param opts? prova.S3ContainerOpts
 ---@return prova.S3Resource
 function s3.container(ctx, opts) end

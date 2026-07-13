@@ -1,10 +1,10 @@
---- The `db.mysql` recipe: the SAME query API as Postgres/SQLite against a real MySQL in an ephemeral
---- container, provisioned in one line. Run from the repo root: `prova examples/db_mysql_test.lua`.
+--- The `mysql.container` recipe: the SAME query API as Postgres/SQLite against a real MySQL in an
+--- ephemeral container, provisioned in one line. Run from the repo root: `prova examples/mysql_test.lua`.
 --- Requires docker; skips gracefully otherwise. Note the only backend differences are the recipe call
 --- and MySQL's `?` placeholders.
 
 local my = prova.fixture("mysql", Scope.File, function(ctx)
-  return db.mysql(ctx, { database = "orders" }).conn
+  return mysql.container(ctx, { database = "orders" }).client
 end)
 
 prova.group("mysql", { requires = { "docker" } }, function(g)

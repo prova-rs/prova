@@ -5,5 +5,5 @@ suite.config{ name = "orders", requires = { "docker" } }
 
 -- ONE Postgres for the whole suite — provisioned once, torn down once, shared by every file below.
 prova.fixture("db", Scope.Suite, function(ctx)
-  return db.postgres(ctx, { database = "orders" }).conn
+  return postgres.container(ctx, { database = "orders" }).client
 end)

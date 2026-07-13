@@ -1,5 +1,5 @@
 //! First-party capability modules injected as globals alongside `prova`: `shell`, `fs`, `http`,
-//! `docker`, and `db`.
+//! `docker`, and the SQL engines.
 //!
 //! These are what make prova useful beyond testing itself — bring a system into existence and poke
 //! it. `shell.run`/`shell.spawn`, `http.*`, and `docker.*` are async (child processes / requests /
@@ -7,7 +7,7 @@
 //! context explicitly (no ambient cwd), preserving the isolation the design promises. `http` is
 //! behind a default-on feature and is HTTP-only in v1 (an `https`/TLS feature can layer on later);
 //! `docker` uses the typed **bollard** daemon client, so tests that need it declare
-//! `requires = { "docker" }` to skip gracefully where the daemon is absent. `http`/`db`/`docker` are
+//! `requires = { "docker" }` to skip gracefully where the daemon is absent. `http`/`postgres`/`docker` are
 //! each behind a default-on feature so builds can opt out of their dependency trees.
 
 use std::path::Path;
@@ -27,8 +27,12 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set("docker", docker::make(lua)?)?;
     #[cfg(feature = "http")]
     lua.globals().set("http", http::make(lua)?)?;
-    #[cfg(feature = "db")]
-    lua.globals().set("db", db::make(lua)?)?;
+    #[cfg(feature = "postgres")]
+    lua.globals().set("postgres", sql::make(lua, sql::Engine::Postgres)?)?;
+    #[cfg(feature = "mysql")]
+    lua.globals().set("mysql", sql::make(lua, sql::Engine::Mysql)?)?;
+    #[cfg(feature = "sqlite")]
+    lua.globals().set("sqlite", sql::make(lua, sql::Engine::Sqlite)?)?;
     #[cfg(feature = "grpc")]
     lua.globals().set("grpc", grpc::make(lua)?)?;
     #[cfg(feature = "graphql")]
@@ -43,11 +47,15 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set("kafka", kafka_mod::make(lua)?)?;
     #[cfg(feature = "s3")]
     lua.globals().set("s3", s3_mod::make(lua)?)?;
-    // Resource recipes — Lua sugar over docker.run + prova.retry + db.connect + ctx:manage. Loaded
+    // Resource recipes — Lua sugar over docker.run + prova.retry + postgres.client + ctx:manage. Loaded
     // after the modules exist; the globals they touch resolve when a recipe is *called*.
-    #[cfg(feature = "db")]
-    lua.load(DB_RECIPES_LUA)
-        .set_name("@prova/db-recipes")
+    #[cfg(feature = "postgres")]
+    lua.load(POSTGRES_RECIPES_LUA)
+        .set_name("@prova/postgres-recipes")
+        .exec()?;
+    #[cfg(feature = "mysql")]
+    lua.load(MYSQL_RECIPES_LUA)
+        .set_name("@prova/mysql-recipes")
         .exec()?;
     #[cfg(feature = "redis")]
     lua.load(REDIS_RECIPES_LUA)
@@ -69,7 +77,8 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
 }
 
 /// `s3.container(ctx, opts?)` provisions an ephemeral MinIO (S3-compatible), creates a bucket, and
-/// returns `{ endpoint, bucket, container, access_key, secret_key }`. Requires the `docker` module.
+/// returns the standard resource shape `{ client, url, container }` plus `access_key`/`secret_key`.
+/// Requires the `docker` module.
 #[cfg(feature = "s3")]
 const S3_RECIPES_LUA: &str = r#"
 function s3.container(ctx, opts)
@@ -87,13 +96,13 @@ function s3.container(ctx, opts)
     env = { MINIO_ROOT_USER = access, MINIO_ROOT_PASSWORD = secret },
     wait = { port = 9000, timeout = timeout },
   })
-  local endpoint = "http://127.0.0.1:" .. container:host_port(9000)
+  local url = "http://127.0.0.1:" .. container:host_port(9000)
   -- Connecting with create=true hits MinIO (creating the bucket), so it doubles as the readiness gate.
-  local bucket = ctx:manage(prova.retry(function()
-    return s3.connect{ endpoint = endpoint, access_key = access, secret_key = secret,
-                       bucket = bucket_name, create = true }
+  local client = ctx:manage(prova.retry(function()
+    return s3.client{ url = url, access_key = access, secret_key = secret,
+                      bucket = bucket_name, create = true }
   end, { timeout = timeout, message = "minio did not become ready in time" }))
-  return { endpoint = endpoint, bucket = bucket, container = container,
+  return { client = client, url = url, container = container,
            access_key = access, secret_key = secret }
 end
 "#;
@@ -129,10 +138,10 @@ function kafka.container(ctx, opts)
     },
     wait = { port = 9092, timeout = timeout },
   })
-  local brokers = "127.0.0.1:" .. port
-  local client = ctx:manage(prova.retry(function() return kafka.connect(brokers) end,
+  local url = "127.0.0.1:" .. port
+  local client = ctx:manage(prova.retry(function() return kafka.client(url) end,
     { timeout = timeout, message = "kafka did not accept connections in time" }))
-  return { brokers = brokers, client = client, container = container }
+  return { client = client, url = url, container = container }
 end
 "#;
 
@@ -153,15 +162,15 @@ function pulsar.container(ctx, opts)
     wait = { log = "messaging service is ready", timeout = timeout },
   })
   local url = "pulsar://127.0.0.1:" .. container:host_port(6650)
-  local client = ctx:manage(prova.retry(function() return pulsar.connect(url) end,
+  local client = ctx:manage(prova.retry(function() return pulsar.client(url) end,
     { timeout = timeout, message = "pulsar did not accept connections in time" }))
-  return { url = url, client = client, container = container }
+  return { client = client, url = url, container = container }
 end
 "#;
 
-/// The Redis counterpart to the `db.*` recipes: `redis.container(ctx, opts?)` provisions an ephemeral
-/// Redis, waits for it, opens a managed connection, and returns `{ url, conn, container }`. Requires
-/// the `docker` module at call time.
+/// The Redis counterpart to `postgres.container`: `redis.container(ctx, opts?)` provisions an
+/// ephemeral Redis, waits for it, opens a managed connection, and returns the standard resource
+/// shape `{ client, url, container }`. Requires the `docker` module at call time.
 #[cfg(feature = "redis")]
 const REDIS_RECIPES_LUA: &str = r#"
 function redis.container(ctx, opts)
@@ -171,64 +180,75 @@ function redis.container(ctx, opts)
   local timeout = opts.timeout or "60s"
   local container = ctx:manage(docker.run{ image = image, ports = { 6379 }, wait = { port = 6379, timeout = timeout } })
   local url = "redis://127.0.0.1:" .. container:host_port(6379)
-  local conn = ctx:manage(prova.retry(function() return redis.connect(url) end,
+  local client = ctx:manage(prova.retry(function() return redis.client(url) end,
     { timeout = timeout, message = "redis did not accept connections in time" }))
-  return { url = url, conn = conn, container = container }
+  return { client = client, url = url, container = container }
 end
 "#;
 
-/// Testcontainers-style database recipes: one call provisions an ephemeral container, waits for it to
-/// actually accept connections, opens a managed connection, and ties it all to the scope. Returns
-/// `{ url, conn, container }`. `db.postgres`/`db.mysql` require the `docker` module at call time and
-/// are `requires = { "docker" }`-gateable like any container test.
-#[cfg(feature = "db")]
-const DB_RECIPES_LUA: &str = r#"
-local function database_recipe(defaults)
-  return function(ctx, opts)
-    assert(ctx and ctx.manage, "db." .. defaults.kind .. "(ctx, opts?): pass the fixture/test context as the first argument")
-    opts = opts or {}
-    local user     = opts.user     or "prova"
-    local password = opts.password or "prova"
-    local database = opts.database or "prova"
-    local image    = opts.image    or (defaults.image_base .. ":" .. (opts.tag or defaults.tag))
-    local timeout  = opts.timeout  or defaults.timeout
+/// `postgres.container(ctx, opts?)` — a testcontainers-style recipe: one call provisions an
+/// ephemeral Postgres, waits for it to actually accept connections, opens a managed connection, and
+/// ties it all to the scope. Returns the standard resource shape `{ client, url, container }`.
+/// Requires the `docker` module at call time and is `requires = { "docker" }`-gateable.
+#[cfg(feature = "postgres")]
+const POSTGRES_RECIPES_LUA: &str = r#"
+function postgres.container(ctx, opts)
+  assert(ctx and ctx.manage, "postgres.container(ctx, opts?): pass the fixture/test context as the first argument")
+  opts = opts or {}
+  local user     = opts.user     or "prova"
+  local password = opts.password or "prova"
+  local database = opts.database or "prova"
+  local image    = opts.image    or ("postgres:" .. (opts.tag or "16-alpine"))
+  local timeout  = opts.timeout  or "60s"
 
-    local env = defaults.env(user, password, database, opts)
-    local container = ctx:manage(docker.run{
-      image = image,
-      env = env,
-      ports = { defaults.port },
-      wait = { port = defaults.port, timeout = timeout },
-    })
+  local container = ctx:manage(docker.run{
+    image = image,
+    env = { POSTGRES_USER = user, POSTGRES_PASSWORD = password, POSTGRES_DB = database },
+    ports = { 5432 },
+    wait = { port = 5432, timeout = timeout },
+  })
 
-    local url = string.format(defaults.url, user, password, container:host_port(defaults.port), database)
-    -- The port opening is a false-positive for a first-boot DB (it restarts once at init); retry the
-    -- real connection until it holds. This doubles as the readiness gate for anything else wiring in.
-    local conn = ctx:manage(prova.retry(function() return db.connect(url) end,
-      { timeout = timeout, message = defaults.kind .. " did not accept connections in time" }))
+  local url = string.format("postgres://%s:%s@127.0.0.1:%d/%s", user, password, container:host_port(5432), database)
+  -- The port opening is a false-positive for a first-boot DB (it restarts once at init); retry the
+  -- real connection until it holds. This doubles as the readiness gate for anything else wiring in.
+  local client = ctx:manage(prova.retry(function() return postgres.client(url) end,
+    { timeout = timeout, message = "postgres did not accept connections in time" }))
 
-    return { url = url, conn = conn, container = container }
-  end
+  return { client = client, url = url, container = container }
 end
+"#;
 
-db.postgres = database_recipe{
-  kind = "postgres", image_base = "postgres", tag = "16-alpine", port = 5432, timeout = "60s",
-  url = "postgres://%s:%s@127.0.0.1:%d/%s",
-  env = function(user, password, database)
-    return { POSTGRES_USER = user, POSTGRES_PASSWORD = password, POSTGRES_DB = database }
-  end,
-}
+/// `mysql.container(ctx, opts?)` — the MySQL counterpart to `postgres.container`. Returns the
+/// standard resource shape `{ client, url, container }`.
+#[cfg(feature = "mysql")]
+const MYSQL_RECIPES_LUA: &str = r#"
+function mysql.container(ctx, opts)
+  assert(ctx and ctx.manage, "mysql.container(ctx, opts?): pass the fixture/test context as the first argument")
+  opts = opts or {}
+  local user     = opts.user     or "prova"
+  local password = opts.password or "prova"
+  local database = opts.database or "prova"
+  local image    = opts.image    or ("mysql:" .. (opts.tag or "8"))
+  local timeout  = opts.timeout  or "90s"
 
-db.mysql = database_recipe{
-  kind = "mysql", image_base = "mysql", tag = "8", port = 3306, timeout = "90s",
-  url = "mysql://%s:%s@127.0.0.1:%d/%s",
-  env = function(user, password, database, opts)
-    return {
+  local container = ctx:manage(docker.run{
+    image = image,
+    env = {
       MYSQL_USER = user, MYSQL_PASSWORD = password, MYSQL_DATABASE = database,
       MYSQL_ROOT_PASSWORD = opts.root_password or "root",
-    }
-  end,
-}
+    },
+    ports = { 3306 },
+    wait = { port = 3306, timeout = timeout },
+  })
+
+  local url = string.format("mysql://%s:%s@127.0.0.1:%d/%s", user, password, container:host_port(3306), database)
+  -- The port opening is a false-positive for a first-boot DB (it restarts once at init); retry the
+  -- real connection until it holds. This doubles as the readiness gate for anything else wiring in.
+  local client = ctx:manage(prova.retry(function() return mysql.client(url) end,
+    { timeout = timeout, message = "mysql did not accept connections in time" }))
+
+  return { client = client, url = url, container = container }
+end
 "#;
 
 // ---------------------------------------------------------------------------------------------
@@ -1263,18 +1283,45 @@ mod docker {
 }
 
 // ---------------------------------------------------------------------------------------------
-// db (one general query API over Postgres/MySQL/SQLite via sqlx's `Any` driver)
+// sql (postgres/mysql/sqlite namespaces over one generic Connection via sqlx's `Any` driver)
 // ---------------------------------------------------------------------------------------------
 
-#[cfg(feature = "db")]
-mod db {
+#[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlite"))]
+mod sql {
     use mlua::{Function, Lua, Table, UserData, UserDataMethods, Value};
     use sqlx::any::{AnyPoolOptions, AnyRow, AnyTypeInfoKind};
     use sqlx::{AnyPool, Column, Row};
 
-    /// A database connection pool from `db.connect(url)`. The backend is chosen by URL scheme
-    /// (`postgres://`, `mysql://`, `sqlite://…?mode=rwc`), so one API covers all three. Methods are
-    /// async; pair with `ctx:defer(function() conn:close() end)`.
+    /// Which SQL engine a namespace fronts. Every engine's `client(url)` returns the same generic
+    /// `Connection` (sqlx `Any` driver) — the namespace exists for discoverability and URL-scheme
+    /// validation, not for a per-engine API.
+    #[derive(Clone, Copy)]
+    pub(crate) enum Engine {
+        Postgres,
+        Mysql,
+        Sqlite,
+    }
+
+    impl Engine {
+        fn name(self) -> &'static str {
+            match self {
+                Engine::Postgres => "postgres",
+                Engine::Mysql => "mysql",
+                Engine::Sqlite => "sqlite",
+            }
+        }
+        fn schemes(self) -> &'static [&'static str] {
+            match self {
+                Engine::Postgres => &["postgres://", "postgresql://"],
+                Engine::Mysql => &["mysql://"],
+                Engine::Sqlite => &["sqlite://", "sqlite:"],
+            }
+        }
+    }
+
+    /// A database connection pool from `postgres.client(url)` / `mysql.client(url)` /
+    /// `sqlite.client(url)`. All three return this same type. Methods are async; pair with
+    /// `ctx:manage(conn)` (or `ctx:defer(function() conn:close() end)`).
     struct Connection {
         pool: AnyPool,
     }
@@ -1348,20 +1395,27 @@ mod db {
         }
     }
 
-    pub(crate) fn make(lua: &Lua) -> mlua::Result<Table> {
-        let db = lua.create_table()?;
-        db.set("connect", connect_fn(lua)?)?;
-        Ok(db)
+    pub(crate) fn make(lua: &Lua, engine: Engine) -> mlua::Result<Table> {
+        let table = lua.create_table()?;
+        table.set("client", client_fn(lua, engine)?)?;
+        Ok(table)
     }
 
-    fn connect_fn(lua: &Lua) -> mlua::Result<Function> {
-        lua.create_async_function(|lua, url: String| async move {
+    fn client_fn(lua: &Lua, engine: Engine) -> mlua::Result<Function> {
+        lua.create_async_function(move |lua, url: String| async move {
+            let name = engine.name();
+            if !engine.schemes().iter().any(|s| url.starts_with(s)) {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "{name}.client: expected a {scheme} URL, got {url:?}",
+                    scheme = engine.schemes()[0]
+                )));
+            }
             sqlx::any::install_default_drivers(); // idempotent
             let pool = AnyPoolOptions::new()
                 .max_connections(1)
                 .connect(&url)
                 .await
-                .map_err(|e| mlua::Error::RuntimeError(format!("db.connect {url:?}: {e}")))?;
+                .map_err(|e| mlua::Error::RuntimeError(format!("{name}.client {url:?}: {e}")))?;
             lua.create_userdata(Connection { pool })
         })
     }
@@ -1386,7 +1440,7 @@ mod db {
                 Value::String(s) => Ok(Bind::Str(s.to_str()?.to_string())),
                 Value::Nil => Ok(Bind::Null),
                 other => Err(mlua::Error::RuntimeError(format!(
-                    "db: unsupported parameter type {}",
+                    "sql: unsupported parameter type {}",
                     other.type_name()
                 ))),
             })
@@ -1411,7 +1465,7 @@ mod db {
     }
 
     fn db_err(e: sqlx::Error) -> mlua::Error {
-        mlua::Error::RuntimeError(format!("db error: {e}"))
+        mlua::Error::RuntimeError(format!("sql error: {e}"))
     }
 
     fn row_to_table(lua: &Lua, row: &AnyRow) -> mlua::Result<Table> {
@@ -1511,7 +1565,7 @@ mod db {
 // the fetched descriptors, invokes with a generic tonic codec over `DynamicMessage`, and decodes the
 // reply back to a Lua table. This keeps prova a single self-contained binary — the whole point of
 // going native instead of shelling out to `grpcurl`. The server must have reflection enabled; if it
-// doesn't, `grpc.connect` fails with a clear message (a proto-file path mode can layer on later).
+// doesn't, `grpc.client` fails with a clear message (a proto-file path mode can layer on later).
 #[cfg(feature = "grpc")]
 mod grpc {
     use std::collections::HashMap;
@@ -1534,9 +1588,9 @@ mod grpc {
 
     pub(crate) fn make(lua: &Lua) -> mlua::Result<Table> {
         let grpc = lua.create_table()?;
-        // grpc.connect(addr, { timeout = "30s" }) → a Client (reflection is performed here, once).
+        // grpc.client(addr, { timeout = "30s" }) → a Client (reflection is performed here, once).
         grpc.set(
-            "connect",
+            "client",
             lua.create_async_function(|lua, (addr, opts): (String, Option<Table>)| async move {
                 let timeout = opt_duration(&opts, "timeout")?;
                 let channel = connect_channel(&addr).await?;
@@ -2156,7 +2210,7 @@ mod redis_mod {
         mlua::Error::RuntimeError(msg.into())
     }
 
-    /// A Redis connection from `redis.connect`. `MultiplexedConnection` is a cheap cloneable handle,
+    /// A Redis connection from `redis.client`. `MultiplexedConnection` is a cheap cloneable handle,
     /// so each async method clones it into its future (nothing borrows Lua across the await).
     struct RedisConnection {
         conn: redis::aio::MultiplexedConnection,
@@ -2296,23 +2350,23 @@ mod redis_mod {
                 }
             });
             // close() — a no-op (the multiplexed handle drops with the userdata); present so a redis
-            // connection is `ctx:manage`-able for symmetry with `db`.
+            // connection is `ctx:manage`-able for symmetry with the SQL clients.
             methods.add_method("close", |_, _this, ()| Ok(()));
         }
     }
 
     pub(crate) fn make(lua: &Lua) -> mlua::Result<Table> {
         let redis_tbl = lua.create_table()?;
-        // redis.connect(url) → a Connection. Async (needs the runtime); call in a fixture/test body.
+        // redis.client(url) → a Connection. Async (needs the runtime); call in a fixture/test body.
         redis_tbl.set(
-            "connect",
+            "client",
             lua.create_async_function(|lua, url: String| async move {
                 let client =
-                    redis::Client::open(url).map_err(|e| err(format!("redis.connect: {e}")))?;
+                    redis::Client::open(url).map_err(|e| err(format!("redis.client: {e}")))?;
                 let conn = client
                     .get_multiplexed_async_connection()
                     .await
-                    .map_err(|e| err(format!("redis.connect: {e}")))?;
+                    .map_err(|e| err(format!("redis.client: {e}")))?;
                 lua.create_userdata(RedisConnection { conn })
             })?,
         )?;
@@ -2343,7 +2397,7 @@ mod pulsar_mod {
         mlua::Error::RuntimeError(msg.into())
     }
 
-    /// A Pulsar client from `pulsar.connect`. `Pulsar<TokioExecutor>` is a cheap cloneable handle.
+    /// A Pulsar client from `pulsar.client`. `Pulsar<TokioExecutor>` is a cheap cloneable handle.
     struct PulsarClient {
         client: Pulsar<TokioExecutor>,
     }
@@ -2450,14 +2504,14 @@ mod pulsar_mod {
 
     pub(crate) fn make(lua: &Lua) -> mlua::Result<Table> {
         let pulsar_tbl = lua.create_table()?;
-        // pulsar.connect(url) → a client. Async (connects to the broker); call in a fixture/test body.
+        // pulsar.client(url) → a client. Async (connects to the broker); call in a fixture/test body.
         pulsar_tbl.set(
-            "connect",
+            "client",
             lua.create_async_function(|lua, url: String| async move {
                 let client = Pulsar::builder(url, TokioExecutor)
                     .build()
                     .await
-                    .map_err(|e| err(format!("pulsar.connect: {e}")))?;
+                    .map_err(|e| err(format!("pulsar.client: {e}")))?;
                 lua.create_userdata(PulsarClient { client })
             })?,
         )?;
@@ -2582,16 +2636,16 @@ mod kafka_mod {
 
     pub(crate) fn make(lua: &Lua) -> mlua::Result<Table> {
         let kafka = lua.create_table()?;
-        // kafka.connect(brokers) → a client. Async: creates a producer and verifies connectivity with
-        // a metadata fetch (so `prova.retry(kafka.connect, ...)` is a real readiness gate).
+        // kafka.client(brokers) → a client. Async: creates a producer and verifies connectivity with
+        // a metadata fetch (so `prova.retry(kafka.client, ...)` is a real readiness gate).
         kafka.set(
-            "connect",
+            "client",
             lua.create_async_function(|lua, brokers: String| async move {
                 let producer: FutureProducer = ClientConfig::new()
                     .set("bootstrap.servers", &brokers)
                     .set("message.timeout.ms", "10000")
                     .create()
-                    .map_err(|e| err(format!("kafka.connect: {e}")))?;
+                    .map_err(|e| err(format!("kafka.client: {e}")))?;
                 // fetch_metadata is blocking; run it on the blocking pool so the worker isn't stalled.
                 let probe = producer.clone();
                 let brokers_for_probe = brokers.clone();
@@ -2601,8 +2655,8 @@ mod kafka_mod {
                         .fetch_metadata(None, Timeout::After(Duration::from_secs(5)))
                 })
                 .await
-                .map_err(|e| err(format!("kafka.connect: {e}")))?
-                .map_err(|e| err(format!("kafka.connect {brokers_for_probe}: {e}")))?;
+                .map_err(|e| err(format!("kafka.client: {e}")))?
+                .map_err(|e| err(format!("kafka.client {brokers_for_probe}: {e}")))?;
                 lua.create_userdata(KafkaClient { brokers, producer })
             })?,
         )?;
@@ -2705,18 +2759,18 @@ mod s3_mod {
 
     pub(crate) fn make(lua: &Lua) -> mlua::Result<Table> {
         let s3 = lua.create_table()?;
-        // s3.connect{ endpoint, access_key, secret_key, bucket, region?, create? } → a bucket client.
+        // s3.client{ url, access_key, secret_key, bucket, region?, create? } → a bucket client.
         // Async; with `create = true` it creates the bucket (idempotent) — the recipe uses that as the
         // readiness gate. Call in a fixture/test body.
         s3.set(
-            "connect",
+            "client",
             lua.create_async_function(|lua, opts: Table| async move {
                 let endpoint: String = opts
-                    .get::<Option<String>>("endpoint")?
-                    .ok_or_else(|| err("s3.connect requires an `endpoint`"))?;
+                    .get::<Option<String>>("url")?
+                    .ok_or_else(|| err("s3.client requires a `url` (the endpoint, e.g. \"http://127.0.0.1:9000\")"))?;
                 let bucket_name: String = opts
                     .get::<Option<String>>("bucket")?
-                    .ok_or_else(|| err("s3.connect requires a `bucket`"))?;
+                    .ok_or_else(|| err("s3.client requires a `bucket`"))?;
                 let access: String = opts.get::<Option<String>>("access_key")?.unwrap_or_default();
                 let secret: String = opts.get::<Option<String>>("secret_key")?.unwrap_or_default();
                 let region_name = opts
@@ -2729,7 +2783,7 @@ mod s3_mod {
                     endpoint,
                 };
                 let creds = Credentials::new(Some(&access), Some(&secret), None, None, None)
-                    .map_err(|e| err(format!("s3.connect credentials: {e}")))?;
+                    .map_err(|e| err(format!("s3.client credentials: {e}")))?;
 
                 if create {
                     // Hits the network (readiness); tolerate "already exists".
@@ -2746,13 +2800,13 @@ mod s3_mod {
                             && !msg.contains("BucketAlreadyExists")
                             && !msg.to_lowercase().contains("already")
                         {
-                            return Err(err(format!("s3.connect create bucket: {e}")));
+                            return Err(err(format!("s3.client create bucket: {e}")));
                         }
                     }
                 }
 
                 let bucket = *Bucket::new(&bucket_name, region, creds)
-                    .map_err(|e| err(format!("s3.connect: {e}")))?
+                    .map_err(|e| err(format!("s3.client: {e}")))?
                     .with_path_style();
                 lua.create_userdata(S3Bucket { bucket })
             })?,

@@ -19,14 +19,12 @@ glob = "0.3"
 # The `http` module. v1 is HTTP-only (no TLS) to stay light — covers localhost service
 # boot-and-probe; an https feature can layer rustls on later. Feature-gated so builds can opt out.
 reqwest = { version = "0.12", optional = true, default-features = false }
-# The `db` module — one general API over Postgres/MySQL/SQLite via sqlx's `Any` driver (backend
-# chosen by URL scheme). Heavy, so feature-gated (default on). No TLS in v1 (local/CI containers).
+# The `postgres`/`mysql`/`sqlite` modules — one general Connection API over sqlx's `Any` driver
+# (backend chosen by URL scheme). Heavy, so feature-gated per engine (default on). No TLS in v1
+# (local/CI containers).
 sqlx = { version = "0.8", optional = true, default-features = false, features = [
     "runtime-tokio",
     "any",
-    "postgres",
-    "mysql",
-    "sqlite",
 ] }
 # The `docker` module — the typed Docker daemon client (bollard), not CLI-shelling: structured
 # errors, log streams, exec, port inspection. Feature-gated (default on).
@@ -77,11 +75,15 @@ rdkafka = { version = "0.39.0", default-features = false, features = ["tokio"], 
 rdkafka = { version = "0.39.0", default-features = false, features = ["tokio", "cmake-build"], optional = true }
 
 [features]
-default = ["http", "db", "docker", "grpc", "graphql", "yaml", "redis", "pulsar", "kafka", "s3"]
+default = ["http", "postgres", "mysql", "sqlite", "docker", "grpc", "graphql", "yaml", "redis", "pulsar", "kafka", "s3"]
 http = ["dep:reqwest"]
 # GraphQL over HTTP (POST { query, variables } → { data, errors }); shares reqwest with `http`.
 graphql = ["dep:reqwest"]
-db = ["dep:sqlx"]
+# SQL databases — one namespace per engine (feature = namespace = global), all returning the same
+# generic Connection over sqlx's `Any` driver.
+postgres = ["dep:sqlx", "sqlx/postgres"]
+mysql = ["dep:sqlx", "sqlx/mysql"]
+sqlite = ["dep:sqlx", "sqlx/sqlite"]
 docker = ["dep:bollard"]
 grpc = [
     "dep:tonic",

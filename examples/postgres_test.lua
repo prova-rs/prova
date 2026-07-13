@@ -1,13 +1,13 @@
---- The North Star data layer: the SAME `db` API driving a REAL Postgres in an ephemeral container.
---- Run from the repo root: `prova examples/db_postgres_test.lua`. Requires docker; skips gracefully
---- where it is unavailable. Note the only difference from the SQLite example is the connect URL and
+--- The North Star data layer: the SAME query API driving a REAL Postgres in an ephemeral container.
+--- Run from the repo root: `prova examples/postgres_test.lua`. Requires docker; skips gracefully
+--- where it is unavailable. Note the only difference from the SQLite example is the client URL and
 --- `$1` placeholders — the query surface is identical.
 
 local pg = prova.fixture("pg", Scope.File, function(ctx)
-  -- The `db.postgres` recipe folds the whole dance — provision an ephemeral container, wait for it to
-  -- actually accept connections, open a managed connection — into one line. Returns { url, conn,
-  -- container }; here we just want the connection.
-  return db.postgres(ctx, { database = "orders" }).conn
+  -- The `postgres.container` recipe folds the whole dance — provision an ephemeral container, wait for
+  -- it to actually accept connections, open a managed connection — into one line. Returns { client,
+  -- url, container }; here we just want the client.
+  return postgres.container(ctx, { database = "orders" }).client
 end)
 
 prova.group("postgres", { requires = { "docker" } }, function(g)

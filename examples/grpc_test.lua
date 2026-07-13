@@ -15,7 +15,7 @@ local server = prova.fixture("grpcbin", Scope.File, function(ctx)
 
   local addr = "127.0.0.1:" .. c:host_port(9000)
   grpc.wait_for(addr, { timeout = "30s" })
-  local client = grpc.connect(addr)
+  local client = grpc.client(addr)
   return client
 end)
 
