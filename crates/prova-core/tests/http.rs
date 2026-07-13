@@ -61,6 +61,22 @@ prova.test("wait_for returns once healthy", function(t)
   local res = http.wait_for(base .. "/health", {{ status = 200, timeout = "5s", every = "50ms" }})
   t:expect(res.status):equals(200)
 end)
+
+prova.test("PATCH is supported", function(t)
+  local res = http.patch(base .. "/orders/1", {{ json = {{ qty = 3 }} }})
+  t:expect(res.status):equals(200)
+end)
+
+prova.test("client prefixes base_url and reuses default headers", function(t)
+  local api = http.client{{ base_url = base, headers = {{ authorization = "Bearer t" }} }}
+  local res = api:get("/health")            -- path joined onto base_url
+  t:expect(res.status):equals(200)
+  t:expect(res:json().service):equals("orders")
+  local created = api:post("/orders", {{ json = {{ sku = "x" }} }})
+  t:expect(created.status):equals(200)
+  local ready = api:wait_for("/health", {{ status = 200, timeout = "5s", every = "50ms" }})
+  t:expect(ready.status):equals(200)
+end)
 "#
     );
 
@@ -71,7 +87,7 @@ end)
 
     let mut reporter = NullReporter;
     let summary = run_path_with(&path, &mut reporter, &RunConfig::default()).expect("run");
-    assert_eq!(summary.passed, 3, "passed");
+    assert_eq!(summary.passed, 5, "passed");
     assert_eq!(summary.failed, 0, "failed");
 
     let _ = std::fs::remove_dir_all(&dir);

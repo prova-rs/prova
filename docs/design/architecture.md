@@ -155,9 +155,12 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
   env, timeout, check})`** (async via `tokio::process`; returns `{code, stdout, stderr, duration}` +
   `:ok()`) and **`shell.spawn(cmd, {cwd, env})`** → a managed `Process` (`.pid`, `:running()`,
   async `:stop()`/`:wait()`; `kill_on_drop` backstop) — the boot-the-app primitive; **`fs`**
-  (`exists`/`read`/`write`/`remove_all`/`tempdir`/`glob`); and **`http`**
-  (`get`/`post`/`put`/`delete`/`wait_for`; async via reqwest; response `.status`/`.body`/`.headers`
-  + `:json()`; `wait_for` is the boot-then-probe poll). Filesystem matchers
+  (`exists`/`read`/`write`/`remove_all`/`tempdir`/`glob`); **`net`** (`free_port()` for a locally-
+  spawned app's dynamic port); and **`http`** (`get`/`post`/`put`/`patch`/`delete`/`head`/`options`/
+  `wait_for`; async via reqwest; response `.status`/`.body`/`.headers` + `:json()`; `wait_for` is the
+  boot-then-probe poll; **`http.client{ base_url, headers }`** is a reusable REST client that prefixes
+  the base URL and merges default headers — the ergonomic path for a suite hitting one service).
+  Filesystem matchers
   `:exists()`/`:is_file()`/`:is_dir()` take a path-string **or handle-table** subject. This is the
   slice that lets prova test a real rendered workspace and a running service.
   *(`examples/shell_fs_test.lua`; `examples/http_probe_test.lua` boots a server + probes it.)*

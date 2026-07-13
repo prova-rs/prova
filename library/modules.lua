@@ -159,12 +159,71 @@ function http.put(url, opts) end
 ---@param url string
 ---@param opts? prova.HttpOpts
 ---@return prova.HttpResponse
+function http.patch(url, opts) end
+---@param url string
+---@param opts? prova.HttpOpts
+---@return prova.HttpResponse
 function http.delete(url, opts) end
+---@param url string
+---@param opts? prova.HttpOpts
+---@return prova.HttpResponse
+function http.head(url, opts) end
+---@param url string
+---@param opts? prova.HttpOpts
+---@return prova.HttpResponse
+function http.options(url, opts) end
 ---Poll until the endpoint responds as expected or the timeout elapses.
 ---@param url string
 ---@param opts? prova.WaitOpts
 ---@return prova.HttpResponse
 function http.wait_for(url, opts) end
+
+---@class prova.HttpClientOpts
+---@field base_url string                  # prefixed onto each call's path
+---@field headers? table<string,string>    # default headers (per-call headers override by name)
+---@field timeout? string                  # default per-call timeout
+
+--- A reusable REST client: base URL + default headers declared once. `path` is joined onto
+--- `base_url` (an absolute URL is used verbatim); per-call `opts` override the defaults.
+---@class prova.HttpClient
+local HttpClient = {}
+---@param path string
+---@param opts? prova.HttpOpts
+---@return prova.HttpResponse
+function HttpClient:get(path, opts) end
+---@param path string
+---@param opts? prova.HttpOpts
+---@return prova.HttpResponse
+function HttpClient:post(path, opts) end
+---@param path string
+---@param opts? prova.HttpOpts
+---@return prova.HttpResponse
+function HttpClient:put(path, opts) end
+---@param path string
+---@param opts? prova.HttpOpts
+---@return prova.HttpResponse
+function HttpClient:patch(path, opts) end
+---@param path string
+---@param opts? prova.HttpOpts
+---@return prova.HttpResponse
+function HttpClient:delete(path, opts) end
+---@param path string
+---@param opts? prova.HttpOpts
+---@return prova.HttpResponse
+function HttpClient:head(path, opts) end
+---@param path string
+---@param opts? prova.HttpOpts
+---@return prova.HttpResponse
+function HttpClient:options(path, opts) end
+---@param path string
+---@param opts? prova.WaitOpts
+---@return prova.HttpResponse
+function HttpClient:wait_for(path, opts) end
+
+--- Build a reusable REST client bound to a base URL and default headers.
+---@param opts prova.HttpClientOpts
+---@return prova.HttpClient
+function http.client(opts) end
 
 ------------------------------------------------------------------------------------------
 -- archetect (plugin: in-process render via archetect-core)
