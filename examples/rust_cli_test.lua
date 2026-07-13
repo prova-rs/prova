@@ -1,8 +1,10 @@
---- Example: acceptance test for the archetype-rust-cli archetype.
---- Renders it in-process, asserts on the layout, then actually builds the output.
+--- Acceptance test for a Rust-CLI archetype: render it in-process, assert on the layout, then
+--- actually `cargo build` the output. Run from the repo root: `prova examples/rust_cli_test.lua`.
 ---
---- Demonstrates: file-scoped fixtures (render once, assert many), fixture-to-fixture
---- dependency, soft assertions, and shelling out against the rendered project.
+--- Demonstrates: file-scoped fixtures (render once, assert many), fixture-to-fixture dependency,
+--- `prova.describe` labeling, soft assertions, and shelling out against the rendered project. The
+--- archetype is a local, dependency-free Lua archetype (under examples/fixtures/rust-cli) so the
+--- build is offline and fast; the build step is `requires`-gated on cargo so it skips where absent.
 
 -- A scratch workspace, one per file. Auto-cleaned when the file's tests finish.
 local workspace = prova.fixture("workspace", "file", function(ctx)
@@ -12,14 +14,14 @@ end)
 -- Render the archetype once for the whole file. Every test below shares this output.
 local project = prova.fixture("project", "file", function(ctx)
   return archetect.render{
-    source = "https://github.com/archetect/archetype-rust-cli.git",
+    source = "examples/fixtures/rust-cli",  -- local archetype, relative to CWD
     answers = { project_name = "widget", description = "a demo cli" },
     destination = ctx:use(workspace),
     defaults = true,
   }
 end)
 
-prova.describe("archetype-rust-cli", function()
+prova.describe("rust-cli archetype", function()
   prova.test("produces the expected scaffold", function(t)
     local p = t:use(project)
     -- Soft assertions: report every missing file, not just the first.
@@ -42,7 +44,7 @@ prova.describe("archetype-rust-cli", function()
     t:expect(main):never():contains("{{")
   end)
 
-  prova.test("compiles cleanly", { timeout = "180s", tags = { "build" } }, function(t)
+  prova.test("compiles cleanly", { timeout = "180s", tags = { "build" }, requires = { "cargo" } }, function(t)
     local p = t:use(project)
     local r = shell.run("cargo build", { cwd = p.path, timeout = "180s" })
     t:expect(r.code):equals(0)

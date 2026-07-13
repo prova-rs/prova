@@ -250,6 +250,10 @@ struct Node {
 struct Collector {
     nodes: Vec<Node>,
     fixtures: Vec<FixtureDef>,
+    /// The stack of ambient parents for *bare* top-level declarations (`prova.test`/`test_each`/
+    /// `group`/`flow`). `prova.describe` pushes its labeling group so bare declarations inside its
+    /// body nest under it (dynamic scoping); everything pops back to the file root (index 0).
+    parent_stack: Vec<NodeIx>,
 }
 
 impl Collector {
@@ -265,6 +269,7 @@ impl Collector {
                 case: None,
             }],
             fixtures: vec![],
+            parent_stack: vec![0],
         }
     }
 
@@ -273,6 +278,11 @@ impl Collector {
         self.nodes.push(node);
         self.nodes[parent].children.push(ix);
         ix
+    }
+
+    /// The current ambient parent for a bare top-level declaration.
+    fn current_parent(&self) -> NodeIx {
+        *self.parent_stack.last().unwrap_or(&0)
     }
 }
 
@@ -883,7 +893,8 @@ fn build_lua(root_name: String, modules: &[Module]) -> mlua::Result<(Lua, Shared
         prova.set(
             "test",
             lua.create_function(move |lua, (name, a, b): (String, Value, Value)| {
-                let ix = register_test(&col, 0, name, a, b, None)?;
+                let parent = col.borrow().current_parent();
+                let ix = register_test(&col, parent, name, a, b, None)?;
                 lua.create_userdata(UnitHandle { ix })
             })?,
         )?;
@@ -894,7 +905,8 @@ fn build_lua(root_name: String, modules: &[Module]) -> mlua::Result<(Lua, Shared
             "test_each",
             lua.create_function(
                 move |lua, (name, cases, factory): (String, Table, Function)| {
-                    register_test_each(lua, &col, 0, name, cases, factory)
+                    let parent = col.borrow().current_parent();
+                    register_test_each(lua, &col, parent, name, cases, factory)
                 },
             )?,
         )?;
@@ -904,7 +916,8 @@ fn build_lua(root_name: String, modules: &[Module]) -> mlua::Result<(Lua, Shared
         prova.set(
             "group",
             lua.create_function(move |lua, (name, a, b): (String, Value, Value)| {
-                let ix = register_group(lua, &col, 0, name, a, b)?;
+                let parent = col.borrow().current_parent();
+                let ix = register_group(lua, &col, parent, name, a, b)?;
                 lua.create_userdata(UnitHandle { ix })
             })?,
         )?;
@@ -914,8 +927,18 @@ fn build_lua(root_name: String, modules: &[Module]) -> mlua::Result<(Lua, Shared
         prova.set(
             "flow",
             lua.create_function(move |lua, (name, a, b): (String, Value, Value)| {
-                let ix = register_flow(lua, &col, 0, name, a, b)?;
+                let parent = col.borrow().current_parent();
+                let ix = register_flow(lua, &col, parent, name, a, b)?;
                 lua.create_userdata(UnitHandle { ix })
+            })?,
+        )?;
+    }
+    {
+        let col = col.clone();
+        prova.set(
+            "describe",
+            lua.create_function(move |_lua, (label, body): (String, Function)| {
+                register_describe(&col, label, body)
             })?,
         )?;
     }
@@ -1030,6 +1053,13 @@ impl UserData for GroupBuilder {
         methods.add_method("flow", |lua, this, (name, a, b): (String, Value, Value)| {
             let ix = register_flow(lua, &this.col, this.ix, name, a, b)?;
             lua.create_userdata(UnitHandle { ix })
+        });
+
+        // Label-only subgrouping: structurally a nested group whose builder body nests explicitly
+        // via `g:test`/etc. (inside a group you use the builder, so no ambient stack is needed here).
+        methods.add_method("describe", |lua, this, (label, body): (String, Function)| {
+            register_group(lua, &this.col, this.ix, label, Value::Function(body), Value::Nil)?;
+            Ok(())
         });
     }
 }
@@ -1166,6 +1196,34 @@ fn register_group(
     })?;
     body.call::<()>(gb)?;
     Ok(gix)
+}
+
+/// Register a `describe` labeling group under the current ambient parent, then run its body with
+/// that group pushed on the parent stack so **bare** `prova.test`/`test_each`/`group`/`flow` inside
+/// the body nest under the label (dynamic scoping). Structurally a group — labeling only, no new
+/// fixture scope. The stack is popped even if the body errors, so one bad `describe` can't corrupt
+/// the ambient parent for the rest of the file.
+fn register_describe(col: &SharedCollector, label: String, body: Function) -> mlua::Result<()> {
+    let ix = {
+        let mut c = col.borrow_mut();
+        let parent = c.current_parent();
+        c.add(
+            parent,
+            Node {
+                name: label,
+                kind: NodeKind::Group,
+                params: Params::default(),
+                opts: UnitOpts::default(),
+                children: vec![],
+                body: None,
+                case: None,
+            },
+        )
+    };
+    col.borrow_mut().parent_stack.push(ix);
+    let result = body.call::<()>(());
+    col.borrow_mut().parent_stack.pop();
+    result
 }
 
 /// Register a `flow` node under `parent` and run its builder body to collect the ordered steps.

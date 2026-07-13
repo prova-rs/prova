@@ -84,15 +84,30 @@ exactly the "batteries-included, no capability ceilings" pitch. Implemented in `
    - **`ctx:param()` + `{ params = {...} }` on `prova.fixture`** — parametrized fixtures: one variant
      per param, multiplying dependent tests. Touches fixture resolution (variant identity in the
      scope cache keyed by param).
-   - **`prova.describe(label, fn)`** — ambient labeling group: bare `prova.test` inside `fn` nests
-     under `label`. Needs a **current-parent stack** in the `Collector` (dynamic scoping) since the
-     body uses bare `prova.test`, not a builder. Moderate.
+   - **`prova.describe(label, fn)` — DONE.** Ambient labeling group: bare `prova.test`/`test_each`/
+     `group`/`flow` inside `fn` nest under `label`. Implemented via a **`parent_stack`** in the
+     `Collector` (dynamic scoping): top-level declarations register under `current_parent()`;
+     `prova.describe` pushes its labeling group, runs the body, pops (even on error). Structurally a
+     group (labeling only, no new fixture scope). `GroupBuilder:describe` is the builder form (== a
+     nested group). *(`testdata/describe.lua` + `tests/describe.rs`: 5 tests, nested labels in paths,
+     pop-back-to-root verified.)*
+   - **`ctx:param()` + `{ params = {...} }` on `prova.fixture`** — parametrized fixtures: one variant
+     per param, multiplying dependent tests. Touches fixture resolution (variant identity in the
+     scope cache keyed by param). *Still to do* — the last blocker for `http_service.lua`.
    - **`f:use(fixture)`** on the FlowBuilder — the hard one: the flow builder runs at *collection*
      time but fixtures resolve at *execution*. Today flow-scoped fixtures work via `t:use` inside
      steps. Options: (i) leave `f:use` unbuilt and rewrite the two examples to `t:use`; (ii) make
      `f:use` register a deferred resolution the first step triggers. Decide when you get here.
-   - *After building test_each/describe/ctx:param:* move the relevant `examples/aspirational/*.lua`
-     back to runnable `examples/*_test.lua`, paired with real containers now that Docker is up.
+     *Still to do* — the blocker for `ordering.lua`/`dependent_flows.lua` (which also need a live
+     service to run against).
+   - *Graduation status:* **`rust_cli.lua` graduated** → `examples/rust_cli_test.lua` (needed only
+     `describe`). It renders a **local, dependency-free Lua archetype** (`examples/fixtures/rust-cli`)
+     rather than the remote `archetype-rust-cli` — remote archetypes are Rhai/v2 and prova-archetect
+     is Lua/v3-only, so a local Lua archetype is the self-contained path — asserts the layout under
+     `describe` with soft assertions, and `cargo build`s the output **offline** (`requires`-gated on
+     cargo). *(`crates/prova-archetect/tests/rust_cli.rs`.)* Remaining aspirational files
+     (`ordering`, `dependent_flows`, `http_service`) still need `f:use`/`ctx:param` **and** a live
+     service backend.
 
 ### Phase 2 — Compose the North Star (the capstone)
 
@@ -148,7 +163,7 @@ exactly the "batteries-included, no capability ceilings" pitch. Implemented in `
 - **Container/DB readiness = retry the real thing**, not `pg_isready`/port-open (init restarts).
 - **Docker `:exec` needs a shell in the image** (`sh -c`); `traefik/whoami` is `FROM scratch`.
 - Feature flags: `http`, `db`, `docker` are default-on; the crate builds with `--no-default-features`.
-- **Verify every change:** `cargo test` (31 tests, some Docker-gated), `cargo clippy --all-targets`
+- **Verify every change:** `cargo test` (35 tests, some Docker/cargo-gated), `cargo clippy --all-targets`
   (zero warnings), `lua-language-server --check "$(pwd)"` (LuaLS-clean), and run touched
   `examples/*.lua` via the CLI. Keep the LuaCATS stub (`library/`) in lockstep with the runtime.
 

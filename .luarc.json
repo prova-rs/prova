@@ -6,7 +6,8 @@
   "workspace.checkThirdParty": false,
   "workspace.ignoreDir": [
     ".vscode",
-    "crates/prova-archetect/tests/fixtures"
+    "crates/prova-archetect/tests/fixtures",
+    "examples/fixtures"
   ],
   "diagnostics.globals": [
     "fs",

@@ -140,6 +140,10 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
   generate one test per case, filling `{placeholder}`s in the name from the case; the case reaches
   the body as its second argument *and* as `t.case` (an optional `case` threaded through
   `Node → PlanItem → Ctx`, so `fn(t, case)` and plain `fn(t)` both work). *(`testdata/test_each.lua`.)*
+- **Labeling groups**: `prova.describe(label, fn)` nests bare `prova.test`/etc. inside `fn` under
+  `label` via a `parent_stack` in the collector (dynamic scoping; popped even on error);
+  `GroupBuilder:describe` is the builder form. Labeling only — no new fixture scope.
+  *(`testdata/describe.lua`. Used by `examples/rust_cli_test.lua`.)*
 - **Fixtures + scopes + teardown**: `prova.fixture(name, scope, factory)` → typed handle;
   `ctx:use(handle|name)` builds-or-caches; `test`/`flow`/`file`/`suite` scopes with per-scope
   caches; `ctx:defer` (LIFO); `ctx:tempdir` (auto-removed); scope-mismatch rejection; inner→outer

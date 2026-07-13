@@ -1,0 +1,5 @@
+---
+description: "Minimal Rust CLI — prova acceptance-test fixture (dependency-free so it builds offline)"
+
+requires:
+  archetect: "3.0.0"

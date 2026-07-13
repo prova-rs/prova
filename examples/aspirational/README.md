@@ -9,9 +9,10 @@ runnable tests**, for two reasons:
 2. **They use planned API not yet in the engine.** The LuaLS stub declares these (so they
    type-check), but the runtime doesn't implement them yet:
    - `f:use(fixture)` — flow-scoped fixture on the flow builder (today: use `t:use` inside steps).
-   - `prova.describe(label, fn)` — ambient labeling group (today: `prova.group` with a builder).
-   - `prova.test_each(name, cases, fn)` — table-driven parametrized tests.
    - parametrized fixtures via `ctx:param()` + `{ params = { ... } }`.
+
+   (`prova.test_each` and `prova.describe` have **landed** — `rust_cli.lua` graduated to
+   `examples/rust_cli_test.lua`, rendering a local Lua archetype and building it offline.)
 
 The files were deliberately dropped from the `*_test.lua` naming so `prova` discovery skips them and
 `examples/*.lua` stays a directory of examples that actually run. When the planned API lands, these
@@ -21,5 +22,4 @@ graduate back into runnable examples (paired with real fixtures/containers).
 |------|-----------|-------|
 | `ordering.lua` | flow + `depends_on` + resource gating | `f:use`, a live service |
 | `dependent_flows.lua` | flow-to-flow DAG (diamond) | `f:use`, a live service |
-| `rust_cli.lua` | render → assert layout → build | `prova.describe`, network + cargo |
-| `http_service.lua` | render → build → boot → probe, table-driven | `test_each`, `ctx:param`, network |
+| `http_service.lua` | render → build → boot → probe, table-driven | `ctx:param`, a live service |
