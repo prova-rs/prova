@@ -384,6 +384,72 @@ function db.postgres(ctx, opts) end
 function db.mysql(ctx, opts) end
 
 ------------------------------------------------------------------------------------------
+-- redis (a thin cache client + an ephemeral-container recipe)
+------------------------------------------------------------------------------------------
+
+--- A Redis connection from `redis.connect`. Methods are async; `ctx:manage(conn)` for teardown.
+---@class prova.RedisConnection
+local RedisConnection = {}
+--- Get a key's value, or nil if it does not exist.
+---@param key string
+---@return string|nil
+function RedisConnection:get(key) end
+--- Set a key to a (string) value.
+---@param key string
+---@param value string
+function RedisConnection:set(key, value) end
+--- Delete one or more keys; returns the number removed.
+---@param ... string
+---@return integer
+function RedisConnection:del(...) end
+--- Whether a key exists.
+---@param key string
+---@return boolean
+function RedisConnection:exists(key) end
+--- Increment a key (by 1, or `by`); returns the new value.
+---@param key string
+---@param by? integer
+---@return integer
+function RedisConnection:incr(key, by) end
+--- Set a key's time-to-live in seconds.
+---@param key string
+---@param seconds integer
+function RedisConnection:expire(key, seconds) end
+--- PING the server (returns "PONG").
+---@return string
+function RedisConnection:ping() end
+--- Run an arbitrary command; returns the raw reply as a Lua value. The escape hatch.
+---@param ... string
+---@return any
+function RedisConnection:command(...) end
+--- No-op (the connection drops with the handle); present for `ctx:manage` symmetry.
+function RedisConnection:close() end
+
+---@class prova.RedisRecipeOpts
+---@field image? string      # full image ref; overrides tag
+---@field tag? string        # image tag (default "7-alpine")
+---@field timeout? string    # readiness deadline
+
+--- A provisioned ephemeral Redis: an open (managed) connection, its URL, and the container.
+---@class prova.RedisResource
+---@field url string
+---@field conn prova.RedisConnection
+---@field container prova.Container
+
+---@class prova.redis
+redis = {}
+--- Connect to a Redis by URL (`redis://host:port`). Async; call in a fixture/test body.
+---@param url string
+---@return prova.RedisConnection
+function redis.connect(url) end
+--- Provision an ephemeral Redis in a container, wait for it, and return an open managed connection —
+--- the counterpart to `db.postgres`. Requires the `docker` module at call time.
+---@param ctx prova.Context
+---@param opts? prova.RedisRecipeOpts
+---@return prova.RedisResource
+function redis.container(ctx, opts) end
+
+------------------------------------------------------------------------------------------
 -- grpc (native dynamic client via server reflection; no `grpcurl`, no `.proto` files)
 ------------------------------------------------------------------------------------------
 

@@ -107,7 +107,7 @@ The core stays small; capability grows at the edges:
 
 | Surface | Extends by | Examples |
 |---|---|---|
-| **Modules** | async Lua modules registered into the runtime (via `RunConfig::with_module`) | `fs`, `net`, `shell`, `http`, `grpc`, `graphql`, `docker`, `db`, `yaml`, `archetect` |
+| **Modules** | async Lua modules registered into the runtime (via `RunConfig::with_module`) | `fs`, `net`, `shell`, `http`, `grpc`, `graphql`, `docker`, `db`, `redis`, `yaml`, `archetect` |
 | **Matchers** | new terminal checks on the matcher | domain assertions, snapshots |
 | **Reporters** | new `Reporter` sinks | JUnit, TAP, GUI socket, load metrics |
 | **Selectors** | plan filters | tag expressions, `--changed`, `--last-failed`, sharding |
@@ -158,11 +158,16 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
   returns truthy (a raise = "not yet") or the deadline elapses, returning the value — replacing the
   hand-rolled `for _=1,N do pcall(...) sleep end` loop (`local conn = prova.retry(function() return
   db.connect(url) end)`). *(`testdata/ergonomics.lua`.)*
-- **Resource recipes** (testcontainers-style): `db.postgres(ctx, opts?)` / `db.mysql(ctx, opts?)` fold
-  provision-container + wait-ready + connect + manage into one call, returning `{ url, conn, container }`.
-  Lua sugar over `docker`/`prova.retry`/`db`/`ctx:manage` (a prova-core prelude); `requires{docker}`-
-  gateable. *(`examples/db_postgres_test.lua` fixture is now one line; `examples/db_mysql_test.lua`;
-  verified against real Postgres + MySQL, leak-free.)*
+- **`redis` module** — a thin async cache client: `redis.connect(url)` → a connection with
+  `get`/`set`/`del`/`exists`/`incr`/`expire`/`ping` and a generic `command(...)` escape hatch. Enough
+  to assert on a cache dependency (a key the app set, a counter). redis-rs, no TLS, feature-gated
+  `redis` (default on). *(`examples/redis_test.lua`, verified against real Redis.)*
+- **Resource recipes** (testcontainers-style): `db.postgres(ctx, opts?)` / `db.mysql(ctx, opts?)` /
+  `redis.container(ctx, opts?)` fold provision-container + wait-ready + connect + manage into one call,
+  returning `{ url, conn, container }`. Lua sugar over `docker`/`prova.retry`/client/`ctx:manage` (a
+  prova-core prelude); `requires{docker}`-gateable. *(`examples/db_postgres_test.lua` fixture is now
+  one line; `db_mysql_test.lua`; `redis_test.lua`; verified against real Postgres + MySQL + Redis,
+  leak-free.)*
 - **Capability modules** (`modules.rs`), injected as their own globals: **`shell.run(cmd, {cwd,
   env, timeout, check})`** (async via `tokio::process`; returns `{code, stdout, stderr, duration}` +
   `:ok()`) and **`shell.spawn(cmd, {cwd, env})`** → a managed `Process` (`.pid`, `:running()`,

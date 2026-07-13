@@ -19,7 +19,8 @@
     "db",
     "grpc",
     "graphql",
-    "yaml"
+    "yaml",
+    "redis"
   ],
   "completion.callSnippet": "Replace",
   "hint.enable": true

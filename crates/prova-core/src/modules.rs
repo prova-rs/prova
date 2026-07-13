@@ -35,14 +35,38 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set("graphql", graphql::make(lua)?)?;
     #[cfg(feature = "yaml")]
     lua.globals().set("yaml", yaml::make(lua)?)?;
+    #[cfg(feature = "redis")]
+    lua.globals().set("redis", redis_mod::make(lua)?)?;
     // Resource recipes — Lua sugar over docker.run + prova.retry + db.connect + ctx:manage. Loaded
     // after the modules exist; the globals they touch resolve when a recipe is *called*.
     #[cfg(feature = "db")]
     lua.load(DB_RECIPES_LUA)
         .set_name("@prova/db-recipes")
         .exec()?;
+    #[cfg(feature = "redis")]
+    lua.load(REDIS_RECIPES_LUA)
+        .set_name("@prova/redis-recipes")
+        .exec()?;
     Ok(())
 }
+
+/// The Redis counterpart to the `db.*` recipes: `redis.container(ctx, opts?)` provisions an ephemeral
+/// Redis, waits for it, opens a managed connection, and returns `{ url, conn, container }`. Requires
+/// the `docker` module at call time.
+#[cfg(feature = "redis")]
+const REDIS_RECIPES_LUA: &str = r#"
+function redis.container(ctx, opts)
+  assert(ctx and ctx.manage, "redis.container(ctx, opts?): pass the fixture/test context as the first argument")
+  opts = opts or {}
+  local image = opts.image or ("redis:" .. (opts.tag or "7-alpine"))
+  local timeout = opts.timeout or "60s"
+  local container = ctx:manage(docker.run{ image = image, ports = { 6379 }, wait = { port = 6379, timeout = timeout } })
+  local url = "redis://127.0.0.1:" .. container:host_port(6379)
+  local conn = ctx:manage(prova.retry(function() return redis.connect(url) end,
+    { timeout = timeout, message = "redis did not accept connections in time" }))
+  return { url = url, conn = conn, container = container }
+end
+"#;
 
 /// Testcontainers-style database recipes: one call provisions an ephemeral container, waits for it to
 /// actually accept connections, opens a managed connection, and ties it all to the scope. Returns
@@ -1964,5 +1988,183 @@ mod graphql {
             })?,
         )?;
         Ok(graphql)
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// redis (async; a thin cache client — get/set/del/exists/incr/ping + a generic command)
+// ---------------------------------------------------------------------------------------------
+
+// Enough to assert on a cache dependency: check a key the app set, seed a value, count keys. The
+// generic `:command(...)` is the escape hatch for anything not covered. No TLS in v1 (local/CI).
+#[cfg(feature = "redis")]
+mod redis_mod {
+    use mlua::{Lua, Table, UserData, UserDataMethods, Value, Variadic};
+
+    fn err(msg: impl Into<String>) -> mlua::Error {
+        mlua::Error::RuntimeError(msg.into())
+    }
+
+    /// A Redis connection from `redis.connect`. `MultiplexedConnection` is a cheap cloneable handle,
+    /// so each async method clones it into its future (nothing borrows Lua across the await).
+    struct RedisConnection {
+        conn: redis::aio::MultiplexedConnection,
+    }
+
+    /// Convert a raw Redis reply to Lua (for the generic `command`); typed methods use redis's own
+    /// `FromRedisValue` conversion instead.
+    fn value_to_lua(lua: &Lua, v: redis::Value) -> mlua::Result<Value> {
+        Ok(match v {
+            redis::Value::Nil => Value::Nil,
+            redis::Value::Int(i) => Value::Integer(i),
+            redis::Value::Double(d) => Value::Number(d),
+            redis::Value::Boolean(b) => Value::Boolean(b),
+            redis::Value::BulkString(bytes) => Value::String(lua.create_string(bytes)?),
+            redis::Value::SimpleString(s) => Value::String(lua.create_string(s)?),
+            redis::Value::Okay => Value::String(lua.create_string("OK")?),
+            redis::Value::Array(items) | redis::Value::Set(items) => {
+                let t = lua.create_table()?;
+                for item in items {
+                    t.push(value_to_lua(lua, item)?)?;
+                }
+                Value::Table(t)
+            }
+            redis::Value::Map(pairs) => {
+                let t = lua.create_table()?;
+                for (k, val) in pairs {
+                    let key = value_to_lua(lua, k)?;
+                    t.set(key, value_to_lua(lua, val)?)?;
+                }
+                Value::Table(t)
+            }
+            other => Value::String(lua.create_string(format!("{other:?}"))?),
+        })
+    }
+
+    impl UserData for RedisConnection {
+        fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+            // get(key) → string | nil
+            methods.add_async_method("get", |_, this, key: String| {
+                let mut conn = this.conn.clone();
+                async move {
+                    redis::cmd("GET")
+                        .arg(key)
+                        .query_async::<Option<String>>(&mut conn)
+                        .await
+                        .map_err(|e| err(format!("redis GET: {e}")))
+                }
+            });
+            // set(key, value)
+            methods.add_async_method("set", |_, this, (key, value): (String, String)| {
+                let mut conn = this.conn.clone();
+                async move {
+                    redis::cmd("SET")
+                        .arg(key)
+                        .arg(value)
+                        .query_async::<()>(&mut conn)
+                        .await
+                        .map_err(|e| err(format!("redis SET: {e}")))
+                }
+            });
+            // del(key, ...) → number of keys removed
+            methods.add_async_method("del", |_, this, keys: Variadic<String>| {
+                let mut conn = this.conn.clone();
+                let keys: Vec<String> = keys.into_iter().collect();
+                async move {
+                    redis::cmd("DEL")
+                        .arg(keys)
+                        .query_async::<i64>(&mut conn)
+                        .await
+                        .map_err(|e| err(format!("redis DEL: {e}")))
+                }
+            });
+            // exists(key) → bool
+            methods.add_async_method("exists", |_, this, key: String| {
+                let mut conn = this.conn.clone();
+                async move {
+                    let n: i64 = redis::cmd("EXISTS")
+                        .arg(key)
+                        .query_async(&mut conn)
+                        .await
+                        .map_err(|e| err(format!("redis EXISTS: {e}")))?;
+                    Ok(n > 0)
+                }
+            });
+            // incr(key, by?) → new value
+            methods.add_async_method("incr", |_, this, (key, by): (String, Option<i64>)| {
+                let mut conn = this.conn.clone();
+                async move {
+                    redis::cmd("INCRBY")
+                        .arg(key)
+                        .arg(by.unwrap_or(1))
+                        .query_async::<i64>(&mut conn)
+                        .await
+                        .map_err(|e| err(format!("redis INCRBY: {e}")))
+                }
+            });
+            // expire(key, seconds)
+            methods.add_async_method("expire", |_, this, (key, seconds): (String, i64)| {
+                let mut conn = this.conn.clone();
+                async move {
+                    redis::cmd("EXPIRE")
+                        .arg(key)
+                        .arg(seconds)
+                        .query_async::<()>(&mut conn)
+                        .await
+                        .map_err(|e| err(format!("redis EXPIRE: {e}")))
+                }
+            });
+            // ping() → "PONG"
+            methods.add_async_method("ping", |_, this, ()| {
+                let mut conn = this.conn.clone();
+                async move {
+                    redis::cmd("PING")
+                        .query_async::<String>(&mut conn)
+                        .await
+                        .map_err(|e| err(format!("redis PING: {e}")))
+                }
+            });
+            // command(name, args...) → the raw reply as a Lua value (the escape hatch)
+            methods.add_async_method("command", |lua, this, args: Variadic<String>| {
+                let mut conn = this.conn.clone();
+                let args: Vec<String> = args.into_iter().collect();
+                async move {
+                    let mut it = args.into_iter();
+                    let name = it
+                        .next()
+                        .ok_or_else(|| err("redis command: needs at least a command name"))?;
+                    let mut cmd = redis::cmd(&name);
+                    for a in it {
+                        cmd.arg(a);
+                    }
+                    let v = cmd
+                        .query_async::<redis::Value>(&mut conn)
+                        .await
+                        .map_err(|e| err(format!("redis {name}: {e}")))?;
+                    value_to_lua(&lua, v)
+                }
+            });
+            // close() — a no-op (the multiplexed handle drops with the userdata); present so a redis
+            // connection is `ctx:manage`-able for symmetry with `db`.
+            methods.add_method("close", |_, _this, ()| Ok(()));
+        }
+    }
+
+    pub(crate) fn make(lua: &Lua) -> mlua::Result<Table> {
+        let redis_tbl = lua.create_table()?;
+        // redis.connect(url) → a Connection. Async (needs the runtime); call in a fixture/test body.
+        redis_tbl.set(
+            "connect",
+            lua.create_async_function(|lua, url: String| async move {
+                let client =
+                    redis::Client::open(url).map_err(|e| err(format!("redis.connect: {e}")))?;
+                let conn = client
+                    .get_multiplexed_async_connection()
+                    .await
+                    .map_err(|e| err(format!("redis.connect: {e}")))?;
+                lua.create_userdata(RedisConnection { conn })
+            })?,
+        )?;
+        Ok(redis_tbl)
     }
 }
