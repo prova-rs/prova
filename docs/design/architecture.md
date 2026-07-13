@@ -223,20 +223,51 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
   `--jobs > 1` (a Lua value can't cross `!Send` states; a serialized once-guard is future work).
 - `Event`/`Reporter`/`MultiReporter`/`JsonReporter`; `discover_path`; CLI takes files **or
   directories**, `--list` / `--format json` / `--jobs N`.
+- **Suite manifest** (`prova.toml`) + **CI**: `prova` with no args runs the suite declared in
+  `prova.toml` (`[run]` = default profile; `[profiles.<name>]` overlays via `--profile`); a profile
+  sets `paths`/`jobs`/`format`/`env`. CLI flags override the manifest; explicit path args bypass it.
+  The `env` table is applied before the run, so the *same* suite targets ephemeral containers
+  locally or CI-provided/live services just by switching profile. A composite GitHub Action
+  (`ci/action.yml`) + example workflow (`ci/example-workflow.yml`) run it in CI. *(Manifest
+  parse/resolve unit-tested in `prova-cli`.)*
 
 The scheduler/lifecycle **spine is now complete** (collect → plan → deps → resources → multi-core
 execute). The remaining increments pivot from engine to **product** — the capabilities that make
 prova useful beyond testing itself:
 
-1. **`grpc` module** — the next network interface (archetect-core has a gRPC proto + fixtures to
-   lean on), then **`graphql`**. *(The matcher surface + soft `expect_all`, `docker` + `requires`
-   gating — done.)*
-2. **Snapshots** — `matches_snapshot`, `.snap` files + `--update-snapshots`.
-3. **Flow ergonomics**: `f:use(fixture)` builder sugar (currently flow-scoped fixtures are used via
+Best done once a Docker daemon is available (their real targets are containerized), so they can be
+verified against real servers rather than stubs:
+
+1. **`db` module** — a **general, multi-database** query surface (`db.connect(url)` →
+   `:query`/`:execute`/`:query_value`/`:close`) over **sqlx's `Any` driver** so Postgres, MySQL, and
+   SQLite share one API by URL scheme. Verifiable with SQLite today; "just works" against
+   `docker.run{postgres|mysql}` once the daemon is up. This is the "query the DB, assert state after
+   calls" pillar.
+2. **`grpc` module** (then **`graphql`**) — the next network interface (archetect-core has a gRPC
+   proto + fixtures to lean on).
+3. **`bollard` for Docker** — swap the CLI-shelling `docker` module for the typed `bollard` daemon
+   client: log streaming, exec, health, structured errors, no CLI parsing. Held until a daemon is
+   present to verify against.
+
+Then (daemon-independent):
+
+4. **Snapshots** — `matches_snapshot`, `.snap` files + `--update-snapshots`.
+5. **Flow ergonomics**: `f:use(fixture)` builder sugar (currently flow-scoped fixtures are used via
    `t:use` inside steps); re-runnable flow bodies (re-invoke to get fresh closures) as the
    precondition for the **load executor** treating a flow as a reusable scenario; `test_each` +
    parametrized fixtures (`ctx:param`).
-4. **Selectors** (tag expressions, `--last-failed`, sharding), richer reporters (JUnit/TAP), and the
+6. **Selectors** (tag expressions, `--last-failed`, sharding), richer reporters (JUnit/TAP), and the
    **load executor**.
-5. **Cross-worker `suite` fixtures**: a serialized once-guard for serializable values (the one open
+7. **Cross-worker `suite` fixtures**: a serialized once-guard for serializable values (the one open
    semantic from the multi-core step).
+
+### North Star (the acceptance scenario the whole design serves)
+
+Generate a Rust gRPC service (Postgres + Pulsar producer) and a Go REST service (MySQL + Pulsar
+consumer) from archetypes; provision the DBs, a Pulsar cluster/topic, and dynamic ports as ephemeral
+containers; boot both apps wired to those endpoints; then drive gRPC + REST and query both databases
+to assert cross-service state. Every ingredient is a module behind the plugin boundary — `archetect`
+(generate, or generate scaffolding on the fly), `docker` (ephemeral deps), `shell.spawn` (boot),
+`http`/`grpc` (drive), `db` (assert state) — composed by fixtures and gated by `requires`. The same
+suite can instead point at a **dev Kubernetes cluster** (skip the containers, set endpoints via a
+manifest profile's `env`) — local, CI, and environment testing from one description.

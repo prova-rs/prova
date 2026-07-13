@@ -12,3 +12,6 @@ path = "src/main.rs"
 prova-core = { path = "../prova-core" }
 # The flagship plugin: makes `archetect.render{...}` available in the standalone `prova` binary.
 prova-archetect = { path = "../prova-archetect" }
+# The suite manifest (`prova.toml`): declare what to run and how, for local + CI.
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"

@@ -1,0 +1,29 @@
+# Sample prova suite manifest. Place a `prova.toml` at your repo root and CI (or a developer) can
+# just run `prova` — no arguments, no wrapper script. Flags override these; explicit path args on
+# the command line bypass the manifest entirely.
+
+[run]                       # the default profile (`prova` with no --profile)
+paths  = ["tests"]          # files/dirs to discover (*_test.lua / *.test.lua)
+jobs   = 4                  # concurrency — throughput only, never changes meaning
+format = "console"          # "console" (human) | "json" (JSONL event protocol)
+
+[run.env]                   # environment variables set for the whole run
+LOG_LEVEL = "info"
+
+# `prova --profile ci` overlays this on [run]: inherits paths/format, overrides jobs, merges env.
+[profiles.ci]
+jobs   = 8
+format = "json"
+[profiles.ci.env]
+CI = "true"
+
+# A fast subset for the inner loop: `prova --profile smoke`.
+[profiles.smoke]
+paths = ["tests/smoke"]
+
+# An environment-testing profile pointing at a live dev cluster instead of ephemeral containers:
+# the same suite, different target — set via env the tests read. `prova --profile dev`.
+[profiles.dev]
+paths = ["tests/acceptance"]
+[profiles.dev.env]
+TARGET_BASE_URL = "https://orders.dev.example.com"

@@ -1,0 +1,36 @@
+# Example consumer workflow: run a Prova acceptance suite in CI, with a real Postgres provided by
+# GitHub Actions `services`. Copy into `.github/workflows/` of a repo that has a `prova.toml`.
+#
+# This mirrors the North Star locally-or-CI story: the SAME suite runs against ephemeral containers
+# (via prova's `docker` module) on a laptop, or against CI-provided services here — the tests only
+# see connection details through env, set by the manifest profile.
+name: acceptance
+on:
+  push:
+  pull_request:
+
+jobs:
+  prova:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: secret
+          POSTGRES_DB: orders
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:secret@localhost:5432/orders
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run the acceptance suite
+        uses: archetect/prova/ci@main
+        with:
+          profile: ci
