@@ -156,9 +156,11 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
   `http` is feature-gated (default on) and HTTP-only in v1 — an `https`/rustls feature layers on
   later; the rest of the stack needs no TLS. Also **`docker`** (`docker.run{image, ports, env,
   wait}` → a `Container`: `.id`, `:host_port(p)`/`:endpoint(p)`, async `:logs()`/`:exec(cmd)`/
-  `:stop()`) — testcontainers-style ephemeral deps via the `docker` CLI: `-d --rm`, publish to a
-  random host port, readiness wait (port TCP-connect or log-substring), force-remove on `:stop()`
-  with a `Drop` backstop so a container never leaks. *(`examples/docker_dependency_test.lua`.)*
+  `:stop()`) — testcontainers-style ephemeral deps via the typed **bollard** daemon client (not CLI
+  parsing): pull, create + start with random host-port bindings, inspect for the mapped ports,
+  readiness wait (port TCP-connect or log-substring), `remove_container(force)` on `:stop()` with a
+  `Drop` backstop so a container never leaks. *(`examples/docker_dependency_test.lua`; verified
+  against a real daemon — whoami HTTP, redis exec/logs, real Postgres.)*
 - **`db` module** — one **general, multi-database** query API over **sqlx's `Any` driver**:
   `db.connect(url)` picks the backend by URL scheme (`postgres://`, `mysql://`,
   `sqlite://…?mode=rwc`), returning a `Connection` with async `:execute` (rows affected),
@@ -251,11 +253,9 @@ execute). The remaining increments pivot from engine to **product** — the capa
 prova useful beyond testing itself:
 
 1. **`grpc` module** (then **`graphql`**) — the next network interface (archetect-core has a gRPC
-   proto + fixtures to lean on). *(The `db` module — sqlx `Any`, verified against real Postgres — is
-   done.)*
-2. **`bollard` for Docker** — swap the CLI-shelling `docker` module for the typed `bollard` daemon
-   client: log streaming, exec, health, structured errors, no CLI parsing.
-3. **Snapshots** — `matches_snapshot`, `.snap` files + `--update-snapshots`.
+   proto + fixtures to lean on). *(The `db` module — sqlx `Any`, verified against real Postgres — and
+   the `bollard` swap for Docker are done.)*
+2. **Snapshots** — `matches_snapshot`, `.snap` files + `--update-snapshots`.
 5. **Flow ergonomics**: `f:use(fixture)` builder sugar (currently flow-scoped fixtures are used via
    `t:use` inside steps); re-runnable flow bodies (re-invoke to get fresh closures) as the
    precondition for the **load executor** treating a flow as a reusable scenario; `test_each` +
