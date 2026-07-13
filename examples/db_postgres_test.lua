@@ -4,20 +4,10 @@
 --- `$1` placeholders — the query surface is identical.
 
 local pg = prova.fixture("pg", "file", function(ctx)
-  -- `ctx:manage` ties the container's lifecycle to the fixture scope (stopped on teardown) — no
-  -- `ctx:defer(function() c:stop() end)` closure.
-  local c = ctx:manage(docker.run{
-    image = "postgres:16-alpine",
-    env = { POSTGRES_PASSWORD = "secret", POSTGRES_DB = "orders" },
-    ports = { 5432 },
-    wait = { port = 5432, timeout = "60s" },
-  })
-
-  -- Postgres restarts once during first-boot init, so port-open (even pg_isready) can false-positive.
-  -- `prova.retry` gates on the real connection actually holding — no hand-rolled loop.
-  local url = "postgres://postgres:secret@127.0.0.1:" .. c:host_port(5432) .. "/orders"
-  return ctx:manage(prova.retry(function() return db.connect(url) end,
-    { timeout = "30s", message = "postgres never accepted connections" }))
+  -- The `db.postgres` recipe folds the whole dance — provision an ephemeral container, wait for it to
+  -- actually accept connections, open a managed connection — into one line. Returns { url, conn,
+  -- container }; here we just want the connection.
+  return db.postgres(ctx, { database = "orders" }).conn
 end)
 
 prova.group("postgres", { requires = { "docker" } }, function(g)

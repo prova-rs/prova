@@ -35,8 +35,68 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set("graphql", graphql::make(lua)?)?;
     #[cfg(feature = "yaml")]
     lua.globals().set("yaml", yaml::make(lua)?)?;
+    // Resource recipes — Lua sugar over docker.run + prova.retry + db.connect + ctx:manage. Loaded
+    // after the modules exist; the globals they touch resolve when a recipe is *called*.
+    #[cfg(feature = "db")]
+    lua.load(DB_RECIPES_LUA)
+        .set_name("@prova/db-recipes")
+        .exec()?;
     Ok(())
 }
+
+/// Testcontainers-style database recipes: one call provisions an ephemeral container, waits for it to
+/// actually accept connections, opens a managed connection, and ties it all to the scope. Returns
+/// `{ url, conn, container }`. `db.postgres`/`db.mysql` require the `docker` module at call time and
+/// are `requires = { "docker" }`-gateable like any container test.
+#[cfg(feature = "db")]
+const DB_RECIPES_LUA: &str = r#"
+local function database_recipe(defaults)
+  return function(ctx, opts)
+    assert(ctx and ctx.manage, "db." .. defaults.kind .. "(ctx, opts?): pass the fixture/test context as the first argument")
+    opts = opts or {}
+    local user     = opts.user     or "prova"
+    local password = opts.password or "prova"
+    local database = opts.database or "prova"
+    local image    = opts.image    or (defaults.image_base .. ":" .. (opts.tag or defaults.tag))
+    local timeout  = opts.timeout  or defaults.timeout
+
+    local env = defaults.env(user, password, database, opts)
+    local container = ctx:manage(docker.run{
+      image = image,
+      env = env,
+      ports = { defaults.port },
+      wait = { port = defaults.port, timeout = timeout },
+    })
+
+    local url = string.format(defaults.url, user, password, container:host_port(defaults.port), database)
+    -- The port opening is a false-positive for a first-boot DB (it restarts once at init); retry the
+    -- real connection until it holds. This doubles as the readiness gate for anything else wiring in.
+    local conn = ctx:manage(prova.retry(function() return db.connect(url) end,
+      { timeout = timeout, message = defaults.kind .. " did not accept connections in time" }))
+
+    return { url = url, conn = conn, container = container }
+  end
+end
+
+db.postgres = database_recipe{
+  kind = "postgres", image_base = "postgres", tag = "16-alpine", port = 5432, timeout = "60s",
+  url = "postgres://%s:%s@127.0.0.1:%d/%s",
+  env = function(user, password, database)
+    return { POSTGRES_USER = user, POSTGRES_PASSWORD = password, POSTGRES_DB = database }
+  end,
+}
+
+db.mysql = database_recipe{
+  kind = "mysql", image_base = "mysql", tag = "8", port = 3306, timeout = "90s",
+  url = "mysql://%s:%s@127.0.0.1:%d/%s",
+  env = function(user, password, database, opts)
+    return {
+      MYSQL_USER = user, MYSQL_PASSWORD = password, MYSQL_DATABASE = database,
+      MYSQL_ROOT_PASSWORD = opts.root_password or "root",
+    }
+  end,
+}
+"#;
 
 // ---------------------------------------------------------------------------------------------
 // shell

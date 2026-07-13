@@ -324,7 +324,7 @@ function docker.run(opts) end
 ------------------------------------------------------------------------------------------
 
 --- A database connection from `db.connect`. Backend chosen by URL scheme, so one API covers
---- Postgres/MySQL/SQLite. Methods are async; pair with `ctx:defer(function() conn:close() end)`.
+--- Postgres/MySQL/SQLite. Methods are async; pair with `ctx:manage(conn)` to close it on teardown.
 --- Use the backend's own placeholder syntax in SQL (`$1` for Postgres, `?` for MySQL/SQLite).
 ---@class prova.Connection
 local Connection = {}
@@ -352,6 +352,36 @@ db = {}
 ---@param url string
 ---@return prova.Connection
 function db.connect(url) end
+
+--- Options for the `db.postgres`/`db.mysql` recipes. All optional (sensible defaults).
+---@class prova.DbRecipeOpts
+---@field user? string           # default "prova"
+---@field password? string       # default "prova"
+---@field database? string       # default "prova"
+---@field image? string          # full image ref; overrides tag
+---@field tag? string            # image tag (postgres → "16-alpine", mysql → "8")
+---@field root_password? string  # MySQL only, default "root"
+---@field timeout? string        # readiness deadline
+
+--- A provisioned ephemeral database: an open (managed) connection, its URL, and the container.
+---@class prova.DbResource
+---@field url string
+---@field conn prova.Connection
+---@field container prova.Container
+
+--- Provision an ephemeral Postgres in a container, wait until it accepts connections, and return an
+--- open managed connection — the whole `docker.run` + retry + `db.connect` + `ctx:manage` dance in one
+--- call. Requires the `docker` module at call time (`requires = { "docker" }` to skip gracefully).
+---@param ctx prova.Context
+---@param opts? prova.DbRecipeOpts
+---@return prova.DbResource
+function db.postgres(ctx, opts) end
+
+--- Provision an ephemeral MySQL the same way as `db.postgres`.
+---@param ctx prova.Context
+---@param opts? prova.DbRecipeOpts
+---@return prova.DbResource
+function db.mysql(ctx, opts) end
 
 ------------------------------------------------------------------------------------------
 -- grpc (native dynamic client via server reflection; no `grpcurl`, no `.proto` files)

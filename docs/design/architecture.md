@@ -158,6 +158,11 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
   returns truthy (a raise = "not yet") or the deadline elapses, returning the value — replacing the
   hand-rolled `for _=1,N do pcall(...) sleep end` loop (`local conn = prova.retry(function() return
   db.connect(url) end)`). *(`testdata/ergonomics.lua`.)*
+- **Resource recipes** (testcontainers-style): `db.postgres(ctx, opts?)` / `db.mysql(ctx, opts?)` fold
+  provision-container + wait-ready + connect + manage into one call, returning `{ url, conn, container }`.
+  Lua sugar over `docker`/`prova.retry`/`db`/`ctx:manage` (a prova-core prelude); `requires{docker}`-
+  gateable. *(`examples/db_postgres_test.lua` fixture is now one line; `examples/db_mysql_test.lua`;
+  verified against real Postgres + MySQL, leak-free.)*
 - **Capability modules** (`modules.rs`), injected as their own globals: **`shell.run(cmd, {cwd,
   env, timeout, check})`** (async via `tokio::process`; returns `{code, stdout, stderr, duration}` +
   `:ok()`) and **`shell.spawn(cmd, {cwd, env})`** → a managed `Process` (`.pid`, `:running()`,
