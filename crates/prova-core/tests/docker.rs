@@ -29,14 +29,14 @@ fn docker_module_runs_a_container_or_skips_gracefully() {
     );
     if docker_available() {
         assert_eq!(
-            summary.passed, 2,
-            "both container tests pass when docker is present"
+            summary.passed, 3,
+            "all container tests pass when docker is present"
         );
         assert_eq!(summary.skipped, 0);
     } else {
         assert_eq!(
-            summary.skipped, 2,
-            "both tests skip (requires docker) when it is absent"
+            summary.skipped, 3,
+            "all tests skip (requires docker) when it is absent"
         );
         assert_eq!(summary.passed, 0);
     }

@@ -28,8 +28,12 @@ sqlx = { version = "0.8", optional = true, default-features = false, features = 
     "mysql",
     "sqlite",
 ] }
+# The `docker` module — the typed Docker daemon client (bollard), not CLI-shelling: structured
+# errors, log streams, exec, port inspection. Feature-gated (default on).
+bollard = { version = "0.18", optional = true }
 
 [features]
-default = ["http", "db"]
+default = ["http", "db", "docker"]
 http = ["dep:reqwest"]
 db = ["dep:sqlx"]
+docker = ["dep:bollard"]
