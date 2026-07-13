@@ -274,7 +274,7 @@ function archetect.render(opts) end
 function archetect.verify(spec) end
 
 ------------------------------------------------------------------------------------------
--- docker (testcontainers-style ephemeral dependencies, via the docker CLI)
+-- docker (testcontainers-style ephemeral dependencies, via the Docker daemon API / bollard)
 ------------------------------------------------------------------------------------------
 
 --- A running container from `docker.run`. Prefer `ctx:defer(function() c:stop() end)` so it is
