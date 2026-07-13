@@ -177,6 +177,32 @@ archetect = {}
 ---@return prova.RenderResult
 function archetect.render(opts) end
 
+--- Declarative archetype check — prova's answer to the pytest harness's `manifest.yaml`, matched
+--- field-for-field but as real Lua you can extend. Renders once (headless) and registers the
+--- standard tests. Anything a prompt needs and the answers omit falls back to its default; a prompt
+--- with no default and no answer errors (headless never hangs).
+---@class prova.VerifySpec
+---@field source string                      # local path or git URL
+---@field name? string                       # label for the generated tests (default "archetype")
+---@field answers? table<string,any>         # prompt answers as data
+---@field switches? string[]
+---@field defaults? boolean                  # headless defaults for unanswered prompts (default true)
+---@field project_dir? string                # assert relative to this subdirectory the render produces
+---@field expected_files? string[]           # must exist (relative to project_dir)
+---@field absent_files? string[]             # must NOT exist
+---@field yaml_globs? string[]               # each glob must match ≥1 file; each match must parse
+---@field fully_rendered? boolean            # assert no leftover template markers (default true)
+---@field requires? string[]                 # capabilities gating the build step (else skip)
+---@field build_steps? (string|string[])[]   # commands run sequentially in project_dir
+---@field env? table<string,string>          # extra environment for build_steps
+---@field timeout? string                    # per build step (default "600s")
+
+--- Render an archetype and register the standard layout/fully-rendered/yaml/build checks. Returns the
+--- shared render fixture so you can add your own tests against the same output (the superset pattern).
+---@param spec prova.VerifySpec
+---@return prova.Fixture
+function archetect.verify(spec) end
+
 ------------------------------------------------------------------------------------------
 -- docker (testcontainers-style ephemeral dependencies, via the docker CLI)
 ------------------------------------------------------------------------------------------

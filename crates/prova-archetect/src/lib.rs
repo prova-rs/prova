@@ -33,8 +33,92 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
     let archetect = lua.create_table()?;
     archetect.set("render", lua.create_function(render)?)?;
     lua.globals().set("archetect", archetect)?;
+    // `archetect.verify{...}` is authoring sugar composed from prova primitives + fs/shell/yaml, so
+    // it lives in Lua rather than Rust. It defines the function; the globals it uses are resolved
+    // when it is *called* (at collection), by which point they all exist.
+    lua.load(VERIFY_LUA).set_name("@prova-archetect/verify").exec()?;
     Ok(())
 }
+
+/// The declarative archetype check — prova's answer to the pytest harness's `manifest.yaml`, matched
+/// field-for-field but as real Lua you can extend. `archetect.verify{...}` renders once and registers
+/// the standard tests (layout, fully-rendered, yaml manifests parse, build), returning the shared
+/// render fixture so callers can add their own tests against the same output.
+const VERIFY_LUA: &str = r#"
+function archetect.verify(spec)
+  assert(type(spec) == "table", "archetect.verify expects a table")
+  assert(spec.source, "archetect.verify requires a `source`")
+  local label = spec.name or "archetype"
+  local timeout = spec.timeout or "600s"
+
+  -- Render once (headless by default); every check below shares this output.
+  local rendered = prova.fixture(label .. ":render", "file", function(ctx)
+    return archetect.render{
+      source = spec.source,
+      answers = spec.answers,
+      switches = spec.switches,
+      defaults = spec.defaults ~= false,
+      destination = ctx:tempdir(),
+    }
+  end)
+
+  -- The project root, optionally a subdirectory the render produces (like the manifest's project_dir).
+  local function project(t)
+    local tree = t:use(rendered)
+    if spec.project_dir then return tree:dir(spec.project_dir) end
+    return tree
+  end
+
+  prova.describe(label, function()
+    if (spec.expected_files and #spec.expected_files > 0)
+       or (spec.absent_files and #spec.absent_files > 0) then
+      prova.test("layout", function(t)
+        local p = project(t)
+        t:expect_all(function()
+          for _, f in ipairs(spec.expected_files or {}) do
+            t:expect(p:file(f), f):exists()
+          end
+          for _, f in ipairs(spec.absent_files or {}) do
+            t:expect(p:file(f), f):never():exists()
+          end
+        end)
+      end)
+    end
+
+    if spec.fully_rendered ~= false then
+      prova.test("fully rendered", function(t)
+        t:expect(project(t)):is_fully_rendered()
+      end)
+    end
+
+    if spec.yaml_globs and #spec.yaml_globs > 0 then
+      prova.test("yaml manifests parse", function(t)
+        local root = project(t).path
+        for _, g in ipairs(spec.yaml_globs) do
+          local matches = fs.glob(root, g)
+          t:expect(#matches, "glob '" .. g .. "' matched no files"):never():equals(0)
+          for _, path in ipairs(matches) do
+            yaml.parse_all(fs.read(path))  -- raises (fails the test) on invalid YAML
+          end
+        end
+      end)
+    end
+
+    if spec.build_steps and #spec.build_steps > 0 then
+      prova.test("build", { requires = spec.requires or {}, tags = { "build" }, timeout = timeout }, function(t)
+        local p = project(t)
+        for _, step in ipairs(spec.build_steps) do
+          local cmd = type(step) == "table" and table.concat(step, " ") or step
+          local r = shell.run(cmd, { cwd = p.path, env = spec.env, timeout = timeout })
+          t:expect(r.code, cmd):equals(0)
+        end
+      end)
+    end
+  end)
+
+  return rendered
+end
+"#;
 
 /// `archetect.render{ source, answers?, switches?, defaults?, destination? }` → a tree handle
 /// rooted at the destination (`out.path`, `out:file(rel)`, `out:read()`, `out.writes`).

@@ -178,6 +178,17 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
   surface over SQLite;* ***`examples/db_postgres_test.lua` + `tests/db_postgres.rs` run the identical
   API against a real Postgres in an ephemeral `docker.run{postgres}` container*** *— the North Star
   data layer, gated by `requires` so it skips without a daemon.)*
+- **`yaml` module** — `yaml.parse(text)` (single document) and `yaml.parse_all(text)` (multi-document
+  `---` stream, as in k8s manifests) → Lua values, the counterpart to `http`'s `:json()`. General
+  black-box machinery for a cloud-oriented, polyglot world (k8s/CI/compose are all YAML). serde_yaml_ng,
+  feature-gated `yaml` (default on). *(`testdata/yaml.lua`.)*
+- **`archetect.verify{...}`** *(prova-archetect)* — the declarative archetype check, prova's answer to
+  the pytest harness's `manifest.yaml`, matched field-for-field but as real Lua. One call renders once
+  (headless) and registers the standard tests: `expected_files`/`absent_files` layout, `is_fully_rendered`,
+  `yaml_globs` (each glob matches ≥1 file and each match parses), and a `requires`-gated `build_steps`;
+  returns the shared render fixture so callers can add their own tests (the superset pattern). Lua sugar
+  over prova primitives + `fs`/`shell`/`yaml`, installed alongside `archetect.render`.
+  *(`examples/archetype_verify_test.lua`; verified against the real `rust-grpc-service-archetype@dev`.)*
 - **`grpc` module** — a **native, dynamic** gRPC client (no `grpcurl` binary, no `.proto` files, no
   codegen): `grpc.connect(addr)` performs **gRPC Server Reflection** once to learn the server's
   schema, then `client:call("pkg.Service/Method", req_table)` builds the request message from the Lua

@@ -26,6 +26,25 @@ prova-archetect inherits it; never a hang).
 Each generated project even ships a **conditional `docker-compose.yml`** declaring exactly the runtime
 resources its answers imply (postgres/mysql/redis/kafka/pulsar) — the hard tier's spec, handed to us.
 
+**The pytest manifest is the ergonomic *floor*.** If a prova archetype test is more verbose than a
+`manifest.yaml`, the easy tier has failed. Met by **`archetect.verify{...}`** (in prova-archetect,
+Lua sugar over prova primitives): renders once headlessly and registers the standard checks —
+`expected_files`/`absent_files` (layout), `is_fully_rendered`, `yaml_globs` (each glob matches ≥1 file
+and every match parses, via the `yaml` module), and a `requires`-gated `build_steps` — matching the
+manifest field-for-field in ~10 lines, but as real Lua you can extend (it returns the shared render
+fixture so you can add custom tests / the runtime tier alongside). *Verified against the real
+`rust-grpc-service-archetype@dev`: layout + fully-rendered + yaml-manifests-parse, ~12 lines.*
+
+## The broader ambition (beyond archetypes)
+
+p6m-archetypes is the impetus, **not the ceiling**. The goal is a general-purpose **black-box /
+acceptance / integration** framework people reach for in a **cloud-oriented, polyglot world** — where
+today they fall back to bash/Python/Go glue. Not a unit-test framework (pytest/JUnit win there); the
+wedge is out-of-process, environment-level testing where the batteries (`docker`, `db`, `http`,
+`grpc`, `yaml`, fixtures, resources, `requires`-gating) and the single-binary polyglot-agnostic
+packaging are the differentiator. Every DX decision serves *easy stuff easy, hard stuff possible* for
+that general audience.
+
 ## The North Star (the target scenario)
 
 A batteries-included, native black-box acceptance harness that can:
@@ -184,7 +203,7 @@ exactly the "batteries-included, no capability ceilings" pitch. Implemented in `
 - **Container/DB readiness = retry the real thing**, not `pg_isready`/port-open (init restarts).
 - **Docker `:exec` needs a shell in the image** (`sh -c`); `traefik/whoami` is `FROM scratch`.
 - Feature flags: `http`, `db`, `docker` are default-on; the crate builds with `--no-default-features`.
-- **Verify every change:** `cargo test` (36 tests, some Docker/cargo-gated), `cargo clippy --all-targets`
+- **Verify every change:** `cargo test` (39 tests, some Docker/cargo-gated), `cargo clippy --all-targets`
   (zero warnings), `lua-language-server --check "$(pwd)"` (LuaLS-clean), and run touched
   `examples/*.lua` via the CLI. Keep the LuaCATS stub (`library/`) in lockstep with the runtime.
 
