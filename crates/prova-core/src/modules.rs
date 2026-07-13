@@ -30,6 +30,8 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set("db", db::make(lua)?)?;
     #[cfg(feature = "grpc")]
     lua.globals().set("grpc", grpc::make(lua)?)?;
+    #[cfg(feature = "yaml")]
+    lua.globals().set("yaml", yaml::make(lua)?)?;
     Ok(())
 }
 
@@ -1510,5 +1512,50 @@ mod grpc {
             Some(t) => t.get::<Option<String>>(key)?.and_then(|s| parse_duration(&s)),
             None => None,
         })
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// yaml (sync — parse YAML text to Lua values; the counterpart to http's `:json()`)
+// ---------------------------------------------------------------------------------------------
+
+// A general capability for a cloud-oriented, polyglot world: k8s manifests, CI configs, and compose
+// files are all YAML. `yaml.parse` handles a single document; `yaml.parse_all` handles a
+// multi-document stream (`---`-separated), which is exactly what Kubernetes manifests use.
+#[cfg(feature = "yaml")]
+mod yaml {
+    use mlua::{Lua, LuaSerdeExt, Table};
+    use serde::Deserialize;
+
+    pub(crate) fn make(lua: &Lua) -> mlua::Result<Table> {
+        let yaml = lua.create_table()?;
+
+        // yaml.parse(text) → Lua value for the single/first document. Raises on invalid YAML.
+        yaml.set(
+            "parse",
+            lua.create_function(|lua, text: String| {
+                let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&text)
+                    .map_err(|e| mlua::Error::RuntimeError(format!("yaml.parse: {e}")))?;
+                lua.to_value(&value)
+            })?,
+        )?;
+
+        // yaml.parse_all(text) → list of Lua values, one per `---`-separated document. Raises on the
+        // first invalid document (with its 1-based index). An empty/whitespace-only string yields {}.
+        yaml.set(
+            "parse_all",
+            lua.create_function(|lua, text: String| {
+                let out = lua.create_table()?;
+                for (i, doc) in serde_yaml_ng::Deserializer::from_str(&text).enumerate() {
+                    let value = serde_yaml_ng::Value::deserialize(doc).map_err(|e| {
+                        mlua::Error::RuntimeError(format!("yaml.parse_all: document {}: {e}", i + 1))
+                    })?;
+                    out.push(lua.to_value(&value)?)?;
+                }
+                Ok(out)
+            })?,
+        )?;
+
+        Ok(yaml)
     }
 }

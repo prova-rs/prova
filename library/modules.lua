@@ -303,3 +303,19 @@ function grpc.connect(addr, opts) end
 ---@param addr string
 ---@param opts? prova.GrpcWaitOpts
 function grpc.wait_for(addr, opts) end
+
+------------------------------------------------------------------------------------------
+-- yaml (parse YAML text to Lua values — k8s manifests, CI configs, compose files)
+------------------------------------------------------------------------------------------
+
+---@class prova.yaml
+yaml = {}
+--- Parse a single YAML document into a Lua value. Raises on invalid YAML.
+---@param text string
+---@return any
+function yaml.parse(text) end
+--- Parse a multi-document YAML stream (`---`-separated, as in Kubernetes manifests) into a list of
+--- Lua values. Raises on the first invalid document.
+---@param text string
+---@return any[]
+function yaml.parse_all(text) end

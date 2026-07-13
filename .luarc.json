@@ -16,7 +16,8 @@
     "archetect",
     "docker",
     "db",
-    "grpc"
+    "grpc",
+    "yaml"
   ],
   "completion.callSnippet": "Replace",
   "hint.enable": true

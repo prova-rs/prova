@@ -42,9 +42,14 @@ tonic-reflection = { version = "0.14", default-features = false, optional = true
 prost = { version = "0.14", optional = true }
 prost-types = { version = "0.14", optional = true }
 prost-reflect = { version = "0.16.5", features = ["serde"], optional = true }
+# The `yaml` module — parse YAML (k8s manifests, CI configs, compose files) to Lua values, the way
+# `http`'s `:json()` does for JSON. General black-box-testing capability, not archetype-specific.
+# Maintained serde_yaml fork. Feature-gated (default on); light, pure-Rust.
+serde_yaml_ng = { version = "0.10.0", optional = true }
+serde = { version = "1", optional = true }
 
 [features]
-default = ["http", "db", "docker", "grpc"]
+default = ["http", "db", "docker", "grpc", "yaml"]
 http = ["dep:reqwest"]
 db = ["dep:sqlx"]
 docker = ["dep:bollard"]
@@ -55,3 +60,4 @@ grpc = [
     "dep:prost-types",
     "dep:prost-reflect",
 ]
+yaml = ["dep:serde_yaml_ng", "dep:serde"]
