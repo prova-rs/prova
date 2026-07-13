@@ -1056,6 +1056,23 @@ fn display(v: &Value) -> String {
 fn build_lua(root_name: String, modules: &[Module]) -> mlua::Result<(Lua, SharedCollector)> {
     let col: SharedCollector = Rc::new(RefCell::new(Collector::new(root_name)));
     let lua = Lua::new();
+
+    // Route `os.getenv` through Rust's view of the environment.
+    //
+    // Lua's own `os.getenv` reads the C runtime's copy of the environment. On Windows that copy is
+    // a snapshot taken at startup, and `std::env::set_var` (SetEnvironmentVariableW) does not
+    // update it — so a manifest's `[run.env]`, which we inject with set_var, reached spawned child
+    // processes but was invisible to the tests themselves. On Unix the two views are the same table,
+    // which is why only Windows saw it. Reading through Rust makes `os.getenv` agree everywhere, and
+    // agree with what `shell.run` children inherit.
+    {
+        let os: mlua::Table = lua.globals().get("os")?;
+        os.set(
+            "getenv",
+            lua.create_function(|_, name: String| Ok(std::env::var(name).ok()))?,
+        )?;
+    }
+
     let prova = lua.create_table()?;
 
     {
