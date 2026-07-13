@@ -96,10 +96,16 @@ local Matcher = {}
 ---@return prova.Matcher
 function Matcher:never() end
 
+--- Deep structural equality (recurses into tables).
 ---@param x any
 function Matcher:equals(x) end
 ---@param x any
 function Matcher:eq(x) end
+--- Identity: the *same* table/function/userdata (by reference), or an equal primitive (`rawequal`).
+--- Use over `equals` when you mean "the same object" — including tables with function fields that
+--- deep-equals cannot compare.
+---@param x any
+function Matcher:is(x) end
 function Matcher:is_truthy() end
 function Matcher:is_falsy() end
 function Matcher:is_true() end

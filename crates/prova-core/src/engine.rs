@@ -644,6 +644,19 @@ impl UserData for Matcher {
                 )
             })
         });
+        // Identity, not structure: the *same* table/function/userdata (reference), or an equal
+        // primitive (`rawequal` semantics). Complements the **deep** `equals` — use `is` to assert
+        // "this is that same object", including tables that hold function fields `equals` can't compare.
+        methods.add_method("is", |_, this, other: Value| {
+            let pass = this.subject == other;
+            this.record(pass, || {
+                format!(
+                    "expected {} to be (identity) {}",
+                    display(&this.subject),
+                    display(&other)
+                )
+            })
+        });
         methods.add_method("is_true", |_, this, ()| {
             let pass = matches!(this.subject, Value::Boolean(true));
             this.record(pass, || {

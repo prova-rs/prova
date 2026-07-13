@@ -269,8 +269,10 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
   design promises. *(`examples/resources_test.lua`; `resources` tests prove exclusive holders
   serialize (~80ms) while shared readers overlap (~40ms) under `concurrency = 8`.)* CLI: `--jobs N`
   / `-j N`.
-- **Assertions**: `t:expect(subject, label?)` → matchers `equals`/`eq` (**deep** for tables),
-  `is_true`/`is_false`/`is_nil`/`is_truthy`/`is_falsy`, `contains`, `matches` (Lua pattern),
+- **Assertions**: `t:expect(subject, label?)` → matchers `equals`/`eq` (**deep** for tables), `is`
+  (**identity** — same reference / `rawequal`, for "the same object" incl. tables with function fields
+  deep-equals can't compare), `is_true`/`is_false`/`is_nil`/`is_truthy`/`is_falsy`, `contains`,
+  `matches` (Lua pattern),
   `has_length`, `is_one_of`, `gt`/`gte`/`lt`/`lte`, and filesystem `exists`/`is_file`/`is_dir`/
   `is_empty`, plus **`is_fully_rendered`** — the signature archetype check: scans every file under a
   rendered tree (contents + path segments) for leftover jinja markers (`{{`/`{%`/`{#`), excluding

@@ -35,8 +35,18 @@ local log = { stopped = 0, closed = 0 }
 prova.test("manage returns the resource and stops it at scope end", function(t)
   local fake = { stop = function() log.stopped = log.stopped + 1 end }
   local r = t:manage(fake)
-  t:expect(r == fake):is_true()    -- returns the SAME resource (identity, not deep-equals)
+  t:expect(r):is(fake)             -- returns the SAME resource (identity; deep-equals can't, fake has a fn field)
   t:expect(log.stopped):equals(0)  -- not yet — teardown runs after the body
+end)
+
+prova.test("is asserts identity, not structure", function(t)
+  local a = { x = 1 }
+  local b = { x = 1 }
+  t:expect(a):is(a)                -- same reference
+  t:expect(a):never():is(b)        -- structurally equal, but a different table
+  t:expect(a):equals(b)            -- ...whereas deep-equals treats them as equal
+  t:expect(42):is(42)              -- primitives compare by value
+  t:expect("hi"):is("hi")
 end)
 
 prova.test("the managed resource was stopped after the previous test", function(t)
