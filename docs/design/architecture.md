@@ -107,7 +107,7 @@ The core stays small; capability grows at the edges:
 
 | Surface | Extends by | Examples |
 |---|---|---|
-| **Modules** | async Lua modules registered into the runtime (via `RunConfig::with_module`) | `fs`, `net`, `shell`, `http`, `grpc`, `graphql`, `docker`, `db`, `redis`, `pulsar`, `yaml`, `archetect` |
+| **Modules** | async Lua modules registered into the runtime (via `RunConfig::with_module`) | `fs`, `net`, `shell`, `http`, `grpc`, `graphql`, `docker`, `db`, `redis`, `pulsar`, `kafka`, `yaml`, `archetect` |
 | **Matchers** | new terminal checks on the matcher | domain assertions, snapshots |
 | **Reporters** | new `Reporter` sinks | JUnit, TAP, GUI socket, load metrics |
 | **Selectors** | plan filters | tag expressions, `--changed`, `--last-failed`, sharding |
@@ -169,14 +169,22 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
   (native-tls/openssl) — the only tokio-compatible option — so this one pulls system openssl. Plaintext
   connect in v1. feature-gated `pulsar` (default on). *(`examples/pulsar_test.lua`, verified against a
   real Pulsar standalone.)*
+- **`kafka` module** — the Kafka counterpart to `pulsar`: `kafka.connect(brokers)` → `produce(topic,
+  msg)` and `consume(topic, { group, max, timeout })` → message strings (a fresh group reads from the
+  earliest offset). rdkafka with **librdkafka vendored + statically linked** (built from source by the
+  C toolchain — no cmake, no runtime .so; the build cost is a CI concern, the *binary stays
+  self-contained* — the guiding priority); no SSL/SASL features → no openssl. *(`examples/kafka_test.lua`,
+  verified against real Apache Kafka KRaft.)*
 - **`docker.run{ command }`** — override the image CMD (a string, whitespace-split, or a list), needed
-  by images like Pulsar's (`bin/pulsar standalone`).
-- **Resource recipes** (testcontainers-style): `db.postgres(ctx, opts?)` / `db.mysql(ctx, opts?)` /
-  `redis.container(ctx, opts?)` / `pulsar.container(ctx, opts?)` fold provision-container + wait-ready +
-  connect + manage into one call, returning `{ url, conn|client, container }`. Lua sugar over
+  by images like Pulsar's (`bin/pulsar standalone`). **`docker.run{ ports = { { container, host } } }`**
+  — a *fixed* host port (else random), needed by Kafka (it advertises a listener clients must reach).
+- **Resource recipes** (testcontainers-style): `db.postgres` / `db.mysql` / `redis.container` /
+  `pulsar.container` / `kafka.container` `(ctx, opts?)` fold provision-container + wait-ready + connect +
+  manage into one call, returning `{ url|brokers, conn|client, container }`. Lua sugar over
   `docker`/`prova.retry`/client/`ctx:manage` (a prova-core prelude); `requires{docker}`-gateable.
-  *(`examples/db_postgres_test.lua` fixture is now one line; `db_mysql_test.lua`; `redis_test.lua`;
-  `pulsar_test.lua`; verified against real Postgres + MySQL + Redis + Pulsar, leak-free.)*
+  *(`db_postgres_test.lua` fixture is one line; `db_mysql`/`redis`/`pulsar`/`kafka_test.lua`; verified
+  against real Postgres + MySQL + Redis + Pulsar + Kafka, leak-free.)* (`kafka.container` uses a fixed
+  host port — one per host at a time — because Kafka advertises a reachable listener.)
 - **Deferred: an environment / TLS+auth arc.** Every client connects **plaintext** in v1 — right for
   the local/CI ephemeral-container mission, but they can't reach a *secured* remote endpoint (a dev k8s
   cluster / cloud broker with TLS + tokens/mTLS/OAuth2). This is a deliberate, additive gap: each

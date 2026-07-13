@@ -309,7 +309,7 @@ function Container:stop() end
 ---@class prova.DockerRunOpts
 ---@field image string
 ---@field command? string|string[]      # override the image CMD ("bin/pulsar standalone" or a list)
----@field ports? integer[]              # container ports to publish to random host ports
+---@field ports? (integer|{container:integer, host:integer})[]  # container ports → random host ports (or a fixed host port)
 ---@field env? table<string,string>
 ---@field wait? prova.DockerWait        # readiness gate
 
@@ -599,3 +599,54 @@ function pulsar.connect(url) end
 ---@param opts? prova.PulsarRecipeOpts
 ---@return prova.PulsarResource
 function pulsar.container(ctx, opts) end
+
+------------------------------------------------------------------------------------------
+-- kafka (a thin produce/consume messaging client + an ephemeral-container recipe)
+------------------------------------------------------------------------------------------
+
+--- A Kafka client from `kafka.connect`. Methods are async; `ctx:manage(client)` for teardown.
+--- Plaintext only in v1 (no SSL/SASL).
+---@class prova.KafkaClient
+local KafkaClient = {}
+--- Produce a string message to a topic; awaits the broker's delivery ack.
+---@param topic string
+---@param message string
+function KafkaClient:produce(topic, message) end
+--- Consume messages from a topic (a fresh group reads from the earliest offset). Collects up to
+--- `max` messages arriving within `timeout`; returns them as a list of strings.
+---@param topic string
+---@param opts? prova.KafkaConsumeOpts
+---@return string[]
+function KafkaClient:consume(topic, opts) end
+--- No-op (present for `ctx:manage` symmetry).
+function KafkaClient:close() end
+
+---@class prova.KafkaConsumeOpts
+---@field group? string          # consumer group id (default "prova")
+---@field max? integer           # stop after this many messages (default 10)
+---@field timeout? string        # collection window (default "15s")
+
+---@class prova.KafkaRecipeOpts
+---@field image? string          # full image ref; overrides tag
+---@field tag? string            # image tag (default "3.9.0", apache/kafka)
+---@field port? integer          # fixed host port (default 9092; Kafka advertises a reachable listener)
+---@field timeout? string        # readiness deadline
+
+--- A provisioned ephemeral Kafka: a connected (managed) client, its bootstrap brokers, the container.
+---@class prova.KafkaResource
+---@field brokers string
+---@field client prova.KafkaClient
+---@field container prova.Container
+
+---@class prova.kafka
+kafka = {}
+--- Connect to Kafka bootstrap brokers (`host:port`). Async; verifies connectivity. Call in a body.
+---@param brokers string
+---@return prova.KafkaClient
+function kafka.connect(brokers) end
+--- Provision an ephemeral single-node Kafka (KRaft) and return a connected managed client. Uses a
+--- FIXED host port (Kafka advertises a reachable listener), so one per host at a time. Requires docker.
+---@param ctx prova.Context
+---@param opts? prova.KafkaRecipeOpts
+---@return prova.KafkaResource
+function kafka.container(ctx, opts) end

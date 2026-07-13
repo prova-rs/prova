@@ -39,6 +39,8 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set("redis", redis_mod::make(lua)?)?;
     #[cfg(feature = "pulsar")]
     lua.globals().set("pulsar", pulsar_mod::make(lua)?)?;
+    #[cfg(feature = "kafka")]
+    lua.globals().set("kafka", kafka_mod::make(lua)?)?;
     // Resource recipes — Lua sugar over docker.run + prova.retry + db.connect + ctx:manage. Loaded
     // after the modules exist; the globals they touch resolve when a recipe is *called*.
     #[cfg(feature = "db")]
@@ -53,8 +55,50 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.load(PULSAR_RECIPES_LUA)
         .set_name("@prova/pulsar-recipes")
         .exec()?;
+    #[cfg(feature = "kafka")]
+    lua.load(KAFKA_RECIPES_LUA)
+        .set_name("@prova/kafka-recipes")
+        .exec()?;
     Ok(())
 }
+
+/// `kafka.container(ctx, opts?)` provisions an ephemeral single-node Kafka (KRaft) and returns
+/// `{ brokers, client, container }`. Unlike the others it uses a **fixed** host port (default 9092),
+/// because Kafka advertises a listener address clients must be able to reach — so only one
+/// `kafka.container` runs per host at a time. Requires the `docker` module at call time.
+#[cfg(feature = "kafka")]
+const KAFKA_RECIPES_LUA: &str = r#"
+function kafka.container(ctx, opts)
+  assert(ctx and ctx.manage, "kafka.container(ctx, opts?): pass the fixture/test context as the first argument")
+  opts = opts or {}
+  local image = opts.image or ("apache/kafka:" .. (opts.tag or "3.9.0"))
+  local port = opts.port or 9092
+  local timeout = opts.timeout or "90s"
+  local container = ctx:manage(docker.run{
+    image = image,
+    ports = { { container = 9092, host = port } },
+    env = {
+      KAFKA_NODE_ID = "1",
+      KAFKA_PROCESS_ROLES = "broker,controller",
+      KAFKA_LISTENERS = "PLAINTEXT://:9092,CONTROLLER://:9093",
+      KAFKA_ADVERTISED_LISTENERS = "PLAINTEXT://127.0.0.1:" .. port,
+      KAFKA_CONTROLLER_QUORUM_VOTERS = "1@localhost:9093",
+      KAFKA_CONTROLLER_LISTENER_NAMES = "CONTROLLER",
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP = "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT",
+      KAFKA_INTER_BROKER_LISTENER_NAME = "PLAINTEXT",
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR = "1",
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS = "0",
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR = "1",
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR = "1",
+    },
+    wait = { port = 9092, timeout = timeout },
+  })
+  local brokers = "127.0.0.1:" .. port
+  local client = ctx:manage(prova.retry(function() return kafka.connect(brokers) end,
+    { timeout = timeout, message = "kafka did not accept connections in time" }))
+  return { brokers = brokers, client = client, container = container }
+end
+"#;
 
 /// `pulsar.container(ctx, opts?)` provisions an ephemeral Pulsar standalone, waits for it, connects,
 /// and returns `{ url, client, container }`. Requires the `docker` module at call time. Pulsar
@@ -906,7 +950,8 @@ mod docker {
 
     struct Spec {
         image: String,
-        ports: Vec<u16>,
+        /// Each published port: the container port and an optional *fixed* host port (else random).
+        ports: Vec<(u16, Option<u16>)>,
         env: Vec<(String, String)>,
         command: Vec<String>,
         wait: Option<Wait>,
@@ -917,7 +962,34 @@ mod docker {
             let image = opts.get::<Option<String>>("image")?.ok_or_else(|| {
                 mlua::Error::RuntimeError("docker.run requires an `image`".into())
             })?;
-            let ports = opts.get::<Option<Vec<u16>>>("ports")?.unwrap_or_default();
+            // `ports` entries are either an integer container port (→ random host port) or a table
+            // `{ container = N, host = M }` (→ fixed host port M, needed by e.g. Kafka's advertised
+            // listener). A bare `{ N, M }` array works too.
+            let mut ports: Vec<(u16, Option<u16>)> = Vec::new();
+            if let Some(list) = opts.get::<Option<Vec<mlua::Value>>>("ports")? {
+                for entry in list {
+                    match entry {
+                        mlua::Value::Integer(i) => ports.push((i as u16, None)),
+                        mlua::Value::Table(t) => {
+                            let container = t
+                                .get::<Option<u16>>("container")?
+                                .or(t.get::<Option<u16>>(1)?)
+                                .ok_or_else(|| {
+                                    mlua::Error::RuntimeError(
+                                        "docker.run port table needs a container port".into(),
+                                    )
+                                })?;
+                            let host = t.get::<Option<u16>>("host")?.or(t.get::<Option<u16>>(2)?);
+                            ports.push((container, host));
+                        }
+                        _ => {
+                            return Err(mlua::Error::RuntimeError(
+                                "docker.run ports entries must be integers or { container, host } tables".into(),
+                            ))
+                        }
+                    }
+                }
+            }
             // `command` overrides the image's default CMD. Accept a string (whitespace-split) or a
             // list of args — e.g. "bin/pulsar standalone" or { "bin/pulsar", "standalone" }.
             let command = match opts.get::<mlua::Value>("command")? {
@@ -986,14 +1058,14 @@ mod docker {
         // Publish each container port to a random host port (host_port "0").
         let mut exposed: HashMap<String, HashMap<(), ()>> = HashMap::new();
         let mut bindings: HashMap<String, Option<Vec<PortBinding>>> = HashMap::new();
-        for port in &spec.ports {
-            let key = format!("{port}/tcp");
+        for (container, host) in &spec.ports {
+            let key = format!("{container}/tcp");
             exposed.insert(key.clone(), HashMap::new());
             bindings.insert(
                 key,
                 Some(vec![PortBinding {
                     host_ip: Some("127.0.0.1".to_string()),
-                    host_port: Some("0".to_string()),
+                    host_port: Some(host.map(|h| h.to_string()).unwrap_or_else(|| "0".to_string())),
                 }]),
             );
         }
@@ -1030,14 +1102,14 @@ mod docker {
         // Inspect for the assigned host ports.
         let info = client.inspect_container(&id, None).await.map_err(derr)?;
         if let Some(ports) = info.network_settings.and_then(|ns| ns.ports) {
-            for port in &spec.ports {
-                if let Some(Some(binds)) = ports.get(&format!("{port}/tcp")) {
+            for (container_port, _) in &spec.ports {
+                if let Some(Some(binds)) = ports.get(&format!("{container_port}/tcp")) {
                     if let Some(hp) = binds
                         .first()
                         .and_then(|b| b.host_port.as_ref())
                         .and_then(|s| s.parse::<u16>().ok())
                     {
-                        container.ports.insert(*port, hp);
+                        container.ports.insert(*container_port, hp);
                     }
                 }
             }
@@ -2354,5 +2426,150 @@ mod pulsar_mod {
             })?,
         )?;
         Ok(pulsar_tbl)
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// kafka (async; a thin produce/consume client via rdkafka — librdkafka statically linked)
+// ---------------------------------------------------------------------------------------------
+
+// The Kafka counterpart to the pulsar module: produce a message an app should consume, or consume
+// messages an app produced and assert on them. Consumers use a fresh group with auto-commit off and
+// `auto.offset.reset=earliest`, so produce-then-consume within one test reads from the start.
+// Plaintext only in v1 (no SSL/SASL — so no openssl either).
+#[cfg(feature = "kafka")]
+mod kafka_mod {
+    use std::time::{Duration, Instant};
+
+    use mlua::{Lua, Table, UserData, UserDataMethods};
+    use rdkafka::config::ClientConfig;
+    use rdkafka::consumer::{Consumer, StreamConsumer};
+    use rdkafka::message::Message;
+    use rdkafka::producer::{FutureProducer, FutureRecord, Producer};
+    use rdkafka::util::Timeout;
+
+    fn err(msg: impl Into<String>) -> mlua::Error {
+        mlua::Error::RuntimeError(msg.into())
+    }
+
+    /// A Kafka client bound to a set of bootstrap brokers. Holds a shared producer; consumers are
+    /// created per `consume` call (each needs its own group/subscription config).
+    struct KafkaClient {
+        brokers: String,
+        producer: FutureProducer,
+    }
+
+    impl UserData for KafkaClient {
+        fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+            // produce(topic, message) — send a string and await the broker's delivery ack.
+            methods.add_async_method("produce", |_, this, (topic, message): (String, String)| {
+                let producer = this.producer.clone();
+                async move {
+                    let record = FutureRecord::to(&topic).payload(&message).key("");
+                    producer
+                        .send(record, Timeout::After(Duration::from_secs(10)))
+                        .await
+                        .map_err(|(e, _)| err(format!("kafka produce: {e}")))?;
+                    Ok(())
+                }
+            });
+
+            // consume(topic, { group?, max?, timeout? }) → list of message strings, from the earliest
+            // offset. Collects up to `max` messages arriving within `timeout`.
+            methods.add_async_method(
+                "consume",
+                |lua, this, (topic, opts): (String, Option<Table>)| {
+                    let brokers = this.brokers.clone();
+                    let mut group = "prova".to_string();
+                    let mut max = 10usize;
+                    let mut timeout = Duration::from_secs(15);
+                    let parsed = (|| -> mlua::Result<()> {
+                        if let Some(o) = &opts {
+                            if let Some(g) = o.get::<Option<String>>("group")? {
+                                group = g;
+                            }
+                            if let Some(m) = o.get::<Option<usize>>("max")? {
+                                max = m;
+                            }
+                            if let Some(t) = o
+                                .get::<Option<String>>("timeout")?
+                                .and_then(|s| crate::model::parse_duration(&s))
+                            {
+                                timeout = t;
+                            }
+                        }
+                        Ok(())
+                    })();
+                    async move {
+                        parsed?;
+                        let consumer: StreamConsumer = ClientConfig::new()
+                            .set("bootstrap.servers", &brokers)
+                            .set("group.id", &group)
+                            .set("auto.offset.reset", "earliest")
+                            .set("enable.auto.commit", "false")
+                            .set("session.timeout.ms", "6000")
+                            .create()
+                            .map_err(|e| err(format!("kafka consumer: {e}")))?;
+                        consumer
+                            .subscribe(&[&topic])
+                            .map_err(|e| err(format!("kafka subscribe {topic}: {e}")))?;
+
+                        let deadline = Instant::now() + timeout;
+                        let out = lua.create_table()?;
+                        let mut n = 0usize;
+                        while n < max {
+                            let remaining = deadline.saturating_duration_since(Instant::now());
+                            if remaining.is_zero() {
+                                break;
+                            }
+                            match tokio::time::timeout(remaining, consumer.recv()).await {
+                                Ok(Ok(msg)) => {
+                                    let payload = msg
+                                        .payload()
+                                        .map(|b| String::from_utf8_lossy(b).into_owned())
+                                        .unwrap_or_default();
+                                    out.push(payload)?;
+                                    n += 1;
+                                }
+                                Ok(Err(e)) => return Err(err(format!("kafka consume: {e}"))),
+                                Err(_) => break, // no more messages within the window
+                            }
+                        }
+                        Ok(out)
+                    }
+                },
+            );
+
+            methods.add_method("close", |_, _this, ()| Ok(()));
+        }
+    }
+
+    pub(crate) fn make(lua: &Lua) -> mlua::Result<Table> {
+        let kafka = lua.create_table()?;
+        // kafka.connect(brokers) → a client. Async: creates a producer and verifies connectivity with
+        // a metadata fetch (so `prova.retry(kafka.connect, ...)` is a real readiness gate).
+        kafka.set(
+            "connect",
+            lua.create_async_function(|lua, brokers: String| async move {
+                let producer: FutureProducer = ClientConfig::new()
+                    .set("bootstrap.servers", &brokers)
+                    .set("message.timeout.ms", "10000")
+                    .create()
+                    .map_err(|e| err(format!("kafka.connect: {e}")))?;
+                // fetch_metadata is blocking; run it on the blocking pool so the worker isn't stalled.
+                let probe = producer.clone();
+                let brokers_for_probe = brokers.clone();
+                tokio::task::spawn_blocking(move || {
+                    probe
+                        .client()
+                        .fetch_metadata(None, Timeout::After(Duration::from_secs(5)))
+                })
+                .await
+                .map_err(|e| err(format!("kafka.connect: {e}")))?
+                .map_err(|e| err(format!("kafka.connect {brokers_for_probe}: {e}")))?;
+                lua.create_userdata(KafkaClient { brokers, producer })
+            })?,
+        )?;
+        Ok(kafka)
     }
 }

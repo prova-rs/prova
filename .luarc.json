@@ -21,7 +21,8 @@
     "graphql",
     "yaml",
     "redis",
-    "pulsar"
+    "pulsar",
+    "kafka"
   ],
   "completion.callSnippet": "Replace",
   "hint.enable": true
