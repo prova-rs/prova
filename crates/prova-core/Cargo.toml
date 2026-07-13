@@ -19,7 +19,17 @@ glob = "0.3"
 # The `http` module. v1 is HTTP-only (no TLS) to stay light — covers localhost service
 # boot-and-probe; an https feature can layer rustls on later. Feature-gated so builds can opt out.
 reqwest = { version = "0.12", optional = true, default-features = false }
+# The `db` module — one general API over Postgres/MySQL/SQLite via sqlx's `Any` driver (backend
+# chosen by URL scheme). Heavy, so feature-gated (default on). No TLS in v1 (local/CI containers).
+sqlx = { version = "0.8", optional = true, default-features = false, features = [
+    "runtime-tokio",
+    "any",
+    "postgres",
+    "mysql",
+    "sqlite",
+] }
 
 [features]
-default = ["http"]
+default = ["http", "db"]
 http = ["dep:reqwest"]
+db = ["dep:sqlx"]

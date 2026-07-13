@@ -13,7 +13,8 @@
     "shell",
     "http",
     "archetect",
-    "docker"
+    "docker",
+    "db"
   ],
   "completion.callSnippet": "Replace",
   "hint.enable": true

@@ -159,6 +159,15 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
   `:stop()`) — testcontainers-style ephemeral deps via the `docker` CLI: `-d --rm`, publish to a
   random host port, readiness wait (port TCP-connect or log-substring), force-remove on `:stop()`
   with a `Drop` backstop so a container never leaks. *(`examples/docker_dependency_test.lua`.)*
+- **`db` module** — one **general, multi-database** query API over **sqlx's `Any` driver**:
+  `db.connect(url)` picks the backend by URL scheme (`postgres://`, `mysql://`,
+  `sqlite://…?mode=rwc`), returning a `Connection` with async `:execute` (rows affected),
+  `:query` (list of column-name→value tables, NULL→nil, typed by SQL kind with a probe fallback for
+  computed columns like `count(*)`), `:query_value` (scalar), `:close`. Positional params bind
+  Lua int/float/bool/string/nil. Feature-gated `db` (default on). *(`tests/db.rs` verifies the full
+  surface over SQLite;* ***`examples/db_postgres_test.lua` + `tests/db_postgres.rs` run the identical
+  API against a real Postgres in an ephemeral `docker.run{postgres}` container*** *— the North Star
+  data layer, gated by `requires` so it skips without a daemon.)*
 - **`requires` capability gating**: `opts.requires = { "docker", ... }` skips (does not fail) a unit
   when a capability is unavailable, with a reason; the skip cascades to dependents. Detection:
   `docker` → `docker info` succeeds, `github` → `GITHUB_TOKEN` set, else a tool of that name on
@@ -241,23 +250,12 @@ The scheduler/lifecycle **spine is now complete** (collect → plan → deps →
 execute). The remaining increments pivot from engine to **product** — the capabilities that make
 prova useful beyond testing itself:
 
-Best done once a Docker daemon is available (their real targets are containerized), so they can be
-verified against real servers rather than stubs:
-
-1. **`db` module** — a **general, multi-database** query surface (`db.connect(url)` →
-   `:query`/`:execute`/`:query_value`/`:close`) over **sqlx's `Any` driver** so Postgres, MySQL, and
-   SQLite share one API by URL scheme. Verifiable with SQLite today; "just works" against
-   `docker.run{postgres|mysql}` once the daemon is up. This is the "query the DB, assert state after
-   calls" pillar.
-2. **`grpc` module** (then **`graphql`**) — the next network interface (archetect-core has a gRPC
-   proto + fixtures to lean on).
-3. **`bollard` for Docker** — swap the CLI-shelling `docker` module for the typed `bollard` daemon
-   client: log streaming, exec, health, structured errors, no CLI parsing. Held until a daemon is
-   present to verify against.
-
-Then (daemon-independent):
-
-4. **Snapshots** — `matches_snapshot`, `.snap` files + `--update-snapshots`.
+1. **`grpc` module** (then **`graphql`**) — the next network interface (archetect-core has a gRPC
+   proto + fixtures to lean on). *(The `db` module — sqlx `Any`, verified against real Postgres — is
+   done.)*
+2. **`bollard` for Docker** — swap the CLI-shelling `docker` module for the typed `bollard` daemon
+   client: log streaming, exec, health, structured errors, no CLI parsing.
+3. **Snapshots** — `matches_snapshot`, `.snap` files + `--update-snapshots`.
 5. **Flow ergonomics**: `f:use(fixture)` builder sugar (currently flow-scoped fixtures are used via
    `t:use` inside steps); re-runnable flow bodies (re-invoke to get fresh closures) as the
    precondition for the **load executor** treating a flow as a reusable scenario; `test_each` +

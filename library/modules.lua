@@ -222,3 +222,37 @@ docker = {}
 ---@param opts prova.DockerRunOpts
 ---@return prova.Container
 function docker.run(opts) end
+
+------------------------------------------------------------------------------------------
+-- db (one general query API over Postgres/MySQL/SQLite via sqlx's Any driver)
+------------------------------------------------------------------------------------------
+
+--- A database connection from `db.connect`. Backend chosen by URL scheme, so one API covers
+--- Postgres/MySQL/SQLite. Methods are async; pair with `ctx:defer(function() conn:close() end)`.
+--- Use the backend's own placeholder syntax in SQL (`$1` for Postgres, `?` for MySQL/SQLite).
+---@class prova.Connection
+local Connection = {}
+--- Run a statement (INSERT/UPDATE/DDL); returns the number of rows affected.
+---@param sql string
+---@param params? any[]
+---@return integer
+function Connection:execute(sql, params) end
+--- Run a query; returns a list of rows, each a table of column name -> value (NULL -> nil).
+---@param sql string
+---@param params? any[]
+---@return table<string, any>[]
+function Connection:query(sql, params) end
+--- Query returning a single scalar (first column of the first row), or nil.
+---@param sql string
+---@param params? any[]
+---@return any
+function Connection:query_value(sql, params) end
+--- Close the connection pool.
+function Connection:close() end
+
+---@class prova.db
+db = {}
+--- Connect by URL: `postgres://…`, `mysql://…`, or `sqlite://<path>?mode=rwc`.
+---@param url string
+---@return prova.Connection
+function db.connect(url) end
