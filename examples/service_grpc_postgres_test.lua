@@ -5,6 +5,11 @@
 ---   prova examples/service_grpc_postgres_test.lua
 --- requires docker + cargo (skips cleanly without either); first run clones libs + downloads crates.
 ---
+--- This is the IDIOMATIC version: `postgres.container(ctx, ...)` provisions the database in one
+--- line. The same integration built from primitives (docker.run + readiness gates + retry) lives in
+--- service_grpc_postgres_primitives_test.lua — read that one when you need a dependency Prova has
+--- no recipe for.
+---
 --- NOTE (why this matters): the archetype today is a SCAFFOLD — its gRPC methods return
 --- `Unimplemented` and its migration is empty. prova *running* the service is exactly what exposes
 --- that "renders + compiles" was hiding a hollow service. As the archetype grows real CRUD, the
@@ -32,17 +37,10 @@ end)
 local service = prova.fixture("service", Scope.File, function(ctx)
   local dir = ctx:use(project):dir("inventory-service").path
 
-  local pg = ctx:manage(docker.run{
-    image = "postgres:16-alpine",
-    env = { POSTGRES_USER = "dev", POSTGRES_PASSWORD = "dev", POSTGRES_DB = "inventory_service" },
-    ports = { 5432 },
-    wait = { port = 5432, timeout = "60s" },
-  })
-  local db_url = "postgres://dev:dev@127.0.0.1:" .. pg:host_port(5432) .. "/inventory_service"
-
-  -- Postgres restarts once at first-boot init; wait for a real connection to hold before the
-  -- service (which connects once and exits on failure) tries.
-  ctx:manage(prova.retry(function() return postgres.client(db_url) end, { timeout = "30s" }))
+  -- One line: container, readiness (a connection that HOLDS, not just an open port), managed
+  -- teardown. `pg.url` is what we inject into the service; `pg.client` is ours to cross-check with.
+  local pg = postgres.container(ctx, { user = "dev", password = "dev", database = "inventory_service" })
+  local db_url = pg.url
 
   local build = shell.run("cargo build", { cwd = dir, timeout = "600s" })
   assert(build:ok(), "service failed to build:\n" .. build.stderr)
@@ -60,7 +58,7 @@ local service = prova.fixture("service", Scope.File, function(ctx)
 
   local addr = "127.0.0.1:" .. port
   grpc.wait_for(addr, { timeout = "30s" })  -- the service only answers if it connected to Postgres
-  return { addr = addr, db_url = db_url }
+  return { addr = addr, db = pg.client }
 end)
 
 prova.group("inventory gRPC service (Postgres)", { requires = { "docker", "cargo" } }, function(g)
@@ -76,8 +74,8 @@ prova.group("inventory gRPC service (Postgres)", { requires = { "docker", "cargo
 
   g:test("ran its migrations against that same Postgres", function(t)
     local svc = t:use(service)
-    local conn = t:manage(postgres.client(svc.db_url))
-    -- prova queries the very database the service is wired to — cross-service state assertion.
-    t:expect(conn:query_value("SELECT count(*) FROM _sqlx_migrations WHERE success")):gte(1)
+    -- The recipe's managed client points at the very database the service is wired to —
+    -- cross-service state assertion with no extra connection ceremony.
+    t:expect(svc.db:query_value("SELECT count(*) FROM _sqlx_migrations WHERE success")):gte(1)
   end)
 end)

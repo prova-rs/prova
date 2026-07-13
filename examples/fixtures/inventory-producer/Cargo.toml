@@ -1,0 +1,36 @@
+# Standalone fixture service for Prova's "kitchen sink" multi-service example.
+# Deliberately NOT part of the prova workspace (see the empty [workspace] table):
+# it is a plain application a user might test with Prova, not part of Prova itself.
+#
+# Versions mirror what prova-core already uses (tonic 0.14, sqlx 0.8, pulsar 6.8,
+# tokio 1) so the ecosystem stays coherent across the example.
+[package]
+name = "inventory-producer"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+# tonic 0.14 split prost support out of the core crate: `tonic-prost` supplies the
+# codec the generated code references.
+tonic = "0.14"
+tonic-prost = "0.14"
+tonic-reflection = "0.14"
+prost = "0.14"
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "postgres",
+] }
+pulsar = { version = "6.8", default-features = false, features = ["tokio-runtime"] }
+serde_json = "1"
+
+[build-dependencies]
+# protox compiles .proto in pure Rust — no protoc binary needed on the machine.
+protox = "0.9"
+# tonic 0.14 moved codegen to tonic-prost-build; compile_fds consumes the
+# FileDescriptorSet protox produced instead of shelling out to protoc.
+tonic-prost-build = "0.14"
+prost = "0.14"

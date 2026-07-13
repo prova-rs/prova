@@ -1709,9 +1709,15 @@ mod grpc {
     }
 
     /// Serialize a response message to a Lua table. `skip_default_fields(false)` keeps zero/empty
-    /// fields present so assertions can see the full message shape.
+    /// fields present so assertions can see the full message shape. Field names mirror how requests
+    /// are written — proto (snake_case) names, not proto3-JSON camelCase — and 64-bit ints arrive
+    /// as Lua numbers rather than strings (tests assert `res.id`, not `res.id == "3"`; Lua numbers
+    /// are exact through 2^53, far beyond any test-scale id).
     fn response_to_lua(lua: &Lua, msg: &DynamicMessage) -> mlua::Result<Value> {
-        let opts = SerializeOptions::new().skip_default_fields(false);
+        let opts = SerializeOptions::new()
+            .skip_default_fields(false)
+            .use_proto_field_name(true)
+            .stringify_64_bit_integers(false);
         let value = msg
             .serialize_with_options(serde_json::value::Serializer, &opts)
             .map_err(|e| err(format!("grpc: decoding response: {e}")))?;

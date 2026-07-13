@@ -28,8 +28,10 @@ prova.group("grpc", { requires = { "docker" } }, function(g)
 
   g:test("echoes fields via the grpcbin dummy service", function(t)
     local client = t:use(server)
+    -- Requests and responses use the same proto (snake_case) field names — what you send is the
+    -- shape you read back.
     local resp = client:call("grpcbin.GRPCBin/DummyUnary", { f_string = "roundtrip" })
-    t:expect(resp.fString):equals("roundtrip")
+    t:expect(resp.f_string):equals("roundtrip")
   end)
 
   g:test("call_status surfaces gRPC error codes without raising", function(t)

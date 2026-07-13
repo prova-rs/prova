@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package inventory.v1;
+
+service Inventory {
+  rpc CreateItem(CreateItemRequest) returns (CreateItemResponse);
+  rpc ListItems(ListItemsRequest) returns (ListItemsResponse);
+}
+
+message CreateItemRequest {
+  string display_name = 1;
+}
+
+message CreateItemResponse {
+  int64 id = 1;
+  string display_name = 2;
+}
+
+message ListItemsRequest {}
+
+message Item {
+  int64 id = 1;
+  string display_name = 2;
+}
+
+message ListItemsResponse {
+  repeated Item items = 1;
+}
