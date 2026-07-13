@@ -1859,11 +1859,29 @@ fn command_succeeds_retry(program: &str, args: &[&str], attempts: u32) -> bool {
 }
 
 /// Is an executable named `name` on `PATH`?
+///
+/// On Windows an executable on `PATH` carries an extension (`cargo.exe`), so probing the bare name
+/// finds nothing and *every* `requires` gate would skip. Try each `PATHEXT` suffix as well —
+/// `requires = { "cargo" }` names the tool, not the file.
 fn binary_on_path(name: &str) -> bool {
     let Some(path) = std::env::var_os("PATH") else {
         return false;
     };
-    std::env::split_paths(&path).any(|dir| dir.join(name).is_file())
+
+    let mut candidates = vec![name.to_string()];
+    if cfg!(windows) {
+        let pathext =
+            std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+        candidates.extend(
+            pathext
+                .split(';')
+                .filter(|ext| !ext.is_empty())
+                .map(|ext| format!("{name}{ext}")),
+        );
+    }
+
+    std::env::split_paths(&path)
+        .any(|dir| candidates.iter().any(|file| dir.join(file).is_file()))
 }
 
 struct NodeResult {
