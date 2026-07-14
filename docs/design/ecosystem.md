@@ -229,8 +229,11 @@ the rare escape hatch, not the common path. Kept on the roadmap, Substrate-infor
 ## Roadmap
 
 1. **`prova.containerized` scaffolding helper** — the ergonomic keystone both tiers depend on; dogfood
-   by re-expressing first-party recipes through it. *(first plumbing slice)*
-2. Unified `requires` compiled-capability detector + stub namespaces.
+   by re-expressing first-party recipes through it. **(done)**
+2. Unified `requires` compiled-capability detector + stub namespaces. **(done)** — a native
+   capability (`kafka`, `postgres`, …) resolves by whether its feature is compiled in, so
+   `requires = { "kafka" }` skips in a lean build exactly as `requires = { "docker" }` skips without
+   a daemon; an absent namespace is a stub raising a clear "not compiled into this build" error.
 3. Org/repo shorthand resolution (reusing the git fetch) → registered orgs.
 4. Action: plugin cache + `plugins:` input.
 5. Stand up `prova-rs/prova-redis` (dogfood the external round-trip); `prova plugin lint`.

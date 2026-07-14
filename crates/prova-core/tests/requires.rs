@@ -10,8 +10,9 @@ fn requires_skips_on_missing_capability() {
     let mut reporter = NullReporter;
     let summary = run_path(&path, &mut reporter).expect("run requires.lua");
 
-    // "needs sh" + "no requirements" pass; the two gated units + the dependent skip.
-    assert_eq!(summary.passed, 2, "passed");
+    // "needs sh" + "no requirements" + "needs kafka (compiled in)" pass; the two missing-tool gates
+    // + the dependent skip. (The kafka assertion assumes the default-featured test build.)
+    assert_eq!(summary.passed, 3, "passed");
     assert_eq!(
         summary.failed, 0,
         "failed (nothing ever fails on a missing capability)"

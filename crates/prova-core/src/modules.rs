@@ -47,6 +47,34 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set("kafka", kafka_mod::make(lua)?)?;
     #[cfg(feature = "s3")]
     lua.globals().set("s3", s3_mod::make(lua)?)?;
+    // Absent-namespace stubs: in a lean distribution a native namespace's feature may be off. Install
+    // a stub so `kafka.client(...)` raises a clear "not compiled into this build" error instead of a
+    // bare `attempt to index a nil value` — the call-side companion to the `requires` skip. In the
+    // default build every feature is on, so none of these arms compile.
+    #[cfg(not(feature = "docker"))]
+    lua.globals().set("docker", absent_stub(lua, "docker")?)?;
+    #[cfg(not(feature = "http"))]
+    lua.globals().set("http", absent_stub(lua, "http")?)?;
+    #[cfg(not(feature = "postgres"))]
+    lua.globals().set("postgres", absent_stub(lua, "postgres")?)?;
+    #[cfg(not(feature = "mysql"))]
+    lua.globals().set("mysql", absent_stub(lua, "mysql")?)?;
+    #[cfg(not(feature = "sqlite"))]
+    lua.globals().set("sqlite", absent_stub(lua, "sqlite")?)?;
+    #[cfg(not(feature = "grpc"))]
+    lua.globals().set("grpc", absent_stub(lua, "grpc")?)?;
+    #[cfg(not(feature = "graphql"))]
+    lua.globals().set("graphql", absent_stub(lua, "graphql")?)?;
+    #[cfg(not(feature = "yaml"))]
+    lua.globals().set("yaml", absent_stub(lua, "yaml")?)?;
+    #[cfg(not(feature = "redis"))]
+    lua.globals().set("redis", absent_stub(lua, "redis")?)?;
+    #[cfg(not(feature = "pulsar"))]
+    lua.globals().set("pulsar", absent_stub(lua, "pulsar")?)?;
+    #[cfg(not(feature = "kafka"))]
+    lua.globals().set("kafka", absent_stub(lua, "kafka")?)?;
+    #[cfg(not(feature = "s3"))]
+    lua.globals().set("s3", absent_stub(lua, "s3")?)?;
     // The `prova.containerized` scaffolding helper — the ergonomic keystone every containerized
     // resource (first-party recipe or third-party plugin) is authored through. Always available;
     // the globals it composes (`docker`, `prova.retry`) resolve when a generated `container` is
@@ -83,10 +111,29 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
     Ok(())
 }
 
-/// `s3.container(ctx, opts?)` provisions an ephemeral MinIO (S3-compatible), creates a bucket, and
-/// returns the standard resource shape `{ client, url, container }` plus `access_key`/`secret_key`.
-/// Requires the `docker` module.
-#[cfg(feature = "s3")]
+/// A stand-in for a native namespace whose feature was not compiled into this build: any field
+/// access raises a clear, actionable error instead of a bare `attempt to index a nil value`. A test
+/// that wants to *skip* rather than error should gate with `requires = { "<name>" }`.
+///
+/// `#[allow(dead_code)]`: only referenced by the `#[cfg(not(feature = …))]` install arms, so in a
+/// default (all-features) build it compiles but is never called.
+#[allow(dead_code)]
+fn absent_stub(lua: &Lua, name: &'static str) -> mlua::Result<Table> {
+    let tbl = lua.create_table()?;
+    let mt = lua.create_table()?;
+    let index = lua.create_function(move |_, (_t, key): (Table, mlua::String)| {
+        let key = key.to_string_lossy();
+        Err::<mlua::Value, _>(mlua::Error::RuntimeError(format!(
+            "`{name}.{key}` is unavailable: the `{name}` capability is not compiled into this build \
+             (use a distribution that includes it, or gate the test with requires = {{ \"{name}\" }} \
+             to skip instead)"
+        )))
+    })?;
+    mt.set("__index", index)?;
+    tbl.set_metatable(Some(mt))?;
+    Ok(tbl)
+}
+
 /// `prova.containerized(spec)` — build a grammar-conformant namespace (`{ client?, container }`) from
 /// a compact spec, so first-party recipes and third-party plugins are authored the same way and come
 /// out the same shape (the tier-agnostic interface — see docs/design/ecosystem.md).
@@ -152,6 +199,10 @@ function prova.containerized(spec)
 end
 "#;
 
+/// `s3.container(ctx, opts?)` provisions an ephemeral MinIO (S3-compatible), creates a bucket, and
+/// returns the standard resource shape `{ client, url, container }` plus `access_key`/`secret_key`.
+/// Requires the `docker` module.
+#[cfg(feature = "s3")]
 const S3_RECIPES_LUA: &str = r#"
 function s3.container(ctx, opts)
   assert(ctx and ctx.manage, "s3.container(ctx, opts?): pass the fixture/test context as the first argument")
@@ -236,6 +287,14 @@ function pulsar.container(ctx, opts)
   local url = "pulsar://127.0.0.1:" .. container:host_port(6650)
   local client = ctx:manage(prova.retry(function() return pulsar.client(url) end,
     { timeout = timeout, message = "pulsar did not accept connections in time" }))
+  -- The "messaging service is ready" log (and a bare connect) are false-positives: the broker accepts
+  -- connections before the public/default namespace bundle is loaded, so the first produce races it
+  -- with "Namespace not found". Retry a real produce to a throwaway topic until it holds — the true
+  -- readiness gate (same principle as the DB connect-retry), on a topic no test consumes.
+  -- `produce` returns nothing on success, so return a truthy sentinel — prova.retry loops until the
+  -- callback returns truthy (a raised "Namespace not found" counts as "not ready" and retries).
+  prova.retry(function() client:produce("prova-readiness-probe", "ready"); return true end,
+    { timeout = timeout, message = "pulsar namespace did not become ready in time" })
   return { client = client, url = url, container = container }
 end
 "#;

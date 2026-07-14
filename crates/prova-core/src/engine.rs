@@ -1865,18 +1865,48 @@ fn resolve_requires(leaves: &mut [Leaf]) {
 /// capability never fails a test — it skips it, visibly.
 fn capability_available(name: &str) -> bool {
     match name {
-        // The docker daemon must be reachable, not just the client installed. Retry a few times: a
+        // The docker daemon must be reachable *and* the feature compiled in. Retry a few times: a
         // single `docker info` can transiently fail when the daemon is momentarily busy (heavy
         // container churn — e.g. many container tests tearing down at once), which would otherwise
         // skip a whole test spuriously. This resolves once per run (memoized), so the cost is bounded;
         // a genuinely-absent daemon fails fast (connection-refused is instant), so the retry budget is
         // paid mostly as backoff sleeps only when the daemon is present-but-busy.
-        "docker" => command_succeeds_retry("docker", &["info"], 8),
+        "docker" => cfg!(feature = "docker") && command_succeeds_retry("docker", &["info"], 8),
         "github" => std::env::var_os("GITHUB_TOKEN").is_some(),
         // No cheap, reliable synchronous probe; assume present (a real offline mode is future work).
         "network" | "internet" => true,
-        other => binary_on_path(other),
+        // A native-client capability (`kafka`, `postgres`, …) is available iff its feature was
+        // compiled into this build — so `requires = { "kafka" }` skips gracefully in a build that
+        // lacks it, exactly as `docker` skips without a daemon. This is the unified gate: there is no
+        // separate `requires_native`, just a capability with a compiled-in detector. Anything not a
+        // native capability falls through to a tool-on-PATH probe (`requires = { "kubectl" }`).
+        other => match native_capability_compiled(other) {
+            Some(compiled) => compiled,
+            None => binary_on_path(other),
+        },
     }
+}
+
+/// Whether `name` is a native-client capability and, if so, whether *this* build compiled it in.
+/// `Some(true)`/`Some(false)` for a known native capability; `None` if `name` is not one (so the
+/// caller falls back to a binary-on-PATH probe). The name set is fixed (independent of features);
+/// only the `cfg!` results vary per build, which is what makes a lean distribution skip cleanly.
+fn native_capability_compiled(name: &str) -> Option<bool> {
+    let compiled = match name {
+        "http" => cfg!(feature = "http"),
+        "postgres" => cfg!(feature = "postgres"),
+        "mysql" => cfg!(feature = "mysql"),
+        "sqlite" => cfg!(feature = "sqlite"),
+        "grpc" => cfg!(feature = "grpc"),
+        "graphql" => cfg!(feature = "graphql"),
+        "yaml" => cfg!(feature = "yaml"),
+        "redis" => cfg!(feature = "redis"),
+        "pulsar" => cfg!(feature = "pulsar"),
+        "kafka" => cfg!(feature = "kafka"),
+        "s3" => cfg!(feature = "s3"),
+        _ => return None,
+    };
+    Some(compiled)
 }
 
 /// Run `program args...`, discarding output; true iff it exits 0. Used for daemon-liveness checks.
