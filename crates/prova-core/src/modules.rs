@@ -47,6 +47,13 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set("kafka", kafka_mod::make(lua)?)?;
     #[cfg(feature = "s3")]
     lua.globals().set("s3", s3_mod::make(lua)?)?;
+    // The `prova.containerized` scaffolding helper — the ergonomic keystone every containerized
+    // resource (first-party recipe or third-party plugin) is authored through. Always available;
+    // the globals it composes (`docker`, `prova.retry`) resolve when a generated `container` is
+    // *called*. Loaded before the recipes so they can be expressed in terms of it.
+    lua.load(CONTAINERIZED_LUA)
+        .set_name("@prova/containerized")
+        .exec()?;
     // Resource recipes — Lua sugar over docker.run + prova.retry + postgres.client + ctx:manage. Loaded
     // after the modules exist; the globals they touch resolve when a recipe is *called*.
     #[cfg(feature = "postgres")]
@@ -80,6 +87,71 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
 /// returns the standard resource shape `{ client, url, container }` plus `access_key`/`secret_key`.
 /// Requires the `docker` module.
 #[cfg(feature = "s3")]
+/// `prova.containerized(spec)` — build a grammar-conformant namespace (`{ client?, container }`) from
+/// a compact spec, so first-party recipes and third-party plugins are authored the same way and come
+/// out the same shape (the tier-agnostic interface — see docs/design/ecosystem.md).
+///
+/// The generated `container(ctx, opts?)` provisions via `docker.run`, waits for readiness, ties
+/// teardown to the scope with `ctx:manage`, and returns `{ url, container }` — attaching a managed
+/// `client` (via `prova.retry`) only when the spec provides a `client` factory, so provisioning works
+/// even where the native client is absent (§ black-box). `opts` overrides `image`/`tag`/`timeout`/`env`
+/// at call time; `env`/`url`/`client` may read `opts`.
+///
+/// Spec fields: `name` (for messages), `image` (base repo), `tag` (default tag), `port`/`ports`
+/// (published; `port` is the primary for readiness + url), `command?`, `env?` (table or
+/// `function(opts)->table`), `wait?` (`{ port|log }`, default `{ port = primary }`), `timeout?`,
+/// `url` (`function(host_port, opts)->string`, required), `client?` (`function(url, opts)->handle`).
+const CONTAINERIZED_LUA: &str = r#"
+function prova.containerized(spec)
+  assert(type(spec) == "table", "prova.containerized: pass a spec table")
+  assert(spec.image and spec.url, "prova.containerized: spec needs `image` and `url`")
+  local name = spec.name or "resource"
+  local ports = spec.ports
+  if type(ports) == "number" then ports = { ports } end
+  ports = ports or { spec.port }
+  local primary = spec.port or ports[1]
+  assert(primary, "prova.containerized: spec needs a `port` (or `ports`)")
+
+  local ns = { client = spec.client }
+
+  function ns.container(ctx, opts)
+    assert(ctx and ctx.manage, name .. ".container(ctx, opts?): pass the fixture/test context first")
+    opts = opts or {}
+
+    local image = opts.image
+    if not image then
+      image = spec.image
+      local tag = opts.tag or spec.tag
+      if tag then image = image .. ":" .. tag end
+    end
+    local timeout = opts.timeout or spec.timeout or "60s"
+
+    local env = opts.env
+    if env == nil then
+      env = spec.env
+      if type(env) == "function" then env = env(opts) end
+    end
+
+    local w = spec.wait or { port = primary }
+    local wait = { port = w.port, log = w.log, timeout = timeout }
+
+    local container = ctx:manage(docker.run{
+      image = image, ports = ports, env = env, command = spec.command, wait = wait,
+    })
+
+    local url = spec.url(container:host_port(primary), opts)
+    local res = { url = url, container = container }
+    if spec.client then
+      res.client = ctx:manage(prova.retry(function() return spec.client(url, opts) end,
+        { timeout = timeout, message = name .. " did not become ready in time" }))
+    end
+    return res
+  end
+
+  return ns
+end
+"#;
+
 const S3_RECIPES_LUA: &str = r#"
 function s3.container(ctx, opts)
   assert(ctx and ctx.manage, "s3.container(ctx, opts?): pass the fixture/test context as the first argument")
@@ -173,17 +245,12 @@ end
 /// shape `{ client, url, container }`. Requires the `docker` module at call time.
 #[cfg(feature = "redis")]
 const REDIS_RECIPES_LUA: &str = r#"
-function redis.container(ctx, opts)
-  assert(ctx and ctx.manage, "redis.container(ctx, opts?): pass the fixture/test context as the first argument")
-  opts = opts or {}
-  local image = opts.image or ("redis:" .. (opts.tag or "7-alpine"))
-  local timeout = opts.timeout or "60s"
-  local container = ctx:manage(docker.run{ image = image, ports = { 6379 }, wait = { port = 6379, timeout = timeout } })
-  local url = "redis://127.0.0.1:" .. container:host_port(6379)
-  local client = ctx:manage(prova.retry(function() return redis.client(url) end,
-    { timeout = timeout, message = "redis did not accept connections in time" }))
-  return { client = client, url = url, container = container }
-end
+-- Authored through prova.containerized — the same seam a third-party plugin uses (dogfood).
+redis.container = prova.containerized{
+  name = "redis", image = "redis", tag = "7-alpine", port = 6379,
+  url = function(hp) return "redis://127.0.0.1:" .. hp end,
+  client = function(url) return redis.client(url) end,
+}.container
 "#;
 
 /// `postgres.container(ctx, opts?)` — a testcontainers-style recipe: one call provisions an
@@ -192,30 +259,21 @@ end
 /// Requires the `docker` module at call time and is `requires = { "docker" }`-gateable.
 #[cfg(feature = "postgres")]
 const POSTGRES_RECIPES_LUA: &str = r#"
-function postgres.container(ctx, opts)
-  assert(ctx and ctx.manage, "postgres.container(ctx, opts?): pass the fixture/test context as the first argument")
-  opts = opts or {}
-  local user     = opts.user     or "prova"
-  local password = opts.password or "prova"
-  local database = opts.database or "prova"
-  local image    = opts.image    or ("postgres:" .. (opts.tag or "16-alpine"))
-  local timeout  = opts.timeout  or "60s"
-
-  local container = ctx:manage(docker.run{
-    image = image,
-    env = { POSTGRES_USER = user, POSTGRES_PASSWORD = password, POSTGRES_DB = database },
-    ports = { 5432 },
-    wait = { port = 5432, timeout = timeout },
-  })
-
-  local url = string.format("postgres://%s:%s@127.0.0.1:%d/%s", user, password, container:host_port(5432), database)
-  -- The port opening is a false-positive for a first-boot DB (it restarts once at init); retry the
-  -- real connection until it holds. This doubles as the readiness gate for anything else wiring in.
-  local client = ctx:manage(prova.retry(function() return postgres.client(url) end,
-    { timeout = timeout, message = "postgres did not accept connections in time" }))
-
-  return { client = client, url = url, container = container }
-end
+-- Authored through prova.containerized (dogfood). `env`/`url` read `opts` for user/password/database.
+-- The port opening is a false-positive for a first-boot DB (it restarts once at init); the client
+-- factory + prova.retry (inside the helper) is the real readiness gate, doubling for anything wiring in.
+postgres.container = prova.containerized{
+  name = "postgres", image = "postgres", tag = "16-alpine", port = 5432,
+  env = function(opts)
+    return { POSTGRES_USER = opts.user or "prova", POSTGRES_PASSWORD = opts.password or "prova",
+             POSTGRES_DB = opts.database or "prova" }
+  end,
+  url = function(hp, opts)
+    return string.format("postgres://%s:%s@127.0.0.1:%d/%s",
+      opts.user or "prova", opts.password or "prova", hp, opts.database or "prova")
+  end,
+  client = function(url) return postgres.client(url) end,
+}.container
 "#;
 
 /// `mysql.container(ctx, opts?)` — the MySQL counterpart to `postgres.container`. Returns the

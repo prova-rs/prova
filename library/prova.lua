@@ -385,6 +385,28 @@ function prova.sleep(millis) end
 ---@return T
 function prova.retry(fn, opts) end
 
+---@class prova.ContainerizedSpec
+---@field name? string                         # namespace name, for error messages
+---@field image string                         # base image repo (e.g. "redis"); `opts.image` fully overrides
+---@field tag? string                          # default tag; `opts.tag` overrides
+---@field port? integer                        # primary published port (readiness + url); or use `ports`
+---@field ports? integer|integer[]             # ports to publish (primary defaults to the first)
+---@field command? string                      # optional container command
+---@field env? table<string,string>|fun(opts: table): table<string,string>  # container env (may read opts)
+---@field wait? { port?: integer, log?: string }  # readiness probe (default: primary port)
+---@field timeout? string                      # readiness deadline (default "60s")
+---@field url fun(host_port: integer, opts: table): string  # connection URL from the mapped host port
+---@field client? fun(url: string, opts: table): any        # attach a client (native / docker-exec); omit for black-box
+
+---Build a grammar-conformant resource namespace (`{ client?, container }`) from a compact spec — the
+---scaffolding every containerized recipe/plugin is authored through, so first-party and third-party
+---resources come out the same shape (the tier-agnostic interface). The generated
+---`container(ctx, opts?)` provisions via docker, waits, ties teardown to the scope, and returns
+---`{ url, container }`, attaching a managed `client` only when the spec provides a `client` factory.
+---@param spec prova.ContainerizedSpec
+---@return { client?: fun(url: string, opts: table): any, container: fun(ctx: prova.Context, opts?: table): table }
+function prova.containerized(spec) end
+
 ---@param fn fun(t: prova.TestContext)
 function prova.before_each(fn) end
 ---@param fn fun(t: prova.TestContext)
