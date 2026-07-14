@@ -239,7 +239,10 @@ the rare escape hatch, not the common path. Kept on the roadmap, Substrate-infor
    `gitlab`/`gl`, or a `[sources]` alias), or a bare `org/repo@ref` (defaults to github; the `@ref`
    is required so a plain path is never a surprise fetch) → a git source; anything else → a local
    path. `[sources]` registers aliases (`acme = "github:acme"` → `acme:redis` = github.com/acme/redis).
-4. Action: plugin cache + `plugins:` input.
+4. Action: plugin cache + `plugins:` input. **(done)** — `prova-rs/run-action` caches
+   `~/.cache/prova/plugins` (keyed on the manifest) so pinned plugins clone once, and its `plugins:`
+   input (one `name = source` per line) expands to prova's repeatable `--plugin name=source` flag,
+   layered over the manifest.
 5. Stand up `prova-rs/prova-redis` (dogfood the external round-trip); `prova plugin lint`.
 6. The `prova-rs/registry` index; distributions (`prova-min`/`prova-full`) + tap variants.
 7. Later: native-plugin hatch, if a real need appears.
