@@ -280,12 +280,13 @@ fn resolve_from_manifest(
 
     // Resolve declared plugins relative to the manifest's directory (git sources fetched into cache).
     let base_dir = Path::new(&path).parent().unwrap_or(Path::new(".")).to_path_buf();
-    let named_plugins = plugins::resolve_plugins(&resolved.plugins, &base_dir, layout).map_err(
-        |e| {
-            eprintln!("prova: {e}");
-            ExitCode::from(2)
-        },
-    )?;
+    let named_plugins =
+        plugins::resolve_plugins(&resolved.plugins, &base_dir, layout, &resolved.sources).map_err(
+            |e| {
+                eprintln!("prova: {e}");
+                ExitCode::from(2)
+            },
+        )?;
 
     let jobs = cli_jobs.or(resolved.jobs).unwrap_or(1);
     let format = match cli_format {

@@ -14,20 +14,22 @@ use prova_core::SystemLayout;
 use crate::manifest::{PluginDetail, PluginSource};
 
 /// Resolve every declared plugin to a concrete `.lua` file, fetching git sources into the cache.
-/// `base_dir` is the manifest's directory (local paths resolve relative to it). Returns `name → file`
-/// or a human-readable error naming the plugin that failed.
+/// `base_dir` is the manifest's directory (local paths resolve relative to it). `sources` are the
+/// registered `[sources]` aliases used to expand shorthands. Returns `name → file` or a
+/// human-readable error naming the plugin that failed.
 pub fn resolve_plugins(
     plugins: &BTreeMap<String, PluginSource>,
     base_dir: &Path,
     layout: &dyn SystemLayout,
+    sources: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, PathBuf>, String> {
     let mut resolved = BTreeMap::new();
     for (name, source) in plugins {
         let detail = match source {
-            PluginSource::Path(p) => PluginDetail {
-                path: Some(p.clone()),
-                ..Default::default()
-            },
+            // A bare string is classified: a git URL or org/repo shorthand becomes a git source; a
+            // path stays a path. (The table form is already explicit.)
+            PluginSource::Path(s) => classify_string_source(s, sources)
+                .map_err(|e| format!("plugin {name:?}: {e}"))?,
             PluginSource::Detailed(d) => d.clone(),
         };
         let file = resolve_one(name, &detail, base_dir, layout)
@@ -35,6 +37,115 @@ pub fn resolve_plugins(
         resolved.insert(name.clone(), file);
     }
     Ok(resolved)
+}
+
+/// Classify a bare string plugin source into a `PluginDetail`:
+/// - a git URL (`https://…`, `git@…`, `….git`) → a `git` source (with an optional trailing `@ref`);
+/// - `host:org/repo[@ref]` where `host` is `github`/`gh`/`gitlab`/`gl` or a registered `[sources]`
+///   alias → the expanded `git` source;
+/// - a bare `org/repo@ref` (an `@ref` is required, so a plain relative path is never mistaken for a
+///   remote) → `https://github.com/org/repo` at that ref;
+/// - anything else → a local `path`.
+///
+/// The `@ref` becomes the `tag` field, which `git clone --branch` accepts for **either** a tag or a
+/// branch; pin to a commit with the explicit table form (`{ git = "…", rev = "…" }`).
+fn classify_string_source(
+    s: &str,
+    sources: &BTreeMap<String, String>,
+) -> Result<PluginDetail, String> {
+    if is_git_url(s) {
+        let (url, reference) = split_ref(s);
+        return Ok(git_detail(url.to_string(), reference));
+    }
+    if let Some((prefix, rest)) = s.split_once(':') {
+        if let Some(base) = expand_prefix(prefix, sources) {
+            let (path, reference) = split_ref(rest);
+            return Ok(git_detail(join_url(&base, path), reference));
+        }
+    }
+    if let (core, Some(reference)) = split_ref(s) {
+        if is_org_repo(core) {
+            return Ok(git_detail(format!("https://github.com/{core}"), Some(reference)));
+        }
+    }
+    Ok(PluginDetail {
+        path: Some(s.to_string()),
+        ..Default::default()
+    })
+}
+
+fn git_detail(url: String, reference: Option<String>) -> PluginDetail {
+    PluginDetail {
+        git: Some(url),
+        tag: reference,
+        ..Default::default()
+    }
+}
+
+/// A recognizable git URL (not a shorthand or a path).
+fn is_git_url(s: &str) -> bool {
+    s.contains("://") || s.starts_with("git@") || s.ends_with(".git")
+}
+
+/// Split a trailing `@ref` off, but only when the `@` is after the last `/`, so `git@host:…` and
+/// `user@host` URLs are left intact.
+fn split_ref(s: &str) -> (&str, Option<String>) {
+    if let Some(at) = s.rfind('@') {
+        let after_last_slash = s.rfind('/').is_none_or(|slash| at > slash);
+        if after_last_slash {
+            return (&s[..at], Some(s[at + 1..].to_string()));
+        }
+    }
+    (s, None)
+}
+
+/// Expand a shorthand prefix to a base URL: a registered `[sources]` alias (itself a `host:org`
+/// shorthand or a base URL), or a built-in host (`github`/`gh`, `gitlab`/`gl`). `None` if unknown
+/// (so `C:\path` and the like fall through to a local path).
+fn expand_prefix(prefix: &str, sources: &BTreeMap<String, String>) -> Option<String> {
+    if let Some(base) = sources.get(prefix) {
+        return Some(expand_base(base));
+    }
+    known_host(prefix).map(str::to_string)
+}
+
+fn known_host(prefix: &str) -> Option<&'static str> {
+    match prefix {
+        "github" | "gh" => Some("https://github.com"),
+        "gitlab" | "gl" => Some("https://gitlab.com"),
+        _ => None,
+    }
+}
+
+/// Expand a `[sources]` value — a full base URL or a `host:org` shorthand — into a base URL.
+fn expand_base(base: &str) -> String {
+    if base.contains("://") {
+        return base.trim_end_matches('/').to_string();
+    }
+    if let Some((host, org)) = base.split_once(':') {
+        if let Some(h) = known_host(host) {
+            return format!("{h}/{org}");
+        }
+    }
+    base.to_string()
+}
+
+fn join_url(base: &str, path: &str) -> String {
+    format!("{}/{}", base.trim_end_matches('/'), path)
+}
+
+/// Does `s` look like `org/repo` (one slash, repo-name characters, not a path)?
+fn is_org_repo(s: &str) -> bool {
+    if s.starts_with('.') || s.starts_with('/') || s.starts_with('~') || s.contains('\\') {
+        return false;
+    }
+    let parts: Vec<&str> = s.split('/').collect();
+    parts.len() == 2
+        && parts.iter().all(|p| {
+            !p.is_empty()
+                && p.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        })
 }
 
 fn resolve_one(
@@ -185,7 +296,7 @@ mod tests {
         plugins.insert("greet".to_string(), PluginSource::Path("greet.lua".into()));
         let layout = RootedSystemLayout::new(dir.join("home"));
 
-        let resolved = resolve_plugins(&plugins, &dir, &layout).expect("resolve");
+        let resolved = resolve_plugins(&plugins, &dir, &layout, &BTreeMap::new()).expect("resolve");
         assert_eq!(resolved["greet"], file);
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -196,7 +307,71 @@ mod tests {
         let mut plugins = BTreeMap::new();
         plugins.insert("nope".to_string(), PluginSource::Path("nope.lua".into()));
         let layout = RootedSystemLayout::new(&dir);
-        let err = resolve_plugins(&plugins, &dir, &layout).unwrap_err();
+        let err = resolve_plugins(&plugins, &dir, &layout, &BTreeMap::new()).unwrap_err();
         assert!(err.contains("nope"), "{err}");
+    }
+
+    fn git(detail: &PluginDetail) -> (&str, Option<&str>) {
+        (detail.git.as_deref().unwrap(), detail.tag.as_deref())
+    }
+
+    #[test]
+    fn classifies_full_git_urls() {
+        let none = BTreeMap::new();
+        let d = classify_string_source("https://github.com/acme/prova-redis.git", &none).unwrap();
+        assert_eq!(git(&d), ("https://github.com/acme/prova-redis.git", None));
+
+        let d = classify_string_source("https://github.com/acme/prova-redis@v1.2", &none).unwrap();
+        assert_eq!(git(&d), ("https://github.com/acme/prova-redis", Some("v1.2")));
+
+        // A `git@host:...` scp URL keeps its early `@`.
+        let d = classify_string_source("git@github.com:acme/prova-redis.git", &none).unwrap();
+        assert_eq!(git(&d), ("git@github.com:acme/prova-redis.git", None));
+    }
+
+    #[test]
+    fn expands_host_prefix_shorthand() {
+        let none = BTreeMap::new();
+        let d = classify_string_source("github:acme/prova-redis@v1", &none).unwrap();
+        assert_eq!(git(&d), ("https://github.com/acme/prova-redis", Some("v1")));
+
+        let d = classify_string_source("gl:acme/prova-redis", &none).unwrap();
+        assert_eq!(git(&d), ("https://gitlab.com/acme/prova-redis", None));
+    }
+
+    #[test]
+    fn expands_registered_alias() {
+        let mut sources = BTreeMap::new();
+        sources.insert("acme".to_string(), "github:acme".to_string());
+        sources.insert("mirror".to_string(), "https://git.acme.io/plugins".to_string());
+
+        let d = classify_string_source("acme:redis@v1", &sources).unwrap();
+        assert_eq!(git(&d), ("https://github.com/acme/redis", Some("v1")));
+
+        let d = classify_string_source("mirror:redis", &sources).unwrap();
+        assert_eq!(git(&d), ("https://git.acme.io/plugins/redis", None));
+    }
+
+    #[test]
+    fn bare_org_repo_needs_a_ref_else_is_a_path() {
+        let none = BTreeMap::new();
+        // With @ref → github shorthand.
+        let d = classify_string_source("acme/prova-redis@v1", &none).unwrap();
+        assert_eq!(git(&d), ("https://github.com/acme/prova-redis", Some("v1")));
+
+        // Without @ref → a local path (never a surprise fetch).
+        let d = classify_string_source("test-support/redis", &none).unwrap();
+        assert_eq!(d.path.as_deref(), Some("test-support/redis"));
+        assert!(d.git.is_none());
+    }
+
+    #[test]
+    fn plain_paths_stay_paths() {
+        let none = BTreeMap::new();
+        for p in ["./plugins/greet.lua", "greet.lua", "../shared/x.lua", "/abs/x.lua"] {
+            let d = classify_string_source(p, &none).unwrap();
+            assert_eq!(d.path.as_deref(), Some(p), "{p} should be a path");
+            assert!(d.git.is_none(), "{p} should not be git");
+        }
     }
 }

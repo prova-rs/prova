@@ -112,11 +112,21 @@ Wired now (the "easy to install" story):
   declared plugin resolves the same way in every environment:
 
   ```toml
+  [sources]                                                           # register org aliases
+  acme = "github:acme"
+
   [plugins]
   greet    = "./plugins/greet.lua"                                    # local path
+  redis    = "acme:prova-redis@v1"                                    # alias shorthand → github.com/acme/prova-redis
+  loadtest = "github:acme/prova-loadtest@v2"                          # host shorthand
+  vault    = "acme/prova-vault@v3"                                    # bare org/repo (defaults to github)
   rabbitmq = { git = "https://github.com/acme/prova-rabbitmq", tag = "v1.0.0" }
   nats     = { git = "https://github.com/acme/prova-nats", rev = "abc123", module = "src/nats.lua" }
   ```
+
+  A bare `org/repo` shorthand **requires an `@ref`** so a plain relative path is never mistaken for a
+  remote (a surprise fetch); use `github:org/repo` for a ref-less remote, or the table form for a
+  commit `rev`. `@ref` maps to `git clone --branch`, which accepts a tag *or* a branch.
 
 Not yet wired, deliberately deferred:
 

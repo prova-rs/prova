@@ -40,6 +40,11 @@ pub struct Manifest {
     /// Not profile-specific — the plugin set is a property of the project, applied to every run.
     #[serde(default)]
     pub plugins: BTreeMap<String, PluginSource>,
+    /// Registered source aliases for plugin shorthands: `alias → base`, where `base` is a host
+    /// shorthand (`github:acme`) or a base URL (`https://github.com/acme`). A plugin written
+    /// `"acme:redis"` then expands via `acme` to `https://github.com/acme/redis`.
+    #[serde(default)]
+    pub sources: BTreeMap<String, String>,
 }
 
 /// Where a declared plugin's Lua comes from. The string shorthand is a local path; the table form
@@ -111,6 +116,8 @@ pub struct Resolved {
     pub suites: BTreeMap<String, SuiteDecl>,
     /// Declared plugins (`[plugins.*]`) — name → source, applied to every run.
     pub plugins: BTreeMap<String, PluginSource>,
+    /// Registered source aliases (`[sources]`) for plugin shorthands.
+    pub sources: BTreeMap<String, String>,
 }
 
 impl Manifest {
@@ -155,6 +162,7 @@ impl Manifest {
             env,
             suites: self.suites.clone(),
             plugins: self.plugins.clone(),
+            sources: self.sources.clone(),
         })
     }
 }
@@ -201,6 +209,7 @@ paths = ["tests/smoke"]
                 env: env(&[("LOG", "info")]),
                 suites: BTreeMap::new(),
                 plugins: BTreeMap::new(),
+                sources: BTreeMap::new(),
             }
         );
     }
@@ -273,6 +282,31 @@ paths = ["services/rest"]
         assert_eq!(r.suites["grpc"].paths, vec!["services/grpc".to_string()]);
         assert_eq!(r.suites["grpc"].setup.as_deref(), Some("services/grpc/suite.lua"));
         assert_eq!(r.suites["rest"].setup, None);
+    }
+
+    #[test]
+    fn parses_registered_sources() {
+        let m = Manifest::parse(
+            r#"
+[run]
+paths = ["tests"]
+
+[sources]
+acme   = "github:acme"
+mirror = "https://git.acme.io/plugins"
+
+[plugins]
+redis = "acme:prova-redis@v1"
+"#,
+        )
+        .unwrap();
+        let r = m.resolve(None).unwrap();
+        assert_eq!(r.sources["acme"], "github:acme");
+        assert_eq!(r.sources["mirror"], "https://git.acme.io/plugins");
+        assert_eq!(
+            r.plugins["redis"],
+            PluginSource::Path("acme:prova-redis@v1".into())
+        );
     }
 
     #[test]

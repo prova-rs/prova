@@ -234,7 +234,11 @@ the rare escape hatch, not the common path. Kept on the roadmap, Substrate-infor
    capability (`kafka`, `postgres`, …) resolves by whether its feature is compiled in, so
    `requires = { "kafka" }` skips in a lean build exactly as `requires = { "docker" }` skips without
    a daemon; an absent namespace is a stub raising a clear "not compiled into this build" error.
-3. Org/repo shorthand resolution (reusing the git fetch) → registered orgs.
+3. Org/repo shorthand resolution (reusing the git fetch) → registered orgs. **(done)** — a string
+   plugin source is classified: a git URL, a `host:org/repo[@ref]` shorthand (`github`/`gh`,
+   `gitlab`/`gl`, or a `[sources]` alias), or a bare `org/repo@ref` (defaults to github; the `@ref`
+   is required so a plain path is never a surprise fetch) → a git source; anything else → a local
+   path. `[sources]` registers aliases (`acme = "github:acme"` → `acme:redis` = github.com/acme/redis).
 4. Action: plugin cache + `plugins:` input.
 5. Stand up `prova-rs/prova-redis` (dogfood the external round-trip); `prova plugin lint`.
 6. The `prova-rs/registry` index; distributions (`prova-min`/`prova-full`) + tap variants.
