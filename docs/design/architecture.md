@@ -254,16 +254,22 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
   single-self-contained-binary promise. *(`examples/grpc_test.lua` + `tests/grpc.rs` run the three
   round-trips — unary, field echo, and a `NotFound` status — against a real reflection-enabled server
   (`moul/grpcbin`) in an ephemeral container, gated by `requires` so it skips without a daemon.)*
-- **Plugin searcher** *(spike)* — `require("name")` resolves Lua plugins through a custom
-  `package.searchers` entry (`plugins.rs`): **bundled** first-party modules embedded in the binary
-  (`prova.*`), then disk — every dir on `PROVA_PLUGIN_PATH`, then `./.prova/plugins/`
+- **Plugin system** — `require("name")` resolves Lua plugins through a custom `package.searchers`
+  entry (`plugins.rs`), in order: **bundled** first-party modules embedded in the binary (`prova.*`),
+  **manifest-declared** plugins (`prova.toml` `[plugins]`, authoritative + pinned), then disk — every
+  dir on `PROVA_PLUGIN_PATH`, the global **`data_dir/plugins`**, then `./.prova/plugins/`
   (`<a/b>.lua` or `<a/b>/init.lua`). A plugin is authored exactly like a first-party recipe: one
-  namespace table following the grammar, composing primitives, `return`ed. Ships one bundled loadable
-  namespace, **`prova.workspace`** (`workspace.create(ctx)` → a scratch dir tied to the scope via
-  `ctx:manage`, composing `fs`), proving the loadable path first-party recipes will migrate onto.
-  *(`examples/workspace_plugin_test.lua`; `tests/plugins.rs` resolves a bundled module and a disk
-  plugin and asserts a clean miss error.)* Design: **[plugin-system.md](plugin-system.md)**. Next:
-  manifest-declared plugin sources with git fetch/cache into a Prova cache dir; XDG config/cache dirs.
+  namespace table following the grammar, composing primitives, `return`ed. **XDG `SystemLayout`**
+  (`layout.rs`: `config_dir`/`cache_dir`/`data_dir`, XDG on macOS too like archetect;
+  `XdgSystemLayout` + `RootedSystemLayout` for tests). **`[plugins]`** maps a name to a local path or
+  a git source (`{ git, tag/branch/rev, module }`); git sources are **fetched (shelling to `git`) into
+  `cache_dir/plugins`, pinned by ref and cached** (CLI `plugins.rs::resolve_plugins`). Ships one
+  bundled loadable namespace, **`prova.workspace`** (`workspace.create(ctx)` → a scratch dir tied to
+  the scope via `ctx:manage`, composing `fs`), proving the loadable path first-party recipes will
+  migrate onto. *(`examples/workspace_plugin_test.lua`; `tests/plugins.rs` = bundled + disk + clean
+  miss; `crates/prova-cli/tests/plugin_git.rs` fetches a git plugin end-to-end through the real
+  binary.)* Design: **[plugin-system.md](plugin-system.md)**. Next: migrate a real recipe (e.g.
+  `redis`) onto the loadable path; `prova plugin add`; read `~/.config/prova`.
 - **`requires` capability gating**: `opts.requires = { "docker", ... }` skips (does not fail) a unit
   when a capability is unavailable, with a reason; the skip cascades to dependents. Detection:
   `docker` → `docker info` succeeds, `github` → `GITHUB_TOKEN` set, else a tool of that name on

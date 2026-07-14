@@ -56,6 +56,11 @@ pub type Module = std::sync::Arc<dyn Fn(&Lua) -> mlua::Result<()> + Send + Sync>
 pub struct RunConfig {
     pub concurrency: usize,
     modules: Vec<Module>,
+    /// Extra disk roots the plugin searcher consults (e.g. the global `data_dir/plugins`).
+    plugin_roots: Vec<std::path::PathBuf>,
+    /// Manifest-declared plugins: name → an exact file (a local path, or a git checkout the CLI
+    /// fetched into the cache). Authoritative over disk roots.
+    named_plugins: std::collections::BTreeMap<String, std::path::PathBuf>,
 }
 
 impl Default for RunConfig {
@@ -63,6 +68,8 @@ impl Default for RunConfig {
         RunConfig {
             concurrency: 1,
             modules: Vec::new(),
+            plugin_roots: Vec::new(),
+            named_plugins: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -72,6 +79,8 @@ impl std::fmt::Debug for RunConfig {
         f.debug_struct("RunConfig")
             .field("concurrency", &self.concurrency)
             .field("modules", &self.modules.len())
+            .field("plugin_roots", &self.plugin_roots)
+            .field("named_plugins", &self.named_plugins)
             .finish()
     }
 }
@@ -80,7 +89,7 @@ impl RunConfig {
     pub fn new(concurrency: usize) -> Self {
         RunConfig {
             concurrency,
-            modules: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -91,6 +100,23 @@ impl RunConfig {
         F: Fn(&Lua) -> mlua::Result<()> + Send + Sync + 'static,
     {
         self.modules.push(std::sync::Arc::new(install));
+        self
+    }
+
+    /// Add a disk root the plugin searcher consults (typically a `SystemLayout`'s `plugins_dir`).
+    pub fn with_plugin_root(mut self, root: impl Into<std::path::PathBuf>) -> Self {
+        self.plugin_roots.push(root.into());
+        self
+    }
+
+    /// Register a manifest-declared plugin: `require(name)` resolves to `path` (a local file or a
+    /// git checkout already fetched into the cache).
+    pub fn with_named_plugin(
+        mut self,
+        name: impl Into<String>,
+        path: impl Into<std::path::PathBuf>,
+    ) -> Self {
+        self.named_plugins.insert(name.into(), path.into());
         self
     }
 }
@@ -1053,7 +1079,7 @@ fn display(v: &Value) -> String {
 // Setup
 // ---------------------------------------------------------------------------------------------
 
-fn build_lua(root_name: String, modules: &[Module]) -> mlua::Result<(Lua, SharedCollector)> {
+fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, SharedCollector)> {
     let col: SharedCollector = Rc::new(RefCell::new(Collector::new(root_name)));
     let lua = Lua::new();
 
@@ -1274,13 +1300,13 @@ fn build_lua(root_name: String, modules: &[Module]) -> mlua::Result<(Lua, Shared
     crate::modules::install(&lua)?;
 
     // Host-provided plugin modules (e.g. `archetect`), installed into every Lua state.
-    for install in modules {
+    for install in &config.modules {
         install(&lua)?;
     }
 
-    // Wire `require` to resolve Lua plugins (bundled + disk). Installed last so a plugin loaded via
-    // `require` sees every primitive global it composes.
-    crate::plugins::install(&lua)?;
+    // Wire `require` to resolve Lua plugins (bundled + manifest + disk). Installed last so a plugin
+    // loaded via `require` sees every primitive global it composes.
+    crate::plugins::install(&lua, &config.plugin_roots, &config.named_plugins)?;
 
     Ok((lua, col))
 }
@@ -2215,7 +2241,7 @@ async fn run_plan(
 // Public entry points
 // ---------------------------------------------------------------------------------------------
 
-fn read_and_collect(path: &Path, modules: &[Module]) -> mlua::Result<(Lua, SharedCollector)> {
+fn read_and_collect(path: &Path, config: &RunConfig) -> mlua::Result<(Lua, SharedCollector)> {
     let code = std::fs::read_to_string(path)
         .map_err(|e| mlua::Error::RuntimeError(format!("cannot read {}: {e}", path.display())))?;
     let stem = path
@@ -2223,7 +2249,7 @@ fn read_and_collect(path: &Path, modules: &[Module]) -> mlua::Result<(Lua, Share
         .and_then(|s| s.to_str())
         .unwrap_or("tests")
         .to_string();
-    let (lua, col) = build_lua(stem, modules)?;
+    let (lua, col) = build_lua(stem, config)?;
     lua.load(&code).set_name(path.to_string_lossy()).exec()?;
     Ok((lua, col))
 }
@@ -2259,7 +2285,7 @@ pub(crate) fn run_file_into(
     reporter: &mut dyn Reporter,
     config: &RunConfig,
 ) -> mlua::Result<Summary> {
-    let (lua, col) = read_and_collect(path, &config.modules)?;
+    let (lua, col) = read_and_collect(path, config)?;
     execute_collected(&lua, &col, reporter, config)
 }
 
@@ -2279,7 +2305,7 @@ pub(crate) fn run_suite_files(
         return run_file_into(&files[0], reporter, config);
     }
 
-    let (lua, col) = build_lua(name.to_string(), &config.modules)?;
+    let (lua, col) = build_lua(name.to_string(), config)?;
 
     // Setup file (fixtures only) runs at the suite level (file index 0).
     if let Some(setup) = setup {
@@ -2381,7 +2407,7 @@ pub fn discover_path(path: &Path) -> mlua::Result<Vec<String>> {
 /// global used there (e.g. `archetect.verify` registering tests) must exist during discovery too —
 /// pass the same `RunConfig` you would run with.
 pub fn discover_path_with(path: &Path, config: &RunConfig) -> mlua::Result<Vec<String>> {
-    let (_lua, col) = read_and_collect(path, &config.modules)?;
+    let (_lua, col) = read_and_collect(path, config)?;
     let col = col.borrow();
     let plan = build_plan(&col)?;
     Ok(plan

@@ -4,14 +4,18 @@
 //!
 //! Resolution order, appended to `package.searchers` so it never shadows Lua's own searchers:
 //!   1. `BUNDLED` — first-party modules embedded in the binary, reserved for the `prova.*` namespace.
-//!   2. each dir on `PROVA_PLUGIN_PATH` (colon-separated), as `<root>/<a/b>.lua` then `<root>/<a/b>/init.lua`.
-//!   3. `./.prova/plugins/` (project-local), same two shapes.
+//!   2. `named` — a plugin declared in `prova.toml` (`[plugins]`), resolved to an exact file (git
+//!      checkouts are fetched into the cache and land here as a path). The manifest is authoritative.
+//!   3. each dir on `PROVA_PLUGIN_PATH` (colon-separated), then any extra `roots` (e.g. the global
+//!      `data_dir/plugins`), then `./.prova/plugins/` — each as `<root>/<a/b>.lua` then
+//!      `<root>/<a/b>/init.lua`.
 //!
 //! A module name's dots map to path separators (`acme.rabbitmq` → `acme/rabbitmq.lua`). A miss
 //! returns a string listing where we looked, so `require`'s aggregate error is actionable. The
 //! searcher never downloads anything — resolution is always bundled code or an explicit local file
-//! (see docs/design/plugin-system.md § Safety).
+//! (git fetch happens earlier, in the CLI, into the cache; see docs/design/plugin-system.md § Safety).
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use mlua::{Lua, Value, Variadic};
@@ -25,11 +29,23 @@ const BUNDLED: &[(&str, &str)] = &[(
 )];
 
 /// Install the plugin searcher into `lua`'s `package.searchers`.
-pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
+///
+/// `named` maps a manifest-declared plugin name to an exact file (a local path, or a git checkout
+/// the CLI already fetched into the cache). `roots` are extra disk search roots (typically the global
+/// `data_dir/plugins`); the built-in `PROVA_PLUGIN_PATH` and `./.prova/plugins` roots are always
+/// searched too. Both are cloned into the searcher closure (the Lua state is single-threaded).
+pub(crate) fn install(
+    lua: &Lua,
+    roots: &[PathBuf],
+    named: &BTreeMap<String, PathBuf>,
+) -> mlua::Result<()> {
     let package: mlua::Table = lua.globals().get("package")?;
     let searchers: mlua::Table = package.get("searchers")?;
 
-    let searcher = lua.create_function(|lua, name: String| resolve(lua, &name))?;
+    let roots = roots.to_vec();
+    let named = named.clone();
+    let searcher =
+        lua.create_function(move |lua, name: String| resolve(lua, &name, &roots, &named))?;
     // Append after the built-in searchers (preload + path-based), so a plugin never shadows them.
     searchers.set(searchers.raw_len() + 1, searcher)?;
     Ok(())
@@ -37,16 +53,30 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
 
 /// A `package.searchers` entry: return a *loader function* when found (Lua then calls it to get the
 /// module value), or a *string* explaining where we looked when not found.
-fn resolve(lua: &Lua, name: &str) -> mlua::Result<Value> {
+fn resolve(
+    lua: &Lua,
+    name: &str,
+    roots: &[PathBuf],
+    named: &BTreeMap<String, PathBuf>,
+) -> mlua::Result<Value> {
     // 1. Bundled first-party modules.
     if let Some((_, src)) = BUNDLED.iter().find(|(n, _)| *n == name) {
         return Ok(Value::Function(bundled_loader(lua, name, src)?));
     }
 
-    // 2 + 3. Disk roots. `acme.rabbitmq` → `acme/rabbitmq`.
-    let rel = name.replace('.', "/");
+    // 2. Manifest-declared plugins — the authoritative, pinned source.
     let mut tried: Vec<String> = Vec::new();
-    for root in disk_roots() {
+    if let Some(path) = named.get(name) {
+        if path.is_file() {
+            return Ok(Value::Function(disk_loader(lua, path)?));
+        }
+        tried.push(path.display().to_string());
+    }
+
+    // 3. Disk roots: PROVA_PLUGIN_PATH, then the passed roots, then ./.prova/plugins. `acme.rabbitmq`
+    //    → `acme/rabbitmq`.
+    let rel = name.replace('.', "/");
+    for root in disk_roots(roots) {
         for candidate in [root.join(format!("{rel}.lua")), root.join(&rel).join("init.lua")] {
             if candidate.is_file() {
                 return Ok(Value::Function(disk_loader(lua, &candidate)?));
@@ -56,7 +86,7 @@ fn resolve(lua: &Lua, name: &str) -> mlua::Result<Value> {
     }
 
     // Not found: a string is how a searcher reports a miss; Lua aggregates these into require's error.
-    let mut msg = format!("\n\tno prova plugin {name:?} (bundled or on disk)");
+    let mut msg = format!("\n\tno prova plugin {name:?} (bundled, manifest, or on disk)");
     for path in tried {
         msg.push_str(&format!("\n\t\tno file '{path}'"));
     }
@@ -83,14 +113,16 @@ fn disk_loader(lua: &Lua, path: &Path) -> mlua::Result<mlua::Function> {
     })
 }
 
-/// Disk search roots, in order: every dir on `PROVA_PLUGIN_PATH`, then `./.prova/plugins`.
-fn disk_roots() -> Vec<PathBuf> {
+/// Disk search roots, in order: every dir on `PROVA_PLUGIN_PATH`, then the caller-supplied `extra`
+/// roots (e.g. the global `data_dir/plugins`), then `./.prova/plugins`.
+fn disk_roots(extra: &[PathBuf]) -> Vec<PathBuf> {
     let mut roots = Vec::new();
     if let Ok(path) = std::env::var("PROVA_PLUGIN_PATH") {
         for dir in path.split(':').filter(|s| !s.is_empty()) {
             roots.push(PathBuf::from(dir));
         }
     }
+    roots.extend(extra.iter().cloned());
     roots.push(PathBuf::from(".prova/plugins"));
     roots
 }

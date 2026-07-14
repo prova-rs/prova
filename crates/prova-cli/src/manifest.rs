@@ -36,6 +36,48 @@ pub struct Manifest {
     pub profiles: BTreeMap<String, Profile>,
     #[serde(default)]
     pub suites: BTreeMap<String, SuiteDecl>,
+    /// Declared plugins: `require(name)` resolves to this source (a local file/dir or a git repo).
+    /// Not profile-specific — the plugin set is a property of the project, applied to every run.
+    #[serde(default)]
+    pub plugins: BTreeMap<String, PluginSource>,
+}
+
+/// Where a declared plugin's Lua comes from. The string shorthand is a local path; the table form
+/// adds git and an in-repo `module` path.
+///
+/// ```toml
+/// [plugins]
+/// greet    = "./plugins/greet.lua"                                   # local path shorthand
+/// fixtures = { path = "./test-support" }                             # local dir (fixtures.lua / init.lua)
+/// rabbitmq = { git = "https://github.com/acme/prova-rabbitmq", tag = "v1.0.0" }
+/// nats     = { git = "https://github.com/acme/prova-nats", rev = "abc123", module = "src/nats.lua" }
+/// ```
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[serde(untagged)]
+pub enum PluginSource {
+    /// A local path to a `.lua` file or a directory (resolved to `<name>.lua` then `init.lua`).
+    Path(String),
+    /// The detailed form: a local `path` or a `git` repo, with an optional in-repo `module` path and
+    /// a pin (`tag` / `branch` / `rev`).
+    Detailed(PluginDetail),
+}
+
+/// The table form of a plugin source. Exactly one of `path` / `git` is expected.
+#[derive(Debug, Deserialize, Clone, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct PluginDetail {
+    /// A local path to a `.lua` file or a directory.
+    pub path: Option<String>,
+    /// A git repository URL.
+    pub git: Option<String>,
+    /// Pin to a tag (shallow-cloned).
+    pub tag: Option<String>,
+    /// Pin to a branch (shallow-cloned).
+    pub branch: Option<String>,
+    /// Pin to a specific commit (cloned, then checked out).
+    pub rev: Option<String>,
+    /// Path within the repo/dir to the module file; defaults to `<name>.lua` then `init.lua`.
+    pub module: Option<String>,
 }
 
 /// An explicitly-declared suite: its `paths` are discovered into one suite (sharing an optional
@@ -67,6 +109,8 @@ pub struct Resolved {
     pub env: BTreeMap<String, String>,
     /// Explicitly-declared suites (`[suites.*]`), run in addition to `paths`.
     pub suites: BTreeMap<String, SuiteDecl>,
+    /// Declared plugins (`[plugins.*]`) — name → source, applied to every run.
+    pub plugins: BTreeMap<String, PluginSource>,
 }
 
 impl Manifest {
@@ -110,6 +154,7 @@ impl Manifest {
             format,
             env,
             suites: self.suites.clone(),
+            plugins: self.plugins.clone(),
         })
     }
 }
@@ -155,7 +200,55 @@ paths = ["tests/smoke"]
                 format: Some("console".into()),
                 env: env(&[("LOG", "info")]),
                 suites: BTreeMap::new(),
+                plugins: BTreeMap::new(),
             }
+        );
+    }
+
+    #[test]
+    fn parses_plugin_sources_in_both_forms() {
+        let m = Manifest::parse(
+            r#"
+[run]
+paths = ["tests"]
+
+[plugins]
+greet    = "./plugins/greet.lua"
+fixtures = { path = "./test-support" }
+rabbitmq = { git = "https://example.com/acme/prova-rabbitmq", tag = "v1.0.0" }
+nats     = { git = "https://example.com/acme/prova-nats", rev = "abc123", module = "src/nats.lua" }
+"#,
+        )
+        .unwrap();
+        let r = m.resolve(None).unwrap();
+        assert_eq!(r.plugins.len(), 4);
+        assert_eq!(
+            r.plugins["greet"],
+            PluginSource::Path("./plugins/greet.lua".into())
+        );
+        assert_eq!(
+            r.plugins["fixtures"],
+            PluginSource::Detailed(PluginDetail {
+                path: Some("./test-support".into()),
+                ..Default::default()
+            })
+        );
+        assert_eq!(
+            r.plugins["rabbitmq"],
+            PluginSource::Detailed(PluginDetail {
+                git: Some("https://example.com/acme/prova-rabbitmq".into()),
+                tag: Some("v1.0.0".into()),
+                ..Default::default()
+            })
+        );
+        assert_eq!(
+            r.plugins["nats"],
+            PluginSource::Detailed(PluginDetail {
+                git: Some("https://example.com/acme/prova-nats".into()),
+                rev: Some("abc123".into()),
+                module: Some("src/nats.lua".into()),
+                ..Default::default()
+            })
         );
     }
 

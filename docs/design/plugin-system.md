@@ -98,16 +98,33 @@ where it looked, so `require`'s aggregate error is actionable. **No network fetc
 searcher** — resolution is always from bundled code or a local file, which is the safety boundary
 (below).
 
+Wired now (the "easy to install" story):
+
+- **XDG layout** (`layout.rs`, `SystemLayout`) — `config_dir` `~/.config/prova`, `cache_dir`
+  `~/.cache/prova`, `data_dir` `~/.local/share/prova` (XDG on macOS too, like archetect;
+  `XDG_*` honored). `XdgSystemLayout` for production, `RootedSystemLayout` for tests.
+- **Global install dir** — the searcher also consults `data_dir/plugins`, so a plugin dropped there
+  is available to every project without `PROVA_PLUGIN_PATH`.
+- **Manifest-declared plugins** — `prova.toml` `[plugins]` maps a name to a local path or a **git
+  source** (`{ git = "…", tag/branch/rev = "…", module = "…" }`). Git sources are fetched (shelling
+  to `git`, like archetect fetches archetype sources) into `cache_dir/plugins`, pinned by ref and
+  reused on the next run. The resolved `name → file` map is authoritative over disk roots, so a
+  declared plugin resolves the same way in every environment:
+
+  ```toml
+  [plugins]
+  greet    = "./plugins/greet.lua"                                    # local path
+  rabbitmq = { git = "https://github.com/acme/prova-rabbitmq", tag = "v1.0.0" }
+  nats     = { git = "https://github.com/acme/prova-nats", rev = "abc123", module = "src/nats.lua" }
+  ```
+
 Not yet wired, deliberately deferred:
 
-- **Global install dir** (XDG `~/.local/share/prova/plugins/`) — needs a path-layout decision; today
-  use `PROVA_PLUGIN_PATH`.
-- **Manifest-declared plugins** — `prova.toml` listing plugin sources (local paths or **git URLs
-  fetched + cached like archetect sources**), optionally auto-installed as globals so a suite's
-  plugins are declared once. This is the real "easy to install" story and the next step after the
-  searcher proves out.
 - **`prova.use(name)`** sugar — `require` + install as a global namespace, for plugins that want
   first-party-style ergonomics.
+- **A `prova plugin add …` subcommand** — resolve + install into `data_dir/plugins` from the CLI
+  (today: edit `[plugins]` or drop a file).
+- **Global `~/.config/prova` config** — the layout exposes `config_dir`; nothing reads it yet.
 
 ## Safety
 
@@ -139,9 +156,11 @@ and tested through the public seam with no behavior change.
 
 ## Status
 
-- **Now (spike):** custom searcher installed; bundled + `PROVA_PLUGIN_PATH` + `./.prova/plugins`
-  resolution; one bundled loadable namespace (`prova.workspace`) and a disk-plugin example proving
-  user authorship. Existing globals unchanged and first-class.
-- **Next:** manifest-declared plugin sources with git fetch/cache; `prova.use`; global XDG dir;
-  migrate a first real recipe (e.g. `redis`) to the bundled loadable path with a parity test.
+- **Done:** custom searcher (bundled → manifest-named → disk roots); one bundled loadable namespace
+  (`prova.workspace`); disk plugins via `PROVA_PLUGIN_PATH` / `./.prova/plugins`; the XDG
+  `SystemLayout`; the global `data_dir/plugins` root; `[plugins]` manifest sources with **git
+  fetch + cache**, verified end-to-end through the real binary (`tests/plugin_git.rs`). Existing
+  globals unchanged and first-class.
+- **Next:** migrate a first real recipe (e.g. `redis`) to the bundled loadable path with a parity
+  test (dogfooding); `prova.use`; a `prova plugin add` subcommand; read `~/.config/prova`.
 - **Later:** the sidecar protocol for native Tier-2 plugins, if a real need appears.

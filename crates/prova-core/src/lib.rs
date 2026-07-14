@@ -6,12 +6,14 @@
 //! structured `Event` stream consumed by `Reporter` sinks (`model`).
 
 mod engine;
+pub mod layout;
 pub mod model;
 mod modules;
 mod plugins;
 mod suite;
 
 pub use engine::{discover_path, discover_path_with, run_path, run_path_with, Module, RunConfig};
+pub use layout::{RootedSystemLayout, SystemLayout, XdgSystemLayout};
 pub use model::{
     ConsoleReporter, Event, JsonReporter, MultiReporter, NullReporter, Outcome, Reporter, Summary,
 };

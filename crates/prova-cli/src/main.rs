@@ -12,6 +12,7 @@
 //! CLI flags override manifest values; explicit path arguments bypass the manifest entirely.
 
 mod manifest;
+mod plugins;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -20,7 +21,7 @@ use std::process::ExitCode;
 use manifest::{Manifest, SuiteDecl};
 use prova_core::{
     discover_files, discover_path_with, discover_suites, run_suites, ConsoleReporter, JsonReporter,
-    MultiReporter, Reporter, RunConfig, Suite,
+    MultiReporter, Reporter, RunConfig, Suite, SystemLayout, XdgSystemLayout,
 };
 
 const HELP: &str = "\
@@ -118,16 +119,27 @@ fn main() -> ExitCode {
         }
     }
 
-    // Resolve the run: explicit path args bypass the manifest; otherwise read prova.toml.
-    let (paths, jobs, format, declared) = if !explicit_paths.is_empty() {
+    // Filesystem layout — where global plugins live (data_dir/plugins) and where git plugins cache.
+    let layout = match XdgSystemLayout::new() {
+        Ok(layout) => layout,
+        Err(err) => {
+            eprintln!("prova: cannot determine home directories: {err}");
+            return ExitCode::from(2);
+        }
+    };
+
+    // Resolve the run: explicit path args bypass the manifest; otherwise read prova.toml. Manifest
+    // `[plugins]` are resolved (git sources fetched into the cache) into a name→file map.
+    let (paths, jobs, format, declared, named_plugins) = if !explicit_paths.is_empty() {
         (
             explicit_paths,
             cli_jobs.unwrap_or(1),
             cli_format.unwrap_or(Format::Console),
             BTreeMap::new(),
+            BTreeMap::new(),
         )
     } else {
-        match resolve_from_manifest(manifest_path, profile, cli_jobs, cli_format) {
+        match resolve_from_manifest(manifest_path, profile, cli_jobs, cli_format, &layout) {
             Ok(resolved) => resolved,
             Err(code) => return code,
         }
@@ -172,8 +184,16 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
+    // The standalone `prova` binary ships the archetect plugin, so `archetect.render{...}` works.
+    // The plugin searcher consults the global install dir plus any manifest-declared plugins.
+    let mut config = RunConfig::new(jobs)
+        .with_module(prova_archetect::install)
+        .with_plugin_root(layout.plugins_dir());
+    for (name, path) in &named_plugins {
+        config = config.with_named_plugin(name.clone(), path.clone());
+    }
+
     if list {
-        let config = RunConfig::new(1).with_module(prova_archetect::install);
         for file in suites.iter().flat_map(|s| &s.files) {
             match discover_path_with(file, &config) {
                 Ok(node_paths) => node_paths.iter().for_each(|p| println!("{p}")),
@@ -193,8 +213,6 @@ fn main() -> ExitCode {
         ))])),
     };
 
-    // The standalone `prova` binary ships the archetect plugin, so `archetect.render{...}` works.
-    let config = RunConfig::new(jobs).with_module(prova_archetect::install);
     match run_suites(&suites, reporter.as_mut(), &config) {
         Ok(summary) if summary.is_success() => ExitCode::SUCCESS,
         Ok(_) => ExitCode::FAILURE,
@@ -205,15 +223,26 @@ fn main() -> ExitCode {
     }
 }
 
-/// Read `prova.toml` (or `--manifest`), overlay `--profile`, apply env, and merge CLI overrides.
-/// Returns (paths, jobs, format, declared-suites) or an exit code on error.
+/// Read `prova.toml` (or `--manifest`), overlay `--profile`, apply env, merge CLI overrides, and
+/// resolve declared plugins (fetching git sources into the cache). Returns (paths, jobs, format,
+/// declared-suites, named-plugins) or an exit code on error.
 #[allow(clippy::type_complexity)]
 fn resolve_from_manifest(
     manifest_path: Option<String>,
     profile: Option<String>,
     cli_jobs: Option<usize>,
     cli_format: Option<Format>,
-) -> Result<(Vec<String>, usize, Format, BTreeMap<String, SuiteDecl>), ExitCode> {
+    layout: &dyn SystemLayout,
+) -> Result<
+    (
+        Vec<String>,
+        usize,
+        Format,
+        BTreeMap<String, SuiteDecl>,
+        BTreeMap<String, PathBuf>,
+    ),
+    ExitCode,
+> {
     let explicit_manifest = manifest_path.is_some();
     let path = manifest_path.unwrap_or_else(|| "prova.toml".to_string());
 
@@ -249,6 +278,15 @@ fn resolve_from_manifest(
         std::env::set_var(key, value);
     }
 
+    // Resolve declared plugins relative to the manifest's directory (git sources fetched into cache).
+    let base_dir = Path::new(&path).parent().unwrap_or(Path::new(".")).to_path_buf();
+    let named_plugins = plugins::resolve_plugins(&resolved.plugins, &base_dir, layout).map_err(
+        |e| {
+            eprintln!("prova: {e}");
+            ExitCode::from(2)
+        },
+    )?;
+
     let jobs = cli_jobs.or(resolved.jobs).unwrap_or(1);
     let format = match cli_format {
         Some(f) => f,
@@ -261,5 +299,5 @@ fn resolve_from_manifest(
             }
         },
     };
-    Ok((resolved.paths, jobs, format, resolved.suites))
+    Ok((resolved.paths, jobs, format, resolved.suites, named_plugins))
 }
