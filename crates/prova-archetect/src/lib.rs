@@ -13,7 +13,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use archetect_api::{ClientMessage, ContextValue, IoError, ScriptIoHandle, ScriptMessage};
@@ -41,26 +41,43 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
 }
 
 /// The declarative archetype check — prova's answer to the pytest harness's `manifest.yaml`, matched
-/// field-for-field but as real Lua you can extend. `archetect.verify{...}` renders once and registers
-/// the standard tests (layout, fully-rendered, yaml manifests parse, build), returning the shared
-/// render fixture so callers can add their own tests against the same output.
+/// field-for-field but as real Lua you can extend. Two calling forms over one core:
+///
+///   archetect.verify{ source = ..., <checks> }        -- one-shot: renders, then registers checks
+///   archetect.verify(render_fixture, { <checks> })    -- compositional: checks an existing render
+///
+/// The compositional form is what makes render → verify → black-box a single pipeline: declare the
+/// render fixture yourself (your name, scope, destination, computed answers), point `verify` at it,
+/// and hang boot/probe fixtures off the same handle. The one-shot is sugar that creates the fixture
+/// (`Scope.File` unless `spec.scope` says otherwise) and delegates. Both return the render fixture.
 const VERIFY_LUA: &str = r#"
-function archetect.verify(spec)
-  assert(type(spec) == "table", "archetect.verify expects a table")
-  assert(spec.source, "archetect.verify requires a `source`")
+function archetect.verify(a, b)
+  local rendered, spec
+  if b ~= nil then
+    rendered, spec = a, b
+    assert(type(spec) == "table", "archetect.verify(fixture, checks) expects a checks table")
+    assert(spec.source == nil,
+      "archetect.verify(fixture, checks): `source` belongs to the one-shot form — the fixture already owns the render")
+  else
+    spec = a
+    assert(type(spec) == "table", "archetect.verify expects a table")
+    assert(spec.source, "archetect.verify requires a `source` (or pass a render fixture as the first argument)")
+  end
   local label = spec.name or "archetype"
   local timeout = spec.timeout or "600s"
 
-  -- Render once (headless by default); every check below shares this output.
-  local rendered = prova.fixture(label .. ":render", Scope.File, function(ctx)
-    return archetect.render{
-      source = spec.source,
-      answers = spec.answers,
-      switches = spec.switches,
-      defaults = spec.defaults ~= false,
-      destination = ctx:tempdir(),
-    }
-  end)
+  -- One-shot form: render once (headless by default); every check below shares this output.
+  if rendered == nil then
+    rendered = prova.fixture(label .. ":render", spec.scope or Scope.File, function(ctx)
+      return archetect.render{
+        source = spec.source,
+        answers = spec.answers,
+        switches = spec.switches,
+        defaults = spec.defaults ~= false,
+        destination = ctx:tempdir(),
+      }
+    end)
+  end
 
   -- The project root, optionally a subdirectory the render produces (like the manifest's project_dir).
   local function project(t)
@@ -198,6 +215,30 @@ fn render_on_thread(
     .map_err(|_| "archetect render thread panicked".to_string())?
 }
 
+/// One archetect system layout (cache/config/data) per process. archetect-core tracks fetched
+/// sources in a process-global set (`source::cached_paths`), so the layout must be process-global
+/// too: with a per-render temp layout, the second render in a process believes its (empty) cache
+/// is already warm and aborts resolving its first catalog library. Sharing the layout also means
+/// catalog libraries are cloned once per run instead of once per render.
+fn shared_layout_root() -> Result<&'static Path, String> {
+    static ROOT: OnceLock<Result<PathBuf, String>> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        let mut path = std::env::temp_dir();
+        path.push(format!("prova-archetect-{}", std::process::id()));
+        std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
+        Ok(path)
+    })
+    .as_deref()
+    .map_err(|e| e.clone())
+}
+
+/// archetect-core's fetched-source tracking is not safe for two concurrent fetches into one
+/// cache, so renders serialize per process. Subsequent renders are mostly cache hits.
+fn render_mutex() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
 /// Render an archetype headlessly, returning the paths written (in order). No terminal, no prompts:
 /// headless resolves every prompt from its default or a supplied answer, or errors if neither.
 pub fn render_headless(
@@ -210,6 +251,8 @@ pub fn render_headless(
     let dest = Utf8PathBuf::from_path_buf(destination.to_path_buf())
         .map_err(|_| ArchetectError::GeneralError("non-UTF-8 destination".into()))?;
 
+    let _serialized = render_mutex().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+
     let writes = Arc::new(Mutex::new(Vec::new()));
     let handle = CapturingIoHandle {
         writes: writes.clone(),
@@ -218,10 +261,16 @@ pub fn render_headless(
 
     let configuration = Configuration::default().with_headless(true);
 
+    let layout_root = shared_layout_root().map_err(ArchetectError::GeneralError)?;
+    let layout = archetect_core::system::RootedSystemLayout::new(
+        Utf8PathBuf::from_path_buf(layout_root.to_path_buf())
+            .map_err(|_| ArchetectError::GeneralError("non-UTF-8 temp dir".into()))?,
+    )?;
+
     let archetect = Archetect::builder()
         .with_driver(handle)
         .with_configuration(configuration)
-        .with_temp_layout()? // isolated cache/config/data — NOT the render destination
+        .with_layout(layout) // process-shared cache/config/data — NOT the render destination
         .build()?;
 
     let archetype = archetect.new_archetype(source)?;

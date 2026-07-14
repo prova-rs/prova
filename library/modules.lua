@@ -247,16 +247,10 @@ archetect = {}
 ---@return prova.RenderResult
 function archetect.render(opts) end
 
---- Declarative archetype check — prova's answer to the pytest harness's `manifest.yaml`, matched
---- field-for-field but as real Lua you can extend. Renders once (headless) and registers the
---- standard tests. Anything a prompt needs and the answers omit falls back to its default; a prompt
---- with no default and no answer errors (headless never hangs).
----@class prova.VerifySpec
----@field source string                      # local path or git URL
+--- The checks `archetect.verify` registers against a rendering — prova's answer to the pytest
+--- harness's `manifest.yaml`, matched field-for-field but as real Lua you can extend.
+---@class prova.VerifyChecks
 ---@field name? string                       # label for the generated tests (default "archetype")
----@field answers? table<string,any>         # prompt answers as data
----@field switches? string[]
----@field defaults? boolean                  # headless defaults for unanswered prompts (default true)
 ---@field project_dir? string                # assert relative to this subdirectory the render produces
 ---@field expected_files? string[]           # must exist (relative to project_dir)
 ---@field absent_files? string[]             # must NOT exist
@@ -267,10 +261,25 @@ function archetect.render(opts) end
 ---@field env? table<string,string>          # extra environment for build_steps
 ---@field timeout? string                    # per build step (default "600s")
 
---- Render an archetype and register the standard layout/fully-rendered/yaml/build checks. Returns the
---- shared render fixture so you can add your own tests against the same output (the superset pattern).
+--- The one-shot form's spec: the checks plus the render itself. Anything a prompt needs and the
+--- answers omit falls back to its default; a prompt with no default and no answer errors (headless
+--- never hangs).
+---@class prova.VerifySpec : prova.VerifyChecks
+---@field source string                      # local path or git URL
+---@field answers? table<string,any>         # prompt answers as data
+---@field switches? string[]
+---@field defaults? boolean                  # headless defaults for unanswered prompts (default true)
+---@field scope? prova.Scope                 # scope of the render fixture it creates (default Scope.File)
+
+--- Register the standard layout/fully-rendered/yaml/build checks against a rendering, returning the
+--- render fixture so you can hang boot/probe fixtures and extra tests off the same output.
+---
+--- Two forms over one core — the compositional form makes render → verify → black-box one pipeline:
+---   archetect.verify{ source = ..., <checks> }        -- one-shot: renders for you
+---   archetect.verify(project_fixture, { <checks> })   -- checks a render fixture you declared
 ---@param spec prova.VerifySpec
 ---@return prova.Fixture
+---@overload fun(fixture: prova.Fixture, checks: prova.VerifyChecks): prova.Fixture
 function archetect.verify(spec) end
 
 ------------------------------------------------------------------------------------------

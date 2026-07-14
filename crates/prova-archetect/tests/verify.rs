@@ -55,3 +55,52 @@ archetect.verify {
   build_steps = { "cargo build" },
 }
 "#;
+
+/// `archetect.verify(fixture, checks)` — the compositional form: the caller declares the render
+/// fixture (its own name, scope, destination) and verify registers the standard checks against it.
+/// Black-box fixtures can then `use` the same handle — render → verify → probe as one pipeline.
+#[test]
+fn verify_compositional_form_checks_an_existing_render_fixture() {
+    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/fixtures/rust-cli")
+        .canonicalize()
+        .expect("rust-cli archetype fixture exists");
+
+    let test_lua = COMPOSITIONAL_TEMPLATE.replace("__SRC__", &src.display().to_string());
+
+    let dir = std::env::temp_dir().join(format!("prova-verify-comp-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("verify_compositional_test.lua");
+    std::fs::write(&path, test_lua).unwrap();
+
+    let config = RunConfig::new(1).with_module(prova_archetect::install);
+    let mut reporter = NullReporter;
+    let summary =
+        run_path_with(&path, &mut reporter, &config).expect("run verify_compositional_test.lua");
+
+    assert_eq!(summary.failed, 0);
+    // layout + fully-rendered from verify, plus the caller's own test sharing the same fixture.
+    assert_eq!(summary.passed, 3, "verify checks + the superset test all pass");
+}
+
+const COMPOSITIONAL_TEMPLATE: &str = r#"
+local project = prova.fixture("project", Scope.File, function(ctx)
+  return archetect.render{
+    source = [[__SRC__]],
+    answers = { project_name = "widget", description = "a demo cli" },
+    destination = ctx:tempdir(),
+    defaults = true,
+  }
+end)
+
+archetect.verify(project, {
+  name = "rust-cli",
+  expected_files = { "Cargo.toml", "src/main.rs" },
+})
+
+-- The same fixture feeds the caller's own tests — the render→verify→black-box pipeline.
+prova.test("caller shares the verified rendering", function(t)
+  local p = t:use(project)
+  t:expect(p:file("Cargo.toml"):read()):contains("widget")
+end)
+"#;

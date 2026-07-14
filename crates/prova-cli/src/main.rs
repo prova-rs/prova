@@ -19,7 +19,7 @@ use std::process::ExitCode;
 
 use manifest::{Manifest, SuiteDecl};
 use prova_core::{
-    discover_files, discover_path, discover_suites, run_suites, ConsoleReporter, JsonReporter,
+    discover_files, discover_path_with, discover_suites, run_suites, ConsoleReporter, JsonReporter,
     MultiReporter, Reporter, RunConfig, Suite,
 };
 
@@ -173,8 +173,9 @@ fn main() -> ExitCode {
     }
 
     if list {
+        let config = RunConfig::new(1).with_module(prova_archetect::install);
         for file in suites.iter().flat_map(|s| &s.files) {
-            match discover_path(file) {
+            match discover_path_with(file, &config) {
                 Ok(node_paths) => node_paths.iter().for_each(|p| println!("{p}")),
                 Err(err) => {
                     eprintln!("prova: {}: {err}", file.display());

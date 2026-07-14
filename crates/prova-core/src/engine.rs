@@ -2368,10 +2368,16 @@ async fn teardown_file_scopes(state: &RunState) {
     }
 }
 
-/// Discovery: collect the test tree without executing (basis for a GUI/IDE model view).
+/// Discovery: collect the test tree without executing tests (basis for a GUI/IDE model view).
 pub fn discover_path(path: &Path) -> mlua::Result<Vec<String>> {
-    // Discovery only needs the built-in globals; plugin modules are for execution.
-    let (_lua, col) = read_and_collect(path, &[])?;
+    discover_path_with(path, &RunConfig::new(1))
+}
+
+/// Discovery with plugin modules installed. Collection runs the file's top level, so any plugin
+/// global used there (e.g. `archetect.verify` registering tests) must exist during discovery too —
+/// pass the same `RunConfig` you would run with.
+pub fn discover_path_with(path: &Path, config: &RunConfig) -> mlua::Result<Vec<String>> {
+    let (_lua, col) = read_and_collect(path, &config.modules)?;
     let col = col.borrow();
     let plan = build_plan(&col)?;
     Ok(plan
