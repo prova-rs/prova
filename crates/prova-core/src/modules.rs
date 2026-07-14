@@ -702,12 +702,16 @@ mod http {
             });
         }
         fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-            // Decode the body as JSON into a Lua value; raises on non-JSON.
+            // Decode the body as JSON into a Lua value; raises on non-JSON. JSON nulls become
+            // Lua nil (not mlua's null sentinel) so `t:expect(body.field):is_nil()` holds.
             methods.add_method("json", |lua, this, ()| {
                 let value: serde_json::Value = serde_json::from_str(&this.body).map_err(|e| {
                     mlua::Error::RuntimeError(format!("response body is not JSON: {e}"))
                 })?;
-                lua.to_value(&value)
+                let opts = mlua::SerializeOptions::new()
+                    .serialize_none_to_null(false)
+                    .serialize_unit_to_null(false);
+                lua.to_value_with(&value, opts)
             });
         }
     }
@@ -2216,14 +2220,16 @@ mod graphql {
         Ok((status, json))
     }
 
-    /// Convert a JSON value to Lua, mapping a top-level `null` to Lua `nil` (mlua otherwise uses a
-    /// null-sentinel lightuserdata, which is surprising for `res.data`/`res.errors` on the boundary).
+    /// Convert a JSON value to Lua, mapping every `null` — top-level or nested — to Lua `nil`
+    /// (mlua otherwise uses a null-sentinel lightuserdata, which no test author expects to meet:
+    /// `t:expect(data.thing):is_nil()` must hold for a JSON null). Trade-off: a null INSIDE an
+    /// array becomes a nil hole that ends the Lua sequence there; JSON APIs under test rarely
+    /// return interior array nulls, and nil ergonomics win for assertions.
     fn json_to_lua(lua: &Lua, v: &serde_json::Value) -> mlua::Result<Value> {
-        if v.is_null() {
-            Ok(Value::Nil)
-        } else {
-            lua.to_value(v)
-        }
+        let opts = mlua::SerializeOptions::new()
+            .serialize_none_to_null(false)
+            .serialize_unit_to_null(false);
+        lua.to_value_with(v, opts)
     }
 
     /// Non-empty `errors` in the response, formatted for an error message (or `None` if clean).
