@@ -1278,6 +1278,10 @@ fn build_lua(root_name: String, modules: &[Module]) -> mlua::Result<(Lua, Shared
         install(&lua)?;
     }
 
+    // Wire `require` to resolve Lua plugins (bundled + disk). Installed last so a plugin loaded via
+    // `require` sees every primitive global it composes.
+    crate::plugins::install(&lua)?;
+
     Ok((lua, col))
 }
 

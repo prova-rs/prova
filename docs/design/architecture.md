@@ -254,6 +254,16 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
   single-self-contained-binary promise. *(`examples/grpc_test.lua` + `tests/grpc.rs` run the three
   round-trips — unary, field echo, and a `NotFound` status — against a real reflection-enabled server
   (`moul/grpcbin`) in an ephemeral container, gated by `requires` so it skips without a daemon.)*
+- **Plugin searcher** *(spike)* — `require("name")` resolves Lua plugins through a custom
+  `package.searchers` entry (`plugins.rs`): **bundled** first-party modules embedded in the binary
+  (`prova.*`), then disk — every dir on `PROVA_PLUGIN_PATH`, then `./.prova/plugins/`
+  (`<a/b>.lua` or `<a/b>/init.lua`). A plugin is authored exactly like a first-party recipe: one
+  namespace table following the grammar, composing primitives, `return`ed. Ships one bundled loadable
+  namespace, **`prova.workspace`** (`workspace.create(ctx)` → a scratch dir tied to the scope via
+  `ctx:manage`, composing `fs`), proving the loadable path first-party recipes will migrate onto.
+  *(`examples/workspace_plugin_test.lua`; `tests/plugins.rs` resolves a bundled module and a disk
+  plugin and asserts a clean miss error.)* Design: **[plugin-system.md](plugin-system.md)**. Next:
+  manifest-declared plugin sources with git fetch/cache into a Prova cache dir; XDG config/cache dirs.
 - **`requires` capability gating**: `opts.requires = { "docker", ... }` skips (does not fail) a unit
   when a capability is unavailable, with a reason; the skip cascades to dependents. Detection:
   `docker` → `docker info` succeeds, `github` → `GITHUB_TOKEN` set, else a tool of that name on

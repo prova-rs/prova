@@ -1,0 +1,96 @@
+//! The plugin searcher: makes `require("name")` resolve Lua plugins from bundled first-party
+//! modules and from local disk, so a plugin is authored exactly like the first-party recipes
+//! (compose primitives, follow the namespacing grammar, `return` a namespace table).
+//!
+//! Resolution order, appended to `package.searchers` so it never shadows Lua's own searchers:
+//!   1. `BUNDLED` — first-party modules embedded in the binary, reserved for the `prova.*` namespace.
+//!   2. each dir on `PROVA_PLUGIN_PATH` (colon-separated), as `<root>/<a/b>.lua` then `<root>/<a/b>/init.lua`.
+//!   3. `./.prova/plugins/` (project-local), same two shapes.
+//!
+//! A module name's dots map to path separators (`acme.rabbitmq` → `acme/rabbitmq.lua`). A miss
+//! returns a string listing where we looked, so `require`'s aggregate error is actionable. The
+//! searcher never downloads anything — resolution is always bundled code or an explicit local file
+//! (see docs/design/plugin-system.md § Safety).
+
+use std::path::{Path, PathBuf};
+
+use mlua::{Lua, Value, Variadic};
+
+/// First-party Lua modules compiled into the binary, resolvable by `require`. Reserved for the
+/// `prova.*` namespace. This is where first-party recipes migrate as they move off `include_str!`
+/// eager-injection and onto the loadable path (see docs/design/plugin-system.md § Dogfooding).
+const BUNDLED: &[(&str, &str)] = &[(
+    "prova.workspace",
+    include_str!("plugins/prova/workspace.lua"),
+)];
+
+/// Install the plugin searcher into `lua`'s `package.searchers`.
+pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
+    let package: mlua::Table = lua.globals().get("package")?;
+    let searchers: mlua::Table = package.get("searchers")?;
+
+    let searcher = lua.create_function(|lua, name: String| resolve(lua, &name))?;
+    // Append after the built-in searchers (preload + path-based), so a plugin never shadows them.
+    searchers.set(searchers.raw_len() + 1, searcher)?;
+    Ok(())
+}
+
+/// A `package.searchers` entry: return a *loader function* when found (Lua then calls it to get the
+/// module value), or a *string* explaining where we looked when not found.
+fn resolve(lua: &Lua, name: &str) -> mlua::Result<Value> {
+    // 1. Bundled first-party modules.
+    if let Some((_, src)) = BUNDLED.iter().find(|(n, _)| *n == name) {
+        return Ok(Value::Function(bundled_loader(lua, name, src)?));
+    }
+
+    // 2 + 3. Disk roots. `acme.rabbitmq` → `acme/rabbitmq`.
+    let rel = name.replace('.', "/");
+    let mut tried: Vec<String> = Vec::new();
+    for root in disk_roots() {
+        for candidate in [root.join(format!("{rel}.lua")), root.join(&rel).join("init.lua")] {
+            if candidate.is_file() {
+                return Ok(Value::Function(disk_loader(lua, &candidate)?));
+            }
+            tried.push(candidate.display().to_string());
+        }
+    }
+
+    // Not found: a string is how a searcher reports a miss; Lua aggregates these into require's error.
+    let mut msg = format!("\n\tno prova plugin {name:?} (bundled or on disk)");
+    for path in tried {
+        msg.push_str(&format!("\n\t\tno file '{path}'"));
+    }
+    Ok(Value::String(lua.create_string(&msg)?))
+}
+
+/// Loader for a bundled module: evaluate the embedded chunk and return its value.
+fn bundled_loader(lua: &Lua, name: &str, src: &'static str) -> mlua::Result<mlua::Function> {
+    let chunk_name = format!("@prova/plugin/{name}");
+    lua.create_function(move |lua, _args: Variadic<Value>| {
+        lua.load(src).set_name(&chunk_name).eval::<Value>()
+    })
+}
+
+/// Loader for a disk module: read the file at require-time and evaluate it.
+fn disk_loader(lua: &Lua, path: &Path) -> mlua::Result<mlua::Function> {
+    let path = path.to_path_buf();
+    let chunk_name = format!("@{}", path.display());
+    lua.create_function(move |lua, _args: Variadic<Value>| {
+        let src = std::fs::read_to_string(&path).map_err(|e| {
+            mlua::Error::RuntimeError(format!("cannot read plugin {}: {e}", path.display()))
+        })?;
+        lua.load(&src).set_name(&chunk_name).eval::<Value>()
+    })
+}
+
+/// Disk search roots, in order: every dir on `PROVA_PLUGIN_PATH`, then `./.prova/plugins`.
+fn disk_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Ok(path) = std::env::var("PROVA_PLUGIN_PATH") {
+        for dir in path.split(':').filter(|s| !s.is_empty()) {
+            roots.push(PathBuf::from(dir));
+        }
+    }
+    roots.push(PathBuf::from(".prova/plugins"));
+    roots
+}
