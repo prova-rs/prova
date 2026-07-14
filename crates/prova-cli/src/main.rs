@@ -34,6 +34,7 @@ options:
       --manifest PATH       use a specific manifest (default ./prova.toml)
       --format console|json output format (--json is shorthand)
   -j, --jobs N              run up to N units concurrently
+  -P, --plugin name=source  add an ad-hoc plugin (repeatable; layers over the manifest)
       --list                discover tests without running them
   -V, --version             print version
   -h, --help                print this help";
@@ -67,9 +68,15 @@ fn main() -> ExitCode {
     let mut explicit_paths: Vec<String> = Vec::new();
     let mut profile: Option<String> = None;
     let mut manifest_path: Option<String> = None;
+    let mut cli_plugins: Vec<String> = Vec::new();
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
+        // `--plugin name=source` (repeatable): an ad-hoc plugin, layered over the manifest (CLI wins).
+        if let Some(v) = value_flag(&arg, &mut args, &["--plugin", "-P"]) {
+            cli_plugins.push(v);
+            continue;
+        }
         if let Some(v) = value_flag(&arg, &mut args, &["--jobs", "-j"]) {
             match v.parse::<usize>() {
                 Ok(n) if n >= 1 => cli_jobs = Some(n),
@@ -130,11 +137,12 @@ fn main() -> ExitCode {
 
     // Resolve the run: explicit path args bypass the manifest; otherwise read prova.toml. Manifest
     // `[plugins]` are resolved (git sources fetched into the cache) into a name→file map.
-    let (paths, jobs, format, declared, named_plugins) = if !explicit_paths.is_empty() {
+    let (paths, jobs, format, declared, mut named_plugins, sources) = if !explicit_paths.is_empty() {
         (
             explicit_paths,
             cli_jobs.unwrap_or(1),
             cli_format.unwrap_or(Format::Console),
+            BTreeMap::new(),
             BTreeMap::new(),
             BTreeMap::new(),
         )
@@ -144,6 +152,30 @@ fn main() -> ExitCode {
             Err(code) => return code,
         }
     };
+
+    // Ad-hoc `--plugin name=source` entries (e.g. CI-only extras) resolve the same way as manifest
+    // plugins and layer on top, overriding a manifest plugin of the same name.
+    if !cli_plugins.is_empty() {
+        let mut adhoc: BTreeMap<String, manifest::PluginSource> = BTreeMap::new();
+        for entry in &cli_plugins {
+            match entry.split_once('=') {
+                Some((name, source)) if !name.is_empty() && !source.is_empty() => {
+                    adhoc.insert(name.to_string(), manifest::PluginSource::Path(source.to_string()));
+                }
+                _ => {
+                    eprintln!("prova: --plugin expects name=source, got {entry:?}");
+                    return ExitCode::from(2);
+                }
+            }
+        }
+        match plugins::resolve_plugins(&adhoc, Path::new("."), &layout, &sources) {
+            Ok(resolved) => named_plugins.extend(resolved),
+            Err(e) => {
+                eprintln!("prova: {e}");
+                return ExitCode::from(2);
+            }
+        }
+    }
 
     // Build the suites to run: first any explicit `[suites.*]` from the manifest (each groups its
     // discovered files under one name + optional setup), then the plain paths — a directory with a
@@ -225,7 +257,7 @@ fn main() -> ExitCode {
 
 /// Read `prova.toml` (or `--manifest`), overlay `--profile`, apply env, merge CLI overrides, and
 /// resolve declared plugins (fetching git sources into the cache). Returns (paths, jobs, format,
-/// declared-suites, named-plugins) or an exit code on error.
+/// declared-suites, named-plugins, source-aliases) or an exit code on error.
 #[allow(clippy::type_complexity)]
 fn resolve_from_manifest(
     manifest_path: Option<String>,
@@ -240,6 +272,7 @@ fn resolve_from_manifest(
         Format,
         BTreeMap<String, SuiteDecl>,
         BTreeMap<String, PathBuf>,
+        BTreeMap<String, String>,
     ),
     ExitCode,
 > {
@@ -300,5 +333,12 @@ fn resolve_from_manifest(
             }
         },
     };
-    Ok((resolved.paths, jobs, format, resolved.suites, named_plugins))
+    Ok((
+        resolved.paths,
+        jobs,
+        format,
+        resolved.suites,
+        named_plugins,
+        resolved.sources,
+    ))
 }
