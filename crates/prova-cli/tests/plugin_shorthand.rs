@@ -73,7 +73,10 @@ fn registered_alias_shorthand_is_fetched_and_required() {
         output.status.success(),
         "prova failed.\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
-    assert!(stdout.contains("shorthand plugin resolves"), "stdout:\n{stdout}");
+    assert!(
+        stdout.contains("shorthand plugin resolves"),
+        "stdout:\n{stdout}"
+    );
 
     std::fs::remove_dir_all(&root).ok();
 }

@@ -23,6 +23,8 @@ prova-archetect = { path = "../prova-archetect" }
 # The suite manifest (`prova.toml`): declare what to run and how, for local + CI.
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+# Reading/merging the project `.luarc.json` (LuaLS IDE pointer) during annotation sync.
+serde_json = "1"
 # Plugin compatibility gating: check a `prova-plugin.toml`'s `requires.prova` range against the
 # running version, the way archetype.yaml's `requires.archetect` gates an archetype.
 semver = "1"

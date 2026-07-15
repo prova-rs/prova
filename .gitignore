@@ -3,3 +3,7 @@
 .DS_Store
 /.prova
 *.snap.new
+# Generated LuaLS IDE artifacts from running the example suites (prova writes these into each
+# example's home dir). The annotations/ dir self-ignores; the .luarc.json pointer does not.
+examples/**/.luarc.json
+examples/**/annotations/

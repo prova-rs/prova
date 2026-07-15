@@ -45,6 +45,47 @@ pub struct Manifest {
     /// `"acme:redis"` then expands via `acme` to `https://github.com/acme/redis`.
     #[serde(default)]
     pub sources: BTreeMap<String, String>,
+    /// How prova manages the project's LuaLS IDE integration (`.luarc.json` + synced annotations).
+    /// Not profile-specific — a property of the project.
+    #[serde(default)]
+    pub luals: Luals,
+}
+
+/// LuaLS / `.luarc.json` management policy. The annotation set under `<home>/annotations/` is always
+/// refreshed (it's prova-owned and gitignored); this only governs whether prova writes the *pointer*
+/// (`.luarc.json` at the project root).
+#[derive(Debug, Deserialize, Clone, Default, PartialEq)]
+pub struct Luals {
+    /// `"auto"` (default) | `"always"` | `"never"`. See [`Manage`].
+    pub manage: Option<String>,
+}
+
+/// Resolved `.luarc.json` management policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Manage {
+    /// Create `.luarc.json` if absent; if one already exists, don't edit it — print a hint to run
+    /// `prova init`. This auto-detects project type: a non-Lua project (Lua present only for prova)
+    /// has no `.luarc.json`, so prova sets it up; a Lua-native project already owns one, so prova
+    /// stays a polite guest.
+    Auto,
+    /// Always create-or-merge our two keys into `.luarc.json`, even into an existing file.
+    Always,
+    /// Never touch `.luarc.json` (annotations still sync; the user wires the pointer themselves).
+    Never,
+}
+
+impl Luals {
+    /// Resolve the policy, defaulting to `Auto`. An unrecognized value is an error the caller surfaces.
+    pub fn manage(&self) -> Result<Manage, String> {
+        match self.manage.as_deref() {
+            None | Some("auto") => Ok(Manage::Auto),
+            Some("always") => Ok(Manage::Always),
+            Some("never") => Ok(Manage::Never),
+            Some(other) => Err(format!(
+                "invalid [luals] manage = {other:?} (expected \"auto\", \"always\", or \"never\")"
+            )),
+        }
+    }
 }
 
 /// Where a declared plugin's Lua comes from. The string shorthand is a local path; the table form
@@ -118,6 +159,8 @@ pub struct Resolved {
     pub plugins: BTreeMap<String, PluginSource>,
     /// Registered source aliases (`[sources]`) for plugin shorthands.
     pub sources: BTreeMap<String, String>,
+    /// LuaLS IDE-integration policy (`[luals]`).
+    pub luals: Luals,
 }
 
 impl Manifest {
@@ -163,6 +206,7 @@ impl Manifest {
             suites: self.suites.clone(),
             plugins: self.plugins.clone(),
             sources: self.sources.clone(),
+            luals: self.luals.clone(),
         })
     }
 }
@@ -210,6 +254,7 @@ paths = ["tests/smoke"]
                 suites: BTreeMap::new(),
                 plugins: BTreeMap::new(),
                 sources: BTreeMap::new(),
+                luals: Luals::default(),
             }
         );
     }
@@ -280,7 +325,10 @@ paths = ["services/rest"]
         let r = m.resolve(None).unwrap();
         assert_eq!(r.suites.len(), 2);
         assert_eq!(r.suites["grpc"].paths, vec!["services/grpc".to_string()]);
-        assert_eq!(r.suites["grpc"].setup.as_deref(), Some("services/grpc/suite.lua"));
+        assert_eq!(
+            r.suites["grpc"].setup.as_deref(),
+            Some("services/grpc/suite.lua")
+        );
         assert_eq!(r.suites["rest"].setup, None);
     }
 

@@ -23,6 +23,10 @@ use crate::manifest::{PluginDetail, PluginSource};
 pub struct ResolvedPlugins {
     pub named: BTreeMap<String, PathBuf>,
     pub namespaces: BTreeMap<String, PathBuf>,
+    /// Each plugin's root directory (the checkout dir, or a local dir/file's parent) keyed by
+    /// canonical name — where its `prova-plugin.toml` and `library/` annotation stub live. Used to
+    /// sync IDE annotations into the project's `annotations/` dir.
+    pub roots: BTreeMap<String, PathBuf>,
 }
 
 /// A plugin's own manifest (`prova-plugin.toml`) — the analogue of `archetype.yaml`. All fields are
@@ -70,8 +74,9 @@ pub fn resolve_plugins(
         let detail = match source {
             // A bare string is classified: a git URL or org/repo shorthand becomes a git source; a
             // path stays a path. (The table form is already explicit.)
-            PluginSource::Path(s) => classify_string_source(s, sources)
-                .map_err(|e| format!("plugin {name:?}: {e}"))?,
+            PluginSource::Path(s) => {
+                classify_string_source(s, sources).map_err(|e| format!("plugin {name:?}: {e}"))?
+            }
             PluginSource::Detailed(d) => d.clone(),
         };
         let one = resolve_one(name, &detail, base_dir, layout, prova_version)
@@ -82,15 +87,18 @@ pub fn resolve_plugins(
                 .namespaces
                 .insert(one.canonical.clone(), dir.to_path_buf());
         }
+        resolved.roots.insert(one.canonical.clone(), one.root);
         resolved.named.insert(name.clone(), one.entry);
     }
     Ok(resolved)
 }
 
-/// One resolved plugin: its entry file and canonical namespace name.
+/// One resolved plugin: its entry file, canonical namespace name, and root directory (where the
+/// `prova-plugin.toml` and `library/` annotation stub live).
 struct ResolvedOne {
     entry: PathBuf,
     canonical: String,
+    root: PathBuf,
 }
 
 /// Classify a bare string plugin source into a `PluginDetail`:
@@ -119,7 +127,10 @@ fn classify_string_source(
     }
     if let (core, Some(reference)) = split_ref(s) {
         if is_org_repo(core) {
-            return Ok(git_detail(format!("https://github.com/{core}"), Some(reference)));
+            return Ok(git_detail(
+                format!("https://github.com/{core}"),
+                Some(reference),
+            ));
         }
     }
     Ok(PluginDetail {
@@ -246,7 +257,15 @@ fn resolve_one(
         .and_then(|m| m.plugin.name.clone())
         .unwrap_or_else(|| name.to_string());
 
-    Ok(ResolvedOne { entry, canonical })
+    // Plugin root: where `prova-plugin.toml` and `library/` live (the dir for a directory source, a
+    // file's parent for a single-file source).
+    let plugin_root = manifest_dir.unwrap_or_else(|| root.clone());
+
+    Ok(ResolvedOne {
+        entry,
+        canonical,
+        root: plugin_root,
+    })
 }
 
 /// The plugin namespace for a standalone entry file (`prova plugin lint <file>`): its canonical name
@@ -258,7 +277,11 @@ pub fn namespace_for_file(file: &Path) -> Option<(String, PathBuf)> {
         .ok()
         .flatten()
         .and_then(|m| m.plugin.name)
-        .or_else(|| file.file_stem().and_then(|s| s.to_str()).map(str::to_string))?;
+        .or_else(|| {
+            file.file_stem()
+                .and_then(|s| s.to_str())
+                .map(str::to_string)
+        })?;
     Some((canonical, dir.to_path_buf()))
 }
 
@@ -318,13 +341,19 @@ fn module_file(
         return Err(format!("{} does not exist", root.display()));
     }
     // A declared entry (consumer override, then the plugin's own manifest) must exist if given.
-    for (source, declared) in [("module", module), ("prova-plugin.toml entry", manifest_entry)] {
+    for (source, declared) in [
+        ("module", module),
+        ("prova-plugin.toml entry", manifest_entry),
+    ] {
         if let Some(rel) = declared {
             let candidate = root.join(rel);
             return if candidate.is_file() {
                 Ok(candidate)
             } else {
-                Err(format!("{source} {rel:?} not found at {}", candidate.display()))
+                Err(format!(
+                    "{source} {rel:?} not found at {}",
+                    candidate.display()
+                ))
             };
         }
     }
@@ -344,7 +373,11 @@ fn module_file(
 /// Fetch a git plugin into the layout's plugin cache, pinned by ref, and return the checkout dir. A
 /// checkout that already exists is reused (tag/rev pins are immutable; a branch is cached on first
 /// fetch — prefer `tag`/`rev` for reproducibility).
-fn fetch_git(url: &str, detail: &PluginDetail, layout: &dyn SystemLayout) -> Result<PathBuf, String> {
+fn fetch_git(
+    url: &str,
+    detail: &PluginDetail,
+    layout: &dyn SystemLayout,
+) -> Result<PathBuf, String> {
     let (pin, label): (Option<&str>, String) = match (&detail.tag, &detail.branch, &detail.rev) {
         (Some(t), _, _) => (Some(t), format!("tag-{t}")),
         (_, Some(b), _) => (Some(b), format!("branch-{b}")),
@@ -373,7 +406,12 @@ fn fetch_git(url: &str, detail: &PluginDetail, layout: &dyn SystemLayout) -> Res
             run_git(&["checkout", rev], Some(&dest))?;
         }
         (None, Some(reference)) => {
-            run_git(&["clone", "--depth", "1", "--branch", reference, url, &dest_str], None)?;
+            run_git(
+                &[
+                    "clone", "--depth", "1", "--branch", reference, url, &dest_str,
+                ],
+                None,
+            )?;
         }
         (None, None) => {
             run_git(&["clone", "--depth", "1", url, &dest_str], None)?;
@@ -402,7 +440,13 @@ fn run_git(args: &[&str], cwd: Option<&Path>) -> Result<(), String> {
 /// Make a filesystem-safe directory component from a URL or ref (keep it recognizable).
 fn sanitize(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '.' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -431,8 +475,8 @@ mod tests {
         plugins.insert("greet".to_string(), PluginSource::Path("greet.lua".into()));
         let layout = RootedSystemLayout::new(dir.join("home"));
 
-        let resolved = resolve_plugins(&plugins, &dir, &layout, &BTreeMap::new(), "0.1.1")
-            .expect("resolve");
+        let resolved =
+            resolve_plugins(&plugins, &dir, &layout, &BTreeMap::new(), "0.1.1").expect("resolve");
         assert_eq!(resolved.named["greet"], file);
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -455,7 +499,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("prova-plugin-entry-{}", std::process::id()));
         let repo = dir.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
-        std::fs::write(repo.join("rabbitmq.lua"), "return { container = function() end }").unwrap();
+        std::fs::write(
+            repo.join("rabbitmq.lua"),
+            "return { container = function() end }",
+        )
+        .unwrap();
         std::fs::write(
             repo.join("prova-plugin.toml"),
             "[plugin]\nname = \"rabbitmq\"\nentry = \"rabbitmq.lua\"\n",
@@ -466,8 +514,8 @@ mod tests {
         plugins.insert("mq".to_string(), PluginSource::Path("repo".into()));
         let layout = RootedSystemLayout::new(dir.join("home"));
 
-        let resolved = resolve_plugins(&plugins, &dir, &layout, &BTreeMap::new(), "0.1.1")
-            .expect("resolve");
+        let resolved =
+            resolve_plugins(&plugins, &dir, &layout, &BTreeMap::new(), "0.1.1").expect("resolve");
         assert_eq!(resolved.named["mq"], repo.join("rabbitmq.lua"));
         // Namespaced by canonical name `rabbitmq` (from the manifest), not the alias `mq`.
         assert_eq!(resolved.namespaces["rabbitmq"], repo);
@@ -492,7 +540,10 @@ mod tests {
         assert_eq!(git(&d), ("https://github.com/acme/prova-redis.git", None));
 
         let d = classify_string_source("https://github.com/acme/prova-redis@v1.2", &none).unwrap();
-        assert_eq!(git(&d), ("https://github.com/acme/prova-redis", Some("v1.2")));
+        assert_eq!(
+            git(&d),
+            ("https://github.com/acme/prova-redis", Some("v1.2"))
+        );
 
         // A `git@host:...` scp URL keeps its early `@`.
         let d = classify_string_source("git@github.com:acme/prova-redis.git", &none).unwrap();
@@ -513,7 +564,10 @@ mod tests {
     fn expands_registered_alias() {
         let mut sources = BTreeMap::new();
         sources.insert("acme".to_string(), "github:acme".to_string());
-        sources.insert("mirror".to_string(), "https://git.acme.io/plugins".to_string());
+        sources.insert(
+            "mirror".to_string(),
+            "https://git.acme.io/plugins".to_string(),
+        );
 
         let d = classify_string_source("acme:redis@v1", &sources).unwrap();
         assert_eq!(git(&d), ("https://github.com/acme/redis", Some("v1")));
@@ -538,7 +592,12 @@ mod tests {
     #[test]
     fn plain_paths_stay_paths() {
         let none = BTreeMap::new();
-        for p in ["./plugins/greet.lua", "greet.lua", "../shared/x.lua", "/abs/x.lua"] {
+        for p in [
+            "./plugins/greet.lua",
+            "greet.lua",
+            "../shared/x.lua",
+            "/abs/x.lua",
+        ] {
             let d = classify_string_source(p, &none).unwrap();
             assert_eq!(d.path.as_deref(), Some(p), "{p} should be a path");
             assert!(d.git.is_none(), "{p} should not be git");

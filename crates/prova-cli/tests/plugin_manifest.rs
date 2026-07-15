@@ -42,7 +42,10 @@ fn manifest_entry_and_vendored_sibling_resolve_under_alias() {
         "local words = require(\"greeter.words\")\n\
          return { hello = function(n) return words.greeting() .. \" \" .. n end }\n",
     );
-    write(&plugin.join("words.lua"), "return { greeting = function() return \"hello\" end }\n");
+    write(
+        &plugin.join("words.lua"),
+        "return { greeting = function() return \"hello\" end }\n",
+    );
 
     // The project pulls it under a DIFFERENT alias `greet` and requires that.
     write(
@@ -63,8 +66,14 @@ fn manifest_entry_and_vendored_sibling_resolve_under_alias() {
     let output = run(&project, &home);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(output.status.success(), "prova failed.\nstdout:\n{stdout}\nstderr:\n{stderr}");
-    assert!(stdout.contains("manifest entry + vendored sibling resolve"), "stdout:\n{stdout}");
+    assert!(
+        output.status.success(),
+        "prova failed.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("manifest entry + vendored sibling resolve"),
+        "stdout:\n{stdout}"
+    );
 
     std::fs::remove_dir_all(&root).ok();
 }
@@ -82,7 +91,10 @@ fn incompatible_plugin_version_is_rejected() {
         &plugin.join("prova-plugin.toml"),
         "[plugin]\nname = \"future\"\nentry = \"impl.lua\"\n\n[requires]\nprova = \">=99.0\"\n",
     );
-    write(&plugin.join("impl.lua"), "return { hello = function() return \"hi\" end }\n");
+    write(
+        &plugin.join("impl.lua"),
+        "return { hello = function() return \"hi\" end }\n",
+    );
     write(
         &project.join("prova.toml"),
         &format!(
@@ -97,7 +109,10 @@ fn incompatible_plugin_version_is_rejected() {
 
     let output = run(&project, &home);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!output.status.success(), "should fail on incompatible plugin");
+    assert!(
+        !output.status.success(),
+        "should fail on incompatible plugin"
+    );
     assert!(stderr.contains("requires prova"), "stderr:\n{stderr}");
 
     std::fs::remove_dir_all(&root).ok();

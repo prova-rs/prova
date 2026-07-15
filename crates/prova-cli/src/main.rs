@@ -11,6 +11,9 @@
 //!
 //! CLI flags override manifest values; explicit path arguments bypass the manifest entirely.
 
+mod annotations;
+mod home;
+mod init;
 mod manifest;
 mod plugins;
 
@@ -18,7 +21,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use manifest::{Manifest, SuiteDecl};
+use home::Home;
+use manifest::{Manage, Manifest, SuiteDecl};
 use prova_core::{
     discover_files, discover_path_with, discover_suites, run_suites, ConsoleReporter, JsonReporter,
     MultiReporter, Reporter, RunConfig, Suite, SystemLayout, XdgSystemLayout,
@@ -27,7 +31,9 @@ use prova_core::{
 const HELP: &str = "\
 usage:
   prova <file-or-dir>...    run the given files/dirs
-  prova                     run the suite declared in ./prova.toml
+  prova                     run the suite declared in prova.toml (found by walking up)
+  prova init                scaffold prova.toml + LuaLS IDE support in this project
+  prova plugin lint <f>...  check plugin files against the namespacing grammar
 
 options:
   -p, --profile NAME        run a profile from the manifest
@@ -65,11 +71,18 @@ fn value_flag(
 }
 
 fn main() -> ExitCode {
-    // Subcommands: `prova plugin <...>`. Everything else is the run path (paths + flags).
+    // Subcommands: `prova plugin <...>` / `prova init`. Everything else is the run path.
     let mut raw = std::env::args().skip(1).peekable();
-    if raw.peek().map(String::as_str) == Some("plugin") {
-        raw.next();
-        return plugin_subcommand(raw.collect());
+    match raw.peek().map(String::as_str) {
+        Some("plugin") => {
+            raw.next();
+            return plugin_subcommand(raw.collect());
+        }
+        Some("init") => {
+            raw.next();
+            return init::run(raw.collect());
+        }
+        _ => {}
     }
 
     run(std::env::args().skip(1).collect())
@@ -212,24 +225,58 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         }
     };
 
-    // Resolve the run: explicit path args bypass the manifest; otherwise read prova.toml. Manifest
-    // `[plugins]` are resolved (git sources fetched into the cache) into a name→file map.
-    let (paths, jobs, format, declared, mut plugins_resolved, sources) = if !explicit_paths.is_empty()
-    {
-        (
-            explicit_paths,
-            cli_jobs.unwrap_or(1),
-            cli_format.unwrap_or(Format::Console),
-            BTreeMap::new(),
-            plugins::ResolvedPlugins::default(),
-            BTreeMap::new(),
-        )
+    // Determine the prova home (the directory owning `prova.toml`), unless explicit path args bypass
+    // the manifest. `--manifest PATH` points directly at a manifest; otherwise discovery walks up
+    // from the current directory. An ambiguous layout (more than one manifest location) is an error.
+    let home: Option<Home> = if !explicit_paths.is_empty() {
+        None
+    } else if let Some(path) = &manifest_path {
+        Some(home::from_manifest_path(Path::new(path)))
     } else {
-        match resolve_from_manifest(manifest_path, profile, cli_jobs, cli_format, &layout) {
-            Ok(resolved) => resolved,
-            Err(code) => return code,
+        match home::find(Path::new(".")) {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("prova: {e}");
+                return ExitCode::from(2);
+            }
         }
     };
+
+    // Resolve the run. Explicit path args bypass the manifest (paths relative to cwd, no IDE
+    // management); otherwise read the home's `prova.toml` (paths relative to the home dir).
+    let (base_dir, paths, jobs, format, declared, mut plugins_resolved, sources, manage) =
+        if !explicit_paths.is_empty() {
+            (
+                PathBuf::from("."),
+                explicit_paths,
+                cli_jobs.unwrap_or(1),
+                cli_format.unwrap_or(Format::Console),
+                BTreeMap::new(),
+                plugins::ResolvedPlugins::default(),
+                BTreeMap::new(),
+                Manage::Never,
+            )
+        } else {
+            let Some(home) = &home else {
+                eprintln!(
+                    "usage: prova <file-or-dir>...   or   prova [--profile NAME]  (reads prova.toml)"
+                );
+                return ExitCode::from(2);
+            };
+            match resolve_from_manifest(home, profile, cli_jobs, cli_format, &layout) {
+                Ok(r) => (
+                    home.dir.clone(),
+                    r.paths,
+                    r.jobs,
+                    r.format,
+                    r.suites,
+                    r.plugins,
+                    r.sources,
+                    r.manage,
+                ),
+                Err(code) => return code,
+            }
+        };
 
     // Ad-hoc `--plugin name=source` entries (e.g. CI-only extras) resolve the same way as manifest
     // plugins and layer on top, overriding a manifest plugin of the same name.
@@ -238,7 +285,10 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         for entry in &cli_plugins {
             match entry.split_once('=') {
                 Some((name, source)) if !name.is_empty() && !source.is_empty() => {
-                    adhoc.insert(name.to_string(), manifest::PluginSource::Path(source.to_string()));
+                    adhoc.insert(
+                        name.to_string(),
+                        manifest::PluginSource::Path(source.to_string()),
+                    );
                 }
                 _ => {
                     eprintln!("prova: --plugin expects name=source, got {entry:?}");
@@ -250,6 +300,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             Ok(resolved) => {
                 plugins_resolved.named.extend(resolved.named);
                 plugins_resolved.namespaces.extend(resolved.namespaces);
+                plugins_resolved.roots.extend(resolved.roots);
             }
             Err(e) => {
                 eprintln!("prova: {e}");
@@ -266,7 +317,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     for (name, decl) in &declared {
         let mut files = Vec::new();
         for p in &decl.paths {
-            match discover_files(Path::new(p)) {
+            match discover_files(&base_dir.join(p)) {
                 Ok(found) => files.extend(found),
                 Err(err) => {
                     eprintln!("prova: suite {name:?}: {p}: {err}");
@@ -278,13 +329,13 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         if !files.is_empty() {
             suites.push(Suite {
                 name: name.clone(),
-                setup: decl.setup.as_ref().map(PathBuf::from),
+                setup: decl.setup.as_ref().map(|s| base_dir.join(s)),
                 files,
             });
         }
     }
     for arg in &paths {
-        match discover_suites(Path::new(arg)) {
+        match discover_suites(&base_dir.join(arg)) {
             Ok(found) => suites.extend(found),
             Err(err) => {
                 eprintln!("prova: {arg}: {err}");
@@ -307,6 +358,20 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     }
     for (canonical, dir) in &plugins_resolved.namespaces {
         config = config.with_plugin_namespace(canonical.clone(), dir.clone());
+    }
+
+    // IDE integration: on a manifest run (not read-only `--list`), refresh the annotation folder
+    // (core + plugin `---@meta` stubs) and manage `.luarc.json` per `[luals] manage`, so
+    // `require("<plugin>")` completes in the editor with no manual wiring. Never blocks the run — a
+    // sync error is a warning, not a failure — and all output goes to stderr so `--format json`
+    // stdout stays a clean event stream.
+    if !list {
+        if let Some(home) = &home {
+            match annotations::setup(home, &plugins_resolved.roots, manage) {
+                Ok(outcome) => report_annotations(&outcome),
+                Err(err) => eprintln!("prova: IDE annotations: {err}"),
+            }
+        }
     }
 
     if list {
@@ -339,43 +404,49 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     }
 }
 
-/// Read `prova.toml` (or `--manifest`), overlay `--profile`, apply env, merge CLI overrides, and
-/// resolve declared plugins (fetching git sources into the cache). Returns (paths, jobs, format,
-/// declared-suites, named-plugins, source-aliases) or an exit code on error.
-#[allow(clippy::type_complexity)]
+/// A resolved manifest run: what to discover, how, and the resolved plugin + IDE settings.
+struct ManifestRun {
+    paths: Vec<String>,
+    jobs: usize,
+    format: Format,
+    suites: BTreeMap<String, SuiteDecl>,
+    plugins: plugins::ResolvedPlugins,
+    sources: BTreeMap<String, String>,
+    manage: Manage,
+}
+
+/// Print a concise, honest one-liner (to stderr) about what the IDE annotation sync did.
+fn report_annotations(outcome: &annotations::Outcome) {
+    if !outcome.synced_plugins.is_empty() {
+        eprintln!(
+            "prova: synced IDE annotations for {}",
+            outcome.synced_plugins.join(", ")
+        );
+    }
+    if outcome.luarc_created {
+        eprintln!("prova: wrote .luarc.json (editor IDE support enabled)");
+    }
+    if outcome.luarc_hint {
+        eprintln!("prova: IDE annotations ready — run `prova init` to point .luarc.json at them");
+    }
+}
+
+/// Read the home's `prova.toml`, overlay `--profile`, apply env, merge CLI overrides, and resolve
+/// declared plugins (fetching git sources into the cache). All paths remain manifest-relative (the
+/// caller joins them to the home dir). Returns the resolved run or an exit code on error.
 fn resolve_from_manifest(
-    manifest_path: Option<String>,
+    home: &Home,
     profile: Option<String>,
     cli_jobs: Option<usize>,
     cli_format: Option<Format>,
     layout: &dyn SystemLayout,
-) -> Result<
-    (
-        Vec<String>,
-        usize,
-        Format,
-        BTreeMap<String, SuiteDecl>,
-        plugins::ResolvedPlugins,
-        BTreeMap<String, String>,
-    ),
-    ExitCode,
-> {
-    let explicit_manifest = manifest_path.is_some();
-    let path = manifest_path.unwrap_or_else(|| "prova.toml".to_string());
+) -> Result<ManifestRun, ExitCode> {
+    let path = &home.manifest;
 
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(_) => {
-            if explicit_manifest || profile.is_some() {
-                eprintln!("prova: cannot read manifest {path:?}");
-            } else {
-                eprintln!(
-                    "usage: prova <file-or-dir>...   or   prova [--profile NAME]  (reads prova.toml)"
-                );
-            }
-            return Err(ExitCode::from(2));
-        }
-    };
+    let text = std::fs::read_to_string(path).map_err(|_| {
+        eprintln!("prova: cannot read manifest {}", path.display());
+        ExitCode::from(2)
+    })?;
 
     let manifest = Manifest::parse(&text).map_err(|e| {
         eprintln!("prova: {e}");
@@ -386,20 +457,26 @@ fn resolve_from_manifest(
         ExitCode::from(2)
     })?;
     if resolved.paths.is_empty() && resolved.suites.is_empty() {
-        eprintln!("prova: manifest {path:?} defines no paths or suites to run");
+        eprintln!(
+            "prova: manifest {} defines no paths or suites to run",
+            path.display()
+        );
         return Err(ExitCode::from(2));
     }
+    let manage = resolved.luals.manage().map_err(|e| {
+        eprintln!("prova: {e}");
+        ExitCode::from(2)
+    })?;
 
     // Apply the run environment before tests execute.
     for (key, value) in &resolved.env {
         std::env::set_var(key, value);
     }
 
-    // Resolve declared plugins relative to the manifest's directory (git sources fetched into cache).
-    let base_dir = Path::new(&path).parent().unwrap_or(Path::new(".")).to_path_buf();
+    // Resolve declared plugins relative to the home directory (git sources fetched into cache).
     let plugins_resolved = plugins::resolve_plugins(
         &resolved.plugins,
-        &base_dir,
+        &home.dir,
         layout,
         &resolved.sources,
         PROVA_VERSION,
@@ -421,12 +498,13 @@ fn resolve_from_manifest(
             }
         },
     };
-    Ok((
-        resolved.paths,
+    Ok(ManifestRun {
+        paths: resolved.paths,
         jobs,
         format,
-        resolved.suites,
-        plugins_resolved,
-        resolved.sources,
-    ))
+        suites: resolved.suites,
+        plugins: plugins_resolved,
+        sources: resolved.sources,
+        manage,
+    })
 }
