@@ -302,10 +302,18 @@ function Container:endpoint(container_port) end
 --- The container's combined stdout+stderr logs.
 ---@return string
 function Container:logs() end
---- Run a command inside the container (`sh -c`); returns (code, stdout, stderr).
+--- Run a command inside the container (`sh -c`); returns (code, stdout, stderr). Low-level and
+--- non-raising — prefer `Container:run` for driving a CLI.
 ---@param command string
 ---@return integer, string, string
 function Container:exec(command) end
+--- Run a command inside the container and return its stdout, raising on a non-zero exit. The
+--- exec-CLI SDK entry point: pass an **argv table** to run a CLI directly (no shell, no quoting), or
+--- a **string** to run under `sh -c` (for pipes/globs). `opts.stdin` is piped to the process.
+---@param command string|string[]
+---@param opts? { stdin?: string }
+---@return string stdout
+function Container:run(command, opts) end
 --- Force-remove the container. Idempotent.
 function Container:stop() end
 

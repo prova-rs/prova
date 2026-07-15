@@ -1018,12 +1018,12 @@ mod docker {
         Config, CreateContainerOptions, LogOutput, LogsOptions, RemoveContainerOptions,
         StartContainerOptions,
     };
-    use bollard::exec::{CreateExecOptions, StartExecResults};
+    use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
     use bollard::image::CreateImageOptions;
     use bollard::models::{HostConfig, PortBinding};
     use bollard::Docker;
     use futures::StreamExt;
-    use mlua::{Function, Lua, Table, UserData, UserDataFields, UserDataMethods};
+    use mlua::{Function, Lua, Table, UserData, UserDataFields, UserDataMethods, Value};
 
     use crate::model::parse_duration;
 
@@ -1078,10 +1078,34 @@ mod docker {
                 let id = this.id.clone();
                 async move { container_logs(&client, &id).await }
             });
+            // Low-level: run a shell command, return (exit_code, stdout, stderr) — no raising.
             methods.add_async_method("exec", |_, this, cmd: String| {
                 let client = this.client.clone();
                 let id = this.id.clone();
-                async move { container_exec(&client, &id, cmd).await }
+                async move {
+                    container_exec(&client, &id, vec!["sh".into(), "-c".into(), cmd], None).await
+                }
+            });
+            // Ergonomic: run a command (argv table = no shell/no quoting, or a string = `sh -c`),
+            // optionally piping `opts.stdin`; raise on non-zero exit, return stdout. This is the
+            // exec-CLI SDK entry point — a plugin drives a CLI in the container without hand-rolling
+            // shell-quoting or `printf | …` piping (see docs/design/ecosystem.md).
+            methods.add_async_method("run", |_, this, (cmd, opts): (Value, Option<Table>)| {
+                let client = this.client.clone();
+                let id = this.id.clone();
+                let parsed = parse_run_cmd(cmd, opts);
+                async move {
+                    let (argv, stdin) = parsed?;
+                    let (code, out, err) = container_exec(&client, &id, argv, stdin).await?;
+                    if code != 0 {
+                        let detail = if err.trim().is_empty() { &out } else { &err };
+                        return Err(mlua::Error::RuntimeError(format!(
+                            "container:run exited {code}: {}",
+                            detail.trim()
+                        )));
+                    }
+                    Ok(out)
+                }
             });
             methods.add_async_method_mut("stop", |_, mut this, ()| {
                 let client = this.client.clone();
@@ -1350,27 +1374,52 @@ mod docker {
         Ok(out)
     }
 
+    /// Exec `cmd` (an argv vector) in the container, optionally writing `stdin` to the process, and
+    /// collect `(exit_code, stdout, stderr)`. `cmd` is run directly (no shell) — the caller passes
+    /// `["sh", "-c", "<script>"]` when it genuinely wants a shell. `stdin` is written in full and the
+    /// input closed (EOF) before output is drained, which suits non-interactive tools that read stdin
+    /// to completion then emit (a producer, `mc pipe`, …); it is not meant for large streaming input.
     async fn container_exec(
         client: &Docker,
         id: &str,
-        cmd: String,
+        cmd: Vec<String>,
+        stdin: Option<String>,
     ) -> mlua::Result<(i64, String, String)> {
+        let want_stdin = stdin.is_some();
         let exec = client
             .create_exec(
                 id,
                 CreateExecOptions {
-                    cmd: Some(vec!["sh".to_string(), "-c".to_string(), cmd]),
+                    cmd: Some(cmd),
                     attach_stdout: Some(true),
                     attach_stderr: Some(true),
+                    attach_stdin: Some(want_stdin),
                     ..Default::default()
                 },
             )
             .await
             .map_err(derr)?;
         let (mut stdout, mut stderr) = (String::new(), String::new());
-        if let StartExecResults::Attached { mut output, .. } =
-            client.start_exec(&exec.id, None).await.map_err(derr)?
+        if let StartExecResults::Attached { mut output, mut input } = client
+            .start_exec(
+                &exec.id,
+                Some(StartExecOptions {
+                    detach: false,
+                    ..Default::default()
+                }),
+            )
+            .await
+            .map_err(derr)?
         {
+            if let Some(data) = stdin {
+                use tokio::io::AsyncWriteExt;
+                input
+                    .write_all(data.as_bytes())
+                    .await
+                    .map_err(|e| derr(bollard::errors::Error::IOError { err: e }))?;
+                let _ = input.shutdown().await;
+            }
+            drop(input);
             while let Some(item) = output.next().await {
                 match item.map_err(derr)? {
                     LogOutput::StdOut { message } => {
@@ -1385,6 +1434,41 @@ mod docker {
         }
         let inspect = client.inspect_exec(&exec.id).await.map_err(derr)?;
         Ok((inspect.exit_code.unwrap_or(-1), stdout, stderr))
+    }
+
+    /// Parse `container:run` arguments off the Lua boundary into owned values (so nothing `!Send`
+    /// crosses the `await`). A **string** command runs under `sh -c` (a shell — for pipes/globs); an
+    /// **argv table** runs directly with no shell, so no quoting is needed. `opts.stdin` is piped in.
+    fn parse_run_cmd(
+        cmd: Value,
+        opts: Option<Table>,
+    ) -> mlua::Result<(Vec<String>, Option<String>)> {
+        let argv = match cmd {
+            Value::String(s) => vec!["sh".to_string(), "-c".to_string(), s.to_str()?.to_string()],
+            Value::Table(t) => {
+                let mut v = Vec::new();
+                for item in t.sequence_values::<String>() {
+                    v.push(item?);
+                }
+                if v.is_empty() {
+                    return Err(mlua::Error::RuntimeError(
+                        "container:run: empty argv table".into(),
+                    ));
+                }
+                v
+            }
+            other => {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "container:run expects a string or an argv table, got {}",
+                    other.type_name()
+                )))
+            }
+        };
+        let stdin = match opts {
+            Some(o) => o.get::<Option<String>>("stdin")?,
+            None => None,
+        };
+        Ok((argv, stdin))
     }
 
     fn log_text(log: LogOutput) -> String {

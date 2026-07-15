@@ -24,6 +24,25 @@ prova.group("containerized service", { requires = { "docker" } }, function(g)
   end)
 end)
 
+-- Exercises `container:run` — the exec-CLI SDK entry point: argv form (no shell), stdin piping, and
+-- raise-on-failure.
+prova.group("container run", { requires = { "docker" } }, function(g)
+  g:test("run: argv, stdin, and raise-on-failure", function(t)
+    local c = docker.run{
+      image = "redis:alpine",
+      wait = { log = "Ready to accept connections", timeout = "30s" },
+    }
+    -- argv form runs the CLI directly (no shell, no quoting) and returns stdout.
+    t:expect(c:run({ "redis-cli", "PING" })):contains("PONG")
+    -- stdin is piped to the process (cat echoes it back verbatim).
+    t:expect(c:run({ "cat" }, { stdin = "hello-stdin" })):equals("hello-stdin")
+    -- a non-zero exit raises.
+    local ok = pcall(function() c:run({ "false" }) end)
+    t:expect(ok):is_false()
+    c:stop()
+  end)
+end)
+
 -- Exercises the bollard exec, logs, and log-based readiness paths on a shell-capable image.
 prova.group("redis exec and logs", { requires = { "docker" } }, function(g)
   g:test("exec runs, logs stream, wait.log gates readiness", function(t)
