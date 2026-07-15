@@ -54,13 +54,9 @@ serde = { version = "1", optional = true }
 # variants are async-std-only). We connect plaintext in v1; token/TLS auth is a later opts addition.
 # `tokio-runtime` only (no compression/oauth2) to stay as light as pulsar allows. Feature-gated.
 pulsar = { version = "6.8.0", default-features = false, features = ["tokio-runtime"], optional = true }
-# The `s3` module — a thin object-storage client (put/get/list/delete) for asserting on an S3/MinIO
-# dependency. rust-s3 with rustls (pure-Rust, statically links — no openssl, static-binary friendly;
-# also enables real HTTPS S3 later). Feature-gated (default on).
-rust-s3 = { version = "0.37.2", default-features = false, features = ["tokio-rustls-tls", "tags", "fail-on-err"], optional = true }
 
 [features]
-default = ["http", "postgres", "mysql", "sqlite", "docker", "grpc", "graphql", "yaml", "pulsar", "s3"]
+default = ["http", "postgres", "mysql", "sqlite", "docker", "grpc", "graphql", "yaml", "pulsar"]
 http = ["dep:reqwest"]
 # GraphQL over HTTP (POST { query, variables } → { data, errors }); shares reqwest with `http`.
 graphql = ["dep:reqwest"]
@@ -79,4 +75,3 @@ grpc = [
 ]
 yaml = ["dep:serde_yaml_ng", "dep:serde"]
 pulsar = ["dep:pulsar"]
-s3 = ["dep:rust-s3"]

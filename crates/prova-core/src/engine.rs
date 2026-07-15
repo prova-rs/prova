@@ -1922,7 +1922,6 @@ fn native_capability_compiled(name: &str) -> Option<bool> {
         "graphql" => cfg!(feature = "graphql"),
         "yaml" => cfg!(feature = "yaml"),
         "pulsar" => cfg!(feature = "pulsar"),
-        "s3" => cfg!(feature = "s3"),
         _ => return None,
     };
     Some(compiled)

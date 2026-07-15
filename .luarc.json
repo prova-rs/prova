@@ -23,7 +23,6 @@
     "graphql",
     "yaml",
     "pulsar",
-    "s3",
     "Scope",
     "suite"
   ],

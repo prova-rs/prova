@@ -47,8 +47,6 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set("yaml", yaml::make(lua)?)?;
     #[cfg(feature = "pulsar")]
     lua.globals().set("pulsar", pulsar_mod::make(lua)?)?;
-    #[cfg(feature = "s3")]
-    lua.globals().set("s3", s3_mod::make(lua)?)?;
     // Absent-namespace stubs: in a lean distribution a native namespace's feature may be off. Install
     // a stub so `kafka.client(...)` raises a clear "not compiled into this build" error instead of a
     // bare `attempt to index a nil value` — the call-side companion to the `requires` skip. In the
@@ -71,8 +69,6 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set("yaml", absent_stub(lua, "yaml")?)?;
     #[cfg(not(feature = "pulsar"))]
     lua.globals().set("pulsar", absent_stub(lua, "pulsar")?)?;
-    #[cfg(not(feature = "s3"))]
-    lua.globals().set("s3", absent_stub(lua, "s3")?)?;
     // The `prova.containerized` scaffolding helper — the ergonomic keystone every containerized
     // resource (first-party recipe or third-party plugin) is authored through. Always available;
     // the globals it composes (`docker`, `prova.retry`) resolve when a generated `container` is
@@ -93,10 +89,6 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
     #[cfg(feature = "pulsar")]
     lua.load(PULSAR_RECIPES_LUA)
         .set_name("@prova/pulsar-recipes")
-        .exec()?;
-    #[cfg(feature = "s3")]
-    lua.load(S3_RECIPES_LUA)
-        .set_name("@prova/s3-recipes")
         .exec()?;
     Ok(())
 }
@@ -302,37 +294,6 @@ function prova.containerized(spec)
   end
 
   return ns
-end
-"#;
-
-/// `s3.container(ctx, opts?)` provisions an ephemeral MinIO (S3-compatible), creates a bucket, and
-/// returns the standard resource shape `{ client, url, container }` plus `access_key`/`secret_key`.
-/// Requires the `docker` module.
-#[cfg(feature = "s3")]
-const S3_RECIPES_LUA: &str = r#"
-function s3.container(ctx, opts)
-  assert(ctx and ctx.manage, "s3.container(ctx, opts?): pass the fixture/test context as the first argument")
-  opts = opts or {}
-  local image = opts.image or ("minio/minio:" .. (opts.tag or "latest"))
-  local access = opts.access_key or "minioadmin"
-  local secret = opts.secret_key or "minioadmin"
-  local bucket_name = opts.bucket or "prova"
-  local timeout = opts.timeout or "60s"
-  local container = ctx:manage(docker.run{
-    image = image,
-    command = "server /data",
-    ports = { 9000 },
-    env = { MINIO_ROOT_USER = access, MINIO_ROOT_PASSWORD = secret },
-    wait = { port = 9000, timeout = timeout },
-  })
-  local url = "http://127.0.0.1:" .. container:host_port(9000)
-  -- Connecting with create=true hits MinIO (creating the bucket), so it doubles as the readiness gate.
-  local client = ctx:manage(prova.retry(function()
-    return s3.client{ url = url, access_key = access, secret_key = secret,
-                      bucket = bucket_name, create = true }
-  end, { timeout = timeout, message = "minio did not become ready in time" }))
-  return { client = client, url = url, container = container,
-           access_key = access, secret_key = secret }
 end
 "#;
 
@@ -2606,156 +2567,5 @@ mod pulsar_mod {
             })?,
         )?;
         Ok(pulsar_tbl)
-    }
-}
-
-// ---------------------------------------------------------------------------------------------
-// s3 (async; a thin object-storage client — put/get/exists/list/delete against S3/MinIO)
-// ---------------------------------------------------------------------------------------------
-
-// Enough to assert on an object-storage dependency: an object an app wrote, its contents, a listing.
-// rust-s3 with rustls (pure-Rust, statically linked — no openssl). Path-style addressing (MinIO).
-#[cfg(feature = "s3")]
-mod s3_mod {
-    use mlua::{Lua, Table, UserData, UserDataMethods};
-    use s3::bucket::Bucket;
-    use s3::creds::Credentials;
-    use s3::region::Region;
-    use s3::BucketConfiguration;
-
-    fn err(msg: impl Into<String>) -> mlua::Error {
-        mlua::Error::RuntimeError(msg.into())
-    }
-
-    /// A client bound to one S3/MinIO bucket. `Bucket` is a cheap cloneable handle.
-    struct S3Bucket {
-        bucket: Bucket,
-    }
-
-    impl UserData for S3Bucket {
-        fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-            // put(key, data) — write an object (bytes of the string).
-            methods.add_async_method("put", |_, this, (key, data): (String, String)| {
-                let bucket = this.bucket.clone();
-                async move {
-                    bucket
-                        .put_object(&key, data.as_bytes())
-                        .await
-                        .map_err(|e| err(format!("s3 put {key}: {e}")))?;
-                    Ok(())
-                }
-            });
-            // get(key) → the object's contents as a string (raises if it does not exist).
-            methods.add_async_method("get", |_, this, key: String| {
-                let bucket = this.bucket.clone();
-                async move {
-                    let resp = bucket
-                        .get_object(&key)
-                        .await
-                        .map_err(|e| err(format!("s3 get {key}: {e}")))?;
-                    if resp.status_code() >= 300 {
-                        return Err(err(format!("s3 get {key}: status {}", resp.status_code())));
-                    }
-                    resp.to_string()
-                        .map_err(|e| err(format!("s3 get {key}: {e}")))
-                }
-            });
-            // exists(key) → bool (via a HEAD).
-            methods.add_async_method("exists", |_, this, key: String| {
-                let bucket = this.bucket.clone();
-                async move {
-                    match bucket.head_object(&key).await {
-                        Ok((_, status)) => Ok(status == 200),
-                        Err(_) => Ok(false),
-                    }
-                }
-            });
-            // delete(key)
-            methods.add_async_method("delete", |_, this, key: String| {
-                let bucket = this.bucket.clone();
-                async move {
-                    bucket
-                        .delete_object(&key)
-                        .await
-                        .map_err(|e| err(format!("s3 delete {key}: {e}")))?;
-                    Ok(())
-                }
-            });
-            // list(prefix?) → the keys under the (optional) prefix.
-            methods.add_async_method("list", |lua, this, prefix: Option<String>| {
-                let bucket = this.bucket.clone();
-                async move {
-                    let results = bucket
-                        .list(prefix.unwrap_or_default(), None)
-                        .await
-                        .map_err(|e| err(format!("s3 list: {e}")))?;
-                    let out = lua.create_table()?;
-                    for page in results {
-                        for object in page.contents {
-                            out.push(object.key)?;
-                        }
-                    }
-                    Ok(out)
-                }
-            });
-            methods.add_method("close", |_, _this, ()| Ok(()));
-        }
-    }
-
-    pub(crate) fn make(lua: &Lua) -> mlua::Result<Table> {
-        let s3 = lua.create_table()?;
-        // s3.client{ url, access_key, secret_key, bucket, region?, create? } → a bucket client.
-        // Async; with `create = true` it creates the bucket (idempotent) — the recipe uses that as the
-        // readiness gate. Call in a fixture/test body.
-        s3.set(
-            "client",
-            lua.create_async_function(|lua, opts: Table| async move {
-                let endpoint: String = opts
-                    .get::<Option<String>>("url")?
-                    .ok_or_else(|| err("s3.client requires a `url` (the endpoint, e.g. \"http://127.0.0.1:9000\")"))?;
-                let bucket_name: String = opts
-                    .get::<Option<String>>("bucket")?
-                    .ok_or_else(|| err("s3.client requires a `bucket`"))?;
-                let access: String = opts.get::<Option<String>>("access_key")?.unwrap_or_default();
-                let secret: String = opts.get::<Option<String>>("secret_key")?.unwrap_or_default();
-                let region_name = opts
-                    .get::<Option<String>>("region")?
-                    .unwrap_or_else(|| "us-east-1".to_string());
-                let create = opts.get::<Option<bool>>("create")?.unwrap_or(false);
-
-                let region = Region::Custom {
-                    region: region_name,
-                    endpoint,
-                };
-                let creds = Credentials::new(Some(&access), Some(&secret), None, None, None)
-                    .map_err(|e| err(format!("s3.client credentials: {e}")))?;
-
-                if create {
-                    // Hits the network (readiness); tolerate "already exists".
-                    if let Err(e) = Bucket::create_with_path_style(
-                        &bucket_name,
-                        region.clone(),
-                        creds.clone(),
-                        BucketConfiguration::default(),
-                    )
-                    .await
-                    {
-                        let msg = e.to_string();
-                        if !msg.contains("BucketAlreadyOwnedByYou")
-                            && !msg.contains("BucketAlreadyExists")
-                            && !msg.to_lowercase().contains("already")
-                        {
-                            return Err(err(format!("s3.client create bucket: {e}")));
-                        }
-                    }
-                }
-
-                let bucket = *Bucket::new(&bucket_name, region, creds)
-                    .map_err(|e| err(format!("s3.client: {e}")))?
-                    .with_path_style();
-                lua.create_userdata(S3Bucket { bucket })
-            })?,
-        )?;
-        Ok(s3)
     }
 }
