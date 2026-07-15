@@ -57,7 +57,7 @@ fn manifest_git_plugin_is_fetched_and_required() {
         project.join("prova.toml"),
         format!(
             "[run]\npaths = [\"tests\"]\n\n[plugins]\ngreet = {{ git = \"{}\", rev = \"{}\" }}\n",
-            remote.display(),
+            remote.to_string_lossy().replace('\\', "/"),
             rev
         ),
     )

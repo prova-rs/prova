@@ -46,7 +46,7 @@ fn registered_alias_shorthand_is_fetched_and_required() {
         project.join("prova.toml"),
         format!(
             "[run]\npaths = [\"tests\"]\n\n[sources]\nacme = \"{}\"\n\n[plugins]\ngreet = \"acme:greetplugin\"\n",
-            remotes.display()
+            remotes.to_string_lossy().replace('\\', "/")
         ),
     )
     .unwrap();

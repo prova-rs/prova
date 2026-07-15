@@ -32,9 +32,10 @@ fn manifest_entry_and_vendored_sibling_resolve_under_alias() {
     let home = root.join("home");
 
     // The plugin: entry impl.lua (NOT named after the consumer alias) + a vendored sibling words.lua.
+    // A permissive `>=0.1` compat so the test tracks the workspace version across 0.x bumps.
     write(
         &plugin.join("prova-plugin.toml"),
-        "[plugin]\nname = \"greeter\"\nentry = \"impl.lua\"\n\n[requires]\nprova = \">=0.1, <0.2\"\n",
+        "[plugin]\nname = \"greeter\"\nentry = \"impl.lua\"\n\n[requires]\nprova = \">=0.1\"\n",
     );
     write(
         &plugin.join("impl.lua"),
@@ -48,7 +49,7 @@ fn manifest_entry_and_vendored_sibling_resolve_under_alias() {
         &project.join("prova.toml"),
         &format!(
             "[run]\npaths = [\"tests\"]\n\n[plugins]\ngreet = {{ path = \"{}\" }}\n",
-            plugin.display()
+            plugin.to_string_lossy().replace('\\', "/")
         ),
     );
     write(
@@ -86,7 +87,7 @@ fn incompatible_plugin_version_is_rejected() {
         &project.join("prova.toml"),
         &format!(
             "[run]\npaths = [\"tests\"]\n\n[plugins]\nfuture = {{ path = \"{}\" }}\n",
-            plugin.display()
+            plugin.to_string_lossy().replace('\\', "/")
         ),
     );
     write(
