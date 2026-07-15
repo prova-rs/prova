@@ -59,23 +59,8 @@ pulsar = { version = "6.8.0", default-features = false, features = ["tokio-runti
 # also enables real HTTPS S3 later). Feature-gated (default on).
 rust-s3 = { version = "0.37.2", default-features = false, features = ["tokio-rustls-tls", "tags", "fail-on-err"], optional = true }
 
-# The `kafka` module — a thin async produce/consume client (rdkafka). rdkafka-sys vendors librdkafka
-# and builds it from source, STATICALLY linking it — so the runtime binary stays self-contained (the
-# build-time C compile is a CI concern). No SSL/SASL features → no openssl. Plaintext only in v1.
-# Feature-gated (default on).
-#
-# The build path differs by platform, hence two tables: librdkafka's default build is an autotools
-# `configure` shell script, which MSVC runners cannot execute (os error 193 — "not a valid Win32
-# application"). `cmake-build` swaps in its CMake path, which is the supported way to build it on
-# Windows. Unix keeps the lighter cc/make path so a laptop build needs no cmake.
-[target.'cfg(not(windows))'.dependencies]
-rdkafka = { version = "0.39.0", default-features = false, features = ["tokio"], optional = true }
-
-[target.'cfg(windows)'.dependencies]
-rdkafka = { version = "0.39.0", default-features = false, features = ["tokio", "cmake-build"], optional = true }
-
 [features]
-default = ["http", "postgres", "mysql", "sqlite", "docker", "grpc", "graphql", "yaml", "pulsar", "kafka", "s3"]
+default = ["http", "postgres", "mysql", "sqlite", "docker", "grpc", "graphql", "yaml", "pulsar", "s3"]
 http = ["dep:reqwest"]
 # GraphQL over HTTP (POST { query, variables } → { data, errors }); shares reqwest with `http`.
 graphql = ["dep:reqwest"]
@@ -94,5 +79,4 @@ grpc = [
 ]
 yaml = ["dep:serde_yaml_ng", "dep:serde"]
 pulsar = ["dep:pulsar"]
-kafka = ["dep:rdkafka"]
 s3 = ["dep:rust-s3"]

@@ -23,7 +23,6 @@
     "graphql",
     "yaml",
     "pulsar",
-    "kafka",
     "s3",
     "Scope",
     "suite"

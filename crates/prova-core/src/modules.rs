@@ -47,8 +47,6 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set("yaml", yaml::make(lua)?)?;
     #[cfg(feature = "pulsar")]
     lua.globals().set("pulsar", pulsar_mod::make(lua)?)?;
-    #[cfg(feature = "kafka")]
-    lua.globals().set("kafka", kafka_mod::make(lua)?)?;
     #[cfg(feature = "s3")]
     lua.globals().set("s3", s3_mod::make(lua)?)?;
     // Absent-namespace stubs: in a lean distribution a native namespace's feature may be off. Install
@@ -73,8 +71,6 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set("yaml", absent_stub(lua, "yaml")?)?;
     #[cfg(not(feature = "pulsar"))]
     lua.globals().set("pulsar", absent_stub(lua, "pulsar")?)?;
-    #[cfg(not(feature = "kafka"))]
-    lua.globals().set("kafka", absent_stub(lua, "kafka")?)?;
     #[cfg(not(feature = "s3"))]
     lua.globals().set("s3", absent_stub(lua, "s3")?)?;
     // The `prova.containerized` scaffolding helper — the ergonomic keystone every containerized
@@ -97,10 +93,6 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
     #[cfg(feature = "pulsar")]
     lua.load(PULSAR_RECIPES_LUA)
         .set_name("@prova/pulsar-recipes")
-        .exec()?;
-    #[cfg(feature = "kafka")]
-    lua.load(KAFKA_RECIPES_LUA)
-        .set_name("@prova/kafka-recipes")
         .exec()?;
     #[cfg(feature = "s3")]
     lua.load(S3_RECIPES_LUA)
@@ -341,44 +333,6 @@ function s3.container(ctx, opts)
   end, { timeout = timeout, message = "minio did not become ready in time" }))
   return { client = client, url = url, container = container,
            access_key = access, secret_key = secret }
-end
-"#;
-
-/// `kafka.container(ctx, opts?)` provisions an ephemeral single-node Kafka (KRaft) and returns
-/// `{ brokers, client, container }`. Unlike the others it uses a **fixed** host port (default 9092),
-/// because Kafka advertises a listener address clients must be able to reach — so only one
-/// `kafka.container` runs per host at a time. Requires the `docker` module at call time.
-#[cfg(feature = "kafka")]
-const KAFKA_RECIPES_LUA: &str = r#"
-function kafka.container(ctx, opts)
-  assert(ctx and ctx.manage, "kafka.container(ctx, opts?): pass the fixture/test context as the first argument")
-  opts = opts or {}
-  local image = opts.image or ("apache/kafka:" .. (opts.tag or "3.9.0"))
-  local port = opts.port or 9092
-  local timeout = opts.timeout or "90s"
-  local container = ctx:manage(docker.run{
-    image = image,
-    ports = { { container = 9092, host = port } },
-    env = {
-      KAFKA_NODE_ID = "1",
-      KAFKA_PROCESS_ROLES = "broker,controller",
-      KAFKA_LISTENERS = "PLAINTEXT://:9092,CONTROLLER://:9093",
-      KAFKA_ADVERTISED_LISTENERS = "PLAINTEXT://127.0.0.1:" .. port,
-      KAFKA_CONTROLLER_QUORUM_VOTERS = "1@localhost:9093",
-      KAFKA_CONTROLLER_LISTENER_NAMES = "CONTROLLER",
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP = "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT",
-      KAFKA_INTER_BROKER_LISTENER_NAME = "PLAINTEXT",
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR = "1",
-      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS = "0",
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR = "1",
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR = "1",
-    },
-    wait = { port = 9092, timeout = timeout },
-  })
-  local url = "127.0.0.1:" .. port
-  local client = ctx:manage(prova.retry(function() return kafka.client(url) end,
-    { timeout = timeout, message = "kafka did not accept connections in time" }))
-  return { client = client, url = url, container = container }
 end
 "#;
 
@@ -2652,151 +2606,6 @@ mod pulsar_mod {
             })?,
         )?;
         Ok(pulsar_tbl)
-    }
-}
-
-// ---------------------------------------------------------------------------------------------
-// kafka (async; a thin produce/consume client via rdkafka — librdkafka statically linked)
-// ---------------------------------------------------------------------------------------------
-
-// The Kafka counterpart to the pulsar module: produce a message an app should consume, or consume
-// messages an app produced and assert on them. Consumers use a fresh group with auto-commit off and
-// `auto.offset.reset=earliest`, so produce-then-consume within one test reads from the start.
-// Plaintext only in v1 (no SSL/SASL — so no openssl either).
-#[cfg(feature = "kafka")]
-mod kafka_mod {
-    use std::time::{Duration, Instant};
-
-    use mlua::{Lua, Table, UserData, UserDataMethods};
-    use rdkafka::config::ClientConfig;
-    use rdkafka::consumer::{Consumer, StreamConsumer};
-    use rdkafka::message::Message;
-    use rdkafka::producer::{FutureProducer, FutureRecord, Producer};
-    use rdkafka::util::Timeout;
-
-    fn err(msg: impl Into<String>) -> mlua::Error {
-        mlua::Error::RuntimeError(msg.into())
-    }
-
-    /// A Kafka client bound to a set of bootstrap brokers. Holds a shared producer; consumers are
-    /// created per `consume` call (each needs its own group/subscription config).
-    struct KafkaClient {
-        brokers: String,
-        producer: FutureProducer,
-    }
-
-    impl UserData for KafkaClient {
-        fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-            // produce(topic, message) — send a string and await the broker's delivery ack.
-            methods.add_async_method("produce", |_, this, (topic, message): (String, String)| {
-                let producer = this.producer.clone();
-                async move {
-                    let record = FutureRecord::to(&topic).payload(&message).key("");
-                    producer
-                        .send(record, Timeout::After(Duration::from_secs(10)))
-                        .await
-                        .map_err(|(e, _)| err(format!("kafka produce: {e}")))?;
-                    Ok(())
-                }
-            });
-
-            // consume(topic, { group?, max?, timeout? }) → list of message strings, from the earliest
-            // offset. Collects up to `max` messages arriving within `timeout`.
-            methods.add_async_method(
-                "consume",
-                |lua, this, (topic, opts): (String, Option<Table>)| {
-                    let brokers = this.brokers.clone();
-                    let mut group = "prova".to_string();
-                    let mut max = 10usize;
-                    let mut timeout = Duration::from_secs(15);
-                    let parsed = (|| -> mlua::Result<()> {
-                        if let Some(o) = &opts {
-                            if let Some(g) = o.get::<Option<String>>("group")? {
-                                group = g;
-                            }
-                            if let Some(m) = o.get::<Option<usize>>("max")? {
-                                max = m;
-                            }
-                            if let Some(t) = o
-                                .get::<Option<String>>("timeout")?
-                                .and_then(|s| crate::model::parse_duration(&s))
-                            {
-                                timeout = t;
-                            }
-                        }
-                        Ok(())
-                    })();
-                    async move {
-                        parsed?;
-                        let consumer: StreamConsumer = ClientConfig::new()
-                            .set("bootstrap.servers", &brokers)
-                            .set("group.id", &group)
-                            .set("auto.offset.reset", "earliest")
-                            .set("enable.auto.commit", "false")
-                            .set("session.timeout.ms", "6000")
-                            .create()
-                            .map_err(|e| err(format!("kafka consumer: {e}")))?;
-                        consumer
-                            .subscribe(&[&topic])
-                            .map_err(|e| err(format!("kafka subscribe {topic}: {e}")))?;
-
-                        let deadline = Instant::now() + timeout;
-                        let out = lua.create_table()?;
-                        let mut n = 0usize;
-                        while n < max {
-                            let remaining = deadline.saturating_duration_since(Instant::now());
-                            if remaining.is_zero() {
-                                break;
-                            }
-                            match tokio::time::timeout(remaining, consumer.recv()).await {
-                                Ok(Ok(msg)) => {
-                                    let payload = msg
-                                        .payload()
-                                        .map(|b| String::from_utf8_lossy(b).into_owned())
-                                        .unwrap_or_default();
-                                    out.push(payload)?;
-                                    n += 1;
-                                }
-                                Ok(Err(e)) => return Err(err(format!("kafka consume: {e}"))),
-                                Err(_) => break, // no more messages within the window
-                            }
-                        }
-                        Ok(out)
-                    }
-                },
-            );
-
-            methods.add_method("close", |_, _this, ()| Ok(()));
-        }
-    }
-
-    pub(crate) fn make(lua: &Lua) -> mlua::Result<Table> {
-        let kafka = lua.create_table()?;
-        // kafka.client(brokers) → a client. Async: creates a producer and verifies connectivity with
-        // a metadata fetch (so `prova.retry(kafka.client, ...)` is a real readiness gate).
-        kafka.set(
-            "client",
-            lua.create_async_function(|lua, brokers: String| async move {
-                let producer: FutureProducer = ClientConfig::new()
-                    .set("bootstrap.servers", &brokers)
-                    .set("message.timeout.ms", "10000")
-                    .create()
-                    .map_err(|e| err(format!("kafka.client: {e}")))?;
-                // fetch_metadata is blocking; run it on the blocking pool so the worker isn't stalled.
-                let probe = producer.clone();
-                let brokers_for_probe = brokers.clone();
-                tokio::task::spawn_blocking(move || {
-                    probe
-                        .client()
-                        .fetch_metadata(None, Timeout::After(Duration::from_secs(5)))
-                })
-                .await
-                .map_err(|e| err(format!("kafka.client: {e}")))?
-                .map_err(|e| err(format!("kafka.client {brokers_for_probe}: {e}")))?;
-                lua.create_userdata(KafkaClient { brokers, producer })
-            })?,
-        )?;
-        Ok(kafka)
     }
 }
 
