@@ -169,6 +169,27 @@ ecosystem coherent without a gatekeeper. When the beautiful thing is the default
 emergent, not enforced. **First-party recipes are authored through this same helper** — the dogfood
 proof that the seam is real.
 
+### The exec-CLI SDK (the docker-exec client half)
+
+`prova.containerized` is the SDK for the *server* half (provision + wait + lifecycle). The **exec-CLI
+SDK** is the *client* half — driving the CLI already in the image — extracted from a deliberate
+5-plugin spread across every resource category (redis · postgres · minio · kafka · rabbitmq), so the
+commonality was earned, not guessed:
+
+- **`container:run(cmd, opts?)`** — the one primitive. An **argv table** runs the CLI directly (no
+  shell, no quoting); a **string** runs under `sh -c` (pipes/globs); `opts.stdin` pipes input; it
+  raises on non-zero exit and returns stdout. This absorbs the two footguns every early plugin
+  hand-rolled — shell-quoting and `printf | …` stdin piping — so neither is public surface.
+- **`prova.parse.{lines, rows, table, json}`** — the output toolkit, covering the shapes the spread
+  produced: line-oriented (redis), delimited/`table`-by-header (postgres `|`, rabbitmq TSV), and JSON
+  (minio `--json`). Lives at the root because parsing is broadly useful, not plugin-only.
+- **`containerized` extras from the spread**: a `{ container, host }` ports entry for a **fixed** host
+  port (kafka's advertised listener), and an **`extra`** hook for resource fields beyond the trio
+  (s3 credentials).
+
+Net: a docker-exec plugin writes only the tech-specific bits — image, port, which CLI commands. The
+5 plugins each shed ~30 lines of plumbing onto this SDK; rabbitmq collapsed to a single file.
+
 ### Tiers are a maturity gradient, not a caste
 
 Because the interface is identical, a capability can **start** as a Tier-2 docker-exec plugin (ship in
