@@ -1,14 +1,21 @@
-//! First-party capability modules injected as globals alongside `prova`: `shell`, `fs`, `http`,
-//! `docker`, and the SQL engines.
+//! First-party capability modules injected as globals alongside `prova`.
 //!
 //! These are what make prova useful beyond testing itself — bring a system into existence and poke
-//! it. `shell.run`/`shell.spawn`, `http.*`, and `docker.*` are async (child processes / requests /
-//! docker calls never block the worker); `fs` is synchronous (fast metadata/read ops). All take
-//! context explicitly (no ambient cwd), preserving the isolation the design promises. `http` is
-//! behind a default-on feature and is HTTP-only in v1 (an `https`/TLS feature can layer on later);
-//! `docker` uses the typed **bollard** daemon client, so tests that need it declare
-//! `requires = { "docker" }` to skip gracefully where the daemon is absent. `http`/`grpc`/`docker` are
-//! each behind a default-on feature so builds can opt out of their dependency trees.
+//! it. Two kinds live here, and the split is deliberate:
+//!
+//! - **Primitives + substrate** (always the foundation): `shell.run`/`shell.spawn`, `fs`, `net`,
+//!   `docker` (the typed **bollard** daemon client). `shell`/`docker` are async (child processes /
+//!   docker calls never block the worker); `fs` is synchronous. All take context explicitly (no
+//!   ambient cwd), preserving the isolation the design promises.
+//! - **Network-drive clients** — `http`, `grpc`, `graphql` — how you *drive the app under test*
+//!   (there is no CLI-in-image for arbitrary gRPC), plus `yaml` (a parse util) and `sqlite` (the one
+//!   embedded, no-docker database). Each is behind a default-on feature so a build can opt out.
+//!
+//! **Resource clients are NOT here.** Databases, caches, brokers, object stores, streams — every
+//! *containerized* resource — are **external docker-exec plugins** (`prova-rs/prova-<name>`, authored
+//! through `prova.containerized` + `container:run`), fetched via `prova.toml`, not compiled in. That
+//! keeps the binary lean and privileges no technology. Modules that need docker declare
+//! `requires = { "docker" }` to skip gracefully where the daemon is absent.
 
 use std::path::Path;
 use std::time::Instant;

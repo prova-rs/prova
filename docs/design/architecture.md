@@ -108,7 +108,7 @@ The core stays small; capability grows at the edges:
 
 | Surface | Extends by | Examples |
 |---|---|---|
-| **Modules** | async Lua modules registered into the runtime (via `RunConfig::with_module`) | `fs`, `net`, `shell`, `http`, `grpc`, `graphql`, `docker`, `db`, `redis`, `pulsar`, `kafka`, `s3`, `yaml`, `archetect` |
+| **Modules** | async Lua modules registered into the runtime (via `RunConfig::with_module`) | `fs`, `net`, `shell`, `http`, `grpc`, `graphql`, `docker`, `sqlite`, `yaml`, `archetect` (resource clients are external plugins) |
 | **Matchers** | new terminal checks on the matcher | domain assertions, snapshots |
 | **Reporters** | new `Reporter` sinks | JUnit, TAP, GUI socket, load metrics |
 | **Selectors** | plan filters | tag expressions, `--changed`, `--last-failed`, sharding |
@@ -159,48 +159,28 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
 - **Readiness without ceremony**: `prova.retry(fn, { timeout, every, message })` calls `fn` until it
   returns truthy (a raise = "not yet") or the deadline elapses, returning the value — replacing the
   hand-rolled `for _=1,N do pcall(...) sleep end` loop (`local conn = prova.retry(function() return
-  db.connect(url) end)`). *(`testdata/ergonomics.lua`.)*
-- **`redis` module** — a thin async cache client: `redis.connect(url)` → a connection with
-  `get`/`set`/`del`/`exists`/`incr`/`expire`/`ping` and a generic `command(...)` escape hatch. Enough
-  to assert on a cache dependency (a key the app set, a counter). redis-rs, no TLS, feature-gated
-  `redis` (default on). *(`examples/redis_test.lua`, verified against real Redis.)*
-- **`pulsar` module** — a thin async messaging client: `pulsar.connect(url)` → `produce(topic, msg)`
-  (awaits the send receipt) and `consume(topic, { subscription, max, timeout, shared })` → a list of
-  message strings (reads from the earliest offset so produce-then-consume in one test is reliable).
-  apache pulsar-rs on tokio; **note**: unlike the other clients, pulsar always links a TLS backend
-  (native-tls/openssl) — the only tokio-compatible option — so this one pulls system openssl. Plaintext
-  connect in v1. feature-gated `pulsar` (default on). *(`examples/pulsar_test.lua`, verified against a
-  real Pulsar standalone.)*
-- **`kafka` module** — the Kafka counterpart to `pulsar`: `kafka.connect(brokers)` → `produce(topic,
-  msg)` and `consume(topic, { group, max, timeout })` → message strings (a fresh group reads from the
-  earliest offset). rdkafka with **librdkafka vendored + statically linked** (built from source by the
-  C toolchain — no cmake, no runtime .so; the build cost is a CI concern, the *binary stays
-  self-contained* — the guiding priority); no SSL/SASL features → no openssl. *(`examples/kafka_test.lua`,
-  verified against real Apache Kafka KRaft.)*
-- **`s3` module** — a thin object-storage client: `s3.connect{ endpoint, bucket, access_key,
-  secret_key, create? }` → `put`/`get`/`exists`/`list`/`delete`. rust-s3 with **rustls** (pure-Rust,
-  statically linked — no openssl — and real HTTPS S3 works too), path-style addressing. Enough to
-  assert on an object an app wrote. *(`examples/s3_test.lua`, verified against real MinIO.)*
+  sqlite.client(url) end)`). *(`testdata/ergonomics.lua`.)*
+- **Resource clients are external plugins** *(as of the 2026-07-15 extraction)*. Databases, caches,
+  brokers, object stores, and streams — every *containerized* resource — live as **external docker-exec
+  plugins** under `prova-rs/prova-<name>` (redis, postgres, mysql, s3, kafka, pulsar, rabbitmq, …),
+  authored through `prova.containerized` + `container:run` and fetched via `prova.toml`. Core compiles
+  **none** of them in (no sqlx-for-servers / rdkafka / pulsar / rust-s3), so the binary is lean and no
+  technology is privileged over another. Each drives the CLI already in the image (`redis-cli`, `psql`,
+  the `mysql` CLI, `mc`, the kafka console tools, `pulsar-client`) and self-tests in its own repo.
+  Generated from `prova-rs/prova-plugin-archetype`. See [ecosystem.md](ecosystem.md).
+- **`sqlite` stays embedded** — the one bundled resource client, because it is *not* a container:
+  `sqlite.client(url)` (`sqlite::memory:` or a file) over sqlx, no docker needed — the fast in-process
+  database for tests that don't want a container.
 - **`docker.run{ command }`** — override the image CMD (a string, whitespace-split, or a list), needed
   by images like Pulsar's (`bin/pulsar standalone`). **`docker.run{ ports = { { container, host } } }`**
-  — a *fixed* host port (else random), needed by Kafka (it advertises a listener clients must reach).
-- **The resource matrix is complete** — DB (`db`: Postgres/MySQL/SQLite), cache (`redis`), messaging
-  (`pulsar`, `kafka`), object storage (`s3`) — every archetype resource type has a client + a
-  `*.container`/`db.*` recipe, each verified against a real container and leak-free.
-- **Resource recipes** (testcontainers-style): `db.postgres` / `db.mysql` / `redis.container` /
-  `pulsar.container` / `kafka.container` `(ctx, opts?)` fold provision-container + wait-ready + connect +
-  manage into one call, returning `{ url|brokers, conn|client, container }`. Lua sugar over
-  `docker`/`prova.retry`/client/`ctx:manage` (a prova-core prelude); `requires{docker}`-gateable.
-  *(`db_postgres_test.lua` fixture is one line; `db_mysql`/`redis`/`pulsar`/`kafka_test.lua`; verified
-  against real Postgres + MySQL + Redis + Pulsar + Kafka, leak-free.)* (`kafka.container` uses a fixed
-  host port — one per host at a time — because Kafka advertises a reachable listener.)
-- **Deferred: an environment / TLS+auth arc.** Every client connects **plaintext** in v1 — right for
-  the local/CI ephemeral-container mission, but they can't reach a *secured* remote endpoint (a dev k8s
-  cluster / cloud broker with TLS + tokens/mTLS/OAuth2). This is a deliberate, additive gap: each
-  crate supports TLS behind a feature, and the `connect(url, opts?)`/`client{...}` signatures already
-  take opts, so a coherent `tls`+credentials pass across `http`→https / `db` / `redis` / `grpc` /
-  `pulsar` / `kafka` slots in without breaking callers — to be built when environment testing (the
-  "point at a dev cluster" variation) is on the table.
+  — a *fixed* host port (else random), needed by Kafka (its advertised listener). Both surface through
+  `prova.containerized` (`spec.command`, a `{ container, host }` ports entry), which every resource
+  plugin is built on.
+- **Deferred: attach-to-secured-external / TLS+auth.** Everything connects **plaintext** in v1 — right
+  for the local/CI ephemeral-container mission, but a secured *remote* endpoint (a dev k8s cluster /
+  cloud broker with TLS + tokens) needs auth. In the plugin model this is a per-plugin concern (a
+  client-container or a native option) plus the network-drive primitives growing an `https`/TLS
+  feature — additive, for when the "point at a dev cluster" environment-testing variation lands.
 - **Capability modules** (`modules.rs`), injected as their own globals: **`shell.run(cmd, {cwd,
   env, timeout, check})`** (async via `tokio::process`; returns `{code, stdout, stderr, duration}` +
   `:ok()`) and **`shell.spawn(cmd, {cwd, env})`** → a managed `Process` (`.pid`, `:running()`,
@@ -222,15 +202,13 @@ into a metrics reporter. No new authoring surface — the same tests, driven dif
   readiness wait (port TCP-connect or log-substring), `remove_container(force)` on `:stop()` with a
   `Drop` backstop so a container never leaks. *(`examples/docker_dependency_test.lua`; verified
   against a real daemon — whoami HTTP, redis exec/logs, real Postgres.)*
-- **`db` module** — one **general, multi-database** query API over **sqlx's `Any` driver**:
-  `db.connect(url)` picks the backend by URL scheme (`postgres://`, `mysql://`,
-  `sqlite://…?mode=rwc`), returning a `Connection` with async `:execute` (rows affected),
-  `:query` (list of column-name→value tables, NULL→nil, typed by SQL kind with a probe fallback for
-  computed columns like `count(*)`), `:query_value` (scalar), `:close`. Positional params bind
-  Lua int/float/bool/string/nil. Feature-gated `db` (default on). *(`tests/db.rs` verifies the full
-  surface over SQLite;* ***`examples/db_postgres_test.lua` + `tests/db_postgres.rs` run the identical
-  API against a real Postgres in an ephemeral `docker.run{postgres}` container*** *— the North Star
-  data layer, gated by `requires` so it skips without a daemon.)*
+- **`sqlite` module** — an embedded SQL query API over **sqlx's `Any` driver**: `sqlite.client(url)`
+  (`sqlite::memory:` or `sqlite://…?mode=rwc`) returns a `Connection` with async `:execute` (rows
+  affected), `:query` (list of column-name→value tables, NULL→nil, typed by SQL kind with a probe
+  fallback for computed columns like `count(*)`), `:query_value` (scalar), `:close`. `?`-placeholder
+  params bind Lua int/float/bool/string/nil. Needs no docker — the fast in-process database. Feature
+  `sqlite` (default on). *(`tests/sqlite.rs`.)* (Server databases — postgres/mysql — are external
+  docker-exec plugins; only sqlite is embedded.)
 - **`yaml` module** — `yaml.parse(text)` (single document) and `yaml.parse_all(text)` (multi-document
   `---` stream, as in k8s manifests) → Lua values, the counterpart to `http`'s `:json()`. General
   black-box machinery for a cloud-oriented, polyglot world (k8s/CI/compose are all YAML). serde_yaml_ng,
@@ -382,10 +360,12 @@ to assert cross-service state. Every ingredient is a module behind the plugin bo
 suite can instead point at a **dev Kubernetes cluster** (skip the containers, set endpoints via a
 manifest profile's `env`) — local, CI, and environment testing from one description.
 
-**Single-service assembly is proven** (`examples/service_grpc_postgres_test.lua`): a real p6m
-`rust-grpc-service-archetype@dev` rendered with Postgres, built, booted against a `docker.run` Postgres,
-and driven over gRPC (`grpc.call_status`) while `db.connect` cross-checks the same database — 31.8s,
-green, leak-free. It also demonstrates prova's forcing-function value: *running* the service exposed
-that the archetype is a scaffold (methods `Unimplemented`, empty migration) — something "renders +
-compiles" hides. The remaining gap to the full North Star is the second service + Pulsar + cross-service
-assertions, which are more of the same composition.
+**Single-service assembly is proven** (the `service_grpc_postgres` capstone): a real p6m
+`rust-grpc-service-archetype@dev` rendered with Postgres, built, booted against a provisioned Postgres,
+and driven over gRPC (`grpc.call_status`) while a Postgres client cross-checks the same database —
+31.8s, green, leak-free. It also demonstrates prova's forcing-function value: *running* the service
+exposed that the archetype is a scaffold (methods `Unimplemented`, empty migration) — something
+"renders + compiles" hides. (This capstone predates the resource-client extraction; it is being
+updated to `require("postgres")` + a `prova.toml` plugin declaration — the new external-plugin model.)
+The remaining gap to the full North Star is the second service + a stream + cross-service assertions,
+which are more of the same composition.

@@ -57,6 +57,17 @@ the manifest hash, plus an optional `plugins:` input for CI-only extras.
 
 ## 2. Three layers
 
+> **DECISION (2026-07-15): resource clients are external, not bundled-native.** The reasoning below
+> weighed native clients (Layer 1, "bundled by distribution") against docker-exec Lua. §3–4 showed
+> docker-exec covers every resource with zero native code, and keeping any resource client compiled
+> in *privileges some technologies over others* for a throughput benefit we don't sell. So **every
+> containerized resource client was extracted to an external docker-exec plugin** (`prova-rs/prova-<name>`:
+> redis, postgres, mysql, s3, kafka, pulsar, rabbitmq, …). Native code in core is now **only** the
+> substrate (`docker`) and the **network-drive primitives** (`http`/`grpc`/`graphql`) — which are how
+> you *drive the app under test*, not resource clients — plus `yaml` and the one embedded, no-docker
+> database, `sqlite`. Read "Layer 1" below as the reasoning that led here, not the current state: the
+> only surviving Layer-1 clients are the network-drive trio + sqlite; resource clients live at Layer 2.
+
 A capability is never "a plugin" or "a battery" as a whole — it is split across layers, and the split
 is where the confusion dissolves. `postgres` is the worked example:
 
