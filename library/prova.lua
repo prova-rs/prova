@@ -396,7 +396,7 @@ function prova.retry(fn, opts) end
 ---@field wait? { port?: integer, log?: string }  # readiness probe (default: primary port)
 ---@field timeout? string                      # readiness deadline (default "60s")
 ---@field url fun(host_port: integer, opts: table): string  # connection URL from the mapped host port
----@field client? fun(url: string, opts: table): any        # attach a client (native / docker-exec); omit for black-box
+---@field client? fun(url: string, opts: table, container: any): any  # attach a client (native uses url; docker-exec uses container); omit for black-box
 
 ---Build a grammar-conformant resource namespace (`{ client?, container }`) from a compact spec — the
 ---scaffolding every containerized recipe/plugin is authored through, so first-party and third-party

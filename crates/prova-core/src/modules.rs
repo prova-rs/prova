@@ -147,7 +147,9 @@ fn absent_stub(lua: &Lua, name: &'static str) -> mlua::Result<Table> {
 /// Spec fields: `name` (for messages), `image` (base repo), `tag` (default tag), `port`/`ports`
 /// (published; `port` is the primary for readiness + url), `command?`, `env?` (table or
 /// `function(opts)->table`), `wait?` (`{ port|log }`, default `{ port = primary }`), `timeout?`,
-/// `url` (`function(host_port, opts)->string`, required), `client?` (`function(url, opts)->handle`).
+/// `url` (`function(host_port, opts)->string`, required), `client?`
+/// (`function(url, opts, container)->handle` — the `container` is passed so a docker-exec client can
+/// `exec` into it; a native client just uses `url`).
 const CONTAINERIZED_LUA: &str = r#"
 function prova.containerized(spec)
   assert(type(spec) == "table", "prova.containerized: pass a spec table")
@@ -189,7 +191,9 @@ function prova.containerized(spec)
     local url = spec.url(container:host_port(primary), opts)
     local res = { url = url, container = container }
     if spec.client then
-      res.client = ctx:manage(prova.retry(function() return spec.client(url, opts) end,
+      -- The factory gets the container too, so a docker-exec client (no native driver) can `exec`
+      -- into it; a native client just uses `url` and ignores the extra arg.
+      res.client = ctx:manage(prova.retry(function() return spec.client(url, opts, container) end,
         { timeout = timeout, message = name .. " did not become ready in time" }))
     end
     return res

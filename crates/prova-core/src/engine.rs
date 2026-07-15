@@ -2446,3 +2446,54 @@ pub fn discover_path_with(path: &Path, config: &RunConfig) -> mlua::Result<Vec<S
         .flat_map(|leaf| leaf.unit.leaf_paths().into_iter().map(String::from))
         .collect())
 }
+
+/// A lint report for a plugin module: the grammar facets it exposes and any conformance issues.
+#[derive(Debug, Default)]
+pub struct PluginReport {
+    /// Facet names found on the returned namespace (e.g. `client`, `container`, `wait_for`).
+    pub facets: Vec<String>,
+    /// Conformance problems — non-empty means the plugin does not follow the grammar.
+    pub issues: Vec<String>,
+}
+
+/// Load a plugin file (with the primitives + searcher installed, exactly as at run time), evaluate it
+/// to its returned namespace, and check it against the namespacing grammar: it must `return` a table
+/// exposing at least one recognized facet (`client` / `container` / `wait_for`), each a function. A
+/// `container` facet is expected to return the `{ client?, url, container }` trio — which can't be
+/// verified without provisioning, so lint checks the shape statically and leaves the trio to tests.
+pub fn inspect_plugin(path: &Path, config: &RunConfig) -> mlua::Result<PluginReport> {
+    let code = std::fs::read_to_string(path)
+        .map_err(|e| mlua::Error::RuntimeError(format!("cannot read {}: {e}", path.display())))?;
+    let (lua, _col) = build_lua("plugin".to_string(), config)?;
+    let value: Value = lua.load(&code).set_name(path.to_string_lossy()).eval()?;
+
+    let mut report = PluginReport::default();
+    let Value::Table(ns) = value else {
+        report.issues.push(format!(
+            "plugin must `return` a namespace table, but returned a {}",
+            value.type_name()
+        ));
+        return Ok(report);
+    };
+
+    // Recognized facets, in grammar order. Each present facet must be a function.
+    for facet in ["client", "container", "wait_for"] {
+        match ns.get::<Value>(facet)? {
+            Value::Nil => {}
+            Value::Function(_) => report.facets.push(facet.to_string()),
+            other => report.issues.push(format!(
+                "`{facet}` should be a function, but is a {}",
+                other.type_name()
+            )),
+        }
+    }
+
+    if report.facets.is_empty() {
+        report.issues.push(
+            "namespace exposes no recognized facet (expected at least one of \
+             `client`, `container`, `wait_for`)"
+                .to_string(),
+        );
+    }
+    Ok(report)
+}

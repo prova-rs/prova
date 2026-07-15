@@ -62,6 +62,66 @@ fn value_flag(
 }
 
 fn main() -> ExitCode {
+    // Subcommands: `prova plugin <...>`. Everything else is the run path (paths + flags).
+    let mut raw = std::env::args().skip(1).peekable();
+    if raw.peek().map(String::as_str) == Some("plugin") {
+        raw.next();
+        return plugin_subcommand(raw.collect());
+    }
+
+    run(std::env::args().skip(1).collect())
+}
+
+/// `prova plugin lint <file>...` — check each plugin file against the namespacing grammar.
+fn plugin_subcommand(args: Vec<String>) -> ExitCode {
+    let mut args = args.into_iter();
+    match args.next().as_deref() {
+        Some("lint") => {
+            let files: Vec<String> = args.collect();
+            if files.is_empty() {
+                eprintln!("usage: prova plugin lint <file>...");
+                return ExitCode::from(2);
+            }
+            // Lint loads each plugin with the same primitives + archetect module a run would install.
+            let config = RunConfig::new(1).with_module(prova_archetect::install);
+            let mut ok = true;
+            for file in &files {
+                match prova_core::inspect_plugin(Path::new(file), &config) {
+                    Ok(report) if report.issues.is_empty() => {
+                        println!("ok   {file}  (facets: {})", report.facets.join(", "));
+                    }
+                    Ok(report) => {
+                        ok = false;
+                        println!("FAIL {file}");
+                        for issue in &report.issues {
+                            println!("       - {issue}");
+                        }
+                    }
+                    Err(err) => {
+                        ok = false;
+                        println!("FAIL {file}");
+                        println!("       - could not load: {err}");
+                    }
+                }
+            }
+            if ok {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+        Some(other) => {
+            eprintln!("prova: unknown plugin subcommand {other:?} (expected: lint)");
+            ExitCode::from(2)
+        }
+        None => {
+            eprintln!("usage: prova plugin lint <file>...");
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn run(cli_args: Vec<String>) -> ExitCode {
     let mut cli_format: Option<Format> = None;
     let mut cli_jobs: Option<usize> = None;
     let mut list = false;
@@ -70,7 +130,7 @@ fn main() -> ExitCode {
     let mut manifest_path: Option<String> = None;
     let mut cli_plugins: Vec<String> = Vec::new();
 
-    let mut args = std::env::args().skip(1);
+    let mut args = cli_args.into_iter();
     while let Some(arg) = args.next() {
         // `--plugin name=source` (repeatable): an ad-hoc plugin, layered over the manifest (CLI wins).
         if let Some(v) = value_flag(&arg, &mut args, &["--plugin", "-P"]) {

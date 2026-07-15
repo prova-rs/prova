@@ -243,6 +243,14 @@ the rare escape hatch, not the common path. Kept on the roadmap, Substrate-infor
    `~/.cache/prova/plugins` (keyed on the manifest) so pinned plugins clone once, and its `plugins:`
    input (one `name = source` per line) expands to prova's repeatable `--plugin name=source` flag,
    layered over the manifest.
-5. Stand up `prova-rs/prova-redis` (dogfood the external round-trip); `prova plugin lint`.
+5. Stand up an external plugin (dogfood the round-trip); `prova plugin lint`. **(done)** —
+   `prova-rs/prova-rabbitmq` is the first standalone plugin: a **zero-native-code** RabbitMQ resource
+   (docker-exec over `rabbitmqadmin`, authored through `prova.containerized`), self-testing through
+   Prova against a live daemon. `prova plugin lint <file>` checks a plugin returns a namespace with
+   grammar facets (`client`/`container`/`wait_for`, each a function). *(Chose rabbitmq over redis: a
+   true external technology Prova doesn't bundle, so it exercises the real docker-exec path — a
+   stronger dogfood than re-exposing a bundled recipe.)* Also: `prova.containerized`'s `client`
+   factory now receives the `container` (`client(url, opts, container)`) so docker-exec clients can
+   `exec` into it — the "fix the starter first" change this plugin surfaced.
 6. The `prova-rs/registry` index; distributions (`prova-min`/`prova-full`) + tap variants.
 7. Later: native-plugin hatch, if a real need appears.
