@@ -178,6 +178,38 @@ what lets "batteries + ecosystem" stay consistent instead of sprawling.
 
 ---
 
+## Plugin shapes
+
+Everything above (facets, the trio, Docker) describes the **resource** shape — but that is one shape,
+not the definition of a plugin. **The only universal contract is: a plugin is a Lua module that
+`return`s a table.** `prova.containerized` is a *constructor* for the resource shape; it sits at one
+row of this table, not at the root.
+
+| Shape | Returns | Docker? | Constructor | Example |
+|---|---|---|---|---|
+| **Resource** | `{ client, url, container }` | yes | `prova.containerized` | `rabbitmq`, `postgres` |
+| **Client-only** | a client factory (attach, no provisioning) | no | — (none yet) | attach to an external Stripe / dev-cluster over `http` |
+| **Library** | an arbitrary table of functions | no | — (none needed) | JWT/token DSL, data builders, custom matchers, a company auth-flow helper |
+| **Composite** | a higher-level flow over several resources | via its parts | — | "spin up the whole stack" |
+
+Consequences that follow from "a plugin is any namespace":
+
+- **`requires = { "docker" }` is a property of the *resource* shape, not of plugins.** A library
+  plugin needs nothing — it is just Lua the searcher resolves and `require` returns.
+- **`prova plugin lint` classifies; it does not prescribe.** It fails only on what is wrong for *any*
+  plugin — a non-table return, or a resource facet (`client`/`container`/`wait_for`) that is present
+  but not a function. "No resource facets" is not an error; it is the signal for a **library** plugin.
+  Lint reports the shape (`resource` / `library`), never rejects a valid library.
+- **Restraint on constructors.** Libraries need no constructor (nothing to abstract); `prova.containerized`
+  earns its place because the resource shape has real boilerplate (provision + wait + manage + trio).
+  A second constructor is added only if a shape proves to carry recurring boilerplate — client-only
+  (attach + readiness) is the likeliest future candidate, but not yet.
+
+So the plugin *system* is **Lua**; **Docker is the substrate for the resource shape specifically**,
+which is the most common shape but not the only one.
+
+---
+
 ## Unified `requires`
 
 There is **one** capability gate. `requires_native` is not a separate concept — it is the same gate

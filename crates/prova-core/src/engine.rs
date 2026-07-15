@@ -2448,19 +2448,39 @@ pub fn discover_path_with(path: &Path, config: &RunConfig) -> mlua::Result<Vec<S
 }
 
 /// A lint report for a plugin module: the grammar facets it exposes and any conformance issues.
+/// What kind of namespace a plugin returned. A plugin is *any* Lua module that returns a table; the
+/// resource shape (`client`/`container`/`wait_for`) is one common kind, but a library of helpers is
+/// equally valid — so lint classifies rather than requiring a fixed shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PluginShape {
+    /// Exposes resource facets (`container`/`client`/`wait_for`) — a provisioned/attachable resource.
+    Resource,
+    /// A table with no resource facets — a helper library (custom matchers, builders, DSLs, …).
+    Library,
+}
+
 #[derive(Debug, Default)]
 pub struct PluginReport {
-    /// Facet names found on the returned namespace (e.g. `client`, `container`, `wait_for`).
+    /// The plugin's shape, if it returned a table (`None` only when it returned a non-table).
+    pub shape: Option<PluginShape>,
+    /// Resource facet names found on the namespace (`client`/`container`/`wait_for`). Empty for a
+    /// library — which is fine, not an error.
     pub facets: Vec<String>,
-    /// Conformance problems — non-empty means the plugin does not follow the grammar.
+    /// Conformance problems that make the plugin *invalid* — non-table return, or a malformed facet.
+    /// An empty list means the plugin is well-formed (whatever its shape).
     pub issues: Vec<String>,
 }
 
 /// Load a plugin file (with the primitives + searcher installed, exactly as at run time), evaluate it
-/// to its returned namespace, and check it against the namespacing grammar: it must `return` a table
-/// exposing at least one recognized facet (`client` / `container` / `wait_for`), each a function. A
-/// `container` facet is expected to return the `{ client?, url, container }` trio — which can't be
-/// verified without provisioning, so lint checks the shape statically and leaves the trio to tests.
+/// to its returned namespace, and check it against the plugin contract.
+///
+/// The *only* universal requirement is that a plugin `return`s a table. Beyond that, lint
+/// **classifies** rather than prescribes: a namespace exposing resource facets
+/// (`client`/`container`/`wait_for`) is a [`PluginShape::Resource`]; a plain table of helpers with no
+/// such facets is a [`PluginShape::Library`] — equally valid. It therefore flags only what is wrong
+/// for *any* plugin: a non-table return, or a resource facet that is present but not a function.
+/// (A `container` facet is expected to yield the `{ client?, url, container }` trio, which can't be
+/// verified without provisioning, so that is left to tests.)
 pub fn inspect_plugin(path: &Path, config: &RunConfig) -> mlua::Result<PluginReport> {
     let code = std::fs::read_to_string(path)
         .map_err(|e| mlua::Error::RuntimeError(format!("cannot read {}: {e}", path.display())))?;
@@ -2476,7 +2496,8 @@ pub fn inspect_plugin(path: &Path, config: &RunConfig) -> mlua::Result<PluginRep
         return Ok(report);
     };
 
-    // Recognized facets, in grammar order. Each present facet must be a function.
+    // Recognized resource facets, in grammar order. A present facet must be a function; a malformed
+    // one is an issue. Absent facets are fine — that just means this isn't a resource plugin.
     for facet in ["client", "container", "wait_for"] {
         match ns.get::<Value>(facet)? {
             Value::Nil => {}
@@ -2488,12 +2509,10 @@ pub fn inspect_plugin(path: &Path, config: &RunConfig) -> mlua::Result<PluginRep
         }
     }
 
-    if report.facets.is_empty() {
-        report.issues.push(
-            "namespace exposes no recognized facet (expected at least one of \
-             `client`, `container`, `wait_for`)"
-                .to_string(),
-        );
-    }
+    report.shape = Some(if report.facets.is_empty() {
+        PluginShape::Library
+    } else {
+        PluginShape::Resource
+    });
     Ok(report)
 }

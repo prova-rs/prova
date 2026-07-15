@@ -45,8 +45,16 @@ plugin.
 
 ## The contract (this *is* the plugin API)
 
-A plugin is a Lua module that `return`s a **namespace table** obeying
-[the namespacing grammar](namespacing.md):
+**The only universal rule: a plugin is a Lua module that `return`s a namespace table.** Everything
+below — facets, the trio, Docker, `ctx:manage` — is the convention for **one shape**, the *resource*
+plugin (a provisioned or attachable server/client pair). Other shapes are equally valid and need none
+of it: a **library** plugin just returns a table of helpers (custom matchers, data builders, a token
+DSL); a **client-only** plugin returns a factory that attaches to an external service. Only the
+resource shape touches Docker. See [ecosystem.md § Plugin shapes](ecosystem.md) for the full
+taxonomy. The rest of this section describes the resource shape, since it carries the conventions
+worth standardizing.
+
+A **resource** plugin returns a namespace obeying [the namespacing grammar](namespacing.md):
 
 ```lua
 -- rabbitmq.lua — a third-party plugin, one namespace, standard facets.

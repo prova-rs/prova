@@ -88,7 +88,16 @@ fn plugin_subcommand(args: Vec<String>) -> ExitCode {
             for file in &files {
                 match prova_core::inspect_plugin(Path::new(file), &config) {
                     Ok(report) if report.issues.is_empty() => {
-                        println!("ok   {file}  (facets: {})", report.facets.join(", "));
+                        // A plugin is any Lua namespace: a resource (has facets) or a helper library
+                        // (none) — both valid. Report the shape rather than requiring facets.
+                        let detail = match report.shape {
+                            Some(prova_core::PluginShape::Resource) => {
+                                format!("resource; facets: {}", report.facets.join(", "))
+                            }
+                            Some(prova_core::PluginShape::Library) => "library".to_string(),
+                            None => "namespace".to_string(),
+                        };
+                        println!("ok   {file}  ({detail})");
                     }
                     Ok(report) => {
                         ok = false;

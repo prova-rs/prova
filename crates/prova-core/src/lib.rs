@@ -14,7 +14,7 @@ mod suite;
 
 pub use engine::{
     discover_path, discover_path_with, inspect_plugin, run_path, run_path_with, Module,
-    PluginReport, RunConfig,
+    PluginReport, PluginShape, RunConfig,
 };
 pub use layout::{RootedSystemLayout, SystemLayout, XdgSystemLayout};
 pub use model::{
