@@ -61,6 +61,9 @@ pub struct RunConfig {
     /// Manifest-declared plugins: name → an exact file (a local path, or a git checkout the CLI
     /// fetched into the cache). Authoritative over disk roots.
     named_plugins: std::collections::BTreeMap<String, std::path::PathBuf>,
+    /// Plugin namespaces: a plugin's canonical name → its module root dir, so a multi-file plugin can
+    /// `require("<canonical>.<sub>")` its own siblings.
+    plugin_namespaces: std::collections::BTreeMap<String, std::path::PathBuf>,
 }
 
 impl Default for RunConfig {
@@ -70,6 +73,7 @@ impl Default for RunConfig {
             modules: Vec::new(),
             plugin_roots: Vec::new(),
             named_plugins: std::collections::BTreeMap::new(),
+            plugin_namespaces: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -81,6 +85,7 @@ impl std::fmt::Debug for RunConfig {
             .field("modules", &self.modules.len())
             .field("plugin_roots", &self.plugin_roots)
             .field("named_plugins", &self.named_plugins)
+            .field("plugin_namespaces", &self.plugin_namespaces)
             .finish()
     }
 }
@@ -117,6 +122,17 @@ impl RunConfig {
         path: impl Into<std::path::PathBuf>,
     ) -> Self {
         self.named_plugins.insert(name.into(), path.into());
+        self
+    }
+
+    /// Register a plugin namespace: `require("<canonical>.<sub>")` resolves `<sub>` under `dir`, so a
+    /// multi-file plugin can require its own sibling modules.
+    pub fn with_plugin_namespace(
+        mut self,
+        canonical: impl Into<String>,
+        dir: impl Into<std::path::PathBuf>,
+    ) -> Self {
+        self.plugin_namespaces.insert(canonical.into(), dir.into());
         self
     }
 }
@@ -1306,7 +1322,12 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
 
     // Wire `require` to resolve Lua plugins (bundled + manifest + disk). Installed last so a plugin
     // loaded via `require` sees every primitive global it composes.
-    crate::plugins::install(&lua, &config.plugin_roots, &config.named_plugins)?;
+    crate::plugins::install(
+        &lua,
+        &config.plugin_roots,
+        &config.named_plugins,
+        &config.plugin_namespaces,
+    )?;
 
     Ok((lua, col))
 }

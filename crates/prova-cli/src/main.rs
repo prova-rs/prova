@@ -39,6 +39,9 @@ options:
   -V, --version             print version
   -h, --help                print this help";
 
+/// The running prova version, checked against each plugin's `requires.prova` compatibility range.
+const PROVA_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 enum Format {
     Console,
     Json,
@@ -82,11 +85,16 @@ fn plugin_subcommand(args: Vec<String>) -> ExitCode {
                 eprintln!("usage: prova plugin lint <file>...");
                 return ExitCode::from(2);
             }
-            // Lint loads each plugin with the same primitives + archetect module a run would install.
-            let config = RunConfig::new(1).with_module(prova_archetect::install);
             let mut ok = true;
             for file in &files {
-                match prova_core::inspect_plugin(Path::new(file), &config) {
+                // Lint loads each plugin with the same primitives + archetect module a run would
+                // install, plus the plugin's own namespace so its intra-plugin `require`s resolve.
+                let path = Path::new(file);
+                let mut config = RunConfig::new(1).with_module(prova_archetect::install);
+                if let Some((canonical, dir)) = plugins::namespace_for_file(path) {
+                    config = config.with_plugin_namespace(canonical, dir);
+                }
+                match prova_core::inspect_plugin(path, &config) {
                     Ok(report) if report.issues.is_empty() => {
                         // A plugin is any Lua namespace: a resource (has facets) or a helper library
                         // (none) — both valid. Report the shape rather than requiring facets.
@@ -206,13 +214,14 @@ fn run(cli_args: Vec<String>) -> ExitCode {
 
     // Resolve the run: explicit path args bypass the manifest; otherwise read prova.toml. Manifest
     // `[plugins]` are resolved (git sources fetched into the cache) into a name→file map.
-    let (paths, jobs, format, declared, mut named_plugins, sources) = if !explicit_paths.is_empty() {
+    let (paths, jobs, format, declared, mut plugins_resolved, sources) = if !explicit_paths.is_empty()
+    {
         (
             explicit_paths,
             cli_jobs.unwrap_or(1),
             cli_format.unwrap_or(Format::Console),
             BTreeMap::new(),
-            BTreeMap::new(),
+            plugins::ResolvedPlugins::default(),
             BTreeMap::new(),
         )
     } else {
@@ -237,8 +246,11 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                 }
             }
         }
-        match plugins::resolve_plugins(&adhoc, Path::new("."), &layout, &sources) {
-            Ok(resolved) => named_plugins.extend(resolved),
+        match plugins::resolve_plugins(&adhoc, Path::new("."), &layout, &sources, PROVA_VERSION) {
+            Ok(resolved) => {
+                plugins_resolved.named.extend(resolved.named);
+                plugins_resolved.namespaces.extend(resolved.namespaces);
+            }
             Err(e) => {
                 eprintln!("prova: {e}");
                 return ExitCode::from(2);
@@ -290,8 +302,11 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     let mut config = RunConfig::new(jobs)
         .with_module(prova_archetect::install)
         .with_plugin_root(layout.plugins_dir());
-    for (name, path) in &named_plugins {
+    for (name, path) in &plugins_resolved.named {
         config = config.with_named_plugin(name.clone(), path.clone());
+    }
+    for (canonical, dir) in &plugins_resolved.namespaces {
+        config = config.with_plugin_namespace(canonical.clone(), dir.clone());
     }
 
     if list {
@@ -340,7 +355,7 @@ fn resolve_from_manifest(
         usize,
         Format,
         BTreeMap<String, SuiteDecl>,
-        BTreeMap<String, PathBuf>,
+        plugins::ResolvedPlugins,
         BTreeMap<String, String>,
     ),
     ExitCode,
@@ -382,13 +397,17 @@ fn resolve_from_manifest(
 
     // Resolve declared plugins relative to the manifest's directory (git sources fetched into cache).
     let base_dir = Path::new(&path).parent().unwrap_or(Path::new(".")).to_path_buf();
-    let named_plugins =
-        plugins::resolve_plugins(&resolved.plugins, &base_dir, layout, &resolved.sources).map_err(
-            |e| {
-                eprintln!("prova: {e}");
-                ExitCode::from(2)
-            },
-        )?;
+    let plugins_resolved = plugins::resolve_plugins(
+        &resolved.plugins,
+        &base_dir,
+        layout,
+        &resolved.sources,
+        PROVA_VERSION,
+    )
+    .map_err(|e| {
+        eprintln!("prova: {e}");
+        ExitCode::from(2)
+    })?;
 
     let jobs = cli_jobs.or(resolved.jobs).unwrap_or(1);
     let format = match cli_format {
@@ -407,7 +426,7 @@ fn resolve_from_manifest(
         jobs,
         format,
         resolved.suites,
-        named_plugins,
+        plugins_resolved,
         resolved.sources,
     ))
 }

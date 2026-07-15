@@ -251,12 +251,30 @@ everyone's binary.
 - `prova-rs/run-action` — the GitHub Action (manifest-canonical + plugin cache).
 - Community plugins live anywhere, referenced by shorthand or listed in the index.
 
-## Native plugins — the heavyweight future hatch
+## Non-goals
 
-For the narrow case of "direct assertion against a technology no distribution bundles and can't be
-inferred through the app," native plugins (dynamic extension, à la Substrate's extension system) are
-viable but cost a **cross-platform release matrix per plugin** — tedious enough that, given §3–4, it is
-the rare escape hatch, not the common path. Kept on the roadmap, Substrate-informed; not led with.
+Two things Prova's plugin system deliberately does **not** do — each avoids a tar pit that would
+outweigh its benefit:
+
+- **No plugin dependency resolver.** `prova-plugin.toml` has no `[dependencies]` field, and won't. A
+  dependency graph would drag in transitive resolution, version-conflict resolution, and a lockfile —
+  and it is *unsatisfiable* here anyway: all plugins share one Lua state where `require("x")` is a
+  global singleton, so two plugins wanting different versions of `x` could never both be honored.
+  **Plugins are self-contained**: a plugin depends on **prova and its primitives, nothing else**
+  (gated by `requires.prova`). The two real needs are met without a resolver — a plugin **vendors**
+  its own helpers in its repo and requires them via its canonical namespace
+  (`require("rabbitmq.helpers")`); a capability wanted by *many* plugins gets **promoted into prova's
+  primitives** (bundled, versioned by `requires.prova`), not passed plugin-to-plugin. A shared
+  community helper library is a valid plugin, but a consumer wires it into their **own `prova.toml`**
+  — dependencies are declared once, at the top level, by whoever sees the whole picture, never
+  discovered transitively. That keeps resolution flat, visible, and reproducible.
+
+- **No third-party native/binary plugins.** Native code is always **first-party and bundled** — the
+  network-drive primitives (`http`/`grpc`/`graphql`) plus the small curated native-client set for
+  throughput/attach-external. A plugin author writes **Lua + Docker**, never native code, so there is
+  no cross-platform release matrix to maintain per plugin. (A dynamic native-extension hatch, à la
+  Substrate's extension system, remains conceivable for a truly exceptional case, but it is *not
+  planned* — the Lua+Docker surface plus black-box-through-app covers the space.)
 
 ## Roadmap
 
@@ -284,5 +302,10 @@ the rare escape hatch, not the common path. Kept on the roadmap, Substrate-infor
    stronger dogfood than re-exposing a bundled recipe.)* Also: `prova.containerized`'s `client`
    factory now receives the `container` (`client(url, opts, container)`) so docker-exec clients can
    `exec` into it — the "fix the starter first" change this plugin surfaced.
-6. The `prova-rs/registry` index; distributions (`prova-min`/`prova-full`) + tap variants.
-7. Later: native-plugin hatch, if a real need appears.
+6. **Plugin manifest (`prova-plugin.toml`)** — entry declaration (fixes alias↔filename frailty),
+   `requires.prova` compatibility gate, intra-plugin `require` by canonical namespace. **(done)** —
+   see [plugin-system.md](plugin-system.md). Plugins are self-contained (no dependency resolver — see
+   Non-goals).
+7. The `prova-rs/registry` index; distributions (`prova-min`/`prova-full`) + tap variants.
+8. *(not planned)* Third-party native-plugin hatch — see Non-goals. The Lua+Docker surface plus
+   black-box-through-app covers the space; native code stays first-party and bundled.

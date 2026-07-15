@@ -31,21 +31,26 @@ const BUNDLED: &[(&str, &str)] = &[(
 /// Install the plugin searcher into `lua`'s `package.searchers`.
 ///
 /// `named` maps a manifest-declared plugin name to an exact file (a local path, or a git checkout
-/// the CLI already fetched into the cache). `roots` are extra disk search roots (typically the global
+/// the CLI already fetched into the cache). `namespaces` maps a plugin's *canonical* name to its
+/// module root directory, so a multi-file plugin can `require("<canonical>.<sub>")` its own sibling
+/// files (namespaced by canonical name, so it is stable regardless of the consumer's alias and never
+/// collides with another plugin). `roots` are extra disk search roots (typically the global
 /// `data_dir/plugins`); the built-in `PROVA_PLUGIN_PATH` and `./.prova/plugins` roots are always
-/// searched too. Both are cloned into the searcher closure (the Lua state is single-threaded).
+/// searched too. All are cloned into the searcher closure (the Lua state is single-threaded).
 pub(crate) fn install(
     lua: &Lua,
     roots: &[PathBuf],
     named: &BTreeMap<String, PathBuf>,
+    namespaces: &BTreeMap<String, PathBuf>,
 ) -> mlua::Result<()> {
     let package: mlua::Table = lua.globals().get("package")?;
     let searchers: mlua::Table = package.get("searchers")?;
 
     let roots = roots.to_vec();
     let named = named.clone();
-    let searcher =
-        lua.create_function(move |lua, name: String| resolve(lua, &name, &roots, &named))?;
+    let namespaces = namespaces.clone();
+    let searcher = lua
+        .create_function(move |lua, name: String| resolve(lua, &name, &roots, &named, &namespaces))?;
     // Append after the built-in searchers (preload + path-based), so a plugin never shadows them.
     searchers.set(searchers.raw_len() + 1, searcher)?;
     Ok(())
@@ -58,6 +63,7 @@ fn resolve(
     name: &str,
     roots: &[PathBuf],
     named: &BTreeMap<String, PathBuf>,
+    namespaces: &BTreeMap<String, PathBuf>,
 ) -> mlua::Result<Value> {
     // 1. Bundled first-party modules.
     if let Some((_, src)) = BUNDLED.iter().find(|(n, _)| *n == name) {
@@ -73,7 +79,21 @@ fn resolve(
         tried.push(path.display().to_string());
     }
 
-    // 3. Disk roots: PROVA_PLUGIN_PATH, then the passed roots, then ./.prova/plugins. `acme.rabbitmq`
+    // 3. Intra-plugin requires: `<canonical>.<sub>` resolves `<sub>` under the plugin's own root, so
+    //    a multi-file plugin can require its siblings (namespaced by canonical name → collision-safe).
+    if let Some((prefix, rest)) = name.split_once('.') {
+        if let Some(dir) = namespaces.get(prefix) {
+            let rel = rest.replace('.', "/");
+            for candidate in [dir.join(format!("{rel}.lua")), dir.join(&rel).join("init.lua")] {
+                if candidate.is_file() {
+                    return Ok(Value::Function(disk_loader(lua, &candidate)?));
+                }
+                tried.push(candidate.display().to_string());
+            }
+        }
+    }
+
+    // 4. Disk roots: PROVA_PLUGIN_PATH, then the passed roots, then ./.prova/plugins. `acme.rabbitmq`
     //    → `acme/rabbitmq`.
     let rel = name.replace('.', "/");
     for root in disk_roots(roots) {

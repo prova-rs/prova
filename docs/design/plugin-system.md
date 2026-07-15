@@ -136,6 +136,33 @@ Wired now (the "easy to install" story):
   remote (a surprise fetch); use `github:org/repo` for a ref-less remote, or the table form for a
   commit `rev`. `@ref` maps to `git clone --branch`, which accepts a tag *or* a branch.
 
+- **Plugin manifest** (`prova-plugin.toml`) — a published plugin carries its own manifest, the
+  analogue of archetect's `archetype.yaml`:
+
+  ```toml
+  [plugin]
+  name  = "rabbitmq"        # canonical namespace (for intra-plugin require); defaults to the key
+  entry = "rabbitmq.lua"    # the entry file — resolution no longer depends on the consumer's alias
+  description = "…"
+  license = "MIT"
+
+  [requires]
+  prova = ">=0.1, <0.2"     # compatibility range — refuses to load outside it (semver VersionReq)
+  ```
+
+  - **`entry`** removes the frail step: the author declares the entry file once, so a consumer can
+    pull the plugin under *any* alias (`mq = "prova-rs/prova-rabbitmq@v1"`) and it still resolves.
+    Entry precedence for a directory source: consumer `module =` override → manifest `entry` →
+    `init.lua` → `<alias>.lua` (last-ditch back-compat; the reason to declare `entry`).
+  - **`[requires] prova`** gates compatibility against the running version, exactly like
+    `requires.archetect` — a clear error, not a mysterious runtime failure, when a plugin is too new
+    or too old. On 0.x the minor is the breaking axis (`^0.1` = `>=0.1.0, <0.2.0`).
+  - **Intra-plugin `require`.** A multi-file plugin requires its own siblings by its **canonical**
+    name — `require("rabbitmq.helpers")` → `<plugin-root>/helpers.lua` — namespaced so it is stable
+    regardless of the consumer's alias and never collides with another plugin. This is the sanctioned
+    way to split a plugin into files (see the self-contained rule in
+    [ecosystem.md](ecosystem.md) — plugins vendor their helpers; there is no dependency resolver).
+
 Not yet wired, deliberately deferred:
 
 - **`prova.use(name)`** sugar — `require` + install as a global namespace, for plugins that want
