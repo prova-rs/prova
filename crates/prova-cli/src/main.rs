@@ -103,9 +103,10 @@ fn plugin_subcommand(args: Vec<String>) -> ExitCode {
                 // Lint loads each plugin with the same primitives + archetect module a run would
                 // install, plus the plugin's own namespace so its intra-plugin `require`s resolve.
                 let path = Path::new(file);
+                let ns = plugins::namespace_for_file(path);
                 let mut config = RunConfig::new(1).with_module(prova_archetect::install);
-                if let Some((canonical, dir)) = plugins::namespace_for_file(path) {
-                    config = config.with_plugin_namespace(canonical, dir);
+                if let Some((canonical, dir)) = &ns {
+                    config = config.with_plugin_namespace(canonical.clone(), dir.clone());
                 }
                 match prova_core::inspect_plugin(path, &config) {
                     Ok(report) if report.issues.is_empty() => {
@@ -119,6 +120,12 @@ fn plugin_subcommand(args: Vec<String>) -> ExitCode {
                             None => "namespace".to_string(),
                         };
                         println!("ok   {file}  ({detail})");
+                        // Advisory (non-fatal): a published plugin should ship a LuaCATS stub so
+                        // consumers of `require("<name>")` get editor completion. The archetype
+                        // generates it; warn when it's absent so the ecosystem stays IDE-ready.
+                        if let Some(warning) = missing_stub_warning(&ns) {
+                            println!("     warn: {warning}");
+                        }
                     }
                     Ok(report) => {
                         ok = false;
@@ -415,6 +422,22 @@ struct ManifestRun {
     manage: Manage,
 }
 
+/// If a linted plugin ships no LuaCATS stub (`library/<canonical>.lua`), return an advisory message.
+/// `ns` is `(canonical, plugin_root_dir)` from `namespace_for_file`. Consumers of `require(name)` get
+/// no editor completion without a stub — the plugin archetype generates one; this nudges hand-authored
+/// plugins to match.
+fn missing_stub_warning(ns: &Option<(String, PathBuf)>) -> Option<String> {
+    let (canonical, dir) = ns.as_ref()?;
+    let stub = dir.join("library").join(format!("{canonical}.lua"));
+    if stub.is_file() {
+        return None;
+    }
+    Some(format!(
+        "no library/{canonical}.lua — consumers of require(\"{canonical}\") get no editor \
+         completion (add a ---@meta stub; the plugin archetype generates one)"
+    ))
+}
+
 /// Print a concise, honest one-liner (to stderr) about what the IDE annotation sync did.
 fn report_annotations(outcome: &annotations::Outcome) {
     if !outcome.synced_plugins.is_empty() {
@@ -507,4 +530,35 @@ fn resolve_from_manifest(
         sources: resolved.sources,
         manage,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_stub_warning_fires_only_without_a_stub() {
+        let base = std::env::temp_dir().join(format!("prova-lint-stub-{}", std::process::id()));
+        let dir = base.join("plugin");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ns = Some(("postgres".to_string(), dir.clone()));
+
+        // No library/ → warns.
+        let w = missing_stub_warning(&ns).expect("should warn without a stub");
+        assert!(w.contains("library/postgres.lua"), "{w}");
+
+        // With library/postgres.lua → silent.
+        std::fs::create_dir_all(dir.join("library")).unwrap();
+        std::fs::write(
+            dir.join("library").join("postgres.lua"),
+            "---@meta postgres\n",
+        )
+        .unwrap();
+        assert!(missing_stub_warning(&ns).is_none());
+
+        // No namespace at all (headless file with no parent info) → nothing to advise.
+        assert!(missing_stub_warning(&None).is_none());
+
+        std::fs::remove_dir_all(&base).ok();
+    }
 }

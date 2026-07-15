@@ -86,6 +86,9 @@ The contract is exactly the conventions the first-party recipes already follow:
 5. **`container` returns the trio** `{ client, url, container }` (extras allowed, trio guaranteed).
 6. **`requires` for graceful skip.** A recipe touching Docker lets its tests declare
    `requires = { "docker" }`; the existing skip-fixpoint handles absence for free.
+7. **Ships a LuaCATS stub** `library/<name>.lua` (a `---@meta <name>` file) so a consumer's
+   `require("<name>")` completes and type-checks in the editor. Prova syncs it automatically; the
+   plugin archetype generates it. See [ide-and-layout.md](ide-and-layout.md).
 
 A plugin author who follows this gets the same shape, IDE completion, and skip behavior as
 `postgres` — because there is no difference.
