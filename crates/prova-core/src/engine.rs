@@ -1921,7 +1921,6 @@ fn native_capability_compiled(name: &str) -> Option<bool> {
         "grpc" => cfg!(feature = "grpc"),
         "graphql" => cfg!(feature = "graphql"),
         "yaml" => cfg!(feature = "yaml"),
-        "redis" => cfg!(feature = "redis"),
         "pulsar" => cfg!(feature = "pulsar"),
         "kafka" => cfg!(feature = "kafka"),
         "s3" => cfg!(feature = "s3"),

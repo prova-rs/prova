@@ -22,7 +22,6 @@
     "grpc",
     "graphql",
     "yaml",
-    "redis",
     "pulsar",
     "kafka",
     "s3",

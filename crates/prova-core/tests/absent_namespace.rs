@@ -2,10 +2,10 @@
 //! namespace is an absent-stub whose field access raises a clear "not compiled into this build"
 //! error instead of a bare `attempt to index a nil value`.
 //!
-//! This whole file compiles/runs only when the `redis` feature is OFF, so exercise it with
+//! This whole file compiles/runs only when the `kafka` feature is OFF, so exercise it with
 //! `cargo test -p prova-core --no-default-features --test absent_namespace`. In the default
-//! (all-features) build there is nothing to test — `redis` is the real namespace — so it is skipped.
-#![cfg(not(feature = "redis"))]
+//! (all-features) build there is nothing to test — `kafka` is the real namespace — so it is skipped.
+#![cfg(not(feature = "kafka"))]
 
 use std::path::PathBuf;
 

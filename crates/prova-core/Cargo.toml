@@ -48,9 +48,6 @@ prost-reflect = { version = "0.16.5", features = ["serde"], optional = true }
 # Maintained serde_yaml fork. Feature-gated (default on); light, pure-Rust.
 serde_yaml_ng = { version = "0.10.0", optional = true }
 serde = { version = "1", optional = true }
-# The `redis` module — a thin async client (get/set/del/exists/incr/ping + a generic `command`) for
-# asserting on a cache dependency. No TLS in v1 (local/CI containers). Feature-gated (default on).
-redis = { version = "1.3.0", default-features = false, features = ["tokio-comp"], optional = true }
 # The `pulsar` module — a thin async produce/consume client for asserting on a messaging dependency.
 # apache pulsar-rs on the tokio runtime. Unlike the other clients, pulsar always links a TLS backend;
 # the tokio path uses native-tls (system openssl) — the only tokio-compatible option (its rustls
@@ -78,7 +75,7 @@ rdkafka = { version = "0.39.0", default-features = false, features = ["tokio"], 
 rdkafka = { version = "0.39.0", default-features = false, features = ["tokio", "cmake-build"], optional = true }
 
 [features]
-default = ["http", "postgres", "mysql", "sqlite", "docker", "grpc", "graphql", "yaml", "redis", "pulsar", "kafka", "s3"]
+default = ["http", "postgres", "mysql", "sqlite", "docker", "grpc", "graphql", "yaml", "pulsar", "kafka", "s3"]
 http = ["dep:reqwest"]
 # GraphQL over HTTP (POST { query, variables } → { data, errors }); shares reqwest with `http`.
 graphql = ["dep:reqwest"]
@@ -96,7 +93,6 @@ grpc = [
     "dep:prost-reflect",
 ]
 yaml = ["dep:serde_yaml_ng", "dep:serde"]
-redis = ["dep:redis"]
 pulsar = ["dep:pulsar"]
 kafka = ["dep:rdkafka"]
 s3 = ["dep:rust-s3"]
