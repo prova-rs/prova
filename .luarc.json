@@ -20,7 +20,6 @@
     "grpc",
     "graphql",
     "yaml",
-    "pulsar",
     "Scope",
     "suite"
   ],

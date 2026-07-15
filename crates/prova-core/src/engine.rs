@@ -1919,7 +1919,6 @@ fn native_capability_compiled(name: &str) -> Option<bool> {
         "grpc" => cfg!(feature = "grpc"),
         "graphql" => cfg!(feature = "graphql"),
         "yaml" => cfg!(feature = "yaml"),
-        "pulsar" => cfg!(feature = "pulsar"),
         _ => return None,
     };
     Some(compiled)

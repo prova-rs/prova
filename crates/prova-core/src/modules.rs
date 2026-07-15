@@ -41,8 +41,6 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set("graphql", graphql::make(lua)?)?;
     #[cfg(feature = "yaml")]
     lua.globals().set("yaml", yaml::make(lua)?)?;
-    #[cfg(feature = "pulsar")]
-    lua.globals().set("pulsar", pulsar_mod::make(lua)?)?;
     // Absent-namespace stubs: in a lean distribution a native namespace's feature may be off. Install
     // a stub so `kafka.client(...)` raises a clear "not compiled into this build" error instead of a
     // bare `attempt to index a nil value` — the call-side companion to the `requires` skip. In the
@@ -59,8 +57,6 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set("graphql", absent_stub(lua, "graphql")?)?;
     #[cfg(not(feature = "yaml"))]
     lua.globals().set("yaml", absent_stub(lua, "yaml")?)?;
-    #[cfg(not(feature = "pulsar"))]
-    lua.globals().set("pulsar", absent_stub(lua, "pulsar")?)?;
     // The `prova.containerized` scaffolding helper — the ergonomic keystone every containerized
     // resource (first-party recipe or third-party plugin) is authored through. Always available;
     // the globals it composes (`docker`, `prova.retry`) resolve when a generated `container` is
@@ -70,10 +66,6 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
         .exec()?;
     // Resource recipes — Lua sugar over docker.run + prova.retry + a client + ctx:manage. Loaded
     // after the modules exist; the globals they touch resolve when a recipe is *called*.
-    #[cfg(feature = "pulsar")]
-    lua.load(PULSAR_RECIPES_LUA)
-        .set_name("@prova/pulsar-recipes")
-        .exec()?;
     Ok(())
 }
 
@@ -278,37 +270,6 @@ function prova.containerized(spec)
   end
 
   return ns
-end
-"#;
-
-/// `pulsar.container(ctx, opts?)` provisions an ephemeral Pulsar standalone, waits for it, connects,
-/// and returns `{ url, client, container }`. Requires the `docker` module at call time. Pulsar
-/// standalone is a heavy image and slow to start (tens of seconds); the default timeout reflects that.
-#[cfg(feature = "pulsar")]
-const PULSAR_RECIPES_LUA: &str = r#"
-function pulsar.container(ctx, opts)
-  assert(ctx and ctx.manage, "pulsar.container(ctx, opts?): pass the fixture/test context as the first argument")
-  opts = opts or {}
-  local image = opts.image or ("apachepulsar/pulsar:" .. (opts.tag or "3.3.1"))
-  local timeout = opts.timeout or "120s"
-  local container = ctx:manage(docker.run{
-    image = image,
-    command = "bin/pulsar standalone",
-    ports = { 6650, 8080 },
-    wait = { log = "messaging service is ready", timeout = timeout },
-  })
-  local url = "pulsar://127.0.0.1:" .. container:host_port(6650)
-  local client = ctx:manage(prova.retry(function() return pulsar.client(url) end,
-    { timeout = timeout, message = "pulsar did not accept connections in time" }))
-  -- The "messaging service is ready" log (and a bare connect) are false-positives: the broker accepts
-  -- connections before the public/default namespace bundle is loaded, so the first produce races it
-  -- with "Namespace not found". Retry a real produce to a throwaway topic until it holds — the true
-  -- readiness gate (same principle as the DB connect-retry), on a topic no test consumes.
-  -- `produce` returns nothing on success, so return a truthy sentinel — prova.retry loops until the
-  -- callback returns truthy (a raised "Namespace not found" counts as "not ready" and retries).
-  prova.retry(function() client:produce("prova-readiness-probe", "ready"); return true end,
-    { timeout = timeout, message = "pulsar namespace did not become ready in time" })
-  return { client = client, url = url, container = container }
 end
 "#;
 
@@ -2344,150 +2305,5 @@ mod graphql {
             })?,
         )?;
         Ok(graphql)
-    }
-}
-
-// ---------------------------------------------------------------------------------------------
-// pulsar (async; a thin produce/consume client for asserting on a messaging dependency)
-// ---------------------------------------------------------------------------------------------
-
-// Enough to drive a messaging dependency from a test: produce a message an app should consume, or
-// consume messages an app produced and assert on them. Consumers read from the earliest offset so a
-// produce-then-consume within a test is reliable regardless of ordering. Plaintext only in v1 (no
-// TLS/token auth — local/CI brokers; an environment/TLS layer lands later).
-#[cfg(feature = "pulsar")]
-mod pulsar_mod {
-    use std::time::{Duration, Instant};
-
-    use futures::StreamExt;
-    use mlua::{Lua, Table, UserData, UserDataMethods};
-    use pulsar::consumer::InitialPosition;
-    use pulsar::{Consumer, ConsumerOptions, Pulsar, SubType, TokioExecutor};
-
-    use crate::model::parse_duration;
-
-    fn err(msg: impl Into<String>) -> mlua::Error {
-        mlua::Error::RuntimeError(msg.into())
-    }
-
-    /// A Pulsar client from `pulsar.client`. `Pulsar<TokioExecutor>` is a cheap cloneable handle.
-    struct PulsarClient {
-        client: Pulsar<TokioExecutor>,
-    }
-
-    impl UserData for PulsarClient {
-        fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-            // produce(topic, message) — send a string and await the broker's receipt (confirmed send).
-            methods.add_async_method("produce", |_, this, (topic, message): (String, String)| {
-                let client = this.client.clone();
-                async move {
-                    let receipt = client
-                        .send(topic, message)
-                        .await
-                        .map_err(|e| err(format!("pulsar produce: {e}")))?;
-                    receipt
-                        .await
-                        .map_err(|e| err(format!("pulsar produce (receipt): {e}")))?;
-                    Ok(())
-                }
-            });
-
-            // consume(topic, { subscription?, max?, timeout?, shared? }) → list of message strings.
-            // Reads from the earliest offset; collects up to `max` messages arriving within `timeout`.
-            methods.add_async_method(
-                "consume",
-                |lua, this, (topic, opts): (String, Option<Table>)| {
-                    let client = this.client.clone();
-                    // Parse opts synchronously (nothing borrows Lua across the await).
-                    let mut subscription = "prova".to_string();
-                    let mut max = 10usize;
-                    let mut timeout = Duration::from_secs(10);
-                    let mut shared = false;
-                    let parsed = (|| -> mlua::Result<()> {
-                        if let Some(o) = &opts {
-                            if let Some(s) = o.get::<Option<String>>("subscription")? {
-                                subscription = s;
-                            }
-                            if let Some(m) = o.get::<Option<usize>>("max")? {
-                                max = m;
-                            }
-                            if let Some(t) = o
-                                .get::<Option<String>>("timeout")?
-                                .and_then(|s| parse_duration(&s))
-                            {
-                                timeout = t;
-                            }
-                            if let Some(b) = o.get::<Option<bool>>("shared")? {
-                                shared = b;
-                            }
-                        }
-                        Ok(())
-                    })();
-                    async move {
-                        parsed?;
-                        let sub_type = if shared {
-                            SubType::Shared
-                        } else {
-                            SubType::Exclusive
-                        };
-                        let mut consumer: Consumer<Vec<u8>, TokioExecutor> = client
-                            .consumer()
-                            .with_topic(&topic)
-                            .with_subscription(&subscription)
-                            .with_subscription_type(sub_type)
-                            .with_options(
-                                ConsumerOptions::default()
-                                    .with_initial_position(InitialPosition::Earliest),
-                            )
-                            .build()
-                            .await
-                            .map_err(|e| err(format!("pulsar consume (subscribe): {e}")))?;
-
-                        let deadline = Instant::now() + timeout;
-                        let out = lua.create_table()?;
-                        let mut n = 0usize;
-                        while n < max {
-                            let remaining = deadline.saturating_duration_since(Instant::now());
-                            if remaining.is_zero() {
-                                break;
-                            }
-                            match tokio::time::timeout(remaining, consumer.next()).await {
-                                Ok(Some(Ok(msg))) => {
-                                    let s = String::from_utf8_lossy(&msg.payload.data).into_owned();
-                                    out.push(s)?;
-                                    n += 1;
-                                    let _ = consumer.ack(&msg).await;
-                                }
-                                Ok(Some(Err(e))) => {
-                                    return Err(err(format!("pulsar consume: {e}")))
-                                }
-                                Ok(None) => break, // stream ended
-                                Err(_) => break,   // no more messages within the window
-                            }
-                        }
-                        Ok(out)
-                    }
-                },
-            );
-
-            // close() — a no-op (the client drops with the handle); present for `ctx:manage` symmetry.
-            methods.add_method("close", |_, _this, ()| Ok(()));
-        }
-    }
-
-    pub(crate) fn make(lua: &Lua) -> mlua::Result<Table> {
-        let pulsar_tbl = lua.create_table()?;
-        // pulsar.client(url) → a client. Async (connects to the broker); call in a fixture/test body.
-        pulsar_tbl.set(
-            "client",
-            lua.create_async_function(|lua, url: String| async move {
-                let client = Pulsar::builder(url, TokioExecutor)
-                    .build()
-                    .await
-                    .map_err(|e| err(format!("pulsar.client: {e}")))?;
-                lua.create_userdata(PulsarClient { client })
-            })?,
-        )?;
-        Ok(pulsar_tbl)
     }
 }
