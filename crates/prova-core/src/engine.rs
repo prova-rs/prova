@@ -1915,8 +1915,6 @@ fn capability_available(name: &str) -> bool {
 fn native_capability_compiled(name: &str) -> Option<bool> {
     let compiled = match name {
         "http" => cfg!(feature = "http"),
-        "postgres" => cfg!(feature = "postgres"),
-        "mysql" => cfg!(feature = "mysql"),
         "sqlite" => cfg!(feature = "sqlite"),
         "grpc" => cfg!(feature = "grpc"),
         "graphql" => cfg!(feature = "graphql"),

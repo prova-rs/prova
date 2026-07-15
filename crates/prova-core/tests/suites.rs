@@ -47,27 +47,3 @@ fn ungrouped_files_are_singleton_suites() {
         suites.iter().map(|s| &s.name).collect::<Vec<_>>()
     );
 }
-
-/// The `examples/suite` showcase against a REAL Postgres: a `Scope.Suite` fixture provisions ONE
-/// container, shared across two files (`b_read_test` sees the row `a_create_test` inserted). Runs for
-/// real where docker is present, skips (via the suite's `requires`) where it is absent.
-#[test]
-fn suite_shares_one_postgres_across_files_or_skips() {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/suite");
-    let suites = discover_suites(&dir).expect("discover");
-    let mut reporter = NullReporter;
-    let summary = run_suites(&suites, &mut reporter, &RunConfig::new(1)).expect("run suite");
-    assert_eq!(summary.failed, 0, "never fails, docker present or not");
-    let docker = std::process::Command::new("docker")
-        .args(["info"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if docker {
-        assert_eq!(summary.passed, 2, "both files pass against the one shared Postgres");
-    } else {
-        assert_eq!(summary.skipped, 2, "the suite's requires{docker} skips both files");
-    }
-}

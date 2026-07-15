@@ -12,10 +12,10 @@ prova.test("no requirements runs", function(t)
   t:expect(true):is_true()
 end)
 
--- A native-client capability is available when its feature is compiled into the build (the default
--- build has kafka), even though there is no `kafka` binary on PATH — the unified gate checks the
--- build, not PATH. (Before unification this spuriously skipped, looking for a `kafka` executable.)
-prova.test("needs the kafka client (compiled in)", { requires = { "kafka" } }, function(t)
+-- A native-client capability is available when its feature is compiled into the build (sqlite is the
+-- embedded database, still bundled), even though there is no `sqlite` binary on PATH — the unified
+-- gate checks the build, not PATH. (Before unification this spuriously skipped, looking for a binary.)
+prova.test("needs the sqlite client (compiled in)", { requires = { "sqlite" } }, function(t)
   t:expect(1):equals(1)
 end)
 

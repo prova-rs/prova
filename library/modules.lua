@@ -338,13 +338,11 @@ docker = {}
 function docker.run(opts) end
 
 ------------------------------------------------------------------------------------------
--- postgres / mysql / sqlite (one namespace per engine, one generic Connection via sqlx Any)
+-- sqlite (an embedded database via sqlx — the only bundled resource client; needs no docker)
 ------------------------------------------------------------------------------------------
 
---- A database connection from `postgres.client` / `mysql.client` / `sqlite.client` — all three
---- engines return this same type. Methods are async; pair with `ctx:manage(conn)` to close it on
---- teardown. Use the backend's own placeholder syntax in SQL (`$1` for Postgres, `?` for
---- MySQL/SQLite).
+--- A database connection from `sqlite.client`. Methods are async; pair with `ctx:manage(conn)` to
+--- close it on teardown. Use `?` placeholders in SQL.
 ---@class prova.Connection
 local Connection = {}
 --- Run a statement (INSERT/UPDATE/DDL); returns the number of rows affected.
@@ -364,49 +362,6 @@ function Connection:query(sql, params) end
 function Connection:query_value(sql, params) end
 --- Close the connection pool.
 function Connection:close() end
-
---- Options for the `postgres.container`/`mysql.container` recipes. All optional (sensible defaults).
----@class prova.SqlContainerOpts
----@field user? string           # default "prova"
----@field password? string       # default "prova"
----@field database? string       # default "prova"
----@field image? string          # full image ref; overrides tag
----@field tag? string            # image tag (postgres → "16-alpine", mysql → "8")
----@field root_password? string  # MySQL only, default "root"
----@field timeout? string        # readiness deadline
-
---- A provisioned ephemeral database — the standard resource shape: an open (managed) client, the
---- URL that reaches it, and the underlying container.
----@class prova.SqlResource
----@field client prova.Connection
----@field url string
----@field container prova.Container
-
----@class prova.postgres
-postgres = {}
---- Attach to a running Postgres by URL (`postgres://user:pass@host:port/db`).
----@param url string
----@return prova.Connection
-function postgres.client(url) end
---- Provision an ephemeral Postgres in a container, wait until it accepts connections, and return an
---- open managed client — the whole `docker.run` + retry + `postgres.client` + `ctx:manage` dance in
---- one call. Requires the `docker` module at call time (`requires = { "docker" }` to skip gracefully).
----@param ctx prova.Context
----@param opts? prova.SqlContainerOpts
----@return prova.SqlResource
-function postgres.container(ctx, opts) end
-
----@class prova.mysql
-mysql = {}
---- Attach to a running MySQL by URL (`mysql://user:pass@host:port/db`).
----@param url string
----@return prova.Connection
-function mysql.client(url) end
---- Provision an ephemeral MySQL the same way as `postgres.container`.
----@param ctx prova.Context
----@param opts? prova.SqlContainerOpts
----@return prova.SqlResource
-function mysql.container(ctx, opts) end
 
 ---@class prova.sqlite
 sqlite = {}
@@ -560,7 +515,7 @@ pulsar = {}
 ---@return prova.PulsarClient
 function pulsar.client(url) end
 --- Provision an ephemeral Pulsar standalone in a container, wait for it, and return a connected
---- managed client — the messaging counterpart to `postgres.container`. Requires `docker` at call time.
+--- managed client — the messaging counterpart to a database container. Requires `docker` at call time.
 ---@param ctx prova.Context
 ---@param opts? prova.PulsarContainerOpts
 ---@return prova.PulsarResource

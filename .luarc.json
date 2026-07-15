@@ -16,8 +16,6 @@
     "http",
     "archetect",
     "docker",
-    "postgres",
-    "mysql",
     "sqlite",
     "grpc",
     "graphql",

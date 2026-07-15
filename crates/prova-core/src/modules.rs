@@ -7,7 +7,7 @@
 //! context explicitly (no ambient cwd), preserving the isolation the design promises. `http` is
 //! behind a default-on feature and is HTTP-only in v1 (an `https`/TLS feature can layer on later);
 //! `docker` uses the typed **bollard** daemon client, so tests that need it declare
-//! `requires = { "docker" }` to skip gracefully where the daemon is absent. `http`/`postgres`/`docker` are
+//! `requires = { "docker" }` to skip gracefully where the daemon is absent. `http`/`grpc`/`docker` are
 //! each behind a default-on feature so builds can opt out of their dependency trees.
 
 use std::path::Path;
@@ -33,10 +33,6 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set("docker", docker::make(lua)?)?;
     #[cfg(feature = "http")]
     lua.globals().set("http", http::make(lua)?)?;
-    #[cfg(feature = "postgres")]
-    lua.globals().set("postgres", sql::make(lua, sql::Engine::Postgres)?)?;
-    #[cfg(feature = "mysql")]
-    lua.globals().set("mysql", sql::make(lua, sql::Engine::Mysql)?)?;
     #[cfg(feature = "sqlite")]
     lua.globals().set("sqlite", sql::make(lua, sql::Engine::Sqlite)?)?;
     #[cfg(feature = "grpc")]
@@ -55,10 +51,6 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set("docker", absent_stub(lua, "docker")?)?;
     #[cfg(not(feature = "http"))]
     lua.globals().set("http", absent_stub(lua, "http")?)?;
-    #[cfg(not(feature = "postgres"))]
-    lua.globals().set("postgres", absent_stub(lua, "postgres")?)?;
-    #[cfg(not(feature = "mysql"))]
-    lua.globals().set("mysql", absent_stub(lua, "mysql")?)?;
     #[cfg(not(feature = "sqlite"))]
     lua.globals().set("sqlite", absent_stub(lua, "sqlite")?)?;
     #[cfg(not(feature = "grpc"))]
@@ -76,16 +68,8 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.load(CONTAINERIZED_LUA)
         .set_name("@prova/containerized")
         .exec()?;
-    // Resource recipes — Lua sugar over docker.run + prova.retry + postgres.client + ctx:manage. Loaded
+    // Resource recipes — Lua sugar over docker.run + prova.retry + a client + ctx:manage. Loaded
     // after the modules exist; the globals they touch resolve when a recipe is *called*.
-    #[cfg(feature = "postgres")]
-    lua.load(POSTGRES_RECIPES_LUA)
-        .set_name("@prova/postgres-recipes")
-        .exec()?;
-    #[cfg(feature = "mysql")]
-    lua.load(MYSQL_RECIPES_LUA)
-        .set_name("@prova/mysql-recipes")
-        .exec()?;
     #[cfg(feature = "pulsar")]
     lua.load(PULSAR_RECIPES_LUA)
         .set_name("@prova/pulsar-recipes")
@@ -324,62 +308,6 @@ function pulsar.container(ctx, opts)
   -- callback returns truthy (a raised "Namespace not found" counts as "not ready" and retries).
   prova.retry(function() client:produce("prova-readiness-probe", "ready"); return true end,
     { timeout = timeout, message = "pulsar namespace did not become ready in time" })
-  return { client = client, url = url, container = container }
-end
-"#;
-
-/// `postgres.container(ctx, opts?)` — a testcontainers-style recipe: one call provisions an
-/// ephemeral Postgres, waits for it to actually accept connections, opens a managed connection, and
-/// ties it all to the scope. Returns the standard resource shape `{ client, url, container }`.
-/// Requires the `docker` module at call time and is `requires = { "docker" }`-gateable.
-#[cfg(feature = "postgres")]
-const POSTGRES_RECIPES_LUA: &str = r#"
--- Authored through prova.containerized (dogfood). `env`/`url` read `opts` for user/password/database.
--- The port opening is a false-positive for a first-boot DB (it restarts once at init); the client
--- factory + prova.retry (inside the helper) is the real readiness gate, doubling for anything wiring in.
-postgres.container = prova.containerized{
-  name = "postgres", image = "postgres", tag = "16-alpine", port = 5432,
-  env = function(opts)
-    return { POSTGRES_USER = opts.user or "prova", POSTGRES_PASSWORD = opts.password or "prova",
-             POSTGRES_DB = opts.database or "prova" }
-  end,
-  url = function(hp, opts)
-    return string.format("postgres://%s:%s@127.0.0.1:%d/%s",
-      opts.user or "prova", opts.password or "prova", hp, opts.database or "prova")
-  end,
-  client = function(url) return postgres.client(url) end,
-}.container
-"#;
-
-/// `mysql.container(ctx, opts?)` — the MySQL counterpart to `postgres.container`. Returns the
-/// standard resource shape `{ client, url, container }`.
-#[cfg(feature = "mysql")]
-const MYSQL_RECIPES_LUA: &str = r#"
-function mysql.container(ctx, opts)
-  assert(ctx and ctx.manage, "mysql.container(ctx, opts?): pass the fixture/test context as the first argument")
-  opts = opts or {}
-  local user     = opts.user     or "prova"
-  local password = opts.password or "prova"
-  local database = opts.database or "prova"
-  local image    = opts.image    or ("mysql:" .. (opts.tag or "8"))
-  local timeout  = opts.timeout  or "90s"
-
-  local container = ctx:manage(docker.run{
-    image = image,
-    env = {
-      MYSQL_USER = user, MYSQL_PASSWORD = password, MYSQL_DATABASE = database,
-      MYSQL_ROOT_PASSWORD = opts.root_password or "root",
-    },
-    ports = { 3306 },
-    wait = { port = 3306, timeout = timeout },
-  })
-
-  local url = string.format("mysql://%s:%s@127.0.0.1:%d/%s", user, password, container:host_port(3306), database)
-  -- The port opening is a false-positive for a first-boot DB (it restarts once at init); retry the
-  -- real connection until it holds. This doubles as the readiness gate for anything else wiring in.
-  local client = ctx:manage(prova.retry(function() return mysql.client(url) end,
-    { timeout = timeout, message = "mysql did not accept connections in time" }))
-
   return { client = client, url = url, container = container }
 end
 "#;
@@ -1507,7 +1435,7 @@ mod docker {
 // sql (postgres/mysql/sqlite namespaces over one generic Connection via sqlx's `Any` driver)
 // ---------------------------------------------------------------------------------------------
 
-#[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlite"))]
+#[cfg(feature = "sqlite")]
 mod sql {
     use mlua::{Function, Lua, Table, UserData, UserDataMethods, Value};
     use sqlx::any::{AnyPoolOptions, AnyRow, AnyTypeInfoKind};
@@ -1518,29 +1446,23 @@ mod sql {
     /// validation, not for a per-engine API.
     #[derive(Clone, Copy)]
     pub(crate) enum Engine {
-        Postgres,
-        Mysql,
         Sqlite,
     }
 
     impl Engine {
         fn name(self) -> &'static str {
             match self {
-                Engine::Postgres => "postgres",
-                Engine::Mysql => "mysql",
                 Engine::Sqlite => "sqlite",
             }
         }
         fn schemes(self) -> &'static [&'static str] {
             match self {
-                Engine::Postgres => &["postgres://", "postgresql://"],
-                Engine::Mysql => &["mysql://"],
                 Engine::Sqlite => &["sqlite://", "sqlite:"],
             }
         }
     }
 
-    /// A database connection pool from `postgres.client(url)` / `mysql.client(url)` /
+    /// A database connection pool from
     /// `sqlite.client(url)`. All three return this same type. Methods are async; pair with
     /// `ctx:manage(conn)` (or `ctx:defer(function() conn:close() end)`).
     struct Connection {

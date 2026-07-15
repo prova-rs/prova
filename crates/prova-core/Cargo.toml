@@ -56,14 +56,12 @@ serde = { version = "1", optional = true }
 pulsar = { version = "6.8.0", default-features = false, features = ["tokio-runtime"], optional = true }
 
 [features]
-default = ["http", "postgres", "mysql", "sqlite", "docker", "grpc", "graphql", "yaml", "pulsar"]
+default = ["http", "sqlite", "docker", "grpc", "graphql", "yaml", "pulsar"]
 http = ["dep:reqwest"]
 # GraphQL over HTTP (POST { query, variables } → { data, errors }); shares reqwest with `http`.
 graphql = ["dep:reqwest"]
 # SQL databases — one namespace per engine (feature = namespace = global), all returning the same
 # generic Connection over sqlx's `Any` driver.
-postgres = ["dep:sqlx", "sqlx/postgres"]
-mysql = ["dep:sqlx", "sqlx/mysql"]
 sqlite = ["dep:sqlx", "sqlx/sqlite"]
 docker = ["dep:bollard"]
 grpc = [
