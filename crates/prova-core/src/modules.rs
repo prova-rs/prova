@@ -23,6 +23,12 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set("shell", make_shell(lua)?)?;
     lua.globals().set("fs", make_fs(lua)?)?;
     lua.globals().set("net", make_net(lua)?)?;
+    // `prova.parse.*` — the exec-CLI output-parsing toolkit (lines / rows / table / json), added to
+    // the `prova` global built earlier in build_lua. Broadly useful, so it lives at the root.
+    {
+        let prova: Table = lua.globals().get("prova")?;
+        prova.set("parse", make_parse(lua)?)?;
+    }
     #[cfg(feature = "docker")]
     lua.globals().set("docker", docker::make(lua)?)?;
     #[cfg(feature = "http")]
@@ -111,6 +117,103 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
     Ok(())
 }
 
+/// `prova.parse.*` — the exec-CLI output-parsing toolkit. A docker-exec plugin drives a CLI and gets
+/// text back; these turn the common shapes into Lua values, so plugins never hand-roll parsing:
+/// `lines` (line-oriented), `rows`/`table` (delimited — TSV/psql `|`/CSV), `json` (JSON, incl. the
+/// one-object-per-line `--json` streams many CLIs emit, via `lines` + `json`).
+fn make_parse(lua: &Lua) -> mlua::Result<Table> {
+    let parse = lua.create_table()?;
+
+    // lines(s) → non-empty, trimmed lines.
+    parse.set(
+        "lines",
+        lua.create_function(|lua, s: String| {
+            let out: Vec<&str> = s.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+            lua.create_sequence_from(out)
+        })?,
+    )?;
+
+    // rows(s, sep?) → a list of rows, each a list of columns split on `sep` (default tab). Blank
+    // lines are skipped.
+    parse.set(
+        "rows",
+        lua.create_function(|lua, (s, sep): (String, Option<String>)| {
+            let sep = sep.unwrap_or_else(|| "\t".to_string());
+            let rows = lua.create_table()?;
+            for (i, line) in s.lines().filter(|l| !l.is_empty()).enumerate() {
+                rows.set(i + 1, lua.create_sequence_from(line.split(&sep))?)?;
+            }
+            Ok(rows)
+        })?,
+    )?;
+
+    // table(s, sep?) → the first non-empty line is a header row; each remaining row becomes a map
+    // keyed by header name (the "column by header" shape, e.g. rabbitmqadmin's TSV).
+    parse.set(
+        "table",
+        lua.create_function(|lua, (s, sep): (String, Option<String>)| {
+            let sep = sep.unwrap_or_else(|| "\t".to_string());
+            let mut non_empty = s.lines().filter(|l| !l.is_empty());
+            let headers: Vec<&str> = match non_empty.next() {
+                Some(h) => h.split(&sep).collect(),
+                None => return lua.create_table(),
+            };
+            let rows = lua.create_table()?;
+            for (i, line) in non_empty.enumerate() {
+                let cols: Vec<&str> = line.split(&sep).collect();
+                let row = lua.create_table()?;
+                for (j, h) in headers.iter().enumerate() {
+                    row.set(*h, *cols.get(j).unwrap_or(&""))?;
+                }
+                rows.set(i + 1, row)?;
+            }
+            Ok(rows)
+        })?,
+    )?;
+
+    // json(s) → a Lua value. A real JSON parse (top-level `null` → `nil`, unlike a raw serde bridge).
+    parse.set(
+        "json",
+        lua.create_function(|lua, s: String| {
+            let v: serde_json::Value = serde_json::from_str(&s)
+                .map_err(|e| mlua::Error::RuntimeError(format!("prova.parse.json: {e}")))?;
+            json_value_to_lua(lua, &v)
+        })?,
+    )?;
+
+    Ok(parse)
+}
+
+/// Convert a `serde_json::Value` to a Lua value, mapping JSON `null` to Lua `nil` (so an absent
+/// field reads as nil, not a null sentinel).
+fn json_value_to_lua(lua: &Lua, v: &serde_json::Value) -> mlua::Result<mlua::Value> {
+    use mlua::Value;
+    use serde_json::Value as J;
+    Ok(match v {
+        J::Null => Value::Nil,
+        J::Bool(b) => Value::Boolean(*b),
+        J::Number(n) => match n.as_i64() {
+            Some(i) => Value::Integer(i),
+            None => Value::Number(n.as_f64().unwrap_or(0.0)),
+        },
+        J::String(s) => Value::String(lua.create_string(s)?),
+        J::Array(a) => {
+            let t = lua.create_table()?;
+            for (i, item) in a.iter().enumerate() {
+                t.set(i + 1, json_value_to_lua(lua, item)?)?;
+            }
+            Value::Table(t)
+        }
+        J::Object(o) => {
+            let t = lua.create_table()?;
+            for (k, val) in o {
+                t.set(k.as_str(), json_value_to_lua(lua, val)?)?;
+            }
+            Value::Table(t)
+        }
+    })
+}
+
 /// A stand-in for a native namespace whose feature was not compiled into this build: any field
 /// access raises a clear, actionable error instead of a bare `attempt to index a nil value`. A test
 /// that wants to *skip* rather than error should gate with `requires = { "<name>" }`.
@@ -145,11 +248,13 @@ fn absent_stub(lua: &Lua, name: &'static str) -> mlua::Result<Table> {
 /// at call time; `env`/`url`/`client` may read `opts`.
 ///
 /// Spec fields: `name` (for messages), `image` (base repo), `tag` (default tag), `port`/`ports`
-/// (published; `port` is the primary for readiness + url), `command?`, `env?` (table or
+/// (published; `port` is the primary for readiness + url; a `ports` entry may be a number for a
+/// random host port or `{ container, host }` for a fixed one), `command?`, `env?` (table or
 /// `function(opts)->table`), `wait?` (`{ port|log }`, default `{ port = primary }`), `timeout?`,
 /// `url` (`function(host_port, opts)->string`, required), `client?`
 /// (`function(url, opts, container)->handle` — the `container` is passed so a docker-exec client can
-/// `exec` into it; a native client just uses `url`).
+/// `exec` into it; a native client just uses `url`), `extra?` (`function(url, opts, container)->table`
+/// of additional resource fields beyond the trio, e.g. s3 credentials).
 const CONTAINERIZED_LUA: &str = r#"
 function prova.containerized(spec)
   assert(type(spec) == "table", "prova.containerized: pass a spec table")
@@ -158,7 +263,13 @@ function prova.containerized(spec)
   local ports = spec.ports
   if type(ports) == "number" then ports = { ports } end
   ports = ports or { spec.port }
-  local primary = spec.port or ports[1]
+  -- The primary container port (for readiness + url). A `ports` entry may be a plain number (random
+  -- host port) or a `{ container = N, host = M }` table (fixed host port, e.g. Kafka's advertised
+  -- listener), which is passed through to docker.run verbatim.
+  local primary = spec.port
+  if not primary and ports[1] then
+    primary = type(ports[1]) == "table" and ports[1].container or ports[1]
+  end
   assert(primary, "prova.containerized: spec needs a `port` (or `ports`)")
 
   local ns = { client = spec.client }
@@ -190,6 +301,13 @@ function prova.containerized(spec)
 
     local url = spec.url(container:host_port(primary), opts)
     local res = { url = url, container = container }
+    -- Extra resource fields beyond the trio (e.g. s3 credentials): `spec.extra(url, opts, container)`
+    -- returns a table merged into the result. The trio (`client`/`url`/`container`) is reserved.
+    if type(spec.extra) == "function" then
+      for k, v in pairs(spec.extra(url, opts, container)) do
+        if k ~= "client" and k ~= "url" and k ~= "container" then res[k] = v end
+      end
+    end
     if spec.client then
       -- The factory gets the container too, so a docker-exec client (no native driver) can `exec`
       -- into it; a native client just uses `url` and ignores the extra arg.

@@ -371,6 +371,32 @@ function prova.describe(label, body) end
 ---@param millis integer
 function prova.sleep(millis) end
 
+---The exec-CLI output-parsing toolkit: turn the text a container CLI returns into Lua values.
+---@class prova.parse
+prova.parse = {}
+
+---Split into non-empty, trimmed lines.
+---@param s string
+---@return string[]
+function prova.parse.lines(s) end
+
+---Split each non-empty line on `sep` (default tab) into a list of columns.
+---@param s string
+---@param sep? string
+---@return string[][]
+function prova.parse.rows(s, sep) end
+
+---Treat the first non-empty line as a header row; return each remaining row as a map keyed by header.
+---@param s string
+---@param sep? string
+---@return table<string, string>[]
+function prova.parse.table(s, sep) end
+
+---Parse JSON into a Lua value (top-level `null` → `nil`).
+---@param s string
+---@return any
+function prova.parse.json(s) end
+
 ---@class prova.RetryOpts
 ---@field timeout? string    # overall deadline (default "30s")
 ---@field every? string      # interval between attempts (default "500ms")
@@ -390,13 +416,14 @@ function prova.retry(fn, opts) end
 ---@field image string                         # base image repo (e.g. "redis"); `opts.image` fully overrides
 ---@field tag? string                          # default tag; `opts.tag` overrides
 ---@field port? integer                        # primary published port (readiness + url); or use `ports`
----@field ports? integer|integer[]             # ports to publish (primary defaults to the first)
+---@field ports? integer|(integer|{ container: integer, host: integer })[]  # ports to publish; a `{container,host}` entry fixes the host port
 ---@field command? string                      # optional container command
 ---@field env? table<string,string>|fun(opts: table): table<string,string>  # container env (may read opts)
 ---@field wait? { port?: integer, log?: string }  # readiness probe (default: primary port)
 ---@field timeout? string                      # readiness deadline (default "60s")
 ---@field url fun(host_port: integer, opts: table): string  # connection URL from the mapped host port
 ---@field client? fun(url: string, opts: table, container: any): any  # attach a client (native uses url; docker-exec uses container); omit for black-box
+---@field extra? fun(url: string, opts: table, container: any): table  # additional resource fields beyond the trio (e.g. s3 credentials)
 
 ---Build a grammar-conformant resource namespace (`{ client?, container }`) from a compact spec — the
 ---scaffolding every containerized recipe/plugin is authored through, so first-party and third-party

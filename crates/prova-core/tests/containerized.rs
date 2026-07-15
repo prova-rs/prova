@@ -11,6 +11,6 @@ fn containerized_builds_conformant_namespace() {
         .join("containerized.lua");
     let mut reporter = NullReporter;
     let summary = run_path(&path, &mut reporter).expect("run containerized.lua");
-    assert_eq!(summary.passed, 5, "passed");
+    assert_eq!(summary.passed, 6, "passed");
     assert_eq!(summary.failed, 0, "failed");
 }

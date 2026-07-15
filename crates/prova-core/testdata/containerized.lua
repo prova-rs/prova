@@ -30,3 +30,14 @@ end)
 prova.test("requires a port", function(t)
   t:expect(pcall(prova.containerized, { image = "x", url = function() end })):is_false()
 end)
+
+prova.test("accepts a fixed-port ports entry and an extra hook", function(t)
+  -- `{ container, host }` fixed-port form (primary resolves to the container port) + an `extra` hook.
+  local ns = prova.containerized{
+    name = "fx", image = "x",
+    ports = { { container = 9092, host = 9092 } },
+    url = function(hp) return "x://" .. hp end,
+    extra = function() return { token = "t" } end,
+  }
+  t:expect(type(ns.container)):equals("function")
+end)
