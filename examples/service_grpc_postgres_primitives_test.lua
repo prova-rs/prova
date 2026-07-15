@@ -1,12 +1,10 @@
---- PRIMITIVES companion to service_grpc_postgres_test.lua — the SAME integration, with the
---- database dependency built by hand instead of via `postgres.container`. Read this when you need
---- a dependency Prova has no recipe for: everything a recipe does is four primitives you already
---- have — `docker.run` (+ a `wait` gate), `prova.retry`, `X.client`, and `ctx:manage`.
----
+--- PRIMITIVES companion to examples/service-grpc-postgres/ — the SAME integration, with the database
+--- built by hand instead of via the external `postgres` plugin. Read this when you need a dependency
+--- no plugin covers: everything `require("postgres").container` does is a few primitives you already
+--- have — `docker.run` (+ a `wait` gate), `container:run` (drive the CLI in the image), and
+--- `prova.retry` / `ctx:manage`. No plugin, so no prova.toml — run it directly:
 ---   prova examples/service_grpc_postgres_primitives_test.lua
----
---- requires docker + cargo (skips cleanly without either). Tagged "primitives" so you can select
---- or exclude the hand-rolled variants as a group once tag filtering lands.
+--- requires docker + cargo (skips cleanly without either). Tagged "primitives".
 
 local ANSWERS = {
   author_name = "Test Author", author_email = "test@example.com",
@@ -25,14 +23,22 @@ local project = prova.fixture("project", Scope.File, function(ctx)
   }
 end)
 
+-- A tiny docker-exec psql helper — what the postgres plugin wraps. Runs a query inside the container
+-- (no shell, no quoting) and returns the trimmed scalar.
+local function psql(container, sql)
+  return (container:run({
+    "env", "PGPASSWORD=dev", "psql", "-U", "dev", "-d", "inventory_service", "-tAc", sql,
+  }):gsub("%s+$", ""))
+end
+
 local service = prova.fixture("service", Scope.File, function(ctx)
   local dir = ctx:use(project):dir("inventory-service").path
 
-  -- What `postgres.container(ctx, opts)` does for you, step by step:
+  -- What `require("postgres").container(ctx, opts)` does for you, step by step:
 
-  -- 1. Start the container. `ports = { 5432 }` publishes to a RANDOM host port (parallel runs
-  --    never collide); `wait = { port = ... }` gates on a listening socket. `ctx:manage` ties the
-  --    container's removal to this fixture's teardown — pass or fail, nothing leaks.
+  -- 1. Start the container. `ports = { 5432 }` publishes to a RANDOM host port (parallel runs never
+  --    collide); `wait = { port = ... }` gates on a listening socket. `ctx:manage` ties removal to
+  --    this fixture's teardown — pass or fail, nothing leaks.
   local pg = ctx:manage(docker.run{
     image = "postgres:16-alpine",
     env = { POSTGRES_USER = "dev", POSTGRES_PASSWORD = "dev", POSTGRES_DB = "inventory_service" },
@@ -44,12 +50,11 @@ local service = prova.fixture("service", Scope.File, function(ctx)
   local db_url = "postgres://dev:dev@127.0.0.1:" .. pg:host_port(5432) .. "/inventory_service"
 
   -- 3. Gate on REAL readiness, not a socket. Postgres restarts once during first-boot init, so a
-  --    listening port is not yet a database. Retry until a client connection HOLDS — the service we
-  --    are about to boot connects exactly once and exits on failure. The connection is managed too,
-  --    so it closes at teardown (in LIFO order, before the container it points at).
-  local db = ctx:manage(prova.retry(function() return postgres.client(db_url) end, { timeout = "30s" }))
+  --    listening port is not yet a database. Retry a real query (via `container:run`) until it HOLDS —
+  --    the service we boot next connects exactly once and exits on failure.
+  prova.retry(function() psql(pg, "SELECT 1"); return true end,
+    { timeout = "30s", message = "postgres did not accept connections in time" })
 
-  -- From here the two variants are identical: build, boot on a dynamic port, gate, hand off.
   local build = shell.run("cargo build", { cwd = dir, timeout = "600s" })
   assert(build:ok(), "service failed to build:\n" .. build.stderr)
 
@@ -65,11 +70,11 @@ local service = prova.fixture("service", Scope.File, function(ctx)
 
   local addr = "127.0.0.1:" .. port
   grpc.wait_for(addr, { timeout = "30s" })  -- the service only answers if it connected to Postgres
-  return { addr = addr, db = db }
+  return { addr = addr, container = pg }
 end)
 
 prova.group("inventory gRPC service (Postgres, from primitives)",
-            { requires = { "docker", "cargo" }, tags = { "primitives" } }, function(g)
+            { requires = { "docker", "cargo" } }, function(g)
   g:test("boots against real Postgres and serves its gRPC API", function(t)
     local svc = t:use(service)
     local client = grpc.client(svc.addr)
@@ -80,6 +85,7 @@ prova.group("inventory gRPC service (Postgres, from primitives)",
 
   g:test("ran its migrations against that same Postgres", function(t)
     local svc = t:use(service)
-    t:expect(svc.db:query_value("SELECT count(*) FROM _sqlx_migrations WHERE success")):gte(1)
+    -- Cross-check the very database the service is wired to, by execing psql in its container.
+    t:expect(psql(svc.container, "SELECT count(*) FROM _sqlx_migrations WHERE success")):gte(1)
   end)
 end)

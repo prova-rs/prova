@@ -1,0 +1,9 @@
+# The three infrastructure dependencies are external plugins. Run: `cd examples/kitchen-sink && prova`.
+# Pin released tags (`@v1.0.0`) in production; `@main` tracks latest for a demo.
+[run]
+paths = ["."]
+
+[plugins]
+postgres = "prova-rs/prova-postgres@main"
+mysql    = "prova-rs/prova-mysql@main"
+pulsar   = "prova-rs/prova-pulsar@main"

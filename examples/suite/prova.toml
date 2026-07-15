@@ -1,0 +1,7 @@
+# The shared Postgres is the external `postgres` plugin. Run: `cd examples/suite && prova`.
+# Pin a released tag (`@v1.0.0`) in production; `@main` tracks latest for a demo.
+[run]
+paths = ["."]
+
+[plugins]
+postgres = "prova-rs/prova-postgres@main"

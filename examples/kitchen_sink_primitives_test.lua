@@ -1,71 +1,88 @@
---- PRIMITIVES companion to kitchen_sink_test.lua — the SAME two-service topology (Rust gRPC
---- producer · Pulsar · Python REST consumer), with all three infrastructure dependencies built by
---- hand instead of via the container recipes. Three different readiness shapes, deliberately:
+--- PRIMITIVES companion to kitchen-sink/ — the SAME two-service topology (Rust gRPC producer ·
+--- Pulsar · Python REST consumer), with all three infrastructure dependencies built by hand
+--- instead of via the external plugins. Read this when a dependency has no plugin, or needs custom
+--- wiring the plugin doesn't expose. Everything the plugins do is a few primitives you already have:
+--- `docker.run` (+ a `wait` gate), `container:run` (drive the CLI already in the image), and
+--- `prova.retry`. No plugins, so no prova.toml — run it directly from the repo root:
+---   prova examples/kitchen_sink_primitives_test.lua
+--- requires docker + cargo + python3 (skips cleanly without them). Tagged "primitives".
 ---
----   postgres — socket gate, then retry a client until the connection HOLDS (first-boot restart)
+--- Three different readiness SHAPES, deliberately:
+---   postgres — socket gate, then retry a real query until the connection HOLDS (first-boot restart)
 ---   mysql    — same shape, longer horizon (init takes tens of seconds)
 ---   pulsar   — a LOG gate ("messaging service is ready"): the broker announces readiness long
 ---              after its ports open
----
---- Read kitchen_sink_test.lua first; come back here when a dependency has no recipe or needs
---- custom wiring. Tagged "primitives".
----
----   prova examples/kitchen_sink_primitives_test.lua
---- requires docker + cargo + python3 (skips cleanly without them).
 
 local TOPIC = "inventory-events"
 
+-- Coerce a canonical numeric string to a number (so `count(*)` reads as 1, not "1"), else leave it.
+local function scalar(s)
+  s = s:gsub("%s+$", "")
+  local n = tonumber(s)
+  if n and tostring(n) == s then return n end
+  return s
+end
+
+-- docker-exec query helpers — what the postgres/mysql plugins wrap. Each runs one statement inside
+-- the container (no shell, no quoting) and returns the trimmed, coerced scalar in the first column.
+local function psql(container, sql)
+  return scalar(container:run({
+    "env", "PGPASSWORD=dev", "psql", "-U", "dev", "-d", "inventory", "-tAc", sql }))
+end
+local function myq(container, sql)
+  return scalar(container:run({
+    "mysql", "-u", "dev", "-pdev", "-D", "audit", "-N", "-B", "-e", sql }))
+end
+
 local infra = prova.fixture("infra", Scope.File, function(ctx)
-  -- Postgres, by hand: container + socket gate, URL from the mapped port, then gate on a
-  -- connection that holds. (This is `postgres.container` unrolled — see also
-  -- service_grpc_postgres_primitives_test.lua for the single-service walkthrough.)
-  local pg_c = ctx:manage(docker.run{
+  -- Postgres, by hand: container + socket gate, URL from the mapped port, then gate on a query that
+  -- HOLDS. (This is `postgres.container` unrolled — see also service_grpc_postgres_primitives_test.lua
+  -- for the single-service walkthrough.)
+  local pg = ctx:manage(docker.run{
     image = "postgres:16-alpine",
     env = { POSTGRES_USER = "dev", POSTGRES_PASSWORD = "dev", POSTGRES_DB = "inventory" },
     ports = { 5432 },
     wait = { port = 5432, timeout = "60s" },
   })
-  local pg_url = "postgres://dev:dev@127.0.0.1:" .. pg_c:host_port(5432) .. "/inventory"
-  local pg = ctx:manage(prova.retry(function() return postgres.client(pg_url) end,
-    { timeout = "30s", message = "postgres did not accept connections in time" }))
+  local pg_url = "postgres://dev:dev@127.0.0.1:" .. pg:host_port(5432) .. "/inventory"
+  prova.retry(function() psql(pg, "SELECT 1"); return true end,
+    { timeout = "30s", message = "postgres did not accept connections in time" })
 
   -- MySQL, by hand: identical shape, but MySQL's first-boot init is slower and it also restarts —
   -- the retry horizon is the only thing that changes.
-  local my_c = ctx:manage(docker.run{
+  local my = ctx:manage(docker.run{
     image = "mysql:8",
     env = { MYSQL_USER = "dev", MYSQL_PASSWORD = "dev", MYSQL_DATABASE = "audit",
             MYSQL_ROOT_PASSWORD = "root" },
     ports = { 3306 },
     wait = { port = 3306, timeout = "90s" },
   })
-  local my_url = "mysql://dev:dev@127.0.0.1:" .. my_c:host_port(3306) .. "/audit"
-  local my = ctx:manage(prova.retry(function() return mysql.client(my_url) end,
-    { timeout = "90s", message = "mysql did not accept connections in time" }))
+  local my_url = "mysql://dev:dev@127.0.0.1:" .. my:host_port(3306) .. "/audit"
+  prova.retry(function() myq(my, "SELECT 1"); return true end,
+    { timeout = "90s", message = "mysql did not accept connections in time" })
 
   -- Pulsar, by hand: a different readiness SHAPE. Standalone opens its ports well before it can
-  -- serve, but it announces readiness in its logs — so the gate is `wait = { log = ... }`, and the
-  -- client retry is just a belt over those suspenders.
-  local pl_c = ctx:manage(docker.run{
+  -- serve, but it announces readiness in its logs — so the gate is `wait = { log = ... }`; no client
+  -- probe needed, the log line IS the readiness signal.
+  local pl = ctx:manage(docker.run{
     image = "apachepulsar/pulsar:3.3.1",
     command = "bin/pulsar standalone",
     ports = { 6650, 8080 },
     wait = { log = "messaging service is ready", timeout = "120s" },
   })
-  local pl_url = "pulsar://127.0.0.1:" .. pl_c:host_port(6650)
-  ctx:manage(prova.retry(function() return pulsar.client(pl_url) end,
-    { timeout = "30s", message = "pulsar did not accept connections in time" }))
+  local pl_url = "pulsar://127.0.0.1:" .. pl:host_port(6650)
 
   return {
-    pg = { client = pg, url = pg_url },
-    mysql = { client = my, url = my_url },
+    pg = { container = pg, url = pg_url },
+    mysql = { container = my, url = my_url },
     pulsar = { url = pl_url },
   }
 end)
 
--- From here down the file is IDENTICAL to kitchen_sink_test.lua — the services neither know nor
--- care how their dependencies came to exist. That interchangeability is the point: a hand-rolled
--- provisioner that returns the standard { client, url, container } shape is indistinguishable
--- from a first-party recipe.
+-- From here down the file is IDENTICAL to kitchen-sink/kitchen_sink_test.lua — the services neither
+-- know nor care how their dependencies came to exist. That interchangeability is the point: a
+-- hand-rolled provisioner that returns the standard { container, url } shape is indistinguishable
+-- from a first-party plugin.
 
 local producer = prova.fixture("producer", Scope.File, function(ctx)
   local env = ctx:use(infra)
@@ -127,8 +144,10 @@ prova.group("kitchen sink from primitives: Rust gRPC producer → Pulsar → Pyt
     local created = client:call("inventory.v1.Inventory/CreateItem", { display_name = "widget" })
     t:expect(created.id, "created id"):gt(0)
 
-    t:expect(env.pg.client:query_value(
-      "SELECT count(*) FROM items WHERE display_name = $1", { "widget" })):equals(1)
+    -- Cross-check the producer's Postgres by execing psql in its container (hand-rolled binding:
+    -- literal values inlined, since there's no plugin doing it for us).
+    t:expect(psql(env.pg.container,
+      "SELECT count(*) FROM items WHERE display_name = 'widget'")):equals(1)
 
     local audits = prova.retry(function()
       local res = cons.api:get("/audits")
@@ -140,8 +159,9 @@ prova.group("kitchen sink from primitives: Rust gRPC producer → Pulsar → Pyt
     t:expect(audits[1].item_id):equals(created.id)
     t:expect(audits[1].display_name):equals("widget")
 
-    t:expect(env.mysql.client:query_value(
-      "SELECT count(*) FROM audits WHERE item_id = ? AND display_name = ?",
-      { created.id, "widget" })):equals(1)
+    -- Cross-check the consumer's MySQL — the event's final resting place.
+    t:expect(myq(env.mysql.container,
+      "SELECT count(*) FROM audits WHERE item_id = " .. created.id ..
+      " AND display_name = 'widget'")):equals(1)
   end)
 end)

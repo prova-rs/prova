@@ -1,0 +1,8 @@
+# The postgres resource is an external plugin now — declared here, fetched + pinned + cached. Run the
+# capstone with `cd examples/service-grpc-postgres && prova` (needs docker + cargo). Pin a released
+# tag (`@v1.0.0`) in production; `@main` tracks the latest for a demo.
+[run]
+paths = ["."]
+
+[plugins]
+postgres = "prova-rs/prova-postgres@main"

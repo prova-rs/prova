@@ -9,13 +9,19 @@
 --- producer's Postgres, watch the event flow through Pulsar into the consumer, read it back over
 --- REST, and cross-check the consumer's MySQL.
 ---
---- This is the IDIOMATIC version — each dependency is one `X.container(ctx)` line. The same
---- topology built from primitives lives in kitchen_sink_primitives_test.lua.
+--- This is the IDIOMATIC version — each dependency is one `X.container(ctx)` line, where postgres,
+--- mysql, and pulsar are external plugins declared in this directory's prova.toml and attached with
+--- `require(...)`. The same topology built from raw primitives (docker.run + container:run readiness
+--- gates, no plugins) lives in ../kitchen_sink_primitives_test.lua.
 ---
---- Run from the repo root (first run compiles the Rust service and installs Python deps):
----   prova examples/kitchen_sink_test.lua
+--- Run from this directory (first run compiles the Rust service and installs Python deps):
+---   cd examples/kitchen-sink && prova
 --- requires docker + cargo + python3 (skips cleanly without them). Pulsar standalone dominates
 --- startup (~60-90s); everything else rides in its shadow.
+
+local postgres = require("postgres")
+local mysql    = require("mysql")
+local pulsar   = require("pulsar")
 
 local TOPIC = "inventory-events"
 
@@ -32,7 +38,7 @@ end)
 -- The Rust half: gRPC in front, Postgres behind, Pulsar out the back.
 local producer = prova.fixture("producer", Scope.File, function(ctx)
   local env = ctx:use(infra)
-  local dir = "examples/fixtures/inventory-producer"
+  local dir = "../fixtures/inventory-producer"
 
   local build = shell.run("cargo build", { cwd = dir, timeout = "600s" })
   assert(build:ok(), "inventory-producer failed to build:\n" .. build.stderr)
@@ -57,7 +63,7 @@ end)
 -- The Python half: Pulsar in, MySQL behind, REST in front.
 local consumer = prova.fixture("consumer", Scope.File, function(ctx)
   local env = ctx:use(infra)
-  local dir = "examples/fixtures/audit-consumer"
+  local dir = "../fixtures/audit-consumer"
 
   local venv = ctx:tempdir()
   local setup = shell.run(

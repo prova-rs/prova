@@ -1,19 +1,22 @@
 --- CAPSTONE — the North Star hard tier, against a REAL p6m archetype. Render a gRPC service with
 --- Postgres persistence, build it, provision an ephemeral Postgres, boot the service wired to it, and
 --- drive its gRPC API while cross-checking the same database — the tier a declarative harness (the
---- pytest manifest) structurally cannot express. Run from the repo root:
----   prova examples/service_grpc_postgres_test.lua
+--- pytest manifest) structurally cannot express. Run it with:
+---   cd examples/service-grpc-postgres && prova
 --- requires docker + cargo (skips cleanly without either); first run clones libs + downloads crates.
 ---
---- This is the IDIOMATIC version: `postgres.container(ctx, ...)` provisions the database in one
---- line. The same integration built from primitives (docker.run + readiness gates + retry) lives in
---- service_grpc_postgres_primitives_test.lua — read that one when you need a dependency Prova has
---- no recipe for.
+--- The database is the external `postgres` plugin, declared in this directory's prova.toml and
+--- attached with `require("postgres")`. `require("postgres").container(ctx, ...)` provisions it in one
+--- line — provision + readiness + managed teardown + a docker-exec client. The same integration built
+--- from raw primitives (docker.run + container:run readiness gates) lives in
+--- ../service_grpc_postgres_primitives.lua — read that when you need a resource with no plugin.
 ---
 --- NOTE (why this matters): the archetype today is a SCAFFOLD — its gRPC methods return
 --- `Unimplemented` and its migration is empty. prova *running* the service is exactly what exposes
 --- that "renders + compiles" was hiding a hollow service. As the archetype grows real CRUD, the
 --- assertions below graduate from "Unimplemented" to real persisted state (Create → row → Get).
+
+local postgres = require("postgres")
 
 local ANSWERS = {
   author_name = "Test Author", author_email = "test@example.com",
@@ -33,7 +36,7 @@ local project = prova.fixture("project", Scope.File, function(ctx)
 end)
 
 -- Provision Postgres, build the service, and boot it wired to the container. Returns the gRPC address
--- and the DB URL (so tests can cross-check the very database the service is using).
+-- and the DB client (so tests can cross-check the very database the service is using).
 local service = prova.fixture("service", Scope.File, function(ctx)
   local dir = ctx:use(project):dir("inventory-service").path
 
@@ -74,7 +77,7 @@ prova.group("inventory gRPC service (Postgres)", { requires = { "docker", "cargo
 
   g:test("ran its migrations against that same Postgres", function(t)
     local svc = t:use(service)
-    -- The recipe's managed client points at the very database the service is wired to —
+    -- The plugin's docker-exec client execs `psql` inside the very container the service is wired to —
     -- cross-service state assertion with no extra connection ceremony.
     t:expect(svc.db:query_value("SELECT count(*) FROM _sqlx_migrations WHERE success")):gte(1)
   end)
