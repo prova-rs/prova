@@ -15,6 +15,8 @@
 //! jobs = 8
 //! [profiles.ci.env]
 //! CI = "true"
+//! [profiles.ci.plugins]         # CI-only capabilities, still pinned in-repo (not an out-of-band input)
+//! toxiproxy = { git = "https://github.com/acme/prova-toxiproxy", tag = "v1" }
 //!
 //! [suites.grpc]                 # an explicit suite: these files share one state (Scope.Suite)
 //! paths = ["services/grpc"]     # (a directory's own `suite.lua` is the zero-config alternative)
@@ -144,6 +146,12 @@ pub struct Profile {
     pub format: Option<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// Profile-scoped plugins (`[profiles.<name>.plugins]`), overlaid on the project-wide
+    /// `[plugins]` set. The principled home for CI-only capabilities: declared in `prova.toml` so a
+    /// `--profile ci` run and local dev resolve the same pinned source, instead of injecting plugins
+    /// through an out-of-band CI input. On a name conflict the profile's entry wins.
+    #[serde(default)]
+    pub plugins: BTreeMap<String, PluginSource>,
 }
 
 /// A fully-resolved run configuration (base `[run]` with an optional profile overlaid).
@@ -198,13 +206,23 @@ impl Manifest {
             }
         }
 
+        // Project-wide `[plugins]` are the base; the selected profile's `[profiles.X.plugins]`
+        // overlay it (profile wins on a name conflict), so a CI profile can add capabilities without
+        // an out-of-band input and local `--profile ci` resolves identically.
+        let mut plugins = self.plugins.clone();
+        if let Some(p) = overlay {
+            for (k, v) in &p.plugins {
+                plugins.insert(k.clone(), v.clone());
+            }
+        }
+
         Ok(Resolved {
             paths,
             jobs,
             format,
             env,
             suites: self.suites.clone(),
-            plugins: self.plugins.clone(),
+            plugins,
             sources: self.sources.clone(),
             luals: self.luals.clone(),
         })
@@ -374,6 +392,43 @@ redis = "acme:prova-redis@v1"
         let r = m.resolve(Some("smoke")).unwrap();
         assert_eq!(r.paths, vec!["tests/smoke".to_string()]);
         assert_eq!(r.jobs, Some(4)); // inherited
+    }
+
+    #[test]
+    fn profile_plugins_overlay_project_wide_plugins() {
+        let m = Manifest::parse(
+            r#"
+[run]
+paths = ["tests"]
+
+[plugins]
+redis = "./plugins/redis.lua"
+
+[profiles.ci]
+[profiles.ci.plugins]
+kafka = { git = "https://example.com/acme/prova-kafka", tag = "v1" }
+redis = "./plugins/redis-ci.lua"
+"#,
+        )
+        .unwrap();
+
+        // Base run: only the project-wide plugin.
+        let base = m.resolve(None).unwrap();
+        assert_eq!(base.plugins.len(), 1);
+        assert_eq!(base.plugins["redis"], PluginSource::Path("./plugins/redis.lua".into()));
+
+        // CI profile: adds kafka, and its redis entry wins over the project-wide one.
+        let ci = m.resolve(Some("ci")).unwrap();
+        assert_eq!(ci.plugins.len(), 2);
+        assert_eq!(
+            ci.plugins["kafka"],
+            PluginSource::Detailed(PluginDetail {
+                git: Some("https://example.com/acme/prova-kafka".into()),
+                tag: Some("v1".into()),
+                ..Default::default()
+            })
+        );
+        assert_eq!(ci.plugins["redis"], PluginSource::Path("./plugins/redis-ci.lua".into()));
     }
 
     #[test]
