@@ -13,6 +13,7 @@ mod plugins;
 mod suite;
 
 pub use engine::{
+    Selection,
     discover_path, discover_path_with, inspect_plugin, run_path, run_path_with, Module,
     PluginReport, PluginShape, RunConfig,
 };

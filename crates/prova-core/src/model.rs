@@ -78,6 +78,9 @@ pub struct Summary {
     pub passed: usize,
     pub failed: usize,
     pub skipped: usize,
+    /// Leaves excluded by the run's selection (`-k` / `--tags` / `--node`) — never executed,
+    /// distinct from `skipped` (which ran into a gate). Zero when no selection is active.
+    pub deselected: usize,
     pub duration: Duration,
 }
 
@@ -151,8 +154,16 @@ impl Reporter for ConsoleReporter {
             }
             Event::RunFinished { summary } => {
                 println!(
-                    "\n{} passed, {} failed, {} skipped   in {:.1?}",
-                    summary.passed, summary.failed, summary.skipped, summary.duration
+                    "\n{} passed, {} failed, {} skipped{}   in {:.1?}",
+                    summary.passed,
+                    summary.failed,
+                    summary.skipped,
+                    if summary.deselected > 0 {
+                        format!(", {} deselected", summary.deselected)
+                    } else {
+                        String::new()
+                    },
+                    summary.duration
                 );
             }
             _ => {}
@@ -235,6 +246,7 @@ pub fn event_to_json(event: &Event) -> serde_json::Value {
             "passed": summary.passed,
             "failed": summary.failed,
             "skipped": summary.skipped,
+            "deselected": summary.deselected,
             "durationMs": summary.duration.as_secs_f64() * 1000.0,
         }),
     }

@@ -52,9 +52,72 @@ use crate::model::{
 /// keeping `prova-core` domain-agnostic.
 pub type Module = std::sync::Arc<dyn Fn(&Lua) -> mlua::Result<()> + Send + Sync>;
 
+/// Which collected nodes a run executes. Empty = everything. Composable, agent-friendly
+/// selection: `keywords` are case-insensitive substrings of the full node path (`-k`), `tags`
+/// match a leaf's effective tags (own + inherited from enclosing groups; `--tags`), `nodes` are
+/// exact node paths (`--node` — re-run precisely the node a report named). `*_excludes` remove
+/// after the includes select. Dependencies of selected leaves are ALWAYS pulled in: an outcome
+/// gate can't be evaluated against a node that never ran.
+#[derive(Debug, Clone, Default)]
+pub struct Selection {
+    pub keywords: Vec<String>,
+    pub keyword_excludes: Vec<String>,
+    pub tags: Vec<String>,
+    pub tag_excludes: Vec<String>,
+    pub nodes: Vec<String>,
+}
+
+impl Selection {
+    pub fn is_empty(&self) -> bool {
+        self.keywords.is_empty()
+            && self.keyword_excludes.is_empty()
+            && self.tags.is_empty()
+            && self.tag_excludes.is_empty()
+            && self.nodes.is_empty()
+    }
+
+    /// Does a leaf with these paths and effective tags survive this selection?
+    fn selects(&self, paths: &[&str], tags: &[String]) -> bool {
+        let lower: Vec<String> = paths.iter().map(|p| p.to_lowercase()).collect();
+        // Includes: with no include criteria at all, everything is a candidate.
+        let has_includes = !self.keywords.is_empty() || !self.nodes.is_empty() || !self.tags.is_empty();
+        let mut included = !has_includes;
+        if !included && !self.keywords.is_empty() {
+            included = self
+                .keywords
+                .iter()
+                .any(|k| lower.iter().any(|p| p.contains(&k.to_lowercase())));
+        }
+        if !included && !self.nodes.is_empty() {
+            included = self.nodes.iter().any(|n| paths.contains(&n.as_str()));
+        }
+        if !included && !self.tags.is_empty() {
+            included = self.tags.iter().any(|t| tags.contains(t));
+        }
+        // When multiple include axes are given, any-axis match includes (they compose as OR) —
+        // excludes below are what narrow.
+        if !included {
+            return false;
+        }
+        if self
+            .keyword_excludes
+            .iter()
+            .any(|k| lower.iter().any(|p| p.contains(&k.to_lowercase())))
+        {
+            return false;
+        }
+        if self.tag_excludes.iter().any(|t| tags.contains(t)) {
+            return false;
+        }
+        true
+    }
+}
+
 #[derive(Clone)]
 pub struct RunConfig {
     pub concurrency: usize,
+    /// Node selection applied after collection (empty = run everything).
+    pub selection: Selection,
     modules: Vec<Module>,
     /// Extra disk roots the plugin searcher consults (e.g. the global `data_dir/plugins`).
     plugin_roots: Vec<std::path::PathBuf>,
@@ -70,6 +133,7 @@ impl Default for RunConfig {
     fn default() -> Self {
         RunConfig {
             concurrency: 1,
+            selection: Selection::default(),
             modules: Vec::new(),
             plugin_roots: Vec::new(),
             named_plugins: std::collections::BTreeMap::new(),
@@ -82,6 +146,7 @@ impl std::fmt::Debug for RunConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RunConfig")
             .field("concurrency", &self.concurrency)
+            .field("selection", &self.selection)
             .field("modules", &self.modules.len())
             .field("plugin_roots", &self.plugin_roots)
             .field("named_plugins", &self.named_plugins)
@@ -1663,6 +1728,8 @@ struct Leaf {
     requires: Vec<String>,
     /// If set, this leaf is skipped before it ever runs (an unmet `requires`), with this reason.
     precondition_skip: Option<String>,
+    /// Effective tags: the unit's own plus every enclosing group's (selection matches on these).
+    tags: Vec<String>,
 }
 
 /// Group-level options that flow down to every contained leaf: `depends_on`, `resources`, `serial`,
@@ -1673,6 +1740,7 @@ struct Inherited {
     resources: Vec<ResourceReq>,
     serial: bool,
     requires: Vec<String>,
+    tags: Vec<String>,
 }
 
 /// The executable plan: a flat list of leaves plus the leaf-level dependency DAG.
@@ -1710,6 +1778,7 @@ fn collect_leaves(
             child_inherited
                 .requires
                 .extend(node.opts.requires.iter().cloned());
+            child_inherited.tags.extend(node.opts.tags.iter().cloned());
             let mut ids = Vec::new();
             for &child in &node.children {
                 ids.extend(collect_leaves(
@@ -1758,6 +1827,8 @@ fn push_leaf(leaves: &mut Vec<Leaf>, unit: PlanUnit, node: &Node, inherited: &In
     reqs.extend(node.opts.resources.iter().cloned());
     let mut requires = inherited.requires.clone();
     requires.extend(node.opts.requires.iter().cloned());
+    let mut tags = inherited.tags.clone();
+    tags.extend(node.opts.tags.iter().cloned());
     let id = leaves.len();
     leaves.push(Leaf {
         unit,
@@ -1767,8 +1838,55 @@ fn push_leaf(leaves: &mut Vec<Leaf>, unit: PlanUnit, node: &Node, inherited: &In
         serial: inherited.serial || node.opts.serial,
         requires,
         precondition_skip: None,
+        tags,
     });
     id
+}
+
+/// Narrow a plan to the selection, pulling in the dependencies of every selected leaf (an outcome
+/// gate can't be evaluated against a node that never ran) and remapping leaf-id edges. Returns the
+/// surviving plan and how many leaves were deselected. Flows are atomic: a flow is selected if ANY
+/// of its step paths match.
+fn apply_selection(plan: Plan, sel: &Selection) -> (Plan, usize) {
+    if sel.is_empty() {
+        return (plan, 0);
+    }
+    let mut keep = vec![false; plan.leaves.len()];
+    for (i, leaf) in plan.leaves.iter().enumerate() {
+        if sel.selects(&leaf.unit.leaf_paths(), &leaf.tags) {
+            keep[i] = true;
+        }
+    }
+    // Dependency closure: selected leaves drag their upstream gates in, transitively.
+    let mut work: Vec<usize> = keep
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &k)| k.then_some(i))
+        .collect();
+    while let Some(i) = work.pop() {
+        for &d in &plan.leaves[i].deps {
+            if !keep[d] {
+                keep[d] = true;
+                work.push(d);
+            }
+        }
+    }
+    let deselected = keep.iter().filter(|&&k| !k).count();
+    if deselected == 0 {
+        return (plan, 0);
+    }
+    let mut remap = vec![usize::MAX; plan.leaves.len()];
+    let mut kept = Vec::with_capacity(plan.leaves.len() - deselected);
+    for (i, leaf) in plan.leaves.into_iter().enumerate() {
+        if keep[i] {
+            remap[i] = kept.len();
+            kept.push(leaf);
+        }
+    }
+    for leaf in &mut kept {
+        leaf.deps = leaf.deps.iter().map(|&d| remap[d]).collect();
+    }
+    (Plan { leaves: kept }, deselected)
 }
 
 /// Turn each leaf's node-level `raw_deps` (which may point at a group) into concrete leaf-id edges,
@@ -2396,19 +2514,20 @@ fn execute_collected(
     reporter: &mut dyn Reporter,
     config: &RunConfig,
 ) -> mlua::Result<Summary> {
-    let (plan, state) = {
+    let (plan, deselected, state) = {
         let col = col.borrow();
-        let plan = build_plan(&col)?;
+        let (plan, deselected) = apply_selection(build_plan(&col)?, &config.selection);
         let state = Rc::new(RunState {
             defs: col.fixtures.clone(),
             suite: Rc::new(RefCell::new(ScopeState::default())),
             files: RefCell::new(HashMap::new()),
         });
-        (plan, state)
+        (plan, deselected, state)
     };
 
     let rt = new_runtime()?;
     let mut summary = Summary::default();
+    summary.deselected = deselected;
     rt.block_on(async {
         let started = Instant::now();
         run_plan(lua, &plan, &state, config, reporter, &mut summary).await;
@@ -2454,7 +2573,7 @@ pub fn discover_path(path: &Path) -> mlua::Result<Vec<String>> {
 pub fn discover_path_with(path: &Path, config: &RunConfig) -> mlua::Result<Vec<String>> {
     let (_lua, col) = read_and_collect(path, config)?;
     let col = col.borrow();
-    let plan = build_plan(&col)?;
+    let (plan, _deselected) = apply_selection(build_plan(&col)?, &config.selection);
     Ok(plan
         .leaves
         .iter()

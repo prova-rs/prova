@@ -41,7 +41,11 @@ options:
       --format console|json output format (--json is shorthand)
   -j, --jobs N              run up to N units concurrently
   -P, --plugin name=source  add an ad-hoc plugin (repeatable; layers over the manifest)
-      --list                discover tests without running them
+  -k PATTERN                select nodes whose path contains PATTERN (repeatable; !PAT excludes)
+      --tags a,b            select nodes tagged with any listed tag (repeatable; !tag excludes)
+      --node PATH           select an exact node path (repeatable) — re-run what a report named
+      --last-failed         select only the nodes that failed in the previous run
+      --list                discover tests without running them (respects selection)
   -V, --version             print version
   -h, --help                print this help";
 
@@ -166,12 +170,38 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     let mut profile: Option<String> = None;
     let mut manifest_path: Option<String> = None;
     let mut cli_plugins: Vec<String> = Vec::new();
+    let mut selection = prova_core::Selection::default();
+    let mut last_failed = false;
 
     let mut args = cli_args.into_iter();
     while let Some(arg) = args.next() {
         // `--plugin name=source` (repeatable): an ad-hoc plugin, layered over the manifest (CLI wins).
         if let Some(v) = value_flag(&arg, &mut args, &["--plugin", "-P"]) {
             cli_plugins.push(v);
+            continue;
+        }
+        // `-k pattern` (repeatable): case-insensitive substring of the node path; `!pat` excludes.
+        if let Some(v) = value_flag(&arg, &mut args, &["-k"]) {
+            match v.strip_prefix('!') {
+                Some(rest) => selection.keyword_excludes.push(rest.to_string()),
+                None => selection.keywords.push(v),
+            }
+            continue;
+        }
+        // `--tags a,b` (repeatable): leaf has any listed tag; `!tag` excludes.
+        if let Some(v) = value_flag(&arg, &mut args, &["--tags"]) {
+            for t in v.split(',').map(str::trim).filter(|t| !t.is_empty()) {
+                match t.strip_prefix('!') {
+                    Some(rest) => selection.tag_excludes.push(rest.to_string()),
+                    None => selection.tags.push(t.to_string()),
+                }
+            }
+            continue;
+        }
+        // `--node "full › node › path"` (repeatable): exact node selection — re-run precisely the
+        // node a report named.
+        if let Some(v) = value_flag(&arg, &mut args, &["--node"]) {
+            selection.nodes.push(v);
             continue;
         }
         if let Some(v) = value_flag(&arg, &mut args, &["--jobs", "-j"]) {
@@ -206,6 +236,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         }
         match arg.as_str() {
             "--list" => list = true,
+            "--last-failed" => last_failed = true,
             "--json" => cli_format = Some(Format::Json),
             "--version" | "-V" => {
                 println!("prova {}", env!("CARGO_PKG_VERSION"));
@@ -367,6 +398,17 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         config = config.with_plugin_namespace(canonical.clone(), dir.clone());
     }
 
+    // `--last-failed`: fold the previous run's failed node paths into the selection as exact nodes.
+    if last_failed {
+        match load_last_failed(&home) {
+            Some(paths) if !paths.is_empty() => selection.nodes.extend(paths),
+            _ => eprintln!(
+                "prova: --last-failed: no failure state from a previous run here; running everything"
+            ),
+        }
+    }
+    config.selection = selection;
+
     // IDE integration: on a manifest run (not read-only `--list`), refresh the annotation folder
     // (core + plugin `---@meta` stubs) and manage `.luarc.json` per `[luals] manage`, so
     // `require("<plugin>")` completes in the editor with no manual wiring. Never blocks the run — a
@@ -394,16 +436,27 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let mut reporter: Box<dyn Reporter> = match format {
+    let inner: Box<dyn Reporter> = match format {
         Format::Console => Box::new(ConsoleReporter),
         Format::Json => Box::new(MultiReporter::new(vec![Box::new(JsonReporter::new(
             std::io::stdout(),
         ))])),
     };
+    // Record failed node paths so the next `--last-failed` can re-run exactly them.
+    let mut reporter = FailureRecorder {
+        inner,
+        failed: Vec::new(),
+    };
 
-    match run_suites(&suites, reporter.as_mut(), &config) {
-        Ok(summary) if summary.is_success() => ExitCode::SUCCESS,
-        Ok(_) => ExitCode::FAILURE,
+    match run_suites(&suites, &mut reporter, &config) {
+        Ok(summary) => {
+            store_last_failed(&home, &reporter.failed);
+            if summary.is_success() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
         Err(err) => {
             eprintln!("prova: {err}");
             ExitCode::from(2)
@@ -560,5 +613,51 @@ mod tests {
         assert!(missing_stub_warning(&None).is_none());
 
         std::fs::remove_dir_all(&base).ok();
+    }
+}
+
+/// Forwards every event and records the paths of failed nodes, so `--last-failed` can select
+/// exactly them next run.
+struct FailureRecorder {
+    inner: Box<dyn Reporter>,
+    failed: Vec<String>,
+}
+
+impl Reporter for FailureRecorder {
+    fn event(&mut self, event: &prova_core::Event) {
+        if let prova_core::Event::NodeFinished {
+            path,
+            outcome: prova_core::Outcome::Failed,
+            ..
+        } = event
+        {
+            self.failed.push(path.to_string());
+        }
+        self.inner.event(event);
+    }
+}
+
+/// Where `--last-failed` state lives: a small JSON list of node paths in the prova home. Runs
+/// without a manifest home have nowhere durable to record, so the feature quietly no-ops there.
+fn last_failed_file(home: &Option<home::Home>) -> Option<std::path::PathBuf> {
+    home.as_ref().map(|h| h.dir.join(".last-failed.json"))
+}
+
+fn load_last_failed(home: &Option<home::Home>) -> Option<Vec<String>> {
+    let path = last_failed_file(home)?;
+    let text = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+fn store_last_failed(home: &Option<home::Home>, failed: &[String]) {
+    let Some(path) = last_failed_file(home) else {
+        return;
+    };
+    if failed.is_empty() {
+        let _ = std::fs::remove_file(path);
+        return;
+    }
+    if let Ok(text) = serde_json::to_string_pretty(failed) {
+        let _ = std::fs::write(path, text);
     }
 }

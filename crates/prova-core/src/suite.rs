@@ -222,6 +222,7 @@ fn run_sequential(suites: &[Suite], reporter: &mut dyn Reporter, config: &RunCon
                 summary.passed += s.passed;
                 summary.failed += s.failed;
                 summary.skipped += s.skipped;
+                summary.deselected += s.deselected;
             }
             Err(err) => report_suite_error(reporter, &mut summary, suite, &err.to_string()),
         }
@@ -235,11 +236,14 @@ fn run_pooled(suites: &[Suite], reporter: &mut dyn Reporter, config: &RunConfig)
     let workers = config.concurrency.min(suites.len()).max(1);
     let queue: Arc<Mutex<VecDeque<Suite>>> = Arc::new(Mutex::new(suites.iter().cloned().collect()));
     let (tx, rx) = channel::<OwnedEvent>();
+    // Deselected leaves emit no node events, so their count travels on a side channel.
+    let (dtx, drx) = channel::<usize>();
 
     let mut handles = Vec::with_capacity(workers);
     for _ in 0..workers {
         let queue = queue.clone();
         let tx = tx.clone();
+        let dtx = dtx.clone();
         // Suite-level parallelism is the worker pool; within a suite, cooperative async as before.
         let config = config.clone();
         handles.push(std::thread::spawn(move || {
@@ -247,7 +251,11 @@ fn run_pooled(suites: &[Suite], reporter: &mut dyn Reporter, config: &RunConfig)
             loop {
                 let next = queue.lock().expect("queue mutex").pop_front();
                 let Some(suite) = next else { break };
-                if let Err(err) = suite.run(&mut sink, &config) {
+                match suite.run(&mut sink, &config) {
+                    Ok(s) => {
+                        let _ = dtx.send(s.deselected);
+                    }
+                    Err(err) => {
                     // Surface a collection/load error as a synthetic failed node for the suite.
                     let path = suite.name.clone();
                     let message = err.to_string();
@@ -259,12 +267,14 @@ fn run_pooled(suites: &[Suite], reporter: &mut dyn Reporter, config: &RunConfig)
                         assertions: 0,
                         message: Some(&message),
                     });
+                    }
                 }
             }
         }));
     }
-    // Drop our own sender so `rx` closes once every worker has finished and dropped its clone.
+    // Drop our own senders so the receivers close once every worker has finished.
     drop(tx);
+    drop(dtx);
 
     let mut summary = Summary::default();
     while let Ok(event) = rx.recv() {
@@ -273,6 +283,7 @@ fn run_pooled(suites: &[Suite], reporter: &mut dyn Reporter, config: &RunConfig)
     for handle in handles {
         let _ = handle.join();
     }
+    summary.deselected += drx.iter().sum::<usize>();
     summary
 }
 
