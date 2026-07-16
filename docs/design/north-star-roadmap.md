@@ -123,9 +123,13 @@ exactly the "batteries-included, no capability ceilings" pitch. Implemented in `
   speaks **v1alpha** — exercises the fallback) in an ephemeral container, `requires{docker}`-gated so
   it skips cleanly without a daemon. Clippy + LuaLS clean.
 
-**2. Flow ergonomics + parametrization** — graduates the 4 `examples/aspirational/` files and is
-   needed to express real multi-service suites tersely. Four sub-features (all have LuaLS stubs
-   already; the engine doesn't implement them yet):
+**2. Flow ergonomics + parametrization — RESOLVED (2026-07-15).** `test_each` and `describe` shipped;
+   parametrized fixtures (`ctx:param`) and `f:use` were both assessed and **dropped** as magic that
+   fights prova's explicit, lazy-`ctx:use` model (details in the sub-bullets and
+   `docs/plans/phase1-ergonomics.md`). The parametrization story is now complete and explicit:
+   `test_each` (data-driven tests) · separate suites (divergent variants) · profiles (env) ·
+   `t:use`-in-steps (flow fixtures). No engine work remains here; the aspirational examples need only
+   a live service backend (Phase 2), not a new authoring feature.
    - **`prova.test_each(name_tmpl, cases, fn)` — DONE.** One test per case; `{placeholder}`s in the
      name filled from the case; the case reaches the body as its 2nd arg *and* as `t.case`; returns
      the list of generated handles. Top-level + `GroupBuilder:test_each`. Implemented by threading an
@@ -150,20 +154,29 @@ exactly the "batteries-included, no capability ceilings" pitch. Implemented in `
      group (labeling only, no new fixture scope). `GroupBuilder:describe` is the builder form (== a
      nested group). *(`testdata/describe.lua` + `tests/describe.rs`: 5 tests, nested labels in paths,
      pop-back-to-root verified.)*
-   - **`f:use(fixture)`** on the FlowBuilder — the hard one: the flow builder runs at *collection*
-     time but fixtures resolve at *execution*. Today flow-scoped fixtures work via `t:use` inside
-     steps. Options: (i) leave `f:use` unbuilt and rewrite the two examples to `t:use`; (ii) make
-     `f:use` register a deferred resolution the first step triggers. Decide when you get here.
-     *Still to do* — the blocker for `ordering.lua`/`dependent_flows.lua` (which also need a live
-     service to run against).
+   - **`f:use(fixture)`** on the FlowBuilder — **DROPPED (2026-07-15).** The flow builder runs at
+     *collection*; a fixture *value* only exists at *execution*, so `f:use` could only work via magic
+     (a transparent proxy that lies to `type()`, or re-running the flow builder). Re-running the
+     builder is real infrastructure whose only substantial consumer is a **load executor** — and load
+     testing is an explicit **non-goal** (`foundations.md`: "stays with k6/Gatling… measure timing,
+     not model load"). So there's no principled consumer to justify it. Flow-scoped fixtures use
+     `t:use` inside steps — scope-cached, so it's the same instance across steps — consistent with how
+     fixtures resolve everywhere. `ordering.lua`/`dependent_flows.lua` rewritten to `t:use`.
+   - **`describe_each` (a `test_each` lifted to a whole block)** — **not built; trigger documented.**
+     Add it *only* when you catch: the same case-list copied across several `test_each` in one file,
+     or copy-pasting a whole suite to change one variant constant, or wanting to run an existing
+     `describe` block over N shared-assertion variants. It composes `describe` + `test_each` (both
+     built), so it's a cheap additive add when a real need appears — not before.
    - *Graduation status:* **`rust_cli.lua` graduated** → `examples/rust_cli_test.lua` (needed only
      `describe`). It renders a **local, dependency-free Lua archetype** (`examples/fixtures/rust-cli`)
      rather than the remote `archetype-rust-cli` — remote archetypes are Rhai/v2 and prova-archetect
      is Lua/v3-only, so a local Lua archetype is the self-contained path — asserts the layout under
      `describe` with soft assertions, and `cargo build`s the output **offline** (`requires`-gated on
-     cargo). *(`crates/prova-archetect/tests/rust_cli.rs`.)* Remaining aspirational files: `ordering`
-     and `dependent_flows` need **`f:use`** (+ a live service); `http_service` no longer waits on
-     `ctx:param` (dropped) — it rewrites to explicit `test_each`/`describe` (+ a live service).
+     cargo). *(`crates/prova-archetect/tests/rust_cli.rs`.)* Remaining aspirational files are no
+     longer blocked on any authoring feature (`ctx:param` and `f:use` both dropped). `ordering`,
+     `dependent_flows`, and `http_service` now need only a **live service backend** to graduate —
+     tracked with the capstone (Phase 2), where a real (or `shell.spawn`ed) service exists to run them
+     against.
 
 ### Phase 2 — Compose the North Star (the capstone)
 
@@ -197,8 +210,13 @@ exactly the "batteries-included, no capability ceilings" pitch. Implemented in `
 7. **Snapshots** — `matches_snapshot`, `.snap` files + `prova --update-snapshots` (stub exists).
 8. **Selectors** — tag expressions (`--tags`), `-k` name filter, `--last-failed`, sharding.
 9. **Reporters** — JUnit XML + TAP sinks (the `Reporter`/`MultiReporter` seam is ready).
-10. **Load executor** — an alternate driver over the same plan; a `flow` is already a reusable
-    scenario. Needs **re-runnable flow bodies** (re-invoke the flow builder for fresh closures).
+10. **Load executor — NON-GOAL (not on the roadmap).** The clean definition≠execution split means an
+    alternate load driver *could* be dropped in over the same plan — but load/performance testing is
+    an explicit non-goal (`foundations.md`: "stays with k6/Gatling… measure timing, not model load").
+    We keep the architectural door open as a property of good layering, not as a feature to ship.
+    Consequently the **re-runnable-flow-*builder*** extension it would need is **not** planned (test
+    and step bodies are already re-runnable via `run_one`; only the structural flow *builder* runs
+    once, like any declarator — correctly). This is why `f:use` was dropped, not built.
 11. **bollard depth** — health checks, log *follow* (streaming), typed inspect for richer waits.
 12. **Cross-worker `suite` fixtures** — the one open semantic: a serialized once-guard for
     serializable values across per-worker Lua states (`suite.rs` note).

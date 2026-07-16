@@ -25,42 +25,50 @@ Design refs: [`docs/design/api.md`](../design/api.md),
 Removed the reserved surface: `Context:param()` and `FixtureOpts.params` in `library/prova.lua`; the
 roadmap bullet. `t.case` (from `test_each`) stays — that's the explicit, visible form.
 
-## Remaining work — `f:use(fixture)` on the flow builder
+## Decision (2026-07-15): `f:use` — DROPPED
 
-The one real Phase 1 gap. Target API (`examples/aspirational/ordering.lua`):
+Assessed and dropped, same reasoning as `ctx:param`: it's magic that fights the explicit,
+lazy-`ctx:use` model. The flow *builder* runs at collection; a fixture *value* only exists at
+execution, so `f:use` could only work via (a) a transparent proxy that lies to `type()` and breaks
+when passed bare to native functions — the exact footgun class we rejected — or (b) re-running the
+flow builder per execution.
 
-```lua
-prova.flow("order lifecycle", { ... }, function(f)
-  local base = f:use(api)          -- resolve a fixture once for the whole flow
-  f:step("create", function(t) http.post(base .. "/orders", ...) end)
-  f:step("read",   function(t) http.get(base .. "/orders/" .. id) end)
-end)
-```
+**The re-runnable-flow-builder assessment (the crux):** its only substantial consumer is a **load
+executor**, and load testing is an explicit **non-goal** (`foundations.md`: "stays with k6/Gatling…
+measure timing, not model load"). Test and step bodies are *already* re-runnable (`run_one` builds a
+fresh `t` per call — principle #2); only the structural flow *builder* runs once, which is correct and
+consistent with every other declarator (`group`, `describe`). With no principled consumer, re-running
+the builder is speculative infrastructure — dismissed.
 
-### The tension
+**Resolution:** flow-scoped fixtures use `t:use` inside steps. Because fixtures are scope-cached,
+`t:use(f)` returns the *same* instance across a flow's steps — identical semantics to what `f:use`
+promised, via the one fixture mechanism prova already has. `ordering.lua` and `dependent_flows.lua`
+rewritten accordingly; `FlowBuilder:use` removed from the LuaLS stub.
 
-The flow-builder body runs at **collection**; `f:use(api)` wants a fixture *value* to close over, but
-fixtures resolve at **execution** (inside a step). Today this works via `t:use(api)` inside each step.
+## Phase 1 ergonomics — RESOLVED
 
-### Options
+Both remaining "features" dropped; the parametrization + fixture story is complete and explicit:
 
-1. **Deferred-resolution proxy** — `f:use` returns a proxy resolved on first step. Fragile: `base .. x`
-   and `base.field` need `__concat`/`__index` metamethods; leaks abstraction.
-2. **Pre-step resolution + explicit deref** — `f:use` records the request on the flow; before each step
-   the engine resolves it once (cached in flow scope) and the step reads the value via a handle.
-3. **Rewrite examples to `t:use`** — no engine change; `f:use` stays unbuilt.
+| Need | Construct | Status |
+|---|---|---|
+| data-driven tests (shared assertions) | `test_each` | ✅ shipped |
+| a whole *block* ×N (shared assertions) | `describe_each` | not built — trigger documented (below) |
+| divergent variants (SQL vs document) | separate suites/files | ✅ |
+| env-level variation | profiles / `prova.toml` | ✅ |
+| flow-scoped fixtures | `t:use` inside steps (scope-cached) | ✅ |
 
-Decision pending until implementation starts — evaluate 1 vs 2 against the real flow execution path
-(where step bodies get their `Ctx`, and whether flow scope is already threaded there).
+### `describe_each` trigger (so it isn't lost)
 
-## Graduation targets
+Build it *only* when one of these appears — until then it's speculative:
+- the same case-list copied across several `test_each` in one file, or
+- copy-pasting a whole suite/file to change one variant constant, or
+- wanting to run an existing `describe` block over N shared-assertion variants.
 
-- `ordering.lua`, `dependent_flows.lua` → runnable once `f:use` lands (+ a live service backend; may
-  stub with a local archetype / a `shell.spawn`ed toy service as `rust_cli` did).
-- `http_service.lua` → rewrite to explicit `test_each`/`describe` (no longer blocked on `ctx:param`);
-  still needs a live service backend.
+It composes `describe` (parent_stack) + `test_each` (case-threading), both built — a cheap additive add
+when the need is real.
 
-## Verify every step
+## Graduation targets (now unblocked on authoring)
 
-`cargo test`, `cargo clippy --all-targets` (zero warnings), `lua-language-server --check`, and run the
-touched `examples/*.lua` via the CLI. Keep the LuaCATS stub (`library/`) in lockstep with the runtime.
+`ordering.lua`, `dependent_flows.lua`, `http_service.lua` no longer wait on any authoring feature — they
+need only a **live service backend**, so they graduate alongside the Phase 2 capstone (a real or
+`shell.spawn`ed service to run them against).

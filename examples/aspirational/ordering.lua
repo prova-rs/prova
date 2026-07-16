@@ -11,21 +11,23 @@ end)
 -- Flow: ordered steps sharing state. `read`/`delete` are skipped if `create` fails.
 --------------------------------------------------------------------------------------------
 prova.flow("order lifecycle", { tags = { "acceptance" }, requires = { "network" }, resources = { prova.port(8080) } }, function(flow)
-  local base = flow:use(api)     -- flow-scoped fixture value
-  local order                    -- shared across steps via closure
+  local order                    -- shared across steps via closure (this is the flow idiom)
 
   flow:step("create", function(t)
+    local base = t:use(api)      -- fixtures resolve through the step context, like everywhere
     order = http.post(base .. "/orders", { json = { sku = "widget", qty = 2 } }):json()
     t:expect(order.id):is_truthy()
   end)
 
   flow:step("read back", function(t)
+    local base = t:use(api)
     local res = http.get(base .. "/orders/" .. order.id)
     t:expect(res.status):equals(200)
     t:expect(res:json().qty):equals(2)
   end)
 
   flow:step("cancel", function(t)
+    local base = t:use(api)
     t:expect(http.post(base .. "/orders/" .. order.id .. "/cancel").status):equals(204)
   end)
 end)

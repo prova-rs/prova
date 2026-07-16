@@ -199,15 +199,12 @@ function Matcher:matches_snapshot(name) end
 ---@class prova.FlowBuilder
 local FlowBuilder = {}
 --- Declare an ordered step. Steps run in declaration order on a single worker.
+--- Fixtures are used *inside* a step via `t:use(...)`, like everywhere else — a flow-scoped fixture
+--- is scope-cached, so `t:use(f)` returns the same instance across the flow's steps. (There is
+--- deliberately no `flow:use` builder sugar; see docs/plans/phase1-ergonomics.md.)
 ---@param name string
 ---@param body fun(t: prova.TestContext)
 function FlowBuilder:step(name, body) end
---- Use a fixture for the flow's lifetime (`flow` scope) — shared across all steps.
----@generic T
----@param fixture prova.Fixture<T>
----@return T
----@overload fun(self: prova.FlowBuilder, name: string): any
-function FlowBuilder:use(fixture) end
 
 --- The group builder: the *independent* strategy. Declares child units (tests, flows, nested
 --- groups) that are isolated and parallelizable. It deliberately exposes **no shared-state

@@ -127,10 +127,12 @@ project → assert the layout → boot the app (`shell.spawn`) → spin up its d
 drive its network interfaces (`http`/`grpc`/`graphql`) → tear it all down** — one framework,
 no capability ceilings.
 
-The **load/stress** executor is the clearest payoff of these seams: a `flow` is already a reusable
-scenario; a load driver takes that scenario, runs it under a concurrency/duration/arrival profile
-(the async spine makes thousands of in-flight iterations cheap), and feeds the same event stream
-into a metrics reporter. No new authoring surface — the same tests, driven differently.
+These seams keep options open — e.g. the definition≠execution split means a load/stress driver
+*could* run a `flow` as a scenario under a concurrency/duration profile over the same plan and event
+stream, with no new authoring surface. We note this as evidence the layering is clean, **not** as a
+feature on the roadmap: load/performance testing is an explicit **non-goal** (see `foundations.md` —
+it stays with k6/Gatling; prova asserts behavioral correctness, it does not model load). The door is
+left open by good architecture; we are not walking through it.
 
 ## Current status (implemented)
 
@@ -340,10 +342,11 @@ prova useful beyond testing itself:
    modules. *(The network-interface trio `http`/`grpc`/`graphql` is done; `db` covers Postgres/MySQL;
    `net.free_port` and `http.client` landed.)*
 2. **Snapshots** — `matches_snapshot`, `.snap` files + `--update-snapshots`.
-5. **Flow ergonomics**: `f:use(fixture)` builder sugar (currently flow-scoped fixtures are used via
-   `t:use` inside steps); re-runnable flow bodies (re-invoke to get fresh closures) as the
-   precondition for the **load executor** treating a flow as a reusable scenario. (`test_each` is
-   done; parametrized fixtures were considered and **dropped** — parametrization stays explicit.)
+5. **Flow ergonomics — resolved.** `test_each` + `describe` shipped. `f:use(fixture)` builder sugar
+   and parametrized fixtures (`ctx:param`) were both **dropped** as magic that fights the explicit,
+   lazy-`ctx:use` model; flow-scoped fixtures use `t:use` inside steps (scope-cached → same instance
+   across steps). Re-running the flow *builder* (its only real consumer would be a load executor,
+   which is a non-goal) is not planned — see the north-star roadmap.
 6. **Selectors** (tag expressions, `--last-failed`, sharding), richer reporters (JUnit/TAP), and the
    **load executor**.
 7. **Cross-worker `suite` fixtures**: a serialized once-guard for serializable values (the one open

@@ -1,26 +1,20 @@
 # Aspirational examples (design showcases — not runnable)
 
 These files illustrate the *intended* authoring surface end to end. They are **documentation, not
-runnable tests**, because they use planned API not yet in the engine. The LuaLS stub declares these
-(so they type-check), but the runtime doesn't implement them yet:
-
-- `f:use(fixture)` — flow-scoped fixture on the flow builder (today: use `t:use` inside steps).
-
-(Parametrized fixtures via `ctx:param()` were considered and **dropped** — see
-`docs/design/north-star-roadmap.md`. `http_service.lua` no longer uses them; parametrization stays
-explicit via `test_each` / separate suites / profiles.)
-
-They also reference a live service (`http://localhost:8080` with no server behind it), so they are
-illustrative of the execution model rather than runnable against real infrastructure.
+runnable tests** — not because of any missing authoring feature (there are none left: both `ctx:param`
+and `f:use` were assessed and **dropped** as magic that fights prova's explicit model — see
+`docs/design/north-star-roadmap.md`), but because they reference a **live service**
+(`http://localhost:8080` with no server behind it). They use only shipped API now (fixtures via
+`t:use`, `test_each`, `describe`), so they illustrate the real execution model.
 
 The files were deliberately dropped from the `*_test.lua` naming so `prova` discovery skips them and
-`examples/*.lua` stays a directory of examples that actually run. When the planned API lands, these
-graduate back into runnable examples (paired with real fixtures/containers).
+`examples/*.lua` stays a directory of examples that actually run. Once paired with a real (or
+`shell.spawn`ed) service backend — with the Phase 2 capstone — they graduate to runnable tests.
 
 | File | Showcases | Needs |
 |------|-----------|-------|
-| `ordering.lua` | flow + `depends_on` + resource gating | `f:use`, a live service |
-| `dependent_flows.lua` | flow-to-flow DAG (diamond) | `f:use`, a live service |
+| `ordering.lua` | flow + `depends_on` + resource gating | a live service |
+| `dependent_flows.lua` | flow-to-flow DAG (diamond) | a live service |
 | `http_service.lua` | render → build → boot → probe, table-driven | a live service |
 
 **Graduated (2026-07-15):** the capstone, kitchen-sink, and suite examples once lived here as
