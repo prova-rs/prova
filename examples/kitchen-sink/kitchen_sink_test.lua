@@ -40,8 +40,7 @@ local producer = prova.fixture("producer", Scope.File, function(ctx)
   local env = ctx:use(infra)
   local dir = "../fixtures/inventory-producer"
 
-  local build = shell.run("cargo build", { cwd = dir, timeout = "600s" })
-  assert(build:ok(), "inventory-producer failed to build:\n" .. build.stderr)
+  shell.run("cargo build", { cwd = dir, timeout = "600s", check = true })
 
   local port = net.free_port()
   ctx:manage(shell.spawn(dir .. "/target/debug/inventory-producer", {
@@ -49,7 +48,7 @@ local producer = prova.fixture("producer", Scope.File, function(ctx)
       DATABASE_URL = env.pg.url,
       PULSAR_URL   = env.pulsar.url,
       PULSAR_TOPIC = TOPIC,
-      PORT         = tostring(port),
+      PORT         = port,
     },
   }))
 
@@ -66,10 +65,8 @@ local consumer = prova.fixture("consumer", Scope.File, function(ctx)
   local dir = "../fixtures/audit-consumer"
 
   local venv = ctx:tempdir()
-  local setup = shell.run(
-    "python3 -m venv " .. venv .. " && " .. venv .. "/bin/pip install -q -r requirements.txt",
-    { cwd = dir, timeout = "300s" })
-  assert(setup:ok(), "audit-consumer venv setup failed:\n" .. setup.stderr)
+  shell.run("python3 -m venv " .. venv .. " && " .. venv .. "/bin/pip install -q -r requirements.txt",
+    { cwd = dir, timeout = "300s", check = true })
 
   local port = net.free_port()
   ctx:manage(shell.spawn(venv .. "/bin/python main.py", {
@@ -78,7 +75,7 @@ local consumer = prova.fixture("consumer", Scope.File, function(ctx)
       DATABASE_URL = env.mysql.url,
       PULSAR_URL   = env.pulsar.url,
       PULSAR_TOPIC = TOPIC,
-      PORT         = tostring(port),
+      PORT         = port,
     },
   }))
 

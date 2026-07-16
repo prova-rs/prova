@@ -9,7 +9,7 @@
 --- attached with `require("postgres")`. `require("postgres").container(ctx, ...)` provisions it in one
 --- line — provision + readiness + managed teardown + a docker-exec client. The same integration built
 --- from raw primitives (docker.run + container:run readiness gates) lives in
---- ../service_grpc_postgres_primitives.lua — read that when you need a resource with no plugin.
+--- ../service_grpc_postgres_primitives_test.lua — read that when you need a resource with no plugin.
 ---
 --- NOTE (why this matters): the archetype today is a SCAFFOLD — its gRPC methods return
 --- `Unimplemented` and its migration is empty. prova *running* the service is exactly what exposes
@@ -45,8 +45,7 @@ local service = prova.fixture("service", Scope.File, function(ctx)
   local pg = postgres.container(ctx, { user = "dev", password = "dev", database = "inventory_service" })
   local db_url = pg.url
 
-  local build = shell.run("cargo build", { cwd = dir, timeout = "600s" })
-  assert(build:ok(), "service failed to build:\n" .. build.stderr)
+  shell.run("cargo build", { cwd = dir, timeout = "600s", check = true })
 
   -- Boot the built binary wired to Postgres via the service's own env config (figment APP_* / __).
   local port = net.free_port()
@@ -54,8 +53,8 @@ local service = prova.fixture("service", Scope.File, function(ctx)
     cwd = dir,
     env = {
       APP_PERSISTENCE__URL = db_url,
-      APP_SERVER__PORT = tostring(port),
-      APP_SERVER__MANAGEMENT_PORT = tostring(port + 1),
+      APP_SERVER__PORT = port,
+      APP_SERVER__MANAGEMENT_PORT = port + 1,
     },
   }))
 
