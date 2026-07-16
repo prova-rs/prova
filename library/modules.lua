@@ -318,8 +318,21 @@ function Container:exec(command) end
 ---@param opts? { stdin?: string }
 ---@return string stdout
 function Container:run(command, opts) end
+--- The alias this container answers to on its user-defined network (from `docker.run`'s `alias`),
+--- or nil if it joined no network or joined one without an alias. Siblings resolve it by DNS.
+---@return string|nil
+function Container:network_alias() end
 --- Force-remove the container. Idempotent.
 function Container:stop() end
+
+--- A user-defined bridge network from `docker.network` — containers joined to it resolve each
+--- other by name/alias over Docker's embedded DNS. Manage it with `ctx:manage(net)` so it is
+--- removed on teardown, LIFO, *after* its containers.
+---@class prova.Network
+---@field name string
+local Network = {}
+--- Remove the network. Idempotent; retries briefly while endpoints are still detaching.
+function Network:stop() end
 
 ---@class prova.DockerWait
 ---@field port? integer       # wait until this container port accepts a TCP connection
@@ -333,6 +346,11 @@ function Container:stop() end
 ---@field ports? (integer|{container:integer, host:integer})[]  # container ports → random host ports (or a fixed host port)
 ---@field env? table<string,string>
 ---@field wait? prova.DockerWait        # readiness gate
+---@field network? prova.Network|string # a user-defined network to join at create time (handle or name)
+---@field alias? string                 # DNS alias to answer to on `network` (requires `network`)
+
+---@class prova.DockerNetworkOpts
+---@field name? string                  # override the generated unique "prova-net-<...>" name
 
 ---@class prova.docker
 docker = {}
@@ -340,6 +358,10 @@ docker = {}
 ---@param opts prova.DockerRunOpts
 ---@return prova.Container
 function docker.run(opts) end
+--- Create a user-defined bridge network (embedded DNS). Manage it with `ctx:manage`.
+---@param opts? prova.DockerNetworkOpts
+---@return prova.Network
+function docker.network(opts) end
 
 ------------------------------------------------------------------------------------------
 -- sqlite (an embedded database via sqlx — the only bundled resource client; needs no docker)

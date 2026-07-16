@@ -1025,15 +1025,17 @@ mod http {
 #[cfg(feature = "docker")]
 mod docker {
     use std::collections::HashMap;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
 
     use bollard::container::{
-        Config, CreateContainerOptions, LogOutput, LogsOptions, RemoveContainerOptions,
-        StartContainerOptions,
+        Config, CreateContainerOptions, LogOutput, LogsOptions, NetworkingConfig,
+        RemoveContainerOptions, StartContainerOptions,
     };
     use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
     use bollard::image::CreateImageOptions;
-    use bollard::models::{HostConfig, PortBinding};
+    use bollard::models::{EndpointSettings, HostConfig, PortBinding};
+    use bollard::network::CreateNetworkOptions;
     use bollard::Docker;
     use futures::StreamExt;
     use mlua::{Function, Lua, Table, UserData, UserDataFields, UserDataMethods, Value};
@@ -1049,6 +1051,9 @@ mod docker {
         client: Docker,
         id: String,
         ports: HashMap<u16, u16>, // container port -> mapped host port
+        /// The alias this container answers to on its user-defined network (from `docker.run`'s
+        /// `alias`), if it joined one with an alias. Siblings resolve it via embedded DNS.
+        alias: Option<String>,
         stopped: bool,
     }
 
@@ -1071,6 +1076,9 @@ mod docker {
             fields.add_field_method_get("id", |_, this| Ok(this.id.clone()));
         }
         fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+            // The network alias this container was created with (nil if it joined no network, or
+            // joined one without an alias). Set at create time from `docker.run`'s `alias`.
+            methods.add_method("network_alias", |_, this, ()| Ok(this.alias.clone()));
             methods.add_method("host_port", |_, this, port: u16| {
                 this.ports.get(&port).copied().ok_or_else(|| {
                     mlua::Error::RuntimeError(format!("container port {port} was not published"))
@@ -1143,9 +1151,76 @@ mod docker {
         }
     }
 
+    /// A user-defined bridge network from `docker.network` — a handle with a `name` field and an
+    /// async teardown (`stop`) that removes the network. Blessed pattern: `ctx:manage(net)`, which
+    /// tears it down LIFO *after* its containers. A `Drop` backstop shells out to remove it if
+    /// cleanup was skipped, so a network never leaks.
+    struct Network {
+        client: Docker,
+        name: String,
+        removed: bool,
+    }
+
+    impl Drop for Network {
+        fn drop(&mut self) {
+            if !self.removed {
+                // Last-resort, fire-and-forget removal (bollard can't run in a sync Drop).
+                let _ = std::process::Command::new("docker")
+                    .args(["network", "rm", "-f", &self.name])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
+            }
+        }
+    }
+
+    impl UserData for Network {
+        fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
+            fields.add_field_method_get("name", |_, this| Ok(this.name.clone()));
+        }
+        fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+            // Teardown (via `ctx:manage`): remove the network. Under LIFO teardown a container is
+            // removed just before its network, but a container started with `--rm` may still be
+            // detaching its endpoint when we get here — Docker then rejects the removal with "has
+            // active endpoints". Retry briefly until the endpoints drain, then give up quietly (the
+            // Drop backstop catches a genuine leak).
+            methods.add_async_method_mut("stop", |_, mut this, ()| {
+                let client = this.client.clone();
+                let name = this.name.clone();
+                let already = this.removed;
+                this.removed = true;
+                async move {
+                    if !already {
+                        let deadline = Instant::now() + Duration::from_secs(15);
+                        loop {
+                            match client.remove_network(&name).await {
+                                Ok(()) => break,
+                                Err(_) if Instant::now() < deadline => {
+                                    tokio::time::sleep(Duration::from_millis(200)).await;
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                    }
+                    Ok(())
+                }
+            });
+        }
+    }
+
+    /// A process-unique, human-recognizable network name: `prova-net-<pid>-<counter>`. Scripts
+    /// can't reach a good entropy source, but Rust can — mirror how temp destinations are named
+    /// (process id + a monotonic counter) so concurrent runs never collide.
+    fn unique_network_name() -> String {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        format!("prova-net-{}-{}", std::process::id(), n)
+    }
+
     pub(crate) fn make(lua: &Lua) -> mlua::Result<Table> {
         let docker = lua.create_table()?;
         docker.set("run", run_fn(lua)?)?;
+        docker.set("network", network_fn(lua)?)?;
         Ok(docker)
     }
 
@@ -1155,6 +1230,35 @@ mod docker {
             async move {
                 let container = start(spec?).await?;
                 lua.create_userdata(container)
+            }
+        })
+    }
+
+    /// `docker.network(opts?)` — create a user-defined bridge network (embedded DNS, so containers
+    /// on it resolve each other by name/alias). `opts.name` overrides the generated unique name.
+    fn network_fn(lua: &Lua) -> mlua::Result<Function> {
+        lua.create_async_function(|lua, opts: Option<Table>| {
+            let name = match &opts {
+                Some(t) => t.get::<Option<String>>("name"),
+                None => Ok(None),
+            };
+            async move {
+                let name = name?.unwrap_or_else(unique_network_name);
+                let client = Docker::connect_with_local_defaults().map_err(derr)?;
+                client
+                    .create_network(CreateNetworkOptions {
+                        name: name.clone(),
+                        driver: "bridge".to_string(),
+                        check_duplicate: true,
+                        ..Default::default()
+                    })
+                    .await
+                    .map_err(derr)?;
+                lua.create_userdata(Network {
+                    client,
+                    name,
+                    removed: false,
+                })
             }
         })
     }
@@ -1173,6 +1277,11 @@ mod docker {
         env: Vec<(String, String)>,
         command: Vec<String>,
         wait: Option<Wait>,
+        /// Name of a user-defined network to join at create time (from a `docker.network` handle or
+        /// a raw name). The container stays dual-homed: published `ports` still map to host ports.
+        network: Option<String>,
+        /// The alias to answer to on `network` (siblings resolve it by DNS). Requires `network`.
+        alias: Option<String>,
     }
 
     impl Spec {
@@ -1241,12 +1350,40 @@ mod docker {
                         .unwrap_or(Duration::from_millis(250)),
                 }),
             };
+            // `network` accepts a `docker.network` handle (read its `.name`) or a raw name string.
+            let network = match opts.get::<Value>("network")? {
+                Value::Nil => None,
+                Value::String(s) => Some(s.to_str()?.to_string()),
+                Value::UserData(ud) => {
+                    let net = ud.borrow::<Network>().map_err(|_| {
+                        mlua::Error::RuntimeError(
+                            "docker.run `network` must be a docker.network handle or a name string"
+                                .into(),
+                        )
+                    })?;
+                    Some(net.name.clone())
+                }
+                other => {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "docker.run `network` must be a docker.network handle or a name string, got {}",
+                        other.type_name()
+                    )))
+                }
+            };
+            let alias = opts.get::<Option<String>>("alias")?;
+            if alias.is_some() && network.is_none() {
+                return Err(mlua::Error::RuntimeError(
+                    "docker.run `alias` requires a `network`".into(),
+                ));
+            }
             Ok(Spec {
                 image,
                 ports,
                 env,
                 command,
                 wait,
+                network,
+                alias,
             })
         }
     }
@@ -1288,6 +1425,18 @@ mod docker {
             );
         }
 
+        // Join a user-defined network at create time (so embedded DNS resolves the container by its
+        // alias from the first moment) — independent of, and simultaneous with, host port publishing.
+        let networking_config = spec.network.as_ref().map(|net_name| {
+            let mut endpoint = EndpointSettings::default();
+            if let Some(alias) = &spec.alias {
+                endpoint.aliases = Some(vec![alias.clone()]);
+            }
+            let mut endpoints_config = HashMap::new();
+            endpoints_config.insert(net_name.clone(), endpoint);
+            NetworkingConfig { endpoints_config }
+        });
+
         let config = Config {
             image: Some(spec.image.clone()),
             env: Some(spec.env.iter().map(|(k, v)| format!("{k}={v}")).collect()),
@@ -1297,6 +1446,7 @@ mod docker {
                 port_bindings: (!bindings.is_empty()).then_some(bindings),
                 ..Default::default()
             }),
+            networking_config,
             ..Default::default()
         };
 
@@ -1314,6 +1464,7 @@ mod docker {
             client: client.clone(),
             id: id.clone(),
             ports: HashMap::new(),
+            alias: spec.alias.clone(),
             stopped: false,
         };
 
