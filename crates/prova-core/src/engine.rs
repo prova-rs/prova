@@ -145,6 +145,9 @@ pub struct RunConfig {
     /// Host port binding strategy. `Auto` for tests; `Fixed` only when an inhabited topology is stood
     /// up with `--fixed`.
     pub ports: PortMode,
+    /// When set (`--update-snapshots`), `matches_snapshot` (re)writes `.snap` files and passes,
+    /// instead of comparing against them.
+    pub update_snapshots: bool,
     modules: Vec<Module>,
     /// Extra disk roots the plugin searcher consults (e.g. the global `data_dir/plugins`).
     plugin_roots: Vec<std::path::PathBuf>,
@@ -162,6 +165,7 @@ impl Default for RunConfig {
             concurrency: 1,
             selection: Selection::default(),
             ports: PortMode::default(),
+            update_snapshots: false,
             modules: Vec::new(),
             plugin_roots: Vec::new(),
             named_plugins: std::collections::BTreeMap::new(),
@@ -176,6 +180,7 @@ impl std::fmt::Debug for RunConfig {
             .field("concurrency", &self.concurrency)
             .field("selection", &self.selection)
             .field("ports", &self.ports)
+            .field("update_snapshots", &self.update_snapshots)
             .field("modules", &self.modules.len())
             .field("plugin_roots", &self.plugin_roots)
             .field("named_plugins", &self.named_plugins)
@@ -196,6 +201,12 @@ impl RunConfig {
     /// up with `--fixed`).
     pub fn with_ports(mut self, ports: PortMode) -> Self {
         self.ports = ports;
+        self
+    }
+
+    /// Enable snapshot-update mode (`--update-snapshots`): `matches_snapshot` (re)writes `.snap` files.
+    pub fn with_update_snapshots(mut self, update: bool) -> Self {
+        self.update_snapshots = update;
         self
     }
 
@@ -373,9 +384,24 @@ struct RunState {
     defs: Vec<FixtureDef>,
     suite: Rc<RefCell<ScopeState>>,
     files: RefCell<HashMap<usize, Rc<RefCell<ScopeState>>>>,
+    /// Source path per file index (from the collector), so a test's snapshot assertion can place its
+    /// `.snap` beside the file it ran from. Empty for the topology (`up`/`watch`) paths.
+    file_paths: Vec<PathBuf>,
+    /// When set, `matches_snapshot` writes/overwrites snapshots instead of comparing (`--update-snapshots`).
+    update_snapshots: bool,
 }
 
 impl RunState {
+    /// The directory a test's `.snap` files live in: `<source-file-dir>/snapshots`, or `None` if the
+    /// file index has no recorded path (e.g. an ad-hoc topology run).
+    fn snapshot_dir(&self, file: usize) -> Option<PathBuf> {
+        let p = self.file_paths.get(file)?;
+        if p.as_os_str().is_empty() {
+            return None;
+        }
+        Some(p.parent().unwrap_or(Path::new(".")).join("snapshots"))
+    }
+
     /// The `Scope.File` instance for file `idx`, created on first use.
     fn file_scope(&self, idx: usize) -> Rc<RefCell<ScopeState>> {
         self.files
@@ -457,6 +483,9 @@ struct Collector {
     /// The index of the file currently being loaded (a suite loads several files into one collector).
     /// Every node added while this is set records it, so `Scope.File` can reset per file.
     current_file: usize,
+    /// Source path per file index (`file_paths[i]` is the file loaded as index `i`), so a snapshot
+    /// assertion can colocate its `.snap` beside the test file it ran from. Grown as files load.
+    file_paths: Vec<PathBuf>,
 }
 
 impl Collector {
@@ -476,7 +505,17 @@ impl Collector {
             topologies: BTreeMap::new(),
             parent_stack: vec![0],
             current_file: 0,
+            file_paths: Vec::new(),
         }
+    }
+
+    /// Record the source path for a file index (idempotent-ish: grows the vec so `file_paths[idx]` is
+    /// set). Called as each file loads, before its nodes are collected.
+    fn set_file_path(&mut self, idx: usize, path: &Path) {
+        if self.file_paths.len() <= idx {
+            self.file_paths.resize(idx + 1, PathBuf::new());
+        }
+        self.file_paths[idx] = path.to_path_buf();
     }
 
     fn add(&mut self, parent: NodeIx, mut node: Node) -> NodeIx {
@@ -585,6 +624,23 @@ struct TestRun {
     /// block reports *every* failure. `soft` is the active flag; `soft_failures` accumulates.
     soft: bool,
     soft_failures: Vec<String>,
+    /// Snapshot context for `matches_snapshot` (where `.snap` files live, the key base, update mode,
+    /// and a per-test counter for auto-named snapshots). `None` when the test has no source file path.
+    snapshot: Option<SnapshotCtx>,
+}
+
+/// Per-test snapshot state: everything `matches_snapshot` needs to locate and key a `.snap` file.
+struct SnapshotCtx {
+    /// `<test-file-dir>/snapshots`.
+    dir: PathBuf,
+    /// The test-file stem — the `.snap` filename prefix (`<stem>__<key>.snap`).
+    stem: String,
+    /// A slug of the test's node path — the base for auto-named snapshots (`<slug>-<n>`).
+    key_base: String,
+    /// `--update-snapshots`: write instead of compare.
+    update: bool,
+    /// Increments per *unnamed* `matches_snapshot` in this test, so several are distinct.
+    counter: usize,
 }
 
 /// Injected into every body/factory. `own_scope` is the scope its `defer`/`tempdir` target and the
@@ -824,6 +880,95 @@ impl Matcher {
     }
 }
 
+/// A filesystem-safe slug of a node path (or a user-given snapshot name): alphanumerics kept,
+/// everything else collapsed to single `-`, lowercased. `"orders › creates a row"` → `"orders-creates-a-row"`.
+fn slugify(s: &str) -> String {
+    let mut out = String::new();
+    let mut pending_dash = false;
+    for c in s.chars() {
+        if c.is_alphanumeric() {
+            if pending_dash && !out.is_empty() {
+                out.push('-');
+            }
+            out.extend(c.to_lowercase());
+            pending_dash = false;
+        } else {
+            pending_dash = true;
+        }
+    }
+    if out.is_empty() {
+        "snapshot".to_string()
+    } else {
+        out
+    }
+}
+
+/// The stored `.snap` document: a small header (for review context) then a `---` line, then the raw
+/// body. The lone `---` delimiter is robust — a body starting with `#!/bin/sh` or containing later
+/// `---` lines round-trips, since only the *first* `---` splits header from body.
+fn format_snapshot(source: &str, body: &str) -> String {
+    format!("prova-snapshot v1\nsource: {source}\n---\n{body}")
+}
+
+/// Extract the body from a stored `.snap` document (everything after the first lone `---` line). A
+/// document with no delimiter (hand-written / legacy) is treated as all-body.
+fn snapshot_body(doc: &str) -> &str {
+    match doc.split_once("\n---\n") {
+        Some((_header, body)) => body,
+        None => doc,
+    }
+}
+
+/// Write a snapshot document, creating the `snapshots/` dir if needed. Returns a message on failure.
+fn write_snapshot(path: &Path, doc: &str) -> Result<(), String> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("cannot create snapshot dir {}: {e}", dir.display()))?;
+    }
+    std::fs::write(path, doc).map_err(|e| format!("cannot write snapshot {}: {e}", path.display()))
+}
+
+/// A minimal LCS-based line diff (`  ` context, `- ` expected-only, `+ ` actual-only), for the
+/// snapshot mismatch message. O(n·m) — fine for snapshot-sized inputs.
+fn line_diff(expected: &str, actual: &str) -> String {
+    let a: Vec<&str> = expected.lines().collect();
+    let b: Vec<&str> = actual.lines().collect();
+    let (n, m) = (a.len(), b.len());
+    // dp[i][j] = LCS length of a[i..] and b[j..].
+    let mut dp = vec![vec![0usize; m + 1]; n + 1];
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            dp[i][j] = if a[i] == b[j] {
+                dp[i + 1][j + 1] + 1
+            } else {
+                dp[i + 1][j].max(dp[i][j + 1])
+            };
+        }
+    }
+    let mut out = String::new();
+    let (mut i, mut j) = (0, 0);
+    while i < n && j < m {
+        if a[i] == b[j] {
+            out.push_str(&format!("    {}\n", a[i]));
+            i += 1;
+            j += 1;
+        } else if dp[i + 1][j] >= dp[i][j + 1] {
+            out.push_str(&format!("  - {}\n", a[i]));
+            i += 1;
+        } else {
+            out.push_str(&format!("  + {}\n", b[j]));
+            j += 1;
+        }
+    }
+    for line in &a[i..] {
+        out.push_str(&format!("  - {line}\n"));
+    }
+    for line in &b[j..] {
+        out.push_str(&format!("  + {line}\n"));
+    }
+    out.trim_end().to_string()
+}
+
 impl UserData for Matcher {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("never", |lua, this, ()| {
@@ -854,6 +999,106 @@ impl UserData for Matcher {
                     display(&this.subject)
                 )
             })
+        });
+
+        // Compare the subject against a stored `.snap` file colocated with the test
+        // (`<dir>/snapshots/<file-stem>__<key>.snap`). `--update-snapshots` (re)writes it and passes;
+        // otherwise a mismatch fails with a line diff and a missing snapshot fails after writing a
+        // reviewable `.snap.new`. `arg` is nil, a name string, or an options table `{ name, level }`
+        // (Phase A takes only a string subject + name; `level`/tree subjects come with the tree phase).
+        methods.add_method("matches_snapshot", |_, this, arg: Value| {
+            if this.negated {
+                return Err(mlua::Error::RuntimeError(
+                    "matches_snapshot cannot be negated".into(),
+                ));
+            }
+            let name: Option<String> = match arg {
+                Value::Nil => None,
+                Value::String(s) => Some(s.to_string_lossy().to_string()),
+                Value::Table(t) => t.get::<Option<String>>("name")?,
+                other => {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "matches_snapshot(name?) expects a string name or an options table, got {}",
+                        other.type_name()
+                    )))
+                }
+            };
+            let actual = match &this.subject {
+                Value::String(s) => s.to_string_lossy().to_string(),
+                other => {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "matches_snapshot expects a string subject (got {}); \
+                         tree/file snapshots land in a later phase",
+                        other.type_name()
+                    )))
+                }
+            };
+
+            // Resolve the `.snap`/`.snap.new` paths + update flag + a header source label from the
+            // per-test snapshot context (advancing the auto-name counter for an unnamed snapshot).
+            let (snap, snap_new, update, source) = {
+                let mut r = this.run.borrow_mut();
+                let ctx = r.snapshot.as_mut().ok_or_else(|| {
+                    mlua::Error::RuntimeError(
+                        "matches_snapshot needs a test-file context (no source path recorded for this run)"
+                            .into(),
+                    )
+                })?;
+                let key = match &name {
+                    Some(n) => slugify(n),
+                    None => {
+                        ctx.counter += 1;
+                        format!("{}-{}", ctx.key_base, ctx.counter)
+                    }
+                };
+                let base = format!("{}__{}", ctx.stem, key);
+                (
+                    ctx.dir.join(format!("{base}.snap")),
+                    ctx.dir.join(format!("{base}.snap.new")),
+                    ctx.update,
+                    format!("{} / {}", ctx.key_base, key),
+                )
+            };
+
+            let stored_doc = format_snapshot(&source, &actual);
+
+            if update {
+                if let Err(e) = write_snapshot(&snap, &stored_doc) {
+                    return Err(mlua::Error::RuntimeError(e));
+                }
+                let _ = std::fs::remove_file(&snap_new); // accepted → drop any pending .new
+                return this.record(true, String::new);
+            }
+
+            match std::fs::read_to_string(&snap) {
+                Ok(doc) => {
+                    let expected = snapshot_body(&doc);
+                    if expected == actual {
+                        let _ = std::fs::remove_file(&snap_new);
+                        this.record(true, String::new)
+                    } else {
+                        let _ = write_snapshot(&snap_new, &stored_doc);
+                        let diff = line_diff(expected, &actual);
+                        let path = snap.display().to_string();
+                        this.record(false, move || {
+                            format!(
+                                "snapshot mismatch ({path})\n{diff}\n  \
+                                 run `prova --update-snapshots` to accept, or see the .snap.new"
+                            )
+                        })
+                    }
+                }
+                Err(_) => {
+                    let _ = write_snapshot(&snap_new, &stored_doc);
+                    let path = snap.display().to_string();
+                    this.record(false, move || {
+                        format!(
+                            "no snapshot at {path} — wrote {path}.new; \
+                             run `prova --update-snapshots` to accept it"
+                        )
+                    })
+                }
+            }
         });
         // Identity, not structure: the *same* table/function/userdata (reference), or an equal
         // primitive (`rawequal` semantics). Complements the **deep** `equals` — use `is` to assert
@@ -2235,6 +2480,24 @@ async fn run_one(
     flow_scope: Option<Rc<RefCell<ScopeState>>>,
 ) -> NodeResult {
     let run = Rc::new(RefCell::new(TestRun::default()));
+    // Snapshot context: where this test's `.snap` files live and how they're keyed. Absent when the
+    // source file has no recorded path (e.g. a topology run), which makes `matches_snapshot` error.
+    if let Some(dir) = state.snapshot_dir(item.file) {
+        let stem = state
+            .file_paths
+            .get(item.file)
+            .and_then(|p| p.file_stem())
+            .and_then(|s| s.to_str())
+            .unwrap_or("tests")
+            .to_string();
+        run.borrow_mut().snapshot = Some(SnapshotCtx {
+            dir,
+            stem,
+            key_base: slugify(&item.path),
+            update: state.update_snapshots,
+            counter: 0,
+        });
+    }
     let test_scope = Rc::new(RefCell::new(ScopeState::default()));
     // The case is delivered both as `t.case` and as the body's second argument, so `fn(t, case)`
     // and `fn(t)` (ignoring the trailing nil) both work.
@@ -2539,6 +2802,7 @@ fn read_and_collect(path: &Path, config: &RunConfig) -> mlua::Result<(Lua, Share
         .unwrap_or("tests")
         .to_string();
     let (lua, col) = build_lua(stem, config)?;
+    col.borrow_mut().set_file_path(0, path); // singleton file → index 0, for snapshot colocation
     lua.load(&code).set_name(path.to_string_lossy()).exec()?;
     Ok((lua, col))
 }
@@ -2615,6 +2879,7 @@ pub(crate) fn run_suite_files(
         {
             let mut c = col.borrow_mut();
             c.current_file = idx;
+            c.set_file_path(idx, file); // for snapshot colocation beside this member file
             let fg = c.add(0, group_node(stem));
             c.parent_stack.push(fg);
         }
@@ -2647,6 +2912,8 @@ fn execute_collected(
             defs: col.fixtures.clone(),
             suite: Rc::new(RefCell::new(ScopeState::default())),
             files: RefCell::new(HashMap::new()),
+            file_paths: col.file_paths.clone(),
+            update_snapshots: config.update_snapshots,
         });
         (plan, deselected, state)
     };
@@ -2789,6 +3056,8 @@ fn load_topology(
         defs: col.borrow().fixtures.clone(),
         suite: Rc::new(RefCell::new(ScopeState::default())),
         files: RefCell::new(HashMap::new()),
+        file_paths: col.borrow().file_paths.clone(),
+        update_snapshots: false, // snapshots are a test-mode concern, not for inhabited topologies
     });
     Ok((lua, state, id))
 }
@@ -3030,6 +3299,32 @@ pub fn inspect_plugin(path: &Path, config: &RunConfig) -> mlua::Result<PluginRep
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slugify_makes_filesystem_safe_keys() {
+        assert_eq!(slugify("orders › creates a row"), "orders-creates-a-row");
+        assert_eq!(slugify("API-shape v2!"), "api-shape-v2");
+        assert_eq!(slugify("  "), "snapshot"); // empty → stable fallback
+    }
+
+    #[test]
+    fn snapshot_doc_round_trips_body_even_with_tricky_content() {
+        // A body that itself starts with `#!` and contains a later `---` line must round-trip.
+        let body = "#!/bin/sh\necho hi\n---\nnot a delimiter";
+        let doc = format_snapshot("some/test / key-1", body);
+        assert_eq!(snapshot_body(&doc), body);
+        // A legacy doc with no header/delimiter is treated as all-body.
+        assert_eq!(snapshot_body("just a value"), "just a value");
+    }
+
+    #[test]
+    fn line_diff_marks_changed_lines_with_context() {
+        let diff = line_diff("a\nb\nc", "a\nB changed\nc");
+        assert_eq!(diff, "    a\n  - b\n  + B changed\n    c");
+        // Pure addition at the end.
+        let add = line_diff("x", "x\ny");
+        assert_eq!(add, "    x\n  + y");
+    }
 
     #[test]
     fn extract_endpoints_walks_named_resources_sorted() {

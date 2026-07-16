@@ -56,6 +56,7 @@ options:
       --tags a,b            select nodes tagged with any listed tag (repeatable; !tag excludes)
       --node PATH           select an exact node path (repeatable) — re-run what a report named
       --last-failed         select only the nodes that failed in the previous run
+  -u, --update-snapshots    (re)write snapshots instead of comparing (matches_snapshot)
       --list                discover tests without running them (respects selection)
   -V, --version             print version
   -h, --help                print this help";
@@ -768,6 +769,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     let mut cli_format: Option<Format> = None;
     let mut cli_junit: Option<String> = None;
     let mut cli_jobs: Option<usize> = None;
+    let mut update_snapshots = false;
     let mut list = false;
     let mut explicit_paths: Vec<String> = Vec::new();
     let mut profile: Option<String> = None;
@@ -846,6 +848,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         match arg.as_str() {
             "--list" => list = true,
             "--last-failed" => last_failed = true,
+            "--update-snapshots" | "-u" => update_snapshots = true,
             "--json" => cli_format = Some(Format::Json),
             "--version" | "-V" => {
                 println!("prova {}", env!("CARGO_PKG_VERSION"));
@@ -998,6 +1001,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     // The standalone `prova` binary ships the archetect plugin, so `archetect.render{...}` works.
     // The plugin searcher consults the global install dir plus any manifest-declared plugins.
     let mut config = RunConfig::new(jobs)
+        .with_update_snapshots(update_snapshots)
         .with_module(prova_archetect::install)
         .with_plugin_root(layout.plugins_dir());
     for (name, path) in &plugins_resolved.named {

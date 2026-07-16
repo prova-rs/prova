@@ -207,7 +207,14 @@ exactly the "batteries-included, no capability ceilings" pitch. Implemented in `
 ### Phase 3 — Scale & polish (daemon-independent, any order)
 
 6. **`graphql` module** (same async-module shape as `http`/`grpc`).
-7. **Snapshots** — `matches_snapshot`, `.snap` files + `prova --update-snapshots` (stub exists).
+7. **Snapshots — Phase A DONE (core); B/C in progress.** `t:expect(str):matches_snapshot(name?)`
+   compares against a `.snap` colocated with the test (`<dir>/snapshots/<stem>__<key>.snap`);
+   `--update-snapshots`/`-u` (re)writes. Missing → fail + reviewable `.snap.new`; mismatch → fail with
+   an LCS line diff; robust `---`-delimited doc format. Plumbing: `Collector.file_paths` →
+   `RunState` → `TestRun.snapshot`; `RunConfig.update_snapshots`. (engine.rs; unit tests + a dogfooding
+   self-test.) **Phase B** = the `level` dial (`layout`/`content`) + `out:tree()`/file-handle subjects;
+   **Phase C** = unused-snapshot flagging. Design + rationale (structure-vs-content, anti-rot default):
+   `docs/plans/snapshots.md`.
 8. **Selectors** — tag expressions (`--tags`), `-k` name filter, `--last-failed`, sharding.
 9. **Reporters — DONE.** JUnit XML (`--junit PATH`, a *file* sink that composes with any `--format`,
    the CI lingua franca) and TAP (`--format tap`, a stdout stream) both landed as `Reporter`s over the

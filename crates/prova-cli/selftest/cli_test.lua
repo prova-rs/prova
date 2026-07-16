@@ -59,6 +59,34 @@ prova.test("--junit writes a JUnit XML file alongside console output", function(
   t:expect(xml):contains("<failure")
 end)
 
+prova.test("snapshots: update writes, re-run matches, a change fails with a diff", function(t)
+  local dir = fs.tempdir()
+  local test = dir .. "/snap_test.lua"
+  local function write_value(v)
+    fs.write(test, 'prova.test("greeting", function(t) t:expect("' .. v .. '"):matches_snapshot() end)\n')
+  end
+
+  -- Missing snapshot without --update-snapshots fails.
+  write_value("hello")
+  t:expect(run(test).code):equals(1)
+
+  -- --update-snapshots writes it and passes; the .snap lands beside the test file.
+  local upd = run("-u " .. test)
+  t:expect(upd.code):equals(0)
+  t:expect(fs.exists(dir .. "/snapshots")):is_truthy()
+
+  -- A clean re-run matches.
+  t:expect(run(test).code):equals(0)
+
+  -- Changing the value fails with a mismatch + diff.
+  write_value("goodbye")
+  local changed = run(test)
+  t:expect(changed.code):equals(1)
+  t:expect(changed.stdout):contains("snapshot mismatch")
+  t:expect(changed.stdout):contains("- hello")
+  t:expect(changed.stdout):contains("+ goodbye")
+end)
+
 prova.test("an unknown flag is a usage error (exit 2)", function(t)
   local r = run("--definitely-not-a-flag")
   t:expect(r.code):equals(2)
