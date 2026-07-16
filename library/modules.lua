@@ -85,9 +85,9 @@ function ShellResult:ok() end
 
 ---@class prova.ShellOpts
 ---@field cwd? string
----@field env? table<string,string>
+---@field env? table<string, string|number|boolean>   # scalars coerce — ports stay numbers
 ---@field timeout? string     # e.g. "120s"
----@field check? boolean      # if true, non-zero exit raises instead of returning
+---@field check? boolean      # non-zero exit raises, carrying the tail of BOTH stdout and stderr
 
 --- A long-running process from `shell.spawn`. Prefer `ctx:defer(function() proc:stop() end)` so it
 --- is stopped during teardown; `stop`/`wait` are async.
@@ -102,10 +102,14 @@ function Process:wait() end
 --- Whether the process is still running (reaps it if it has already exited).
 ---@return boolean
 function Process:running() end
+--- The process's combined stdout+stderr so far (bounded: last 64KB, oldest dropped). Never-blind
+--- boots: assert on it, or print it when readiness times out.
+---@return string
+function Process:output() end
 
 ---@class prova.SpawnOpts
 ---@field cwd? string
----@field env? table<string,string>
+---@field env? table<string, string|number|boolean>   # scalars coerce — ports stay numbers
 
 ---@class prova.shell
 shell = {}

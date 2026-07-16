@@ -11,6 +11,6 @@ fn retry_and_manage_ergonomics() {
         .join("ergonomics.lua");
     let mut reporter = NullReporter;
     let summary = run_path(&path, &mut reporter).expect("run ergonomics.lua");
-    assert_eq!(summary.passed, 9, "passed");
+    assert_eq!(summary.passed, 12, "passed");
     assert_eq!(summary.failed, 0, "failed");
 }

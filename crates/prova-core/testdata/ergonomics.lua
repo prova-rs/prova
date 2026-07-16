@@ -66,3 +66,30 @@ prova.test("manage rejects a resource with no stop()/close()", function(t)
   local ok = pcall(function() t:manage({}) end)
   t:expect(ok):is_false()
 end)
+
+-- Quiet-primitives surface: env scalars coerce, check=true errors carry both streams, spawned
+-- processes capture output (bounded) via proc:output().
+
+prova.test("env accepts numbers and booleans", function(t)
+  local r = shell.run("echo $PORT $FLAG", { env = { PORT = 8080, FLAG = true } })
+  t:expect(r.stdout):contains("8080 true")
+end)
+
+prova.test("check=true failures carry stdout and stderr", function(t)
+  local ok, err = pcall(function()
+    shell.run("echo out-detail; echo err-detail 1>&2; exit 3", { check = true })
+  end)
+  t:expect(ok):is_false()
+  local msg = tostring(err)
+  t:expect(msg):contains("exited 3")
+  t:expect(msg):contains("err-detail")
+  t:expect(msg):contains("out-detail")
+end)
+
+prova.test("spawned process output is captured", function(t)
+  local proc = t:manage(shell.spawn("echo hello-from-spawn && sleep 5"))
+  prova.retry(function()
+    if proc:output():find("hello-from-spawn", 1, true) then return true end
+  end, { timeout = "10s", message = "spawn output never captured" })
+  t:expect(proc:output()):contains("hello-from-spawn")
+end)

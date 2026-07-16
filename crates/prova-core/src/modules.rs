@@ -20,7 +20,7 @@
 use std::path::Path;
 use std::time::Instant;
 
-use mlua::{Lua, Table, UserData, UserDataFields, UserDataMethods};
+use mlua::{Lua, Table, UserData, UserDataFields, UserDataMethods, Value};
 
 use crate::model::parse_duration;
 
@@ -146,7 +146,7 @@ fn make_parse(lua: &Lua) -> mlua::Result<Table> {
 /// Convert a `serde_json::Value` to a Lua value, mapping JSON `null` to Lua `nil` (so an absent
 /// field reads as nil, not a null sentinel).
 fn json_value_to_lua(lua: &Lua, v: &serde_json::Value) -> mlua::Result<mlua::Value> {
-    use mlua::Value;
+
     use serde_json::Value as J;
     Ok(match v {
         J::Null => Value::Nil,
@@ -311,13 +311,50 @@ impl UserData for ShellResult {
 struct Process {
     child: Option<tokio::process::Child>,
     pid: Option<u32>,
+    // Combined stdout+stderr, captured by reader tasks into a bounded buffer (oldest dropped),
+    // so a failed boot is never blind: `proc:output()` returns what the app said.
+    output: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+}
+
+/// Cap for a spawned process's captured output. Old bytes drop first.
+const SPAWN_OUTPUT_CAP: usize = 64 * 1024;
+
+fn spawn_output_reader(
+    stream: impl tokio::io::AsyncRead + Unpin + Send + 'static,
+    buf: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+) {
+    tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let mut stream = stream;
+        let mut chunk = [0u8; 8192];
+        loop {
+            match stream.read(&mut chunk).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let mut b = buf.lock().unwrap_or_else(|p| p.into_inner());
+                    b.extend_from_slice(&chunk[..n]);
+                    if b.len() > SPAWN_OUTPUT_CAP {
+                        let overflow = b.len() - SPAWN_OUTPUT_CAP;
+                        b.drain(..overflow);
+                    }
+                }
+            }
+        }
+    });
 }
 
 impl UserData for Process {
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
         fields.add_field_method_get("pid", |_, this| Ok(this.pid));
     }
+    // NOTE: output() lives in add_methods below.
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        // The process's combined stdout+stderr so far (bounded: last 64KB, oldest dropped).
+        // The escape hatch for blind boots and the hook for asserting on log output.
+        methods.add_method("output", |_, this, ()| {
+            let buf = this.output.lock().unwrap_or_else(|p| p.into_inner());
+            Ok(String::from_utf8_lossy(&buf).into_owned())
+        });
         // Kill (SIGKILL) and reap. Idempotent — a second stop, or stop after exit, is a no-op.
         methods.add_async_method_mut("stop", |_, mut this, ()| async move {
             if let Some(mut child) = this.child.take() {
@@ -395,9 +432,13 @@ fn make_shell(lua: &Lua) -> mlua::Result<Table> {
                 duration: start.elapsed().as_secs_f64(),
             };
             if check && result.code != 0 {
+                // Builds put failure detail on either stream (msbuild/pnpm favor stdout), so the
+                // error carries the tail of both — better than any hand-rolled assert.
                 return Err(mlua::Error::RuntimeError(format!(
-                    "shell.run: command exited {} (check=true): {cmd}\n{}",
-                    result.code, result.stderr
+                    "shell.run: command exited {} (check=true): {cmd}\n--- stderr ---\n{}\n--- stdout ---\n{}",
+                    result.code,
+                    tail(&result.stderr, 4096),
+                    tail(&result.stdout, 4096)
                 )));
             }
             lua.create_userdata(result)
@@ -420,16 +461,24 @@ fn make_shell(lua: &Lua) -> mlua::Result<Table> {
                 command.env(k, v);
             }
             command
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
                 .kill_on_drop(true);
-            let child = command
+            let mut child = command
                 .spawn()
                 .map_err(|e| mlua::Error::RuntimeError(format!("shell.spawn failed: {e}")))?;
             let pid = child.id();
+            let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            if let Some(out) = child.stdout.take() {
+                spawn_output_reader(out, output.clone());
+            }
+            if let Some(err) = child.stderr.take() {
+                spawn_output_reader(err, output.clone());
+            }
             lua.create_userdata(Process {
                 child: Some(child),
                 pid,
+                output,
             })
         })?,
     )?;
@@ -462,13 +511,50 @@ fn opt_env(opts: &Option<Table>) -> mlua::Result<Vec<(String, String)>> {
     let mut out = Vec::new();
     if let Some(t) = opts {
         if let Some(env) = t.get::<Option<Table>>("env")? {
-            for pair in env.pairs::<String, String>() {
+            for pair in env.pairs::<String, Value>() {
                 let (k, v) = pair?;
-                out.push((k, v));
+                let value = env_value(&k, v)?;
+                out.push((k, value));
             }
         }
     }
     Ok(out)
+}
+
+/// Environment values coerce from the scalars tests naturally hold — ports are numbers, flags are
+/// booleans — so suites never write `tostring()` around env wiring.
+fn env_value(key: &str, v: Value) -> mlua::Result<String> {
+    Ok(match v {
+        Value::String(s) => s.to_str()?.to_string(),
+        Value::Integer(i) => i.to_string(),
+        Value::Number(n) => {
+            // Render integral floats without a trailing .0 (Lua numbers are f64).
+            if n.fract() == 0.0 && n.abs() < 9.007_199_254_740_992e15 {
+                format!("{}", n as i64)
+            } else {
+                n.to_string()
+            }
+        }
+        Value::Boolean(b) => b.to_string(),
+        other => {
+            return Err(mlua::Error::RuntimeError(format!(
+                "env.{key}: expected string/number/boolean, got {}",
+                other.type_name()
+            )))
+        }
+    })
+}
+
+/// Last `max` bytes of `s`, on a char boundary, prefixed with an ellipsis marker when truncated.
+fn tail(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut start = s.len() - max;
+    while !s.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("[... truncated ...]\n{}", &s[start..])
 }
 
 // ---------------------------------------------------------------------------------------------
