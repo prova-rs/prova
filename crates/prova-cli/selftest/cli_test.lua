@@ -87,6 +87,26 @@ prova.test("snapshots: update writes, re-run matches, a change fails with a diff
   t:expect(changed.stdout):contains("+ goodbye")
 end)
 
+prova.test("snapshots: a layout snapshot catches an added file", function(t)
+  local work = fs.tempdir()
+  local render = work .. "/render"
+  shell.run("mkdir -p " .. render .. "/src")
+  fs.write(render .. "/Cargo.toml", "[package]")
+  fs.write(render .. "/src/main.rs", "fn main() {}")
+  -- The test file lives in `work` so its .snap lands in work/snapshots.
+  local test = work .. "/layout_test.lua"
+  fs.write(test, 'prova.test("layout", function(t) t:expect({ path = "' .. render ..
+    '" }):matches_snapshot("shape") end)\n')
+
+  t:expect(run("-u " .. test).code):equals(0)     -- record the layout
+  t:expect(run(test).code):equals(0)              -- unchanged → matches
+
+  fs.write(render .. "/src/extra.rs", "// oops")  -- an unexpected file appears
+  local changed = run(test)
+  t:expect(changed.code):equals(1)
+  t:expect(changed.stdout):contains("+ src/extra.rs")
+end)
+
 prova.test("an unknown flag is a usage error (exit 2)", function(t)
   local r = run("--definitely-not-a-flag")
   t:expect(r.code):equals(2)

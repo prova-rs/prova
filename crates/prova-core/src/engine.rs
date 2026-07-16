@@ -880,6 +880,95 @@ impl Matcher {
     }
 }
 
+/// Serialize a `matches_snapshot` subject to the string that gets stored/compared, honoring the
+/// **level** dial. A string subject is its own content. A **filesystem subject** — any Lua table with
+/// a `path` string field (the convention every prova path-handle follows: `archetect.render` output,
+/// `out:file(...)`, `out:dir(...)`) — serializes at a level:
+///
+/// - `layout` — the sorted relative file paths (the render's *shape*; stable, low-rot). Default for a
+///   directory subject.
+/// - `content` — the paths plus each file's bytes, as `=== path ===` sections. Default for a *file*
+///   subject (a single file has one content and no meaningful "layout").
+///
+/// The default-by-kind is the anti-rot guard: a broad directory snapshot defaults to the cheap shape,
+/// and you *opt into* `content`.
+fn serialize_snapshot_subject(subject: &Value, level: Option<&str>) -> Result<String, String> {
+    match subject {
+        Value::String(s) => Ok(s.to_string_lossy().to_string()),
+        Value::Table(t) => {
+            let path: Option<String> = t.get("path").ok().flatten();
+            let path = path.ok_or_else(|| {
+                "matches_snapshot: table subject must be a path handle (a `path` field); \
+                 got a table without one"
+                    .to_string()
+            })?;
+            serialize_path(Path::new(&path), level)
+        }
+        other => Err(format!(
+            "matches_snapshot expects a string or a filesystem path-handle subject, got {}",
+            other.type_name()
+        )),
+    }
+}
+
+/// Serialize a filesystem path at a snapshot level (see [`serialize_snapshot_subject`]).
+fn serialize_path(path: &Path, level: Option<&str>) -> Result<String, String> {
+    let meta = std::fs::metadata(path)
+        .map_err(|e| format!("matches_snapshot: cannot stat {}: {e}", path.display()))?;
+
+    if meta.is_file() {
+        // A single file: `content` is the only meaningful level.
+        if matches!(level, Some("layout")) {
+            return Err(format!(
+                "matches_snapshot: level=\"layout\" needs a directory subject, but {} is a file",
+                path.display()
+            ));
+        }
+        return std::fs::read_to_string(path)
+            .map_err(|e| format!("matches_snapshot: cannot read {}: {e}", path.display()));
+    }
+
+    // A directory: default to the low-rot `layout` (shape), opt into `content`.
+    let rels = walk_files_relative(path)?;
+    match level.unwrap_or("layout") {
+        "layout" => Ok(rels.join("\n")),
+        "content" => {
+            let mut out = String::new();
+            for rel in &rels {
+                let full = path.join(rel);
+                let body = std::fs::read_to_string(&full)
+                    .unwrap_or_else(|_| "<binary or unreadable>".to_string());
+                out.push_str(&format!("=== {rel} ===\n{body}\n"));
+            }
+            Ok(out.trim_end().to_string())
+        }
+        other => Err(format!(
+            "matches_snapshot: unknown level {other:?} (expected \"layout\" or \"content\")"
+        )),
+    }
+}
+
+/// Every file under `root`, as `/`-separated relative paths, sorted — a deterministic layout listing.
+fn walk_files_relative(root: &Path) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = std::fs::read_dir(&dir)
+            .map_err(|e| format!("matches_snapshot: cannot read dir {}: {e}", dir.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("matches_snapshot: dir entry error: {e}"))?;
+            let p = entry.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if let Ok(rel) = p.strip_prefix(root) {
+                out.push(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
 /// A filesystem-safe slug of a node path (or a user-given snapshot name): alphanumerics kept,
 /// everything else collapsed to single `-`, lowercased. `"orders › creates a row"` → `"orders-creates-a-row"`.
 fn slugify(s: &str) -> String {
@@ -1012,10 +1101,11 @@ impl UserData for Matcher {
                     "matches_snapshot cannot be negated".into(),
                 ));
             }
-            let name: Option<String> = match arg {
-                Value::Nil => None,
-                Value::String(s) => Some(s.to_string_lossy().to_string()),
-                Value::Table(t) => t.get::<Option<String>>("name")?,
+            // `arg` is nil | a name string | an options table `{ name?, level? }`.
+            let (name, level): (Option<String>, Option<String>) = match arg {
+                Value::Nil => (None, None),
+                Value::String(s) => (Some(s.to_string_lossy().to_string()), None),
+                Value::Table(t) => (t.get::<Option<String>>("name")?, t.get::<Option<String>>("level")?),
                 other => {
                     return Err(mlua::Error::RuntimeError(format!(
                         "matches_snapshot(name?) expects a string name or an options table, got {}",
@@ -1023,16 +1113,8 @@ impl UserData for Matcher {
                     )))
                 }
             };
-            let actual = match &this.subject {
-                Value::String(s) => s.to_string_lossy().to_string(),
-                other => {
-                    return Err(mlua::Error::RuntimeError(format!(
-                        "matches_snapshot expects a string subject (got {}); \
-                         tree/file snapshots land in a later phase",
-                        other.type_name()
-                    )))
-                }
-            };
+            let actual = serialize_snapshot_subject(&this.subject, level.as_deref())
+                .map_err(mlua::Error::RuntimeError)?;
 
             // Resolve the `.snap`/`.snap.new` paths + update flag + a header source label from the
             // per-test snapshot context (advancing the auto-name counter for an unnamed snapshot).
@@ -3315,6 +3397,29 @@ mod tests {
         assert_eq!(snapshot_body(&doc), body);
         // A legacy doc with no header/delimiter is treated as all-body.
         assert_eq!(snapshot_body("just a value"), "just a value");
+    }
+
+    #[test]
+    fn serialize_path_honors_the_level_dial() {
+        let root = std::env::temp_dir().join("prova-serialize-path-test");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("Cargo.toml"), "x").unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn main() {}").unwrap();
+
+        // Directory defaults to layout: sorted relative paths.
+        assert_eq!(serialize_path(&root, None).unwrap(), "Cargo.toml\nsrc/main.rs");
+        // Content: `=== path ===` sections.
+        let content = serialize_path(&root, Some("content")).unwrap();
+        assert!(content.contains("=== Cargo.toml ===\nx"), "{content}");
+        assert!(content.contains("=== src/main.rs ===\nfn main() {}"), "{content}");
+        // A single file serializes to its content (any level).
+        assert_eq!(serialize_path(&root.join("Cargo.toml"), None).unwrap(), "x");
+        // layout on a file, or an unknown level, is an error.
+        assert!(serialize_path(&root.join("Cargo.toml"), Some("layout")).is_err());
+        assert!(serialize_path(&root, Some("bogus")).is_err());
+
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

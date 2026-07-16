@@ -212,9 +212,12 @@ exactly the "batteries-included, no capability ceilings" pitch. Implemented in `
    `--update-snapshots`/`-u` (re)writes. Missing → fail + reviewable `.snap.new`; mismatch → fail with
    an LCS line diff; robust `---`-delimited doc format. Plumbing: `Collector.file_paths` →
    `RunState` → `TestRun.snapshot`; `RunConfig.update_snapshots`. (engine.rs; unit tests + a dogfooding
-   self-test.) **Phase B** = the `level` dial (`layout`/`content`) + `out:tree()`/file-handle subjects;
-   **Phase C** = unused-snapshot flagging. Design + rationale (structure-vs-content, anti-rot default):
-   `docs/plans/snapshots.md`.
+   self-test.) **Phase B DONE:** the `level` dial — a string subject snapshots as content; any **path
+   handle** (a table with a `path` field: `archetect.render` output, `out:file(rel)`) snapshots at
+   `level = "layout"` (sorted relative paths — the render shape, default for a directory) or `"content"`
+   (paths + bytes, `=== path ===` sections). Anti-rot default lives in the API (broad dir → cheap shape;
+   opt into content). Verified: a layout snapshot catches an added file with a `+ path` diff.
+   **Phase C** (remaining) = unused-snapshot flagging. Design + rationale: `docs/plans/snapshots.md`.
 8. **Selectors** — tag expressions (`--tags`), `-k` name filter, `--last-failed`, sharding.
 9. **Reporters — DONE.** JUnit XML (`--junit PATH`, a *file* sink that composes with any `--format`,
    the CI lingua franca) and TAP (`--format tap`, a stdout stream) both landed as `Reporter`s over the

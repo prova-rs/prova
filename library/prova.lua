@@ -134,9 +134,16 @@ function Matcher:is_empty() end
 --- no `{{`, `{%`, or `{#` in any file's contents or path segments. GitHub Actions `${{ … }}`
 --- expressions are excluded. The signature archetype check.
 function Matcher:is_fully_rendered() end
----Compare against a stored snapshot (`prova test --update-snapshots` to rewrite).
----@param name? string  # optional named snapshot
-function Matcher:matches_snapshot(name) end
+---Compare the subject against a stored `.snap` file colocated with the test
+---(`snapshots/<file>__<key>.snap`). Pass `prova --update-snapshots` (`-u`) to (re)write it; a
+---mismatch fails with a line diff, a missing snapshot writes a reviewable `.snap.new`.
+---
+---The subject may be a **string** (compared as-is) or a **path handle** — any table with a `path`
+---field, e.g. `archetect.render` output or `out:file(rel)`. For a path handle, `level` selects how
+---much is captured: `"layout"` (sorted relative paths — the render's shape; the default for a
+---directory) or `"content"` (paths + each file's bytes). Keep `content` snapshots narrow.
+---@param opts? string|{ name?: string, level?: "layout"|"content" }  # a name, or options
+function Matcher:matches_snapshot(opts) end
 
 ------------------------------------------------------------------------------------------
 -- Registration API
