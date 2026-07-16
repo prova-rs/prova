@@ -3019,6 +3019,15 @@ pub(crate) fn run_suite_files(
     }
 
     // Each member file loads under a file-group node, with its own file index (1-based).
+    load_member_files(&lua, &col, files)?;
+
+    execute_collected(&lua, &col, reporter, config)
+}
+
+/// Load each member `file` under its own file-group node with its own file index (1-based; index 0
+/// is the suite/setup level). Shared by `run_suite_files` and the warm re-run path (which re-collects
+/// into a *held* Lua state instead of a fresh one).
+fn load_member_files(lua: &Lua, col: &SharedCollector, files: &[PathBuf]) -> mlua::Result<()> {
     for (i, file) in files.iter().enumerate() {
         let idx = i + 1;
         let stem = file
@@ -3043,8 +3052,7 @@ pub(crate) fn run_suite_files(
             c.current_file = 0;
         }
     }
-
-    execute_collected(&lua, &col, reporter, config)
+    Ok(())
 }
 
 /// Build plan → run → tear down (every file scope, then the suite). Shared by the single-file and
@@ -3101,6 +3109,30 @@ fn execute_collected(
 pub fn eval_snippet(code: &str, config: &RunConfig) -> mlua::Result<serde_json::Value> {
     let (lua, col) = build_lua("eval".to_string(), config)?;
 
+    // One transient scope for the whole eval, over a state that knows the snippet's fixtures.
+    let state = Rc::new(RunState {
+        defs: col.borrow().fixtures.clone(),
+        suite: Rc::new(RefCell::new(ScopeState::default())),
+        files: RefCell::new(HashMap::new()),
+        file_paths: Vec::new(),
+        update_snapshots: false,
+        snapshot_registry: None,
+    });
+
+    let rt = new_runtime()?;
+    eval_with_state(&lua, &rt, code, &state)
+}
+
+/// The shared eval executor: compile `code`, expose a transient `ctx` over `state`'s File scope,
+/// run it inside `rt`, tear the transient scope down (success OR error), and JSON-ify the value.
+/// Used by the one-shot `eval_snippet` (fresh Lua/runtime) and by `HeldTopology::eval_warm` (the
+/// holder's Lua/runtime, with the held instance pre-seeded into `state`).
+fn eval_with_state(
+    lua: &Lua,
+    rt: &tokio::runtime::Runtime,
+    code: &str,
+    state: &Rc<RunState>,
+) -> mlua::Result<serde_json::Value> {
     // Prefer the expression wrapping; fall back to raw statements. The newline before `)` keeps a
     // trailing `-- comment` in the snippet from swallowing the wrapper's close paren.
     let chunk = match lua
@@ -3112,16 +3144,8 @@ pub fn eval_snippet(code: &str, config: &RunConfig) -> mlua::Result<serde_json::
         Err(_) => lua.load(code).set_name("eval").into_function()?,
     };
 
-    // One transient scope for the whole eval: a File-scope context, exactly like `prova up`'s
-    // provisioner (no test scope exists here; the File scope stands in for `defer`/`manage`).
-    let state = Rc::new(RunState {
-        defs: col.borrow().fixtures.clone(),
-        suite: Rc::new(RefCell::new(ScopeState::default())),
-        files: RefCell::new(HashMap::new()),
-        file_paths: Vec::new(),
-        update_snapshots: false,
-        snapshot_registry: None,
-    });
+    // A File-scope context, exactly like `prova up`'s provisioner (no test scope exists here; the
+    // File scope stands in for `defer`/`manage`).
     let file0 = state.file_scope(0);
     let ctx = Ctx {
         run: Rc::new(RefCell::new(TestRun::default())),
@@ -3134,16 +3158,15 @@ pub fn eval_snippet(code: &str, config: &RunConfig) -> mlua::Result<serde_json::
     };
     lua.globals().set("ctx", lua.create_userdata(ctx)?)?;
 
-    let rt = new_runtime()?;
     let value = rt.block_on(async {
         let outcome = chunk.call_async::<Value>(()).await;
         // Tear the transient scope down inside the same runtime, success OR error (mirroring
         // execute_collected), so whatever the snippet provisioned is reaped before we return.
-        teardown_file_scopes(&state).await;
+        teardown_file_scopes(state).await;
         teardown_scope(&state.suite).await;
         outcome
     })?;
-    Ok(eval_value_to_json(&lua, &value, 0))
+    Ok(eval_value_to_json(lua, &value, 0))
 }
 
 /// Convert an eval result to JSON, defensively: primitives map directly, tables become arrays
@@ -3227,7 +3250,7 @@ pub fn up(
     config: &RunConfig,
     on_ready: impl FnOnce(&[Endpoint]),
 ) -> mlua::Result<()> {
-    let (lua, state, id) = load_topology(files, name, config)?;
+    let (lua, _col, state, id) = load_topology(files, name, config)?;
 
     let rt = new_runtime()?;
     rt.block_on(async {
@@ -3259,9 +3282,9 @@ pub fn watch(
         loop {
             // Build a fresh state each pass so a changed definition is actually re-read.
             match load_topology(files, name, config) {
-                Ok((lua, state, id)) => {
+                Ok((lua, _col, state, id)) => {
                     let held = async {
-                        let endpoints = provision(&lua, &state, id, name).await?;
+                        let (_value, endpoints) = provision(&lua, &state, id, name).await?;
                         on_ready(&endpoints, reapply);
                         Ok::<bool, mlua::Error>(wait_for_change_or_shutdown(files).await)
                     }
@@ -3290,12 +3313,13 @@ pub fn watch(
 }
 
 /// Load `files` into a fresh Lua state and resolve the named topology's fixture id, returning the
-/// state pieces `provision` needs. Shared by `up` and `watch`.
+/// state pieces `provision` needs. Shared by `up`, `watch`, and `hold_topology` (which keeps the
+/// collector so warm runs can reset and re-collect in the same state).
 fn load_topology(
     files: &[PathBuf],
     name: &str,
     config: &RunConfig,
-) -> mlua::Result<(Lua, Rc<RunState>, usize)> {
+) -> mlua::Result<(Lua, SharedCollector, Rc<RunState>, usize)> {
     let (lua, col) = build_lua("up".to_string(), config)?;
     for file in files {
         let code = std::fs::read_to_string(file).map_err(|e| {
@@ -3331,7 +3355,7 @@ fn load_topology(
         update_snapshots: false, // snapshots are a test-mode concern, not for inhabited topologies
         snapshot_registry: None,
     });
-    Ok((lua, state, id))
+    Ok((lua, col, state, id))
 }
 
 /// Instantiate the topology under a held `Scope.File`, report its endpoints, and block until a
@@ -3344,21 +3368,22 @@ async fn provision_and_hold(
     topo_name: &str,
     on_ready: impl FnOnce(&[Endpoint]),
 ) -> mlua::Result<()> {
-    let endpoints = provision(lua, state, id, topo_name).await?;
+    let (_value, endpoints) = provision(lua, state, id, topo_name).await?;
     on_ready(&endpoints);
     wait_for_shutdown().await;
     Ok(())
 }
 
-/// Instantiate the topology under a held `Scope.File` and return its endpoints. The provisioned
-/// resources stay alive via the File scope's teardowns (held in `state`) until the caller reaps them;
-/// separated from the wait/hold so both `up` (hold until signal) and `watch` (hold until change) reuse it.
+/// Instantiate the topology under a held `Scope.File` and return its live value plus its endpoints.
+/// The provisioned resources stay alive via the File scope's teardowns (held in `state`) until the
+/// caller reaps them; separated from the wait/hold so `up` (hold until signal), `watch` (hold until
+/// change), and `hold_topology` (hold across MCP tool calls) all reuse it.
 async fn provision(
     lua: &Lua,
     state: &Rc<RunState>,
     id: usize,
     topo_name: &str,
-) -> mlua::Result<Vec<Endpoint>> {
+) -> mlua::Result<(Value, Vec<Endpoint>)> {
     let file0 = state.file_scope(0);
     let ctx = Ctx {
         run: Rc::new(RefCell::new(TestRun::default())),
@@ -3371,7 +3396,8 @@ async fn provision(
     };
     let handle = lua.create_userdata(FixtureHandle { id })?;
     let value = resolve_use(lua, &ctx, Value::UserData(handle)).await?;
-    Ok(extract_endpoints(&value, topo_name))
+    let endpoints = extract_endpoints(&value, topo_name);
+    Ok((value, endpoints))
 }
 
 /// Walk a topology's returned value for connect strings. Each field whose value is a table with a
@@ -3400,6 +3426,214 @@ fn extract_endpoints(value: &Value, topo_name: &str) -> Vec<Endpoint> {
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
+}
+
+// ---------------------------------------------------------------------------------------------
+// Warm topology holding (`prova mcp`: up / run{topology} / eval{topology} / down)
+// ---------------------------------------------------------------------------------------------
+
+/// A named topology provisioned and **held inside this process** — the warm phase of MCP mode
+/// (docs/design/mcp-mode.md "Warm re-run"). Owns the Lua state the topology lives in, the run
+/// state whose held File scope carries the topology's teardowns, and the Tokio runtime that
+/// provisioned it (held resources — clients, pools, containers — may be bound to that runtime, so
+/// every warm call runs under it).
+///
+/// **Same-Lua warmth**: `run_warm` re-collects the project's files into this same Lua state and
+/// injects the held instance into the fresh run's scope caches keyed by topology *name*, so
+/// `t:use(<topology>)` resolves the identical live Lua values instead of provisioning.
+///
+/// **Ownership**: warm runs and evals tear down only their own transient scopes (the held value is
+/// injected as a cached *value*, never as a teardown), so the holder — `teardown()`, driven by the
+/// MCP `down` tool or server shutdown — is the one true reaper.
+///
+/// `Lua` is `!Send`, so a `HeldTopology` must be created, used, and dropped on one thread (the MCP
+/// server confines each one to a dedicated holder thread driven by a command channel).
+pub struct HeldTopology {
+    name: String,
+    lua: Lua,
+    /// The collector captured by this state's `prova.*` closures — reset and re-populated per warm
+    /// run (fresh collection, held values).
+    col: SharedCollector,
+    /// The holder's run state: its File scope owns the provisioning teardowns.
+    state: Rc<RunState>,
+    /// The held instance — the topology factory's returned value, alive for the holder's lifetime.
+    value: Value,
+    endpoints: Vec<Endpoint>,
+    rt: tokio::runtime::Runtime,
+    config: RunConfig,
+}
+
+/// Stand up the topology named `name` from `files` and hold it in-process: the factory runs exactly
+/// once, its teardowns are parked on the returned holder, and the held value is also published as a
+/// Lua **global named after the topology** (so `eval_warm` snippets can address it directly, e.g.
+/// `return orders.db.url`). A mid-provision failure still reaps whatever came up before erroring.
+pub fn hold_topology(
+    files: &[PathBuf],
+    name: &str,
+    config: &RunConfig,
+) -> mlua::Result<HeldTopology> {
+    let (lua, col, state, id) = load_topology(files, name, config)?;
+    let rt = new_runtime()?;
+    let provisioned = rt.block_on(async {
+        match provision(&lua, &state, id, name).await {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                // Partial provisioning already parked teardowns for whatever came up — reap them.
+                teardown_file_scopes(&state).await;
+                teardown_scope(&state.suite).await;
+                Err(e)
+            }
+        }
+    });
+    let (value, endpoints) = provisioned?;
+    lua.globals().set(name, value.clone())?;
+    Ok(HeldTopology {
+        name: name.to_string(),
+        lua,
+        col,
+        state,
+        value,
+        endpoints,
+        rt,
+        config: config.clone(),
+    })
+}
+
+impl HeldTopology {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The endpoints reported at provisioning time (`name → url`), for `up` results and `status`.
+    pub fn endpoints(&self) -> &[Endpoint] {
+        &self.endpoints
+    }
+
+    /// A **warm run**: re-read `files` from disk (edits since `up` take effect), collect them into
+    /// this holder's Lua state (collector reset, same VM), and run the plan with the held topology
+    /// instance injected — `t:use(<topology>)` resolves the very same live Lua values the holder
+    /// provisioned, so held state accumulates across runs and the factory never re-runs.
+    pub fn run_warm(
+        &self,
+        files: &[PathBuf],
+        selection: &Selection,
+        reporter: &mut dyn Reporter,
+    ) -> mlua::Result<Summary> {
+        // Fresh collection in the held state: reset the collector the `prova.*` globals write to,
+        // then load exactly as a cold suite would (one file at index 0; several under per-file
+        // groups), so node paths and selection match their cold-run spelling.
+        if files.len() == 1 {
+            let stem = files[0]
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("tests")
+                .to_string();
+            *self.col.borrow_mut() = Collector::new(stem);
+            self.col.borrow_mut().set_file_path(0, &files[0]);
+            let code = std::fs::read_to_string(&files[0]).map_err(|e| {
+                mlua::Error::RuntimeError(format!("cannot read {}: {e}", files[0].display()))
+            })?;
+            self.lua
+                .load(&code)
+                .set_name(files[0].to_string_lossy())
+                .exec()?;
+        } else {
+            *self.col.borrow_mut() = Collector::new(self.name.clone());
+            load_member_files(&self.lua, &self.col, files)?;
+        }
+
+        let (plan, deselected, state) = {
+            let col = self.col.borrow();
+            let (plan, deselected) = apply_selection(build_plan(&col)?, selection);
+
+            // A fresh run state — the run's own scopes, so its teardown reaps only what it built.
+            let state = Rc::new(RunState {
+                defs: col.fixtures.clone(),
+                suite: Rc::new(RefCell::new(ScopeState::default())),
+                files: RefCell::new(HashMap::new()),
+                file_paths: col.file_paths.clone(),
+                update_snapshots: self.config.update_snapshots,
+                snapshot_registry: self.config.snapshot_registry.clone(),
+            });
+
+            // Held-instance injection, keyed by topology NAME (topologies are name-addressable by
+            // design): the fresh collection re-declared the topology under a new fixture id — seed
+            // that id's value into the suite scope and every file scope, so `t:use` cache-hits from
+            // whichever scope the (re-read) declaration targets, instead of running the factory.
+            // The value goes in *without* a teardown entry: the holder remains the only reaper.
+            let id = *col.topologies.get(&self.name).ok_or_else(|| {
+                mlua::Error::RuntimeError(format!(
+                    "held topology {:?} is no longer defined by the project's files",
+                    self.name
+                ))
+            })?;
+            state.suite.borrow_mut().cache.insert(id, self.value.clone());
+            for idx in 0..=files.len() {
+                state
+                    .file_scope(idx)
+                    .borrow_mut()
+                    .cache
+                    .insert(id, self.value.clone());
+            }
+            (plan, deselected, state)
+        };
+
+        let mut config = self.config.clone();
+        config.selection = selection.clone();
+
+        reporter.event(&Event::RunStarted);
+        let mut summary = Summary::default();
+        summary.deselected = deselected;
+        // The holder's runtime, not a fresh one: held resources may be bound to it.
+        self.rt.block_on(async {
+            let started = Instant::now();
+            run_plan(&self.lua, &plan, &state, &config, reporter, &mut summary).await;
+            // Tear down the run's own scopes only. The injected instance is a cached value with no
+            // teardown registered here; its teardowns stay parked on the holder's state.
+            teardown_file_scopes(&state).await;
+            teardown_scope(&state.suite).await;
+            summary.duration = started.elapsed();
+        });
+        reporter.event(&Event::RunFinished { summary: &summary });
+        Ok(summary)
+    }
+
+    /// A **warm eval**: run a one-shot snippet in the holder's Lua state, where the held value is a
+    /// global named after the topology (set at hold time) and `ctx:use(<name>)` resolves the held
+    /// instance. The snippet's own `defer`/`manage` teardowns run afterwards; the held instance's
+    /// never do.
+    pub fn eval_warm(&self, code: &str) -> mlua::Result<serde_json::Value> {
+        // A transient state seeded with the held instance, so `ctx:use` is warm too. The current
+        // collector still describes the most recent collection in this VM, so its fixture ids line
+        // up with any handles a snippet might reference.
+        let state = Rc::new(RunState {
+            defs: self.col.borrow().fixtures.clone(),
+            suite: Rc::new(RefCell::new(ScopeState::default())),
+            files: RefCell::new(HashMap::new()),
+            file_paths: Vec::new(),
+            update_snapshots: false,
+            snapshot_registry: None,
+        });
+        if let Some(&id) = self.col.borrow().topologies.get(&self.name) {
+            state.suite.borrow_mut().cache.insert(id, self.value.clone());
+            state
+                .file_scope(0)
+                .borrow_mut()
+                .cache
+                .insert(id, self.value.clone());
+        }
+        eval_with_state(&self.lua, &self.rt, code, &state)
+    }
+
+    /// The one true teardown: run everything the provisioning parked on the holder's scopes
+    /// (`ctx:defer`/`ctx:manage`, LIFO), consuming the holder. Driven by the MCP `down` tool or by
+    /// server shutdown — never by a warm run.
+    pub fn teardown(self) {
+        self.rt.block_on(async {
+            teardown_file_scopes(&self.state).await;
+            teardown_scope(&self.state.suite).await;
+        });
+    }
 }
 
 /// Block until the user (Ctrl-C / SIGINT) or a supervisor (`prova down`, via SIGTERM) asks to shut

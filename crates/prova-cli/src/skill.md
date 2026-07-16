@@ -156,12 +156,21 @@ call tools. Tools mirror the CLI one-to-one and **everything else is identical**
 
 | MCP tool | CLI equivalent |
 |---|---|
-| `run { keywords?, keyword_excludes?, tags?, tag_excludes?, nodes?, last_failed?, profile?, jobs? }` | `prova -k … --tags … --node … --last-failed --profile … --jobs …` |
+| `run { keywords?, keyword_excludes?, tags?, tag_excludes?, nodes?, last_failed?, profile?, jobs?, topology? }` | `prova -k … --tags … --node … --last-failed --profile … --jobs …` |
 | `list { same selection fields }` | `prova --list` (same flags) |
-| `eval { code }` | `prova eval '<code>'` |
+| `eval { code, topology? }` | `prova eval '<code>'` |
+| `up { name }` / `down { name }` / `status {}` | `prova up <name>` — but held *inside* the server |
 
 The server resolves the manifest and plugins from its working directory exactly like the CLI,
-serves this document as its `instructions`, and returns compact JSON results. Warm topology tools
-(`up`/`down`, `run { topology }`) are the next phase.
+serves this document as its `instructions`, and returns compact JSON results.
+
+**Warm re-runs — the MCP-only capability.** `up { name }` provisions a named topology once and
+holds it inside the server; `run { topology = name }` and `eval { code, topology = name }` then
+resolve the held live instance instead of provisioning — millisecond re-runs against a standing
+environment while you iterate. In a warm `eval`, the held value is also a global named after the
+topology (`return orders.db.url`). Warm calls require a prior `up` (never provision implicitly);
+`status` lists what's held; the holder owns teardown — `down` (or server shutdown) reaps, warm
+runs never do. A held environment accumulates state (that's the point): `down` then `up` when
+isolation matters.
 
 Full reference: https://prova-rs.github.io (source: https://github.com/prova-rs/prova)
