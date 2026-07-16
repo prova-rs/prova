@@ -113,11 +113,38 @@ impl Selection {
     }
 }
 
+/// How published container ports bind to the host. Tests always want `Auto` (a random host port per
+/// container, so parallel runs never collide); an *inhabited* topology (`prova up --fixed`) can ask
+/// for `Fixed`, pinning each published port to its canonical container port so external tools connect
+/// on a predictable address and advertised-listener resources (Kafka) can compute their listener.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum PortMode {
+    /// Random host port per published container port (the testing default).
+    #[default]
+    Auto,
+    /// Pin each published port to its canonical container port on the host.
+    Fixed,
+}
+
+impl PortMode {
+    /// The value exposed to Lua as `prova.ports` (`"auto"` | `"fixed"`), which `prova.containerized`
+    /// reads to decide whether to upgrade plain (random) ports to fixed bindings.
+    fn as_str(self) -> &'static str {
+        match self {
+            PortMode::Auto => "auto",
+            PortMode::Fixed => "fixed",
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct RunConfig {
     pub concurrency: usize,
     /// Node selection applied after collection (empty = run everything).
     pub selection: Selection,
+    /// Host port binding strategy. `Auto` for tests; `Fixed` only when an inhabited topology is stood
+    /// up with `--fixed`.
+    pub ports: PortMode,
     modules: Vec<Module>,
     /// Extra disk roots the plugin searcher consults (e.g. the global `data_dir/plugins`).
     plugin_roots: Vec<std::path::PathBuf>,
@@ -134,6 +161,7 @@ impl Default for RunConfig {
         RunConfig {
             concurrency: 1,
             selection: Selection::default(),
+            ports: PortMode::default(),
             modules: Vec::new(),
             plugin_roots: Vec::new(),
             named_plugins: std::collections::BTreeMap::new(),
@@ -147,6 +175,7 @@ impl std::fmt::Debug for RunConfig {
         f.debug_struct("RunConfig")
             .field("concurrency", &self.concurrency)
             .field("selection", &self.selection)
+            .field("ports", &self.ports)
             .field("modules", &self.modules.len())
             .field("plugin_roots", &self.plugin_roots)
             .field("named_plugins", &self.named_plugins)
@@ -161,6 +190,13 @@ impl RunConfig {
             concurrency,
             ..Default::default()
         }
+    }
+
+    /// Set the host port binding strategy (`Auto` for tests, `Fixed` for an inhabited topology stood
+    /// up with `--fixed`).
+    pub fn with_ports(mut self, ports: PortMode) -> Self {
+        self.ports = ports;
+        self
     }
 
     /// Register a plugin module — a `Fn(&Lua) -> Result<()>` run against every Lua state the run
@@ -1426,6 +1462,11 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
         })?,
     )?;
 
+    // The host port mode, readable by topology/plugin authors as `prova.ports` (`"auto"` | `"fixed"`).
+    // `prova.containerized` consults it to upgrade random ports to fixed bindings under `--fixed`; a
+    // recipe with an advertised listener (Kafka) reads it to emit the right listener address.
+    prova.set("ports", config.ports.as_str())?;
+
     lua.globals().set("prova", prova)?;
 
     // The typed fixture-scope constants: `Scope.Test` / `Scope.Flow` / `Scope.File` / `Scope.Suite`.
@@ -2648,6 +2689,75 @@ pub fn up(
     config: &RunConfig,
     on_ready: impl FnOnce(&[Endpoint]),
 ) -> mlua::Result<()> {
+    let (lua, state, id) = load_topology(files, name, config)?;
+
+    let rt = new_runtime()?;
+    rt.block_on(async {
+        let result = provision_and_hold(&lua, &state, id, name, on_ready).await;
+        // Always tear down whatever got provisioned — a clean signal, or a mid-provision failure.
+        teardown_file_scopes(&state).await;
+        teardown_scope(&state.suite).await;
+        result
+    })
+}
+
+/// `prova watch <name>` — the inhabited dev loop. Provision the topology, report its endpoints, and
+/// hold; when any of `files` changes on disk, tear down and re-provision from the *fresh* definition
+/// (a new Lua state, so edits take effect), reporting the new endpoints. Repeats until a shutdown
+/// signal, then tears down and returns. `on_ready(endpoints, reapply)` is called after each successful
+/// (re)provision (`reapply` is false the first time). A definition that fails to provision (e.g. a bad
+/// edit) is reported via `on_error` and does *not* exit the loop — the watcher waits for the next
+/// change so the fix is picked up. Use `--fixed` for stable endpoints across re-applies.
+pub fn watch(
+    files: &[PathBuf],
+    name: &str,
+    config: &RunConfig,
+    mut on_ready: impl FnMut(&[Endpoint], bool),
+    mut on_error: impl FnMut(&mlua::Error),
+) -> mlua::Result<()> {
+    let rt = new_runtime()?;
+    rt.block_on(async {
+        let mut reapply = false;
+        loop {
+            // Build a fresh state each pass so a changed definition is actually re-read.
+            match load_topology(files, name, config) {
+                Ok((lua, state, id)) => {
+                    let held = async {
+                        let endpoints = provision(&lua, &state, id, name).await?;
+                        on_ready(&endpoints, reapply);
+                        Ok::<bool, mlua::Error>(wait_for_change_or_shutdown(files).await)
+                    }
+                    .await;
+                    teardown_file_scopes(&state).await;
+                    teardown_scope(&state.suite).await;
+                    match held {
+                        // A file changed → loop and re-provision. Shutdown → done.
+                        Ok(true) => {}
+                        Ok(false) => return Ok(()),
+                        // Provisioning itself failed: report, then wait for the next edit or a signal.
+                        Err(e) => {
+                            on_error(&e);
+                            if !wait_for_change_or_shutdown(files).await {
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+                // The files don't even load / no such topology — a hard error worth surfacing to exit.
+                Err(e) => return Err(e),
+            }
+            reapply = true;
+        }
+    })
+}
+
+/// Load `files` into a fresh Lua state and resolve the named topology's fixture id, returning the
+/// state pieces `provision` needs. Shared by `up` and `watch`.
+fn load_topology(
+    files: &[PathBuf],
+    name: &str,
+    config: &RunConfig,
+) -> mlua::Result<(Lua, Rc<RunState>, usize)> {
     let (lua, col) = build_lua("up".to_string(), config)?;
     for file in files {
         let code = std::fs::read_to_string(file).map_err(|e| {
@@ -2680,15 +2790,7 @@ pub fn up(
         suite: Rc::new(RefCell::new(ScopeState::default())),
         files: RefCell::new(HashMap::new()),
     });
-
-    let rt = new_runtime()?;
-    rt.block_on(async {
-        let result = provision_and_hold(&lua, &state, id, name, on_ready).await;
-        // Always tear down whatever got provisioned — a clean signal, or a mid-provision failure.
-        teardown_file_scopes(&state).await;
-        teardown_scope(&state.suite).await;
-        result
-    })
+    Ok((lua, state, id))
 }
 
 /// Instantiate the topology under a held `Scope.File`, report its endpoints, and block until a
@@ -2701,6 +2803,21 @@ async fn provision_and_hold(
     topo_name: &str,
     on_ready: impl FnOnce(&[Endpoint]),
 ) -> mlua::Result<()> {
+    let endpoints = provision(lua, state, id, topo_name).await?;
+    on_ready(&endpoints);
+    wait_for_shutdown().await;
+    Ok(())
+}
+
+/// Instantiate the topology under a held `Scope.File` and return its endpoints. The provisioned
+/// resources stay alive via the File scope's teardowns (held in `state`) until the caller reaps them;
+/// separated from the wait/hold so both `up` (hold until signal) and `watch` (hold until change) reuse it.
+async fn provision(
+    lua: &Lua,
+    state: &Rc<RunState>,
+    id: usize,
+    topo_name: &str,
+) -> mlua::Result<Vec<Endpoint>> {
     let file0 = state.file_scope(0);
     let ctx = Ctx {
         run: Rc::new(RefCell::new(TestRun::default())),
@@ -2713,10 +2830,7 @@ async fn provision_and_hold(
     };
     let handle = lua.create_userdata(FixtureHandle { id })?;
     let value = resolve_use(lua, &ctx, Value::UserData(handle)).await?;
-    let endpoints = extract_endpoints(&value, topo_name);
-    on_ready(&endpoints);
-    wait_for_shutdown().await;
-    Ok(())
+    Ok(extract_endpoints(&value, topo_name))
 }
 
 /// Walk a topology's returned value for connect strings. Each field whose value is a table with a
@@ -2769,6 +2883,37 @@ async fn wait_for_shutdown() {
     {
         let _ = tokio::signal::ctrl_c().await;
     }
+}
+
+/// Block until either a watched file changes on disk (returns `true` — re-apply) or a shutdown signal
+/// arrives (returns `false` — stop). Dependency-free: polls the files' modification times against a
+/// snapshot taken at entry. A short settle after a detected change lets an editor's multi-write save
+/// finish before we re-provision, so one save triggers one re-apply.
+async fn wait_for_change_or_shutdown(files: &[PathBuf]) -> bool {
+    let baseline = snapshot_mtimes(files);
+    let mut ticker = tokio::time::interval(std::time::Duration::from_millis(400));
+    ticker.tick().await; // the first tick completes immediately; skip it
+    loop {
+        tokio::select! {
+            _ = wait_for_shutdown() => return false,
+            _ = ticker.tick() => {
+                if snapshot_mtimes(files) != baseline {
+                    // Let a burst of writes settle, then confirm before re-provisioning.
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    return true;
+                }
+            }
+        }
+    }
+}
+
+/// Each file's last-modified time (`None` if it can't be stat'd — e.g. mid-rename), positional so a
+/// simple `!=` against a baseline detects any change, appearance, or disappearance.
+fn snapshot_mtimes(files: &[PathBuf]) -> Vec<Option<std::time::SystemTime>> {
+    files
+        .iter()
+        .map(|f| std::fs::metadata(f).and_then(|m| m.modified()).ok())
+        .collect()
 }
 
 /// An empty labeling `Group` node (a file-group). `file`/parent are set by `add`.

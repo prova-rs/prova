@@ -27,7 +27,7 @@ use home::Home;
 use manifest::{Manage, Manifest, SuiteDecl};
 use prova_core::{
     discover_files, discover_path_with, discover_suites, run_suites, ConsoleReporter, JsonReporter,
-    MultiReporter, Reporter, RunConfig, Suite, SystemLayout, XdgSystemLayout,
+    MultiReporter, PortMode, Reporter, RunConfig, Suite, SystemLayout, XdgSystemLayout,
 };
 
 const HELP: &str = "\
@@ -35,7 +35,8 @@ usage:
   prova <file-or-dir>...    run the given files/dirs
   prova                     run the suite declared in prova.toml (found by walking up)
   prova init                scaffold prova.toml + LuaLS IDE support in this project
-  prova up <topology>       stand up a topology and hold it until Ctrl-C
+  prova up <topology>       stand up a topology and hold it until Ctrl-C (--fixed for canonical ports)
+  prova watch <topology>    stand up a topology and re-apply on definition change (dev loop)
   prova start <topology>    stand up a topology detached (returns; use `down` to stop)
   prova down <topology>     tear down a detached topology
   prova ps                  list running topologies
@@ -95,6 +96,10 @@ fn main() -> ExitCode {
         Some("up") => {
             raw.next();
             return up_subcommand(raw.collect());
+        }
+        Some("watch") => {
+            raw.next();
+            return watch_subcommand(raw.collect());
         }
         Some("start") => {
             raw.next();
@@ -191,6 +196,7 @@ fn up_subcommand(args: Vec<String>) -> ExitCode {
     let mut name: Option<String> = None;
     let mut profile: Option<String> = None;
     let mut manifest_path: Option<String> = None;
+    let mut fixed = false;
 
     let mut it = args.into_iter();
     while let Some(arg) = it.next() {
@@ -203,12 +209,20 @@ fn up_subcommand(args: Vec<String>) -> ExitCode {
             continue;
         }
         match arg.as_str() {
+            "--fixed" => {
+                fixed = true;
+                continue;
+            }
             "-h" | "--help" => {
                 println!(
-                    "usage: prova up <topology> [--profile NAME] [--manifest PATH]\n\
+                    "usage: prova up <topology> [--fixed] [--profile NAME] [--manifest PATH]\n\
                      \n\
                      stand up a topology (declared with prova.topology) and hold it running until\n\
-                     Ctrl-C, printing each resource's endpoint."
+                     Ctrl-C, printing each resource's endpoint.\n\
+                     \n\
+                     --fixed  pin each resource to its canonical container port on the host (a\n\
+                     \x20        predictable, external-tool-friendly address) instead of a random one.\n\
+                     \x20        Only one fixed instance of a port can run at a time."
                 );
                 return ExitCode::SUCCESS;
             }
@@ -229,19 +243,13 @@ fn up_subcommand(args: Vec<String>) -> ExitCode {
         return ExitCode::from(2);
     };
 
-    let layout = match XdgSystemLayout::new() {
-        Ok(l) => l,
-        Err(err) => {
-            eprintln!("prova: cannot determine home directories: {err}");
-            return ExitCode::from(2);
-        }
-    };
-
-    // Locate the project (the manifest tells us where topologies + plugins live).
-    let home = match resolve_home(manifest_path.as_deref()) {
-        Ok(h) => h,
+    let prep = match build_topology_run("up", &name, profile, manifest_path, fixed) {
+        Ok(p) => p,
         Err(code) => return code,
     };
+    let TopologyRun {
+        home, files, config, ..
+    } = prep;
 
     // Refuse to double-provision: if a live record for this name exists, it is already up. A stale
     // record (the holder is gone) is cleared and we proceed.
@@ -254,55 +262,6 @@ fn up_subcommand(args: Vec<String>) -> ExitCode {
             return ExitCode::from(2);
         }
         runstate::remove(&home, &name);
-    }
-
-    let run = match resolve_from_manifest(&home, profile, None, None, &layout) {
-        Ok(r) => r,
-        Err(code) => return code,
-    };
-
-    // Gather every file that could declare a topology: the run paths plus any explicit suites.
-    let mut files: Vec<PathBuf> = Vec::new();
-    let mut discover = |rel: &str| -> Result<(), ExitCode> {
-        match discover_files(&home.dir.join(rel)) {
-            Ok(found) => {
-                files.extend(found);
-                Ok(())
-            }
-            Err(err) => {
-                eprintln!("prova up: {rel}: {err}");
-                Err(ExitCode::from(2))
-            }
-        }
-    };
-    for p in &run.paths {
-        if let Err(code) = discover(p) {
-            return code;
-        }
-    }
-    for decl in run.suites.values() {
-        for p in &decl.paths {
-            if let Err(code) = discover(p) {
-                return code;
-            }
-        }
-    }
-    files.sort();
-    files.dedup();
-    if files.is_empty() {
-        eprintln!("prova up: no files found to search for topologies");
-        return ExitCode::from(2);
-    }
-
-    // Build the engine config with the declared plugins (so the topology's `require(...)` resolves).
-    let mut config = RunConfig::new(1)
-        .with_module(prova_archetect::install)
-        .with_plugin_root(layout.plugins_dir());
-    for (n, path) in &run.plugins.named {
-        config = config.with_named_plugin(n.clone(), path.clone());
-    }
-    for (canonical, dir) in &run.plugins.namespaces {
-        config = config.with_plugin_namespace(canonical.clone(), dir.clone());
     }
 
     eprintln!("prova: standing up topology {name:?}…");
@@ -343,6 +302,174 @@ fn up_subcommand(args: Vec<String>) -> ExitCode {
     }
 }
 
+/// Everything the `up`/`watch` verbs need to stand a topology up: the located project, the files that
+/// may declare topologies, and the engine config (plugins resolved, port mode set).
+struct TopologyRun {
+    home: Home,
+    files: Vec<PathBuf>,
+    config: RunConfig,
+}
+
+/// Resolve the manifest, discover the topology files, and build the engine config for an inhabited
+/// verb (`up`/`watch`). Shared so both consume one definition the same way; `verb` only labels errors.
+fn build_topology_run(
+    verb: &str,
+    name: &str,
+    profile: Option<String>,
+    manifest_path: Option<String>,
+    fixed: bool,
+) -> Result<TopologyRun, ExitCode> {
+    let layout = XdgSystemLayout::new().map_err(|err| {
+        eprintln!("prova: cannot determine home directories: {err}");
+        ExitCode::from(2)
+    })?;
+
+    // Locate the project (the manifest tells us where topologies + plugins live).
+    let home = resolve_home(manifest_path.as_deref())?;
+
+    let run = resolve_from_manifest(&home, profile, None, None, &layout)?;
+
+    // Gather every file that could declare a topology: the run paths plus any explicit suites.
+    let mut files: Vec<PathBuf> = Vec::new();
+    let mut discover = |rel: &str| -> Result<(), ExitCode> {
+        match discover_files(&home.dir.join(rel)) {
+            Ok(found) => {
+                files.extend(found);
+                Ok(())
+            }
+            Err(err) => {
+                eprintln!("prova {verb}: {rel}: {err}");
+                Err(ExitCode::from(2))
+            }
+        }
+    };
+    for p in &run.paths {
+        discover(p)?;
+    }
+    for decl in run.suites.values() {
+        for p in &decl.paths {
+            discover(p)?;
+        }
+    }
+    files.sort();
+    files.dedup();
+    if files.is_empty() {
+        eprintln!("prova {verb}: no files found to search for topologies (topology {name:?})");
+        return Err(ExitCode::from(2));
+    }
+
+    // Build the engine config with the declared plugins (so the topology's `require(...)` resolves).
+    // `--fixed` pins ports for external reachability; the default is random (like tests), so several
+    // topologies can be inhabited at once without colliding.
+    let mut config = RunConfig::new(1)
+        .with_ports(if fixed {
+            PortMode::Fixed
+        } else {
+            PortMode::Auto
+        })
+        .with_module(prova_archetect::install)
+        .with_plugin_root(layout.plugins_dir());
+    for (n, path) in &run.plugins.named {
+        config = config.with_named_plugin(n.clone(), path.clone());
+    }
+    for (canonical, dir) in &run.plugins.namespaces {
+        config = config.with_plugin_namespace(canonical.clone(), dir.clone());
+    }
+
+    Ok(TopologyRun {
+        home,
+        files,
+        config,
+    })
+}
+
+/// `prova watch <topology>` — the inhabited dev loop: stand the topology up, print its endpoints, and
+/// re-provision whenever its definition files change, holding until Ctrl-C. Attached-only (no detached
+/// supervisor); pair with `--fixed` for endpoints that stay put across re-applies.
+fn watch_subcommand(args: Vec<String>) -> ExitCode {
+    let mut name: Option<String> = None;
+    let mut profile: Option<String> = None;
+    let mut manifest_path: Option<String> = None;
+    let mut fixed = false;
+
+    let mut it = args.into_iter();
+    while let Some(arg) = it.next() {
+        if let Some(v) = value_flag(&arg, &mut it, &["--profile", "-p"]) {
+            profile = Some(v);
+            continue;
+        }
+        if let Some(v) = value_flag(&arg, &mut it, &["--manifest"]) {
+            manifest_path = Some(v);
+            continue;
+        }
+        match arg.as_str() {
+            "--fixed" => {
+                fixed = true;
+                continue;
+            }
+            "-h" | "--help" => {
+                println!(
+                    "usage: prova watch <topology> [--fixed] [--profile NAME] [--manifest PATH]\n\
+                     \n\
+                     stand up a topology and re-provision it whenever its definition files change,\n\
+                     holding until Ctrl-C. A live dev loop over the same definition your tests use.\n\
+                     \n\
+                     --fixed  keep endpoints on canonical ports so they stay stable across re-applies."
+                );
+                return ExitCode::SUCCESS;
+            }
+            other if other.starts_with('-') => {
+                eprintln!("prova watch: unknown flag {other}");
+                return ExitCode::from(2);
+            }
+            other if name.is_none() => name = Some(other.to_string()),
+            other => {
+                eprintln!("prova watch: unexpected argument {other:?} (expected one topology name)");
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    let Some(name) = name else {
+        eprintln!("usage: prova watch <topology>");
+        return ExitCode::from(2);
+    };
+
+    let TopologyRun {
+        files, config, ..
+    } = match build_topology_run("watch", &name, profile, manifest_path, fixed) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+
+    eprintln!("prova: watching topology {name:?} (Ctrl-C to stop)…");
+    let result = prova_core::watch(
+        &files,
+        &name,
+        &config,
+        |endpoints, reapply| {
+            if reapply {
+                println!("\n  change detected — re-applied:");
+            }
+            print_endpoints(&name, endpoints);
+            println!("\n  watching — edit the definition to re-apply, Ctrl-C to tear down");
+        },
+        |err| {
+            eprintln!("\n  prova watch: provisioning failed — fix the definition to retry:\n    {err}");
+        },
+    );
+    match result {
+        Ok(()) => {
+            println!("\n  torn down.");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("prova watch: {err}");
+            ExitCode::from(2)
+        }
+    }
+}
+
 /// Locate the prova project home from `--manifest` or by walking up from the current directory.
 fn resolve_home(manifest_path: Option<&str>) -> Result<Home, ExitCode> {
     match manifest_path {
@@ -378,7 +505,7 @@ fn print_endpoints(name: &str, endpoints: &[prova_core::Endpoint]) {
 /// process group (stdio → a log file), wait for it to self-register (confirming it's up), print the
 /// endpoints, and return, leaving it running. `prova down` stops it.
 fn start_subcommand(args: Vec<String>) -> ExitCode {
-    let (name, manifest_path, profile) = match parse_topology_args("start", args) {
+    let (name, manifest_path, profile, fixed) = match parse_topology_args("start", args) {
         Ok(v) => v,
         Err(code) => return code,
     };
@@ -413,6 +540,9 @@ fn start_subcommand(args: Vec<String>) -> ExitCode {
     let log = runstate::log_path(&home, &name);
     let mut cmd = Command::new(exe);
     cmd.arg("up").arg(&name);
+    if fixed {
+        cmd.arg("--fixed");
+    }
     if let Some(m) = &manifest_path {
         cmd.arg("--manifest").arg(m);
     }
@@ -484,7 +614,7 @@ fn start_subcommand(args: Vec<String>) -> ExitCode {
 /// runs the same in-process teardown an attached Ctrl-C would. Idempotent: a missing or stale record
 /// is not an error.
 fn down_subcommand(args: Vec<String>) -> ExitCode {
-    let (name, manifest_path, _profile) = match parse_topology_args("down", args) {
+    let (name, manifest_path, _profile, _fixed) = match parse_topology_args("down", args) {
         Ok(v) => v,
         Err(code) => return code,
     };
@@ -575,14 +705,17 @@ fn ps_subcommand(args: Vec<String>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Parse `<topology> [--profile NAME] [--manifest PATH]` for the `start`/`down` verbs.
+/// Parse `<topology> [--fixed] [--profile NAME] [--manifest PATH]` for the `start`/`down` verbs.
+/// The `fixed` flag is meaningful only for `start` (forwarded to the detached `prova up`); `down`
+/// accepts and ignores it so the two verbs share one parser.
 fn parse_topology_args(
     verb: &str,
     args: Vec<String>,
-) -> Result<(String, Option<String>, Option<String>), ExitCode> {
+) -> Result<(String, Option<String>, Option<String>, bool), ExitCode> {
     let mut name: Option<String> = None;
     let mut profile: Option<String> = None;
     let mut manifest_path: Option<String> = None;
+    let mut fixed = false;
     let mut it = args.into_iter();
     while let Some(arg) = it.next() {
         if let Some(v) = value_flag(&arg, &mut it, &["--profile", "-p"]) {
@@ -594,8 +727,14 @@ fn parse_topology_args(
             continue;
         }
         match arg.as_str() {
+            "--fixed" => {
+                fixed = true;
+                continue;
+            }
             "-h" | "--help" => {
-                println!("usage: prova {verb} <topology> [--profile NAME] [--manifest PATH]");
+                println!(
+                    "usage: prova {verb} <topology> [--fixed] [--profile NAME] [--manifest PATH]"
+                );
                 return Err(ExitCode::SUCCESS);
             }
             other if other.starts_with('-') => {
@@ -612,7 +751,7 @@ fn parse_topology_args(
         }
     }
     match name {
-        Some(n) => Ok((n, manifest_path, profile)),
+        Some(n) => Ok((n, manifest_path, profile, fixed)),
         None => {
             eprintln!("usage: prova {verb} <topology>");
             Err(ExitCode::from(2))

@@ -1,6 +1,6 @@
-# `examples/topology/` — one definition, three verbs
+# `examples/topology/` — one definition, many verbs
 
-A single `prova.topology("orders", …)` — a seeded Postgres wired with a Redis — consumed three ways.
+A single `prova.topology("orders", …)` — a seeded Postgres wired with a Redis — consumed many ways.
 The point: **your tests and your dev environment are the same description, so they cannot drift.**
 
 Run from this directory (`cd examples/topology`); requires Docker.
@@ -32,6 +32,33 @@ Stands up the same topology, prints each resource's endpoint, and holds until Ct
 
 Now connect to the very database your tests use — `psql "postgres://prova:prova@127.0.0.1:54982/orders"`
 or `redis-cli -p 54981` — and develop against it. Ctrl-C reaps everything.
+
+Ports are **random by default** (so you can stand up several topologies at once without collisions).
+For a stable, predictable address, add `--fixed` to pin each resource to its canonical port:
+
+```
+prova up orders --fixed
+```
+
+```
+  orders — up:
+    cache  redis://127.0.0.1:6379
+    db     postgres://prova:prova@127.0.0.1:5432/orders
+```
+
+Same definition — the *verb* chooses the port strategy. Only one fixed instance of a port can run at
+a time.
+
+## Watch it (dev loop)
+
+```
+prova watch orders --fixed
+```
+
+Stands the topology up and **re-applies whenever you edit the definition** — tear down, re-provision
+from the fresh definition, re-print endpoints — holding until Ctrl-C. With `--fixed`, the endpoints
+stay put across re-applies, so your app's config never changes. A live dev loop over the exact
+description your tests assert against.
 
 ## Inhabit it (detached)
 

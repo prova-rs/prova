@@ -231,6 +231,22 @@ function prova.containerized(spec)
   end
   assert(primary, "prova.containerized: spec needs a `port` (or `ports`)")
 
+  -- Port mode (set by the verb): tests and `prova up` default to random host ports (parallel-safe,
+  -- collision-free). `prova up --fixed` sets `prova.ports == "fixed"`, which pins each *random* entry
+  -- to its canonical container port so external tools connect on a predictable address. Entries the
+  -- author already fixed (`{ container, host }`) are left exactly as written.
+  if prova.ports == "fixed" then
+    local pinned = {}
+    for i, p in ipairs(ports) do
+      if type(p) == "number" then
+        pinned[i] = { container = p, host = p }
+      else
+        pinned[i] = p
+      end
+    end
+    ports = pinned
+  end
+
   local ns = { client = spec.client }
 
   function ns.container(ctx, opts)

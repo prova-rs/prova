@@ -109,13 +109,38 @@ test scope; `prova up orders` instantiates the identical object under a held env
   a real Postgres container (survives `start` returning; reaped by `down`) and a no-docker CLI
   integration test proving the detached child runs teardown on `down`.
 
+## Port modes — external reachability (done)
+
+The definition is written once; the **verb** picks the port strategy, so the seam stays clean:
+
+1. **Testing** — random host ports (parallel-safe). `prova` / `prova test`.
+2. **Inhabited, random** — `prova up`/`start` provision on random host ports and print each endpoint,
+   so many topologies coexist without collisions.
+3. **Inhabited, fixed** — `prova up`/`start --fixed` pin each published port to its canonical container
+   port, giving a predictable address real external tools connect to, and letting an advertised-listener
+   resource (Kafka) compute its listener because the host port is known up front.
+
+Mechanism: `RunConfig::ports: PortMode` (`Auto`/`Fixed`), exposed to Lua as `prova.ports`
+(`"auto"`/`"fixed"`). `prova.containerized` upgrades random ports to fixed bindings under `--fixed`,
+leaving author-declared `{ container, host }` entries as-is. Verified live: `up --fixed` binds and is
+reachable on `5432`/`6379`; default `up` uses random ports. This settles the **external reachability**
+question for the common case; the Kafka advertised-listener recipe is a plugin-side follow-up that
+now has the core signal it needs.
+
+## `prova watch` — the inhabited dev loop (done)
+
+`prova watch <name>` stands the topology up, prints its endpoints, and re-provisions whenever the
+definition files change — the Tilt-ish live loop, over the *same* definition the tests use. Each pass
+builds a fresh Lua state so edits take effect; a failed edit is reported and the loop waits for the fix
+rather than exiting. Dependency-free mtime polling with a short settle (one save → one re-apply);
+attached-only, pair with `--fixed` for endpoints stable across re-applies. `up` and `watch` share the
+provisioning path (`load_topology`/`provision`), so there is one definition-to-resources route, not two.
+
 ## Remaining work (bounded, and named)
 
-- **External reachability.** An inhabited environment's endpoints must be reachable by real external
-  tools, not just in-container `exec`. This makes the **fixed-host-port** capability (surfaced by the
-  kafka plugin: advertised listeners need a fixed port) load-bearing, where in test-only mode the
-  exec client could dodge it via container-internal ports.
-- **`prova watch`** — the re-apply loop (Tilt-ish); further out.
+- **Per-resource addressing** — whole-topology addressing across the verbs is done; standing up or
+  referencing an *individual* resource (`prova up orders.db`) is speculative, likely a non-goal.
+- **Advertised-listener recipe (Kafka)** — plugin-side follow-up; the core port-mode signal is in place.
 
 ## The discipline this imposes now
 

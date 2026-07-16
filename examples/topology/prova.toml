@@ -1,6 +1,9 @@
 # A topology — ONE definition, MULTIPLE consumers. From this directory:
-#   prova                 run the tests against the `orders` topology
+#   prova                 run the tests against the `orders` topology (random ports, parallel-safe)
 #   prova up orders       stand it up, print endpoints, hold until Ctrl-C (psql / redis-cli into it)
+#   prova up orders --fixed   same, but on canonical ports (postgres 5432, redis 6379) for a fixed,
+#                             external-tool-friendly address — one fixed instance at a time
+#   prova watch orders    stand it up and re-apply on every edit to the definition (dev loop)
 #   prova start orders    stand it up detached; then `prova ps` and `prova down orders`
 # Pin released tags (`@v0.2.1`) in production; `@main` tracks latest for a demo.
 [run]
