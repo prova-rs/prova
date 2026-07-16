@@ -7,3 +7,5 @@
 # example's home dir). The annotations/ dir self-ignores; the .luarc.json pointer does not.
 examples/**/.luarc.json
 examples/**/annotations/
+# Held-topology run-state from `prova up`/`start` in the examples (self-ignores too).
+examples/**/running/
