@@ -32,7 +32,7 @@
 //! the capability modules (`shell`, `fs`) live in `modules.rs`.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -249,10 +249,30 @@ impl UserData for ScopeRef {
 /// Build the `Scope` global — the typed scope constants.
 fn make_scope_global(lua: &Lua) -> mlua::Result<Table> {
     let t = lua.create_table()?;
-    t.set("Test", ScopeRef { kind: ScopeKind::Test })?;
-    t.set("Flow", ScopeRef { kind: ScopeKind::Flow })?;
-    t.set("File", ScopeRef { kind: ScopeKind::File })?;
-    t.set("Suite", ScopeRef { kind: ScopeKind::Suite })?;
+    t.set(
+        "Test",
+        ScopeRef {
+            kind: ScopeKind::Test,
+        },
+    )?;
+    t.set(
+        "Flow",
+        ScopeRef {
+            kind: ScopeKind::Flow,
+        },
+    )?;
+    t.set(
+        "File",
+        ScopeRef {
+            kind: ScopeKind::File,
+        },
+    )?;
+    t.set(
+        "Suite",
+        ScopeRef {
+            kind: ScopeKind::Suite,
+        },
+    )?;
     Ok(t)
 }
 
@@ -390,6 +410,10 @@ struct Node {
 struct Collector {
     nodes: Vec<Node>,
     fixtures: Vec<FixtureDef>,
+    /// Named topologies (`prova.topology`) → their fixture id, so `prova up <name>` can address a
+    /// whole environment by name. A topology is a fixture that is *also* addressable by the `up`/
+    /// `start` verbs; in test mode it is used exactly like any other fixture (`t:use(handle)`).
+    topologies: BTreeMap<String, usize>,
     /// The stack of ambient parents for *bare* top-level declarations (`prova.test`/`test_each`/
     /// `group`/`flow`). `prova.describe` pushes its labeling group so bare declarations inside its
     /// body nest under it (dynamic scoping); everything pops back to the file root (index 0).
@@ -413,6 +437,7 @@ impl Collector {
                 file: 0,
             }],
             fixtures: vec![],
+            topologies: BTreeMap::new(),
             parent_stack: vec![0],
             current_file: 0,
         }
@@ -1092,13 +1117,24 @@ fn unrendered_markers(root: &Path) -> Vec<String> {
         if let Ok(contents) = std::fs::read_to_string(path) {
             if let Some(idx) = first_marker(&contents) {
                 let line = contents[..idx].matches('\n').count() + 1;
-                let snippet: String = contents[idx..].lines().next().unwrap_or("").trim().chars().take(60).collect();
+                let snippet: String = contents[idx..]
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .chars()
+                    .take(60)
+                    .collect();
                 out.push(format!("{}:{line}: {snippet}", rel.display()));
             }
         }
     };
     if root.is_file() {
-        scan_file(root, Path::new(root.file_name().unwrap_or_default()), &mut out);
+        scan_file(
+            root,
+            Path::new(root.file_name().unwrap_or_default()),
+            &mut out,
+        );
         return out;
     }
     let mut stack = vec![root.to_path_buf()];
@@ -1264,6 +1300,45 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
             })?,
         )?;
     }
+    {
+        // prova.topology(name, [scope,] factory) — a named, verb-agnostic bundle of wired resources.
+        // It is a fixture (default `Scope.File`, so it is provisioned once and shared across a file's
+        // tests) that is *also* addressable by name: `prova up <name>` / `prova start <name>` stand up
+        // the identical object outside any test. In test mode it is used like any fixture:
+        // `t:use(env)`. Same definition, different terminal verb — tests and dev-env cannot drift.
+        let col = col.clone();
+        prova.set(
+            "topology",
+            lua.create_function(move |lua, (name, a, b): (String, Value, Value)| {
+                let (scope, factory) = match (a, b) {
+                    (Value::Function(f), Value::Nil) => (ScopeKind::File, f),
+                    (scope_val, Value::Function(f)) => (parse_scope(scope_val)?, f),
+                    _ => {
+                        return Err(mlua::Error::RuntimeError(
+                            "topology(name, [scope,] factory)".into(),
+                        ))
+                    }
+                };
+                let id = {
+                    let mut c = col.borrow_mut();
+                    if c.topologies.contains_key(&name) {
+                        return Err(mlua::Error::RuntimeError(format!(
+                            "topology {name:?} is already defined"
+                        )));
+                    }
+                    let id = c.fixtures.len();
+                    c.fixtures.push(FixtureDef {
+                        name: name.clone(),
+                        scope,
+                        factory,
+                    });
+                    c.topologies.insert(name, id);
+                    id
+                };
+                lua.create_userdata(FixtureHandle { id })
+            })?,
+        )?;
+    }
 
     prova.set(
         "sleep",
@@ -1307,8 +1382,9 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
                     Err(e) => last_err = Some(e.to_string()),
                 }
                 if Instant::now() >= deadline {
-                    let base = message
-                        .unwrap_or_else(|| format!("prova.retry: condition not met within {timeout:?}"));
+                    let base = message.unwrap_or_else(|| {
+                        format!("prova.retry: condition not met within {timeout:?}")
+                    });
                     return Err(mlua::Error::RuntimeError(match last_err {
                         Some(e) => format!("{base} (last error: {e})"),
                         None => base,
@@ -1431,10 +1507,20 @@ impl UserData for GroupBuilder {
 
         // Label-only subgrouping: structurally a nested group whose builder body nests explicitly
         // via `g:test`/etc. (inside a group you use the builder, so no ambient stack is needed here).
-        methods.add_method("describe", |lua, this, (label, body): (String, Function)| {
-            register_group(lua, &this.col, this.ix, label, Value::Function(body), Value::Nil)?;
-            Ok(())
-        });
+        methods.add_method(
+            "describe",
+            |lua, this, (label, body): (String, Function)| {
+                register_group(
+                    lua,
+                    &this.col,
+                    this.ix,
+                    label,
+                    Value::Function(body),
+                    Value::Nil,
+                )?;
+                Ok(())
+            },
+        );
     }
 }
 
@@ -2090,8 +2176,7 @@ fn binary_on_path(name: &str) -> bool {
         );
     }
 
-    std::env::split_paths(&path)
-        .any(|dir| candidates.iter().any(|file| dir.join(file).is_file()))
+    std::env::split_paths(&path).any(|dir| candidates.iter().any(|file| dir.join(file).is_file()))
 }
 
 struct NodeResult {
@@ -2540,6 +2625,152 @@ fn execute_collected(
     Ok(summary)
 }
 
+// ---------------------------------------------------------------------------------------------
+// `prova up` — stand up a named topology and hold it (the same definition tests use)
+// ---------------------------------------------------------------------------------------------
+
+/// A resource endpoint reported by `prova up` — a topology field name and its connect URL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Endpoint {
+    pub name: String,
+    pub url: String,
+}
+
+/// Stand up the topology named `name` from `files`, report its endpoints via `on_ready`, and hold it
+/// running until a shutdown signal (SIGINT / SIGTERM), then tear it down. The files are loaded into
+/// one Lua state (so a topology may live in a setup file or any test file). `on_ready` is called once,
+/// after provisioning succeeds, with the resources' endpoints — the caller prints them and records any
+/// run state. Returns after teardown completes (or immediately with an error if provisioning fails,
+/// having still torn down any partial resources).
+pub fn up(
+    files: &[PathBuf],
+    name: &str,
+    config: &RunConfig,
+    on_ready: impl FnOnce(&[Endpoint]),
+) -> mlua::Result<()> {
+    let (lua, col) = build_lua("up".to_string(), config)?;
+    for file in files {
+        let code = std::fs::read_to_string(file).map_err(|e| {
+            mlua::Error::RuntimeError(format!("cannot read {}: {e}", file.display()))
+        })?;
+        lua.load(&code).set_name(file.to_string_lossy()).exec()?;
+    }
+
+    let id = {
+        let c = col.borrow();
+        match c.topologies.get(name) {
+            Some(id) => *id,
+            None => {
+                let hint = if c.topologies.is_empty() {
+                    "no topologies are defined (declare one with prova.topology(name, fn))"
+                        .to_string()
+                } else {
+                    let avail: Vec<&str> = c.topologies.keys().map(String::as_str).collect();
+                    format!("available: {}", avail.join(", "))
+                };
+                return Err(mlua::Error::RuntimeError(format!(
+                    "no topology named {name:?} ({hint})"
+                )));
+            }
+        }
+    };
+
+    let state = Rc::new(RunState {
+        defs: col.borrow().fixtures.clone(),
+        suite: Rc::new(RefCell::new(ScopeState::default())),
+        files: RefCell::new(HashMap::new()),
+    });
+
+    let rt = new_runtime()?;
+    rt.block_on(async {
+        let result = provision_and_hold(&lua, &state, id, name, on_ready).await;
+        // Always tear down whatever got provisioned — a clean signal, or a mid-provision failure.
+        teardown_file_scopes(&state).await;
+        teardown_scope(&state.suite).await;
+        result
+    })
+}
+
+/// Instantiate the topology under a held `Scope.File`, report its endpoints, and block until a
+/// shutdown signal. Separated so `up` can run teardown unconditionally afterward — even if the factory
+/// raises mid-provision, the File scope already holds teardowns for whatever came up.
+async fn provision_and_hold(
+    lua: &Lua,
+    state: &Rc<RunState>,
+    id: usize,
+    topo_name: &str,
+    on_ready: impl FnOnce(&[Endpoint]),
+) -> mlua::Result<()> {
+    let file0 = state.file_scope(0);
+    let ctx = Ctx {
+        run: Rc::new(RefCell::new(TestRun::default())),
+        state: state.clone(),
+        test_scope: file0.clone(), // no test scope in `up`; the File scope stands in for `manage`
+        file_scope: file0,
+        flow_scope: None,
+        own_scope: ScopeKind::File,
+        case: None,
+    };
+    let handle = lua.create_userdata(FixtureHandle { id })?;
+    let value = resolve_use(lua, &ctx, Value::UserData(handle)).await?;
+    let endpoints = extract_endpoints(&value, topo_name);
+    on_ready(&endpoints);
+    wait_for_shutdown().await;
+    Ok(())
+}
+
+/// Walk a topology's returned value for connect strings. Each field whose value is a table with a
+/// string `url` becomes an endpoint (`db → postgres://…`); a top-level `url` (a single-resource
+/// topology) is reported under the topology's own name.
+fn extract_endpoints(value: &Value, topo_name: &str) -> Vec<Endpoint> {
+    let mut out = Vec::new();
+    if let Value::Table(t) = value {
+        if let Ok(Value::String(u)) = t.get::<Value>("url") {
+            out.push(Endpoint {
+                name: topo_name.to_string(),
+                url: u.to_string_lossy().to_string(),
+            });
+        }
+        for pair in t.pairs::<Value, Value>() {
+            let Ok((Value::String(key), Value::Table(rt))) = pair else {
+                continue;
+            };
+            if let Ok(Value::String(u)) = rt.get::<Value>("url") {
+                out.push(Endpoint {
+                    name: key.to_string_lossy().to_string(),
+                    url: u.to_string_lossy().to_string(),
+                });
+            }
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+/// Block until the user (Ctrl-C / SIGINT) or a supervisor (`prova down`, via SIGTERM) asks to shut
+/// down. Handling SIGTERM here is what lets the detached `start`/`down` layer tear an environment down.
+async fn wait_for_shutdown() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => {}
+                }
+            }
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
 /// An empty labeling `Group` node (a file-group). `file`/parent are set by `add`.
 fn group_node(name: String) -> Node {
     Node {
@@ -2649,4 +2880,52 @@ pub fn inspect_plugin(path: &Path, config: &RunConfig) -> mlua::Result<PluginRep
         PluginShape::Resource
     });
     Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_endpoints_walks_named_resources_sorted() {
+        let lua = Lua::new();
+        let t = lua.create_table().unwrap();
+        let db = lua.create_table().unwrap();
+        db.set("url", "postgres://u1").unwrap();
+        let app = lua.create_table().unwrap();
+        app.set("url", "http://u2").unwrap();
+        t.set("db", db).unwrap();
+        t.set("app", app).unwrap();
+        t.set("note", "not-a-resource").unwrap(); // non-table field is ignored
+
+        let eps = extract_endpoints(&Value::Table(t), "topo");
+        assert_eq!(
+            eps,
+            vec![
+                Endpoint {
+                    name: "app".into(),
+                    url: "http://u2".into()
+                },
+                Endpoint {
+                    name: "db".into(),
+                    url: "postgres://u1".into()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn extract_endpoints_reports_a_top_level_url_under_the_topology_name() {
+        let lua = Lua::new();
+        let single = lua.create_table().unwrap();
+        single.set("url", "amqp://only").unwrap();
+        let eps = extract_endpoints(&Value::Table(single), "solo");
+        assert_eq!(
+            eps,
+            vec![Endpoint {
+                name: "solo".into(),
+                url: "amqp://only".into()
+            }]
+        );
+    }
 }

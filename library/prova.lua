@@ -275,6 +275,19 @@ prova = {}
 ---@return prova.Fixture<T>
 function prova.fixture(name, scope, factory, opts) end
 
+---Declare a **topology**: a named, verb-agnostic bundle of wired resources. It is a fixture (default
+---`Scope.File` — provisioned once, shared across a file's tests) that is *also* addressable by name:
+---`prova up <name>` and `prova start <name>` stand up the identical object outside any test, printing
+---each resource's `url`. In test mode use it exactly like any fixture — `t:use(handle)`. One
+---definition powers both your tests and your dev environment, so they cannot drift.
+---@generic T
+---@overload fun(name: string, factory: fun(ctx: prova.Context): T): prova.Fixture<T>
+---@param name string
+---@param scope prova.ScopeRef
+---@param factory fun(ctx: prova.Context): T
+---@return prova.Fixture<T>
+function prova.topology(name, scope, factory) end
+
 --- An opaque fixture-scope value — a member of the `Scope` global.
 ---@class prova.ScopeRef
 ---@field scope string   # the scope name ("test"|"flow"|"file"|"suite")

@@ -33,6 +33,7 @@ usage:
   prova <file-or-dir>...    run the given files/dirs
   prova                     run the suite declared in prova.toml (found by walking up)
   prova init                scaffold prova.toml + LuaLS IDE support in this project
+  prova up <topology>       stand up a topology and hold it until Ctrl-C
   prova plugin lint <f>...  check plugin files against the namespacing grammar
 
 options:
@@ -85,6 +86,10 @@ fn main() -> ExitCode {
         Some("init") => {
             raw.next();
             return init::run(raw.collect());
+        }
+        Some("up") => {
+            raw.next();
+            return up_subcommand(raw.collect());
         }
         _ => {}
     }
@@ -157,6 +162,151 @@ fn plugin_subcommand(args: Vec<String>) -> ExitCode {
         }
         None => {
             eprintln!("usage: prova plugin lint <file>...");
+            ExitCode::from(2)
+        }
+    }
+}
+
+/// `prova up <topology>` — stand up a named topology (the same definition tests use) and hold it
+/// running until Ctrl-C, printing each resource's endpoint. Discovers the topology in the manifest's
+/// test files, resolves declared plugins, and hands off to the engine's held-execution mode.
+fn up_subcommand(args: Vec<String>) -> ExitCode {
+    let mut name: Option<String> = None;
+    let mut profile: Option<String> = None;
+    let mut manifest_path: Option<String> = None;
+
+    let mut it = args.into_iter();
+    while let Some(arg) = it.next() {
+        if let Some(v) = value_flag(&arg, &mut it, &["--profile", "-p"]) {
+            profile = Some(v);
+            continue;
+        }
+        if let Some(v) = value_flag(&arg, &mut it, &["--manifest"]) {
+            manifest_path = Some(v);
+            continue;
+        }
+        match arg.as_str() {
+            "-h" | "--help" => {
+                println!(
+                    "usage: prova up <topology> [--profile NAME] [--manifest PATH]\n\
+                     \n\
+                     stand up a topology (declared with prova.topology) and hold it running until\n\
+                     Ctrl-C, printing each resource's endpoint."
+                );
+                return ExitCode::SUCCESS;
+            }
+            other if other.starts_with('-') => {
+                eprintln!("prova up: unknown flag {other}");
+                return ExitCode::from(2);
+            }
+            other if name.is_none() => name = Some(other.to_string()),
+            other => {
+                eprintln!("prova up: unexpected argument {other:?} (expected one topology name)");
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    let Some(name) = name else {
+        eprintln!("usage: prova up <topology>");
+        return ExitCode::from(2);
+    };
+
+    let layout = match XdgSystemLayout::new() {
+        Ok(l) => l,
+        Err(err) => {
+            eprintln!("prova: cannot determine home directories: {err}");
+            return ExitCode::from(2);
+        }
+    };
+
+    // Locate the project (the manifest tells us where topologies + plugins live).
+    let home = match &manifest_path {
+        Some(p) => home::from_manifest_path(Path::new(p)),
+        None => {
+            match home::find(Path::new(".")) {
+                Ok(Some(h)) => h,
+                Ok(None) => {
+                    eprintln!("prova up: no prova.toml found (a topology is declared in a project's files)");
+                    return ExitCode::from(2);
+                }
+                Err(e) => {
+                    eprintln!("prova: {e}");
+                    return ExitCode::from(2);
+                }
+            }
+        }
+    };
+
+    let run = match resolve_from_manifest(&home, profile, None, None, &layout) {
+        Ok(r) => r,
+        Err(code) => return code,
+    };
+
+    // Gather every file that could declare a topology: the run paths plus any explicit suites.
+    let mut files: Vec<PathBuf> = Vec::new();
+    let mut discover = |rel: &str| -> Result<(), ExitCode> {
+        match discover_files(&home.dir.join(rel)) {
+            Ok(found) => {
+                files.extend(found);
+                Ok(())
+            }
+            Err(err) => {
+                eprintln!("prova up: {rel}: {err}");
+                Err(ExitCode::from(2))
+            }
+        }
+    };
+    for p in &run.paths {
+        if let Err(code) = discover(p) {
+            return code;
+        }
+    }
+    for decl in run.suites.values() {
+        for p in &decl.paths {
+            if let Err(code) = discover(p) {
+                return code;
+            }
+        }
+    }
+    files.sort();
+    files.dedup();
+    if files.is_empty() {
+        eprintln!("prova up: no files found to search for topologies");
+        return ExitCode::from(2);
+    }
+
+    // Build the engine config with the declared plugins (so the topology's `require(...)` resolves).
+    let mut config = RunConfig::new(1)
+        .with_module(prova_archetect::install)
+        .with_plugin_root(layout.plugins_dir());
+    for (n, path) in &run.plugins.named {
+        config = config.with_named_plugin(n.clone(), path.clone());
+    }
+    for (canonical, dir) in &run.plugins.namespaces {
+        config = config.with_plugin_namespace(canonical.clone(), dir.clone());
+    }
+
+    eprintln!("prova: standing up topology {name:?}…");
+    let result = prova_core::up(&files, &name, &config, |endpoints| {
+        println!("\n  {name} — up:");
+        if endpoints.is_empty() {
+            println!("    (no endpoints — a resource exposes a `url` field to appear here)");
+        } else {
+            let w = endpoints.iter().map(|e| e.name.len()).max().unwrap_or(0);
+            for e in endpoints {
+                println!("    {:<w$}  {}", e.name, e.url);
+            }
+        }
+        println!("\n  holding — Ctrl-C to tear down");
+    });
+    match result {
+        Ok(()) => {
+            println!("\n  torn down.");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("prova up: {err}");
             ExitCode::from(2)
         }
     }

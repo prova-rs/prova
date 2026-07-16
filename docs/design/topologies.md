@@ -88,17 +88,29 @@ test scope; `prova up orders` instantiates the identical object under a held env
 - **Teardown** — the scope machinery already reaps `ctx:manage`d resources; `up` triggers it on signal
   instead of at scope-end.
 
-## Honest remaining work (bounded, and named)
+## Status
 
-- **A held execution mode** (`prova up`): provision the topology, report endpoints, block until signal,
-  tear down. Plus, later, **detach + `prova down <name>`**, which needs a little state to track what is
-  running.
+- **`prova.topology(name, [scope,] fn)`** — **done.** A named, verb-agnostic fixture (default
+  `Scope.File`), registered so verbs can address it by name. In test mode it is used exactly like any
+  fixture (`t:use(handle)`).
+- **`prova up <name>` (attached)** — **done.** Loads the manifest's files, provisions the named
+  topology under a held File scope, prints each resource's `url`, and blocks until **SIGINT or
+  SIGTERM**, then runs the existing `ctx:manage` teardown. Verified with a real Postgres container
+  (endpoint on a live host port; container reaped on Ctrl-C). SIGTERM is handled now precisely so the
+  detached layer below can drive teardown with no new teardown code.
+
+## Remaining work (bounded, and named)
+
+- **Detached mode** (`prova start` / `prova down` / `prova ps`) — a thin **supervisor over attached
+  `prova up`**: `start` spawns `prova up <name>` detached (own process group, stdio → log), which
+  self-registers a state file (pid + endpoints); `down` reads it and `SIGTERM`s the pid, so the child
+  runs the *same* in-process teardown. One provisioning path, one teardown path — no resource-inventory
+  tracking, no survive-process-exit container semantics.
 - **External reachability.** An inhabited environment's endpoints must be reachable by real external
   tools, not just in-container `exec`. This makes the **fixed-host-port** capability (surfaced by the
   kafka plugin: advertised listeners need a fixed port) load-bearing, where in test-only mode the
   exec client could dodge it via container-internal ports.
-- **Topology addressing** — how `up` names and selects a topology to stand up (by the topology's name;
-  a file may define several).
+- **`prova watch`** — the re-apply loop (Tilt-ish); further out.
 
 ## The discipline this imposes now
 
