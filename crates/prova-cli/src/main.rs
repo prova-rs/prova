@@ -16,10 +16,12 @@ mod home;
 mod init;
 mod manifest;
 mod plugins;
+mod runstate;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
+use std::time::{Duration, Instant};
 
 use home::Home;
 use manifest::{Manage, Manifest, SuiteDecl};
@@ -34,6 +36,9 @@ usage:
   prova                     run the suite declared in prova.toml (found by walking up)
   prova init                scaffold prova.toml + LuaLS IDE support in this project
   prova up <topology>       stand up a topology and hold it until Ctrl-C
+  prova start <topology>    stand up a topology detached (returns; use `down` to stop)
+  prova down <topology>     tear down a detached topology
+  prova ps                  list running topologies
   prova plugin lint <f>...  check plugin files against the namespacing grammar
 
 options:
@@ -90,6 +95,18 @@ fn main() -> ExitCode {
         Some("up") => {
             raw.next();
             return up_subcommand(raw.collect());
+        }
+        Some("start") => {
+            raw.next();
+            return start_subcommand(raw.collect());
+        }
+        Some("down") => {
+            raw.next();
+            return down_subcommand(raw.collect());
+        }
+        Some("ps") => {
+            raw.next();
+            return ps_subcommand(raw.collect());
         }
         _ => {}
     }
@@ -221,22 +238,23 @@ fn up_subcommand(args: Vec<String>) -> ExitCode {
     };
 
     // Locate the project (the manifest tells us where topologies + plugins live).
-    let home = match &manifest_path {
-        Some(p) => home::from_manifest_path(Path::new(p)),
-        None => {
-            match home::find(Path::new(".")) {
-                Ok(Some(h)) => h,
-                Ok(None) => {
-                    eprintln!("prova up: no prova.toml found (a topology is declared in a project's files)");
-                    return ExitCode::from(2);
-                }
-                Err(e) => {
-                    eprintln!("prova: {e}");
-                    return ExitCode::from(2);
-                }
-            }
-        }
+    let home = match resolve_home(manifest_path.as_deref()) {
+        Ok(h) => h,
+        Err(code) => return code,
     };
+
+    // Refuse to double-provision: if a live record for this name exists, it is already up. A stale
+    // record (the holder is gone) is cleared and we proceed.
+    if let Some(rec) = runstate::read(&home, &name) {
+        if runstate::is_alive(rec.pid) {
+            eprintln!(
+                "prova up: topology {name:?} is already up (pid {})",
+                rec.pid
+            );
+            return ExitCode::from(2);
+        }
+        runstate::remove(&home, &name);
+    }
 
     let run = match resolve_from_manifest(&home, profile, None, None, &layout) {
         Ok(r) => r,
@@ -288,18 +306,31 @@ fn up_subcommand(args: Vec<String>) -> ExitCode {
     }
 
     eprintln!("prova: standing up topology {name:?}…");
+    // Self-register run-state once provisioned, so `prova down`/`ps` can supervise this holder (the
+    // same for an attached `up` here and the detached child a `prova start` spawns).
+    let state_home = home.clone();
+    let state_name = name.clone();
     let result = prova_core::up(&files, &name, &config, |endpoints| {
-        println!("\n  {name} — up:");
-        if endpoints.is_empty() {
-            println!("    (no endpoints — a resource exposes a `url` field to appear here)");
-        } else {
-            let w = endpoints.iter().map(|e| e.name.len()).max().unwrap_or(0);
-            for e in endpoints {
-                println!("    {:<w$}  {}", e.name, e.url);
-            }
+        let record = runstate::Record {
+            name: state_name.clone(),
+            pid: std::process::id(),
+            started_at: runstate::now_secs(),
+            endpoints: endpoints
+                .iter()
+                .map(|e| runstate::Endpoint {
+                    name: e.name.clone(),
+                    url: e.url.clone(),
+                })
+                .collect(),
+        };
+        if let Err(e) = runstate::write(&state_home, &record) {
+            eprintln!("prova up: could not record run-state: {e}");
         }
+        print_endpoints(&state_name, endpoints);
         println!("\n  holding — Ctrl-C to tear down");
     });
+    // Clean teardown completed (or provisioning failed) — drop our record.
+    runstate::remove(&home, &name);
     match result {
         Ok(()) => {
             println!("\n  torn down.");
@@ -308,6 +339,283 @@ fn up_subcommand(args: Vec<String>) -> ExitCode {
         Err(err) => {
             eprintln!("prova up: {err}");
             ExitCode::from(2)
+        }
+    }
+}
+
+/// Locate the prova project home from `--manifest` or by walking up from the current directory.
+fn resolve_home(manifest_path: Option<&str>) -> Result<Home, ExitCode> {
+    match manifest_path {
+        Some(p) => Ok(home::from_manifest_path(Path::new(p))),
+        None => match home::find(Path::new(".")) {
+            Ok(Some(h)) => Ok(h),
+            Ok(None) => {
+                eprintln!("prova: no prova.toml found in this directory or any parent");
+                Err(ExitCode::from(2))
+            }
+            Err(e) => {
+                eprintln!("prova: {e}");
+                Err(ExitCode::from(2))
+            }
+        },
+    }
+}
+
+/// Print a topology's endpoints as an aligned `name → url` block.
+fn print_endpoints(name: &str, endpoints: &[prova_core::Endpoint]) {
+    println!("\n  {name} — up:");
+    if endpoints.is_empty() {
+        println!("    (no endpoints — a resource exposes a `url` field to appear here)");
+    } else {
+        let w = endpoints.iter().map(|e| e.name.len()).max().unwrap_or(0);
+        for e in endpoints {
+            println!("    {:<w$}  {}", e.name, e.url);
+        }
+    }
+}
+
+/// `prova start <topology>` — stand up a topology **detached**: spawn `prova up <topology>` in its own
+/// process group (stdio → a log file), wait for it to self-register (confirming it's up), print the
+/// endpoints, and return, leaving it running. `prova down` stops it.
+fn start_subcommand(args: Vec<String>) -> ExitCode {
+    let (name, manifest_path, profile) = match parse_topology_args("start", args) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+
+    let home = match resolve_home(manifest_path.as_deref()) {
+        Ok(h) => h,
+        Err(code) => return code,
+    };
+
+    if let Some(rec) = runstate::read(&home, &name) {
+        if runstate::is_alive(rec.pid) {
+            eprintln!(
+                "prova start: topology {name:?} is already up (pid {})",
+                rec.pid
+            );
+            return ExitCode::from(2);
+        }
+        runstate::remove(&home, &name);
+    }
+    if let Err(e) = runstate::dir(&home) {
+        eprintln!("prova start: cannot create run-state dir: {e}");
+        return ExitCode::from(2);
+    }
+
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("prova start: cannot find the prova executable: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let log = runstate::log_path(&home, &name);
+    let mut cmd = Command::new(exe);
+    cmd.arg("up").arg(&name);
+    if let Some(m) = &manifest_path {
+        cmd.arg("--manifest").arg(m);
+    }
+    if let Some(p) = &profile {
+        cmd.arg("--profile").arg(p);
+    }
+    if let Err(e) = runstate::detach(&mut cmd, &log) {
+        eprintln!("prova start: cannot open log {}: {e}", log.display());
+        return ExitCode::from(2);
+    }
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("prova start: cannot spawn `prova up`: {e}");
+            return ExitCode::from(2);
+        }
+    };
+
+    eprintln!("prova: starting topology {name:?} (detached)…");
+    // Poll until the child self-registers (up) or exits (failed). Provisioning can be slow (image
+    // pulls, first-boot restarts), so allow a generous window.
+    let deadline = Instant::now() + Duration::from_secs(300);
+    loop {
+        if let Some(rec) = runstate::read(&home, &name) {
+            let eps: Vec<prova_core::Endpoint> = rec
+                .endpoints
+                .iter()
+                .map(|e| prova_core::Endpoint {
+                    name: e.name.clone(),
+                    url: e.url.clone(),
+                })
+                .collect();
+            print_endpoints(&name, &eps);
+            println!(
+                "\n  started (pid {}) — `prova down {name}` to stop, `prova ps` to list",
+                rec.pid
+            );
+            return ExitCode::SUCCESS;
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                eprintln!(
+                    "prova start: topology {name:?} failed to come up (child exited: {status})"
+                );
+                let tail = runstate::log_tail(&home, &name, 20);
+                if !tail.trim().is_empty() {
+                    eprintln!("--- {name} log (tail) ---\n{tail}");
+                }
+                runstate::remove(&home, &name);
+                return ExitCode::from(2);
+            }
+            Ok(None) => {}
+            Err(e) => {
+                eprintln!("prova start: lost track of the child process: {e}");
+                return ExitCode::from(2);
+            }
+        }
+        if Instant::now() >= deadline {
+            eprintln!("prova start: topology {name:?} did not come up within 300s; stopping it");
+            let _ = child.kill();
+            runstate::remove(&home, &name);
+            return ExitCode::from(2);
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// `prova down <topology>` — tear down a detached topology by signalling its holder (SIGTERM), which
+/// runs the same in-process teardown an attached Ctrl-C would. Idempotent: a missing or stale record
+/// is not an error.
+fn down_subcommand(args: Vec<String>) -> ExitCode {
+    let (name, manifest_path, _profile) = match parse_topology_args("down", args) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    let home = match resolve_home(manifest_path.as_deref()) {
+        Ok(h) => h,
+        Err(code) => return code,
+    };
+
+    let Some(rec) = runstate::read(&home, &name) else {
+        println!("topology {name:?} is not running");
+        return ExitCode::SUCCESS;
+    };
+
+    if !runstate::is_alive(rec.pid) {
+        runstate::remove(&home, &name);
+        println!("topology {name:?} was not running (stale record cleaned)");
+        return ExitCode::SUCCESS;
+    }
+
+    eprintln!("prova: tearing down topology {name:?} (pid {})…", rec.pid);
+    runstate::terminate(rec.pid);
+    // The holder runs its teardown, then removes its own record and exits — wait for it to be gone.
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while runstate::is_alive(rec.pid) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    if runstate::is_alive(rec.pid) {
+        eprintln!(
+            "prova down: {name:?} (pid {}) did not exit within 120s",
+            rec.pid
+        );
+        runstate::remove(&home, &name);
+        return ExitCode::from(2);
+    }
+    runstate::remove(&home, &name);
+    println!("torn down {name}.");
+    ExitCode::SUCCESS
+}
+
+/// `prova ps` — list this project's running topologies and their endpoints. Stale records (holder
+/// gone) are reported once and cleaned up.
+fn ps_subcommand(args: Vec<String>) -> ExitCode {
+    // `ps` takes only an optional --manifest.
+    let mut manifest_path: Option<String> = None;
+    let mut it = args.into_iter();
+    while let Some(arg) = it.next() {
+        if let Some(v) = value_flag(&arg, &mut it, &["--manifest"]) {
+            manifest_path = Some(v);
+            continue;
+        }
+        match arg.as_str() {
+            "-h" | "--help" => {
+                println!("usage: prova ps [--manifest PATH]");
+                return ExitCode::SUCCESS;
+            }
+            other => {
+                eprintln!("prova ps: unexpected argument {other:?}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let home = match resolve_home(manifest_path.as_deref()) {
+        Ok(h) => h,
+        Err(code) => return code,
+    };
+
+    let records = runstate::list(&home);
+    if records.is_empty() {
+        println!("no topologies running");
+        return ExitCode::SUCCESS;
+    }
+    let now = runstate::now_secs();
+    for rec in &records {
+        let alive = runstate::is_alive(rec.pid);
+        if !alive {
+            runstate::remove(&home, &rec.name);
+        }
+        let status = if alive { "running" } else { "stale" };
+        let uptime = now.saturating_sub(rec.started_at);
+        println!(
+            "{}  [{}]  pid {}  up {}s",
+            rec.name, status, rec.pid, uptime
+        );
+        for e in &rec.endpoints {
+            println!("    {}  {}", e.name, e.url);
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+/// Parse `<topology> [--profile NAME] [--manifest PATH]` for the `start`/`down` verbs.
+fn parse_topology_args(
+    verb: &str,
+    args: Vec<String>,
+) -> Result<(String, Option<String>, Option<String>), ExitCode> {
+    let mut name: Option<String> = None;
+    let mut profile: Option<String> = None;
+    let mut manifest_path: Option<String> = None;
+    let mut it = args.into_iter();
+    while let Some(arg) = it.next() {
+        if let Some(v) = value_flag(&arg, &mut it, &["--profile", "-p"]) {
+            profile = Some(v);
+            continue;
+        }
+        if let Some(v) = value_flag(&arg, &mut it, &["--manifest"]) {
+            manifest_path = Some(v);
+            continue;
+        }
+        match arg.as_str() {
+            "-h" | "--help" => {
+                println!("usage: prova {verb} <topology> [--profile NAME] [--manifest PATH]");
+                return Err(ExitCode::SUCCESS);
+            }
+            other if other.starts_with('-') => {
+                eprintln!("prova {verb}: unknown flag {other}");
+                return Err(ExitCode::from(2));
+            }
+            other if name.is_none() => name = Some(other.to_string()),
+            other => {
+                eprintln!(
+                    "prova {verb}: unexpected argument {other:?} (expected one topology name)"
+                );
+                return Err(ExitCode::from(2));
+            }
+        }
+    }
+    match name {
+        Some(n) => Ok((n, manifest_path, profile)),
+        None => {
+            eprintln!("usage: prova {verb} <topology>");
+            Err(ExitCode::from(2))
         }
     }
 }
