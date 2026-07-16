@@ -38,6 +38,10 @@ usage:
   prova <file-or-dir>...    run the given files/dirs
   prova                     run the suite declared in prova.toml (found by walking up)
   prova init                scaffold prova.toml + LuaLS IDE support in this project
+  prova eval '<code>'       run a one-shot Lua snippet in the full prova environment and print
+                            the returned value (`-` reads the snippet from stdin)
+  prova skill               print the agent skill (how to drive Prova); --install writes it
+                            to .claude/skills/prova/SKILL.md at the project root
   prova up <topology>       stand up a topology and hold it until Ctrl-C (--fixed for canonical ports)
   prova watch <topology>    stand up a topology and re-apply on definition change (dev loop)
   prova start <topology>    stand up a topology detached (returns; use `down` to stop)
@@ -96,9 +100,17 @@ fn main() -> ExitCode {
             raw.next();
             return plugin_subcommand(raw.collect());
         }
+        Some("skill") => {
+            raw.next();
+            return skill_subcommand(raw.collect());
+        }
         Some("init") => {
             raw.next();
             return init::run(raw.collect());
+        }
+        Some("eval") => {
+            raw.next();
+            return eval_subcommand(raw.collect());
         }
         Some("up") => {
             raw.next();
@@ -193,6 +205,162 @@ fn plugin_subcommand(args: Vec<String>) -> ExitCode {
             eprintln!("usage: prova plugin lint <file>...");
             ExitCode::from(2)
         }
+    }
+}
+
+/// `prova eval '<code>'` — run a one-shot Lua snippet in the FULL prova environment (built-in
+/// modules, manifest-declared plugins via `require`, a real transient `ctx`) and print the returned
+/// value. Goes through the same manifest/home/plugins resolution as the run path, so
+/// `require("postgres")` works from a project directory; without a manifest it still runs with the
+/// built-ins. Exit 0 on success, 1 if the snippet raises, 2 on usage errors.
+fn eval_subcommand(args: Vec<String>) -> ExitCode {
+    let mut code: Option<String> = None;
+    let mut profile: Option<String> = None;
+    let mut manifest_path: Option<String> = None;
+    let mut cli_plugins: Vec<String> = Vec::new();
+    let mut force_json = false;
+
+    let mut it = args.into_iter();
+    while let Some(arg) = it.next() {
+        if let Some(v) = value_flag(&arg, &mut it, &["--profile", "-p"]) {
+            profile = Some(v);
+            continue;
+        }
+        if let Some(v) = value_flag(&arg, &mut it, &["--manifest"]) {
+            manifest_path = Some(v);
+            continue;
+        }
+        if let Some(v) = value_flag(&arg, &mut it, &["--plugin", "-P"]) {
+            cli_plugins.push(v);
+            continue;
+        }
+        if let Some(v) = value_flag(&arg, &mut it, &["--format"]) {
+            match v.as_str() {
+                "json" => force_json = true,
+                "console" => {}
+                other => {
+                    eprintln!("prova eval: unknown format {other:?} (expected console|json)");
+                    return ExitCode::from(2);
+                }
+            }
+            continue;
+        }
+        match arg.as_str() {
+            "--json" => force_json = true,
+            "-h" | "--help" => {
+                println!(
+                    "usage: prova eval '<lua code>' [--format json] [--profile NAME] [--manifest PATH] [-P name=source]\n\
+                     \n\
+                     run a one-shot Lua snippet in the full prova environment — built-in modules\n\
+                     (fs, shell, docker, http, …), manifest-declared plugins via require(), and a\n\
+                     real transient `ctx` (anything it provisions is torn down afterwards) — then\n\
+                     print the returned value and exit.\n\
+                     \n\
+                     the snippet may be a bare expression (`1 + 1`) or statements with an explicit\n\
+                     `return`. pass `-` to read the snippet from stdin.\n\
+                     \n\
+                     examples:\n\
+                     \x20 prova eval 'return 1 + 1'\n\
+                     \x20 prova eval 'return fs.exists(\"Cargo.toml\")'\n\
+                     \x20 prova eval 'local db = require(\"postgres\").container(ctx); return db.url'"
+                );
+                return ExitCode::SUCCESS;
+            }
+            "-" if code.is_none() => {
+                use std::io::Read;
+                let mut buf = String::new();
+                if let Err(e) = std::io::stdin().read_to_string(&mut buf) {
+                    eprintln!("prova eval: cannot read snippet from stdin: {e}");
+                    return ExitCode::from(2);
+                }
+                code = Some(buf);
+            }
+            other if other.starts_with('-') && other.len() > 1 => {
+                eprintln!("prova eval: unknown flag {other}");
+                return ExitCode::from(2);
+            }
+            other if code.is_none() => code = Some(other.to_string()),
+            other => {
+                eprintln!("prova eval: unexpected argument {other:?} (expected one snippet)");
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    let Some(code) = code else {
+        eprintln!("usage: prova eval '<lua code>'   (or `prova eval -` to read the snippet from stdin)");
+        return ExitCode::from(2);
+    };
+    if code.trim().is_empty() {
+        eprintln!("prova eval: the snippet is empty");
+        return ExitCode::from(2);
+    }
+
+    let layout = match XdgSystemLayout::new() {
+        Ok(layout) => layout,
+        Err(err) => {
+            eprintln!("prova: cannot determine home directories: {err}");
+            return ExitCode::from(2);
+        }
+    };
+
+    // Same home/manifest resolution as the run path — but a missing manifest is fine here: the
+    // snippet then runs with just the built-ins (no manifest-declared plugins).
+    let home: Option<Home> = if let Some(path) = &manifest_path {
+        Some(home::from_manifest_path(Path::new(path)))
+    } else {
+        match home::find(Path::new(".")) {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("prova: {e}");
+                return ExitCode::from(2);
+            }
+        }
+    };
+    let (mut plugins_resolved, sources) = match &home {
+        Some(home) => match resolve_from_manifest(home, profile, None, None, &layout) {
+            Ok(r) => (r.plugins, r.sources),
+            Err(code) => return code,
+        },
+        None => (plugins::ResolvedPlugins::default(), BTreeMap::new()),
+    };
+    if let Err(code) = layer_cli_plugins(&cli_plugins, &layout, &sources, &mut plugins_resolved) {
+        return code;
+    }
+    let config = engine_config(1, &layout, &plugins_resolved);
+
+    match prova_core::eval_snippet(&code, &config) {
+        Ok(value) => {
+            print_eval_value(&value, force_json);
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("prova eval: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Print an eval result: scalars plainly (a string without quotes, so the value is shell-friendly),
+/// nothing for null, pretty JSON for tables/arrays. `--format json` forces JSON for everything.
+fn print_eval_value(value: &serde_json::Value, force_json: bool) {
+    use serde_json::Value as J;
+    if force_json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(value).unwrap_or_else(|_| "null".into())
+        );
+        return;
+    }
+    match value {
+        J::Null => {}
+        J::Bool(b) => println!("{b}"),
+        J::Number(n) => println!("{n}"),
+        J::String(s) => println!("{s}"),
+        other => println!(
+            "{}",
+            serde_json::to_string_pretty(other).unwrap_or_else(|_| "null".into())
+        ),
     }
 }
 
@@ -368,20 +536,11 @@ fn build_topology_run(
     // Build the engine config with the declared plugins (so the topology's `require(...)` resolves).
     // `--fixed` pins ports for external reachability; the default is random (like tests), so several
     // topologies can be inhabited at once without colliding.
-    let mut config = RunConfig::new(1)
-        .with_ports(if fixed {
-            PortMode::Fixed
-        } else {
-            PortMode::Auto
-        })
-        .with_module(prova_archetect::install)
-        .with_plugin_root(layout.plugins_dir());
-    for (n, path) in &run.plugins.named {
-        config = config.with_named_plugin(n.clone(), path.clone());
-    }
-    for (canonical, dir) in &run.plugins.namespaces {
-        config = config.with_plugin_namespace(canonical.clone(), dir.clone());
-    }
+    let config = engine_config(1, &layout, &run.plugins).with_ports(if fixed {
+        PortMode::Fixed
+    } else {
+        PortMode::Auto
+    });
 
     Ok(TopologyRun {
         home,
@@ -943,33 +1102,8 @@ fn run(cli_args: Vec<String>) -> ExitCode {
 
     // Ad-hoc `--plugin name=source` entries (e.g. CI-only extras) resolve the same way as manifest
     // plugins and layer on top, overriding a manifest plugin of the same name.
-    if !cli_plugins.is_empty() {
-        let mut adhoc: BTreeMap<String, manifest::PluginSource> = BTreeMap::new();
-        for entry in &cli_plugins {
-            match entry.split_once('=') {
-                Some((name, source)) if !name.is_empty() && !source.is_empty() => {
-                    adhoc.insert(
-                        name.to_string(),
-                        manifest::PluginSource::Path(source.to_string()),
-                    );
-                }
-                _ => {
-                    eprintln!("prova: --plugin expects name=source, got {entry:?}");
-                    return ExitCode::from(2);
-                }
-            }
-        }
-        match plugins::resolve_plugins(&adhoc, Path::new("."), &layout, &sources, PROVA_VERSION) {
-            Ok(resolved) => {
-                plugins_resolved.named.extend(resolved.named);
-                plugins_resolved.namespaces.extend(resolved.namespaces);
-                plugins_resolved.roots.extend(resolved.roots);
-            }
-            Err(e) => {
-                eprintln!("prova: {e}");
-                return ExitCode::from(2);
-            }
-        }
+    if let Err(code) = layer_cli_plugins(&cli_plugins, &layout, &sources, &mut plugins_resolved) {
+        return code;
     }
 
     // Build the suites to run: first any explicit `[suites.*]` from the manifest (each groups its
@@ -1013,16 +1147,8 @@ fn run(cli_args: Vec<String>) -> ExitCode {
 
     // The standalone `prova` binary ships the archetect plugin, so `archetect.render{...}` works.
     // The plugin searcher consults the global install dir plus any manifest-declared plugins.
-    let mut config = RunConfig::new(jobs)
-        .with_update_snapshots(update_snapshots)
-        .with_module(prova_archetect::install)
-        .with_plugin_root(layout.plugins_dir());
-    for (name, path) in &plugins_resolved.named {
-        config = config.with_named_plugin(name.clone(), path.clone());
-    }
-    for (canonical, dir) in &plugins_resolved.namespaces {
-        config = config.with_plugin_namespace(canonical.clone(), dir.clone());
-    }
+    let mut config =
+        engine_config(jobs, &layout, &plugins_resolved).with_update_snapshots(update_snapshots);
 
     // `--last-failed`: fold the previous run's failed node paths into the selection as exact nodes.
     if last_failed {
@@ -1198,6 +1324,67 @@ fn report_annotations(outcome: &annotations::Outcome) {
     }
 }
 
+/// Build the engine `RunConfig` every verb shares: the bundled archetect module, the global plugin
+/// install root, and each resolved named plugin/namespace (so `require(...)` resolves identically
+/// in `run`, `up`/`watch`, and `eval`). Callers layer verb-specific knobs (ports, snapshots,
+/// selection) on top.
+fn engine_config(
+    jobs: usize,
+    layout: &dyn SystemLayout,
+    plugins_resolved: &plugins::ResolvedPlugins,
+) -> RunConfig {
+    let mut config = RunConfig::new(jobs)
+        .with_module(prova_archetect::install)
+        .with_plugin_root(layout.plugins_dir());
+    for (name, path) in &plugins_resolved.named {
+        config = config.with_named_plugin(name.clone(), path.clone());
+    }
+    for (canonical, dir) in &plugins_resolved.namespaces {
+        config = config.with_plugin_namespace(canonical.clone(), dir.clone());
+    }
+    config
+}
+
+/// Resolve ad-hoc `--plugin name=source` entries the same way manifest plugins resolve and layer
+/// them over `plugins_resolved` (CLI wins over a manifest plugin of the same name).
+fn layer_cli_plugins(
+    cli_plugins: &[String],
+    layout: &dyn SystemLayout,
+    sources: &BTreeMap<String, String>,
+    plugins_resolved: &mut plugins::ResolvedPlugins,
+) -> Result<(), ExitCode> {
+    if cli_plugins.is_empty() {
+        return Ok(());
+    }
+    let mut adhoc: BTreeMap<String, manifest::PluginSource> = BTreeMap::new();
+    for entry in cli_plugins {
+        match entry.split_once('=') {
+            Some((name, source)) if !name.is_empty() && !source.is_empty() => {
+                adhoc.insert(
+                    name.to_string(),
+                    manifest::PluginSource::Path(source.to_string()),
+                );
+            }
+            _ => {
+                eprintln!("prova: --plugin expects name=source, got {entry:?}");
+                return Err(ExitCode::from(2));
+            }
+        }
+    }
+    match plugins::resolve_plugins(&adhoc, Path::new("."), layout, sources, PROVA_VERSION) {
+        Ok(resolved) => {
+            plugins_resolved.named.extend(resolved.named);
+            plugins_resolved.namespaces.extend(resolved.namespaces);
+            plugins_resolved.roots.extend(resolved.roots);
+        }
+        Err(e) => {
+            eprintln!("prova: {e}");
+            return Err(ExitCode::from(2));
+        }
+    }
+    Ok(())
+}
+
 /// Read the home's `prova.toml`, overlay `--profile`, apply env, merge CLI overrides, and resolve
 /// declared plugins (fetching git sources into the cache). All paths remain manifest-relative (the
 /// caller joins them to the home dir). Returns the resolved run or an exit code on error.
@@ -1352,4 +1539,34 @@ fn store_last_failed(home: &Option<home::Home>, failed: &[String]) {
     if let Ok(text) = serde_json::to_string_pretty(failed) {
         let _ = std::fs::write(path, text);
     }
+}
+
+
+/// The embedded agent skill — versioned with the binary so it can never drift from the features.
+const SKILL: &str = include_str!("skill.md");
+
+/// `prova skill` prints the skill; `prova skill --install` writes it into the project's
+/// `.claude/skills/prova/SKILL.md` (next to the manifest's project root) so the repo carries it.
+fn skill_subcommand(args: Vec<String>) -> ExitCode {
+    let install = args.iter().any(|a| a == "--install");
+    if let Some(bad) = args.iter().find(|a| *a != "--install") {
+        eprintln!("prova: skill: unknown argument {bad:?} (expected --install or nothing)");
+        return ExitCode::from(2);
+    }
+    if !install {
+        print!("{SKILL}");
+        return ExitCode::SUCCESS;
+    }
+    let root = match home::find(&std::env::current_dir().unwrap_or_default()) {
+        Ok(Some(h)) => h.root,
+        _ => std::env::current_dir().unwrap_or_default(),
+    };
+    let dir = root.join(".claude/skills/prova");
+    let path = dir.join("SKILL.md");
+    if let Err(err) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, SKILL)) {
+        eprintln!("prova: skill: could not write {}: {err}", path.display());
+        return ExitCode::from(2);
+    }
+    println!("wrote {}", path.display());
+    ExitCode::SUCCESS
 }

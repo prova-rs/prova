@@ -758,7 +758,15 @@ async fn resolve_use(lua: &Lua, this: &Ctx, target: Value) -> mlua::Result<Value
         }
     };
 
-    let def = this.state.defs[id].clone();
+    // `get` (not indexing): an eval snippet can mint a handle *after* the run state was built
+    // (fixtures registered mid-snippet), so an unknown id must be an error, not a panic.
+    let def = this.state.defs.get(id).cloned().ok_or_else(|| {
+        mlua::Error::RuntimeError(
+            "fixture is not registered in this run (in `prova eval`, a fixture declared inside \
+             the snippet cannot be used via ctx:use — call its factory directly)"
+                .into(),
+        )
+    })?;
 
     // Scope compatibility: a fixture may only use fixtures of equal-or-broader scope.
     if def.scope.rank() < this.own_scope.rank() {
@@ -3074,6 +3082,126 @@ fn execute_collected(
         summary.duration = started.elapsed();
     });
     Ok(summary)
+}
+
+// ---------------------------------------------------------------------------------------------
+// `prova eval` — a one-shot snippet in the full environment
+// ---------------------------------------------------------------------------------------------
+
+/// Run a one-shot Lua snippet in the full prova environment — built-in modules (`shell`, `fs`,
+/// `docker`, …), host modules, and manifest-declared plugins via `require` — with a global `ctx`
+/// backed by a real transient scope, then convert the returned value to JSON for the caller.
+///
+/// The snippet may be an expression or statements: it is first compiled as `return (<code>)` (so
+/// `1 + 1` works bare), falling back to the raw source (multi-statement snippets write their own
+/// `return`). It runs via the async call path inside the per-run Tokio runtime, so async
+/// functions (a plugin's `container()`, `shell.run`, `prova.sleep`) work exactly as they do in
+/// tests. Everything `ctx:defer`/`ctx:manage` registered is torn down — success *or* error —
+/// inside that same runtime before this returns, so provisioned resources never outlive the eval.
+pub fn eval_snippet(code: &str, config: &RunConfig) -> mlua::Result<serde_json::Value> {
+    let (lua, col) = build_lua("eval".to_string(), config)?;
+
+    // Prefer the expression wrapping; fall back to raw statements. The newline before `)` keeps a
+    // trailing `-- comment` in the snippet from swallowing the wrapper's close paren.
+    let chunk = match lua
+        .load(format!("return ({code}\n)"))
+        .set_name("eval")
+        .into_function()
+    {
+        Ok(f) => f,
+        Err(_) => lua.load(code).set_name("eval").into_function()?,
+    };
+
+    // One transient scope for the whole eval: a File-scope context, exactly like `prova up`'s
+    // provisioner (no test scope exists here; the File scope stands in for `defer`/`manage`).
+    let state = Rc::new(RunState {
+        defs: col.borrow().fixtures.clone(),
+        suite: Rc::new(RefCell::new(ScopeState::default())),
+        files: RefCell::new(HashMap::new()),
+        file_paths: Vec::new(),
+        update_snapshots: false,
+        snapshot_registry: None,
+    });
+    let file0 = state.file_scope(0);
+    let ctx = Ctx {
+        run: Rc::new(RefCell::new(TestRun::default())),
+        state: state.clone(),
+        test_scope: file0.clone(),
+        file_scope: file0,
+        flow_scope: None,
+        own_scope: ScopeKind::File,
+        case: None,
+    };
+    lua.globals().set("ctx", lua.create_userdata(ctx)?)?;
+
+    let rt = new_runtime()?;
+    let value = rt.block_on(async {
+        let outcome = chunk.call_async::<Value>(()).await;
+        // Tear the transient scope down inside the same runtime, success OR error (mirroring
+        // execute_collected), so whatever the snippet provisioned is reaped before we return.
+        teardown_file_scopes(&state).await;
+        teardown_scope(&state.suite).await;
+        outcome
+    })?;
+    Ok(eval_value_to_json(&lua, &value, 0))
+}
+
+/// Convert an eval result to JSON, defensively: primitives map directly, tables become arrays
+/// (pure sequences) or objects, and anything without a JSON form — userdata, functions, threads,
+/// non-finite numbers — degrades to its `tostring()` string. The eval already succeeded; reporting
+/// its value must never raise or panic.
+fn eval_value_to_json(lua: &Lua, v: &Value, depth: usize) -> serde_json::Value {
+    use serde_json::Value as J;
+    if depth > 64 {
+        return J::String("<table nested too deeply (or cyclic)>".into());
+    }
+    match v {
+        Value::Nil => J::Null,
+        Value::Boolean(b) => J::Bool(*b),
+        Value::Integer(i) => J::Number((*i).into()),
+        Value::Number(n) => serde_json::Number::from_f64(*n)
+            .map(J::Number)
+            .unwrap_or_else(|| J::String(n.to_string())), // NaN/±inf have no JSON number form
+        Value::String(s) => J::String(s.to_string_lossy().to_string()),
+        Value::Table(t) => {
+            let len = t.raw_len();
+            let pairs: Vec<(Value, Value)> = t
+                .clone()
+                .pairs::<Value, Value>()
+                .filter_map(|p| p.ok())
+                .collect();
+            // A pure sequence (keys are exactly 1..#t) is a JSON array; anything else an object.
+            if len > 0 && pairs.len() == len {
+                J::Array(
+                    (1..=len)
+                        .map(|i| {
+                            let item = t.raw_get::<Value>(i).unwrap_or(Value::Nil);
+                            eval_value_to_json(lua, &item, depth + 1)
+                        })
+                        .collect(),
+                )
+            } else {
+                let mut map = serde_json::Map::new();
+                for (k, val) in pairs {
+                    let key = match &k {
+                        Value::String(s) => s.to_string_lossy().to_string(),
+                        other => eval_tostring(lua, other),
+                    };
+                    map.insert(key, eval_value_to_json(lua, &val, depth + 1));
+                }
+                J::Object(map)
+            }
+        }
+        other => J::String(eval_tostring(lua, other)),
+    }
+}
+
+/// `tostring(v)` through Lua (honors `__tostring`), with a typename fallback if even that raises.
+fn eval_tostring(lua: &Lua, v: &Value) -> String {
+    lua.globals()
+        .get::<Function>("tostring")
+        .and_then(|f| f.call::<String>(v.clone()))
+        .unwrap_or_else(|_| format!("<{}>", v.type_name()))
 }
 
 // ---------------------------------------------------------------------------------------------
