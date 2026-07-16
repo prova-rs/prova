@@ -151,8 +151,17 @@ against locally is byte-identical to the one CI enforces** — that is the point
 
 ## Driving Prova
 
-Today Prova is a CLI: everything above is `prova <verb>` via your shell. An MCP mode (server-held
-warm topologies, `run`/`eval`/`up` as tools, this document as its instructions) is designed and
-coming — when connected, tools mirror the CLI one-to-one and **everything else is identical**.
+Two transports, one contract: as a CLI, run `prova <verb>`; as an MCP server (`prova mcp`, stdio),
+call tools. Tools mirror the CLI one-to-one and **everything else is identical**:
+
+| MCP tool | CLI equivalent |
+|---|---|
+| `run { keywords?, keyword_excludes?, tags?, tag_excludes?, nodes?, last_failed?, profile?, jobs? }` | `prova -k … --tags … --node … --last-failed --profile … --jobs …` |
+| `list { same selection fields }` | `prova --list` (same flags) |
+| `eval { code }` | `prova eval '<code>'` |
+
+The server resolves the manifest and plugins from its working directory exactly like the CLI,
+serves this document as its `instructions`, and returns compact JSON results. Warm topology tools
+(`up`/`down`, `run { topology }`) are the next phase.
 
 Full reference: https://prova-rs.github.io (source: https://github.com/prova-rs/prova)

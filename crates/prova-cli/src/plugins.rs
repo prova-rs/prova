@@ -19,7 +19,7 @@ use crate::manifest::{PluginDetail, PluginSource};
 /// The fully-resolved plugin set to hand to the engine: `named` maps each consumer require-name to
 /// its entry file; `namespaces` maps each plugin's canonical name to its root dir (for intra-plugin
 /// `require`s).
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct ResolvedPlugins {
     pub named: BTreeMap<String, PathBuf>,
     pub namespaces: BTreeMap<String, PathBuf>,

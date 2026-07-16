@@ -77,7 +77,7 @@ describes, so it can never drift), delivered three ways:
 
 1. `prova skill` — prints to stdout. An agent session ingests it with `! prova skill`.
 2. **MCP `instructions`** — served on connect; MCP agents "just know" without any command.
-3. `prova init --skill` — writes `.claude/skills/prova/SKILL.md` so repos carry it durably.
+3. `prova skill --install` — writes `.claude/skills/prova/SKILL.md` so repos carry it durably.
 
 Structure (universal-first, transport notes last — avoiding duplicated skills):
 

@@ -17,6 +17,7 @@ mod annotations;
 mod home;
 mod init;
 mod manifest;
+mod mcp;
 mod plugins;
 mod runstate;
 
@@ -42,6 +43,7 @@ usage:
                             the returned value (`-` reads the snippet from stdin)
   prova skill               print the agent skill (how to drive Prova); --install writes it
                             to .claude/skills/prova/SKILL.md at the project root
+  prova mcp                 serve an MCP stdio server whose tools mirror the CLI (run, list, eval)
   prova up <topology>       stand up a topology and hold it until Ctrl-C (--fixed for canonical ports)
   prova watch <topology>    stand up a topology and re-apply on definition change (dev loop)
   prova start <topology>    stand up a topology detached (returns; use `down` to stop)
@@ -111,6 +113,10 @@ fn main() -> ExitCode {
         Some("eval") => {
             raw.next();
             return eval_subcommand(raw.collect());
+        }
+        Some("mcp") => {
+            raw.next();
+            return mcp::run(raw.collect());
         }
         Some("up") => {
             raw.next();
@@ -1106,40 +1112,14 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         return code;
     }
 
-    // Build the suites to run: first any explicit `[suites.*]` from the manifest (each groups its
-    // discovered files under one name + optional setup), then the plain paths — a directory with a
-    // `suite.lua` is one suite (files share a state → shared `Scope.Suite`), every other file a
-    // singleton. `--jobs` parallelizes across suites.
-    let mut suites: Vec<Suite> = Vec::new();
-    for (name, decl) in &declared {
-        let mut files = Vec::new();
-        for p in &decl.paths {
-            match discover_files(&base_dir.join(p)) {
-                Ok(found) => files.extend(found),
-                Err(err) => {
-                    eprintln!("prova: suite {name:?}: {p}: {err}");
-                    return ExitCode::from(2);
-                }
-            }
+    // Build the suites to run (declared `[suites.*]` first, then the plain paths).
+    let suites = match collect_suites(&base_dir, &declared, &paths) {
+        Ok(suites) => suites,
+        Err(msg) => {
+            eprintln!("prova: {msg}");
+            return ExitCode::from(2);
         }
-        files.sort();
-        if !files.is_empty() {
-            suites.push(Suite {
-                name: name.clone(),
-                setup: decl.setup.as_ref().map(|s| base_dir.join(s)),
-                files,
-            });
-        }
-    }
-    for arg in &paths {
-        match discover_suites(&base_dir.join(arg)) {
-            Ok(found) => suites.extend(found),
-            Err(err) => {
-                eprintln!("prova: {arg}: {err}");
-                return ExitCode::from(2);
-            }
-        }
-    }
+    };
     if suites.is_empty() {
         eprintln!("prova: no test files found (looked for *_test.lua / *.test.lua)");
         return ExitCode::from(2);
@@ -1322,6 +1302,39 @@ fn report_annotations(outcome: &annotations::Outcome) {
     if outcome.luarc_hint {
         eprintln!("prova: IDE annotations ready — run `prova init` to point .luarc.json at them");
     }
+}
+
+/// Build the suites a run executes: first any explicit `[suites.*]` from the manifest (each groups
+/// its discovered files under one name + optional setup), then the plain paths — a directory with a
+/// `suite.lua` is one suite (files share a state → shared `Scope.Suite`), every other file a
+/// singleton. Shared by the CLI run path and MCP mode so both consume one manifest the same way.
+fn collect_suites(
+    base_dir: &Path,
+    declared: &BTreeMap<String, SuiteDecl>,
+    paths: &[String],
+) -> Result<Vec<Suite>, String> {
+    let mut suites: Vec<Suite> = Vec::new();
+    for (name, decl) in declared {
+        let mut files = Vec::new();
+        for p in &decl.paths {
+            let found = discover_files(&base_dir.join(p))
+                .map_err(|err| format!("suite {name:?}: {p}: {err}"))?;
+            files.extend(found);
+        }
+        files.sort();
+        if !files.is_empty() {
+            suites.push(Suite {
+                name: name.clone(),
+                setup: decl.setup.as_ref().map(|s| base_dir.join(s)),
+                files,
+            });
+        }
+    }
+    for arg in paths {
+        let found = discover_suites(&base_dir.join(arg)).map_err(|err| format!("{arg}: {err}"))?;
+        suites.extend(found);
+    }
+    Ok(suites)
 }
 
 /// Build the engine `RunConfig` every verb shares: the bundled archetect module, the global plugin
