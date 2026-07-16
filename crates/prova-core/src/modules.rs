@@ -258,10 +258,13 @@ function prova.containerized(spec)
       image = image, ports = ports, env = env, command = spec.command, wait = wait,
     })
 
-    local url = spec.url(container:host_port(primary), opts)
-    local res = { url = url, container = container }
+    local hp = container:host_port(primary)
+    local url = spec.url(hp, opts)
+    -- The standard resource shape: client/url/container, plus the primary endpoint split out as
+    -- host/port so env wiring is `DbHost = res.host, DbPort = res.port` — no host_port() ceremony.
+    local res = { url = url, container = container, host = "127.0.0.1", port = hp }
     -- Extra resource fields beyond the trio (e.g. s3 credentials): `spec.extra(url, opts, container)`
-    -- returns a table merged into the result. The trio (`client`/`url`/`container`) is reserved.
+    -- returns a table merged into the result. The reserved names are `client`/`url`/`container`/`host`/`port`.
     if type(spec.extra) == "function" then
       for k, v in pairs(spec.extra(url, opts, container)) do
         if k ~= "client" and k ~= "url" and k ~= "container" then res[k] = v end
