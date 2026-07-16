@@ -209,7 +209,12 @@ exactly the "batteries-included, no capability ceilings" pitch. Implemented in `
 6. **`graphql` module** (same async-module shape as `http`/`grpc`).
 7. **Snapshots** — `matches_snapshot`, `.snap` files + `prova --update-snapshots` (stub exists).
 8. **Selectors** — tag expressions (`--tags`), `-k` name filter, `--last-failed`, sharding.
-9. **Reporters** — JUnit XML + TAP sinks (the `Reporter`/`MultiReporter` seam is ready).
+9. **Reporters — DONE.** JUnit XML (`--junit PATH`, a *file* sink that composes with any `--format`,
+   the CI lingua franca) and TAP (`--format tap`, a stdout stream) both landed as `Reporter`s over the
+   event seam. JUnit buffers cases and writes one `<testsuites>` doc on `RunFinished` — path split into
+   `classname`/`name`, XML-escaped, failure/skipped elements, valid XML (xmllint-checked). TAP streams
+   `TAP version 13` + `ok/not ok N` (with `# SKIP` directives and YAML failure diagnostics) + a trailing
+   `1..N` plan. *(`model.rs` `JUnitReporter`/`TapReporter` + 3 unit tests; verified live via the CLI.)*
 10. **Load executor — NON-GOAL (not on the roadmap).** The clean definition≠execution split means an
     alternate load driver *could* be dropped in over the same plan — but load/performance testing is
     an explicit non-goal (`foundations.md`: "stays with k6/Gatling… measure timing, not model load").

@@ -38,6 +38,27 @@ prova.test("--format json emits the JSONL event protocol", function(t)
   t:expect(r.stdout):contains('"outcome":"passed"')
 end)
 
+prova.test("--format tap emits the TAP protocol", function(t)
+  local r = run("--format tap " .. fixtures .. "/mixed.lua")
+  t:expect(r.code):equals(1)                              -- mixed has a failure
+  t:expect(r.stdout):contains("TAP version 13")
+  t:expect(r.stdout):contains("ok ")
+  t:expect(r.stdout):contains("not ok ")
+  t:expect(r.stdout):contains("1..")                      -- trailing plan
+end)
+
+prova.test("--junit writes a JUnit XML file alongside console output", function(t)
+  local out = fs.tempdir() .. "/results.xml"
+  local r = run("--junit " .. out .. " " .. fixtures .. "/mixed.lua")
+  t:expect(r.code):equals(1)
+  t:expect(r.stdout):contains("passed")                  -- console still prints
+  t:expect(fs.exists(out)):is_truthy()                   -- and the file is written
+  local xml = fs.read(out)
+  t:expect(xml):contains("<testsuites")
+  t:expect(xml):contains('failures="1"')
+  t:expect(xml):contains("<failure")
+end)
+
 prova.test("an unknown flag is a usage error (exit 2)", function(t)
   local r = run("--definitely-not-a-flag")
   t:expect(r.code):equals(2)

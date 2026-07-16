@@ -6,6 +6,8 @@
 //!   prova --profile ci               run the `ci` profile from ./prova.toml
 //!   prova --manifest path.toml       use a specific manifest
 //!   prova --format json <path>       stream JSONL events (machine/GUI protocol)
+//!   prova --format tap <path>        emit TAP (Test Anything Protocol) to stdout
+//!   prova --junit results.xml <path> also write a JUnit XML report (for CI dashboards)
 //!   prova --list <path>              discover tests without running them
 //!   prova --jobs N <path>            run up to N units concurrently (throughput only)
 //!
@@ -26,8 +28,9 @@ use std::time::{Duration, Instant};
 use home::Home;
 use manifest::{Manage, Manifest, SuiteDecl};
 use prova_core::{
-    discover_files, discover_path_with, discover_suites, run_suites, ConsoleReporter, JsonReporter,
-    MultiReporter, PortMode, Reporter, RunConfig, Suite, SystemLayout, XdgSystemLayout,
+    discover_files, discover_path_with, discover_suites, run_suites, ConsoleReporter, JUnitReporter,
+    JsonReporter, MultiReporter, PortMode, Reporter, RunConfig, Suite, SystemLayout, TapReporter,
+    XdgSystemLayout,
 };
 
 const HELP: &str = "\
@@ -45,7 +48,8 @@ usage:
 options:
   -p, --profile NAME        run a profile from the manifest
       --manifest PATH       use a specific manifest (default ./prova.toml)
-      --format console|json output format (--json is shorthand)
+      --format console|json|tap  output format (--json is shorthand)
+      --junit PATH          also write a JUnit XML report to PATH (for CI; composes with --format)
   -j, --jobs N              run up to N units concurrently
   -P, --plugin name=source  add an ad-hoc plugin (repeatable; layers over the manifest)
   -k PATTERN                select nodes whose path contains PATTERN (repeatable; !PAT excludes)
@@ -62,6 +66,7 @@ const PROVA_VERSION: &str = env!("CARGO_PKG_VERSION");
 enum Format {
     Console,
     Json,
+    Tap,
 }
 
 /// Match `--name value` / `--name=value` (and any aliases); returns the value if `arg` is one.
@@ -761,6 +766,7 @@ fn parse_topology_args(
 
 fn run(cli_args: Vec<String>) -> ExitCode {
     let mut cli_format: Option<Format> = None;
+    let mut cli_junit: Option<String> = None;
     let mut cli_jobs: Option<usize> = None;
     let mut list = false;
     let mut explicit_paths: Vec<String> = Vec::new();
@@ -824,11 +830,17 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             match v.as_str() {
                 "json" => cli_format = Some(Format::Json),
                 "console" => cli_format = Some(Format::Console),
+                "tap" => cli_format = Some(Format::Tap),
                 other => {
-                    eprintln!("prova: unknown format {other:?} (expected console|json)");
+                    eprintln!("prova: unknown format {other:?} (expected console|json|tap)");
                     return ExitCode::from(2);
                 }
             }
+            continue;
+        }
+        // `--junit PATH`: write a JUnit XML report to a file, alongside whatever --format prints.
+        if let Some(v) = value_flag(&arg, &mut args, &["--junit"]) {
+            cli_junit = Some(v);
             continue;
         }
         match arg.as_str() {
@@ -1033,15 +1045,25 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let inner: Box<dyn Reporter> = match format {
+    // The stdout sink chosen by --format, plus an optional JUnit XML *file* sink (--junit), fanned
+    // out through a MultiReporter so a CI run can print to the console and drop a results.xml at once.
+    let mut sinks: Vec<Box<dyn Reporter>> = vec![match format {
         Format::Console => Box::new(ConsoleReporter),
-        Format::Json => Box::new(MultiReporter::new(vec![Box::new(JsonReporter::new(
-            std::io::stdout(),
-        ))])),
-    };
+        Format::Json => Box::new(JsonReporter::new(std::io::stdout())),
+        Format::Tap => Box::new(TapReporter::new(std::io::stdout())),
+    }];
+    if let Some(path) = &cli_junit {
+        match std::fs::File::create(path) {
+            Ok(file) => sinks.push(Box::new(JUnitReporter::new(file, "prova"))),
+            Err(e) => {
+                eprintln!("prova: cannot open --junit file {path:?}: {e}");
+                return ExitCode::from(2);
+            }
+        }
+    }
     // Record failed node paths so the next `--last-failed` can re-run exactly them.
     let mut reporter = FailureRecorder {
-        inner,
+        inner: Box::new(MultiReporter::new(sinks)),
         failed: Vec::new(),
     };
 
@@ -1164,9 +1186,10 @@ fn resolve_from_manifest(
         Some(f) => f,
         None => match resolved.format.as_deref() {
             Some("json") => Format::Json,
+            Some("tap") => Format::Tap,
             None | Some("console") => Format::Console,
             Some(other) => {
-                eprintln!("prova: unknown format {other:?} in manifest (expected console|json)");
+                eprintln!("prova: unknown format {other:?} in manifest (expected console|json|tap)");
                 return Err(ExitCode::from(2));
             }
         },
