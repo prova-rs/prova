@@ -155,25 +155,26 @@ end)
 (The options-table form `{ scope=..., autouse=... }` is accepted anywhere the bare scope
 string is; the string is just sugar for `{ scope = "..." }`.)
 
-### Parametrized fixtures
+### Parametrization stays explicit (no parametrized fixtures)
 
-A fixture can be **parametrized**, producing one variant per parameter. Every test that
-uses it is multiplied across the variants (this is pytest's most powerful and most-copied
-feature):
+Prova deliberately has **no** parametrized fixtures (`ctx:param`). A fixture that silently multiplies
+the tests using it is pytest's most-confusing feature — action-at-a-distance — and prova's lazy
+`ctx:use` model can't do the clean usage-driven version anyway. Instead, choose by whether the
+*assertions* are shared:
 
 ```lua
-local toolchain = prova.fixture("toolchain", "suite", function(ctx)
-  local tc = ctx:param()               -- "stable" or "nightly"
-  return { name = tc, cargo = "cargo +" .. tc }
-end, { params = { "stable", "nightly" } })
-
-prova.test("builds on the toolchain", function(t)
-  local tc = t:use(toolchain)
-  local r = shell.run(tc.cargo .. " build", { cwd = t:use(workspace) })
+-- Same assertions, varying data → test_each (explicit, visible at the test):
+prova.test_each("builds on {tc}", { { tc = "stable" }, { tc = "nightly" } }, function(t, case)
+  local r = shell.run("cargo +" .. case.tc .. " build", { cwd = t:use(workspace) })
   t:expect(r.code):equals(0)
 end)
--- Runs twice: "builds on the toolchain[stable]" and "…[nightly]".
 ```
+
+- **Divergent variants** (e.g. a Postgres vs a MongoDB rendering, whose CRUD assertions differ) →
+  **separate suites/files**, not one shared body.
+- **Env-level variation** (local / CI / cluster) → **profiles** in `prova.toml`.
+
+See `docs/design/north-star-roadmap.md` (§Phase 1.2) for the full rationale.
 
 ---
 
@@ -415,7 +416,6 @@ base; the test context adds assertions and skip/case.
 | `ctx:defer(fn)`   | both     | Register LIFO teardown for the current scope                  |
 | `ctx:tempdir()`   | both     | A scratch dir auto-removed when the scope ends                |
 | `ctx:log(msg)`    | both     | Structured log line attached to the test/fixture in the report|
-| `ctx:param()`         | fixtures | Current parameter (parametrized fixtures)                 |
 | `t:expect(v, label?)` | tests    | Start a fluent assertion; optional `label` for messages   |
 | `t:expect_all(fn)`    | tests    | Soft assertions — collect all failures in `fn`            |
 | `t:skip(reason)`      | tests    | Skip the current test at runtime                          |

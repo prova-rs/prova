@@ -5,7 +5,10 @@ runnable tests**, because they use planned API not yet in the engine. The LuaLS 
 (so they type-check), but the runtime doesn't implement them yet:
 
 - `f:use(fixture)` — flow-scoped fixture on the flow builder (today: use `t:use` inside steps).
-- parametrized fixtures via `ctx:param()` + `{ params = { ... } }`.
+
+(Parametrized fixtures via `ctx:param()` were considered and **dropped** — see
+`docs/design/north-star-roadmap.md`. `http_service.lua` no longer uses them; parametrization stays
+explicit via `test_each` / separate suites / profiles.)
 
 They also reference a live service (`http://localhost:8080` with no server behind it), so they are
 illustrative of the execution model rather than runnable against real infrastructure.
@@ -18,7 +21,7 @@ graduate back into runnable examples (paired with real fixtures/containers).
 |------|-----------|-------|
 | `ordering.lua` | flow + `depends_on` + resource gating | `f:use`, a live service |
 | `dependent_flows.lua` | flow-to-flow DAG (diamond) | `f:use`, a live service |
-| `http_service.lua` | render → build → boot → probe, table-driven | `ctx:param`, a live service |
+| `http_service.lua` | render → build → boot → probe, table-driven | a live service |
 
 **Graduated (2026-07-15):** the capstone, kitchen-sink, and suite examples once lived here as
 design sketches using `postgres.container` / `mysql.container` / … as built-in globals. The resource

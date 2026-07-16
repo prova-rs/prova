@@ -1,13 +1,15 @@
 --- Example: render a service archetype, build it, boot it, and probe it over HTTP.
 ---
---- Demonstrates: suite-scoped + parametrized fixtures, a fixture that starts and stops a
---- long-running process via ctx:defer, http.wait_for for boot-then-probe, and table-driven
---- tests. This is the black-box acceptance layer the framework is built for.
+--- Demonstrates: suite-scoped fixtures, a fixture that starts and stops a long-running process via
+--- ctx:defer, http.wait_for for boot-then-probe, and table-driven tests. This is the black-box
+--- acceptance layer the framework is built for.
 
--- Parametrized suite fixture: the whole file's tests run once per toolchain.
+-- The toolchain to build with. To exercise *several* toolchains, prova keeps parametrization
+-- explicit — an outer `test_each`/`describe` or a separate suite per toolchain — rather than a
+-- parametrized fixture (deliberately dropped; see docs/design/north-star-roadmap.md).
 local toolchain = prova.fixture("toolchain", Scope.Suite, function(ctx)
-  return { name = ctx:param() }
-end, { params = { "stable" } })
+  return { name = "stable" }
+end)
 
 -- Render + build once per suite.
 local built_service = prova.fixture("built_service", Scope.Suite, function(ctx)

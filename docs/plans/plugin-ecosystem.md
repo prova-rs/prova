@@ -52,9 +52,10 @@ deferred/cut with rationale below._
   so `--profile ci` and local resolve identically. (`crates/prova-cli/src/manifest.rs`.)
 - **Quarantined examples graduated** — the capstone/kitchen/suite examples are all runnable now,
   using `require("<plugin>")` + `prova.toml`. The three files left in `examples/aspirational/`
-  (`ordering.lua`, `dependent_flows.lua`, `http_service.lua`) are *design showcases* blocked on
-  unimplemented authoring API (`f:use`, `ctx:param`), not on the ecosystem — tracked as a language
-  feature, not an ecosystem cleanup.
+  (`ordering.lua`, `dependent_flows.lua`, `http_service.lua`) are *design showcases* blocked on the
+  unimplemented `f:use` builder sugar (+ a live service backend), not on the ecosystem — tracked as a
+  language feature (`docs/plans/phase1-ergonomics.md`), not an ecosystem cleanup. (`ctx:param` was
+  dropped, so `http_service.lua` no longer waits on it.)
 
 ## Non-goals (explicit)
 

@@ -47,10 +47,6 @@ function Context:tempdir() end
 ---@param msg string
 function Context:log(msg) end
 
----Current parameter value for a parametrized fixture (see `params` on `prova.fixture`).
----@return any param
-function Context:param() end
-
 ---Context passed to test bodies. Extends `prova.Context` with assertions and control flow.
 ---@class prova.TestContext : prova.Context
 ---@field name string                              # resolved test name
@@ -146,10 +142,11 @@ function Matcher:matches_snapshot(name) end
 -- Registration API
 ------------------------------------------------------------------------------------------
 
---- Reserved for future fixture options (parametrization). Scope is a `Scope` value, not an option.
+--- Reserved for future fixture options. Scope is a `Scope` value, not an option.
+--- (Parametrized fixtures were considered and deliberately dropped — parametrization stays explicit:
+--- `test_each` for data-driven tests, separate suites for divergent variants, profiles for env.)
 ---@class prova.FixtureOpts
 ---@field autouse? boolean               # run even when no test names it
----@field params? any[]                  # parametrize: one variant per element (see Context:param)
 
 --- An opaque, typed resource reference from `prova.port`/`prova.resource`/`prova.shared`.
 --- Prefer these constructors over magic-format strings like `"port:8080"` — the prefix in a

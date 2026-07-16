@@ -342,8 +342,8 @@ prova useful beyond testing itself:
 2. **Snapshots** — `matches_snapshot`, `.snap` files + `--update-snapshots`.
 5. **Flow ergonomics**: `f:use(fixture)` builder sugar (currently flow-scoped fixtures are used via
    `t:use` inside steps); re-runnable flow bodies (re-invoke to get fresh closures) as the
-   precondition for the **load executor** treating a flow as a reusable scenario; `test_each` +
-   parametrized fixtures (`ctx:param`).
+   precondition for the **load executor** treating a flow as a reusable scenario. (`test_each` is
+   done; parametrized fixtures were considered and **dropped** — parametrization stays explicit.)
 6. **Selectors** (tag expressions, `--last-failed`, sharding), richer reporters (JUnit/TAP), and the
    **load executor**.
 7. **Cross-worker `suite` fixtures**: a serialized once-guard for serializable values (the one open

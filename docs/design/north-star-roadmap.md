@@ -134,9 +134,15 @@ exactly the "batteries-included, no capability ceilings" pitch. Implemented in `
      and `Ctx` exposes `t.case` via a field getter. Name templating = `render_case_name` (unknown key
      or non-table case leaves the `{key}` literal). *(`testdata/test_each.lua` + `tests/test_each.rs`:
      8 tests green, names substituted, `t.case`==arg, plain test unaffected.)*
-   - **`ctx:param()` + `{ params = {...} }` on `prova.fixture`** — parametrized fixtures: one variant
-     per param, multiplying dependent tests. Touches fixture resolution (variant identity in the
-     scope cache keyed by param).
+   - **`ctx:param()` + `{ params = {...} }` on `prova.fixture`** — **DROPPED (2026-07-15).**
+     Parametrized fixtures are pytest's most-confusing feature: a fixture silently *multiplies* the
+     tests that transitively use it (action-at-a-distance). Prova's **lazy `ctx:use`** model can't even
+     do the usage-driven version cleanly (no static fixture-dependency graph) — the architecture is
+     telling us not to. And the real need decomposes without it, by whether the *assertions* are shared:
+     same assertions over varying data → **`test_each`** (have it); divergent variants (relational CRUD
+     vs document store) → **separate suites**; env-level → **profiles**. A `describe_each` (a `test_each`
+     lifted to a whole block) is the only gap and is **not built speculatively** — add it if a real
+     "whole block ×N, shared assertions" need appears. See `docs/plans/phase1-ergonomics.md`.
    - **`prova.describe(label, fn)` — DONE.** Ambient labeling group: bare `prova.test`/`test_each`/
      `group`/`flow` inside `fn` nest under `label`. Implemented via a **`parent_stack`** in the
      `Collector` (dynamic scoping): top-level declarations register under `current_parent()`;
@@ -144,9 +150,6 @@ exactly the "batteries-included, no capability ceilings" pitch. Implemented in `
      group (labeling only, no new fixture scope). `GroupBuilder:describe` is the builder form (== a
      nested group). *(`testdata/describe.lua` + `tests/describe.rs`: 5 tests, nested labels in paths,
      pop-back-to-root verified.)*
-   - **`ctx:param()` + `{ params = {...} }` on `prova.fixture`** — parametrized fixtures: one variant
-     per param, multiplying dependent tests. Touches fixture resolution (variant identity in the
-     scope cache keyed by param). *Still to do* — the last blocker for `http_service.lua`.
    - **`f:use(fixture)`** on the FlowBuilder — the hard one: the flow builder runs at *collection*
      time but fixtures resolve at *execution*. Today flow-scoped fixtures work via `t:use` inside
      steps. Options: (i) leave `f:use` unbuilt and rewrite the two examples to `t:use`; (ii) make
@@ -158,9 +161,9 @@ exactly the "batteries-included, no capability ceilings" pitch. Implemented in `
      rather than the remote `archetype-rust-cli` — remote archetypes are Rhai/v2 and prova-archetect
      is Lua/v3-only, so a local Lua archetype is the self-contained path — asserts the layout under
      `describe` with soft assertions, and `cargo build`s the output **offline** (`requires`-gated on
-     cargo). *(`crates/prova-archetect/tests/rust_cli.rs`.)* Remaining aspirational files
-     (`ordering`, `dependent_flows`, `http_service`) still need `f:use`/`ctx:param` **and** a live
-     service backend.
+     cargo). *(`crates/prova-archetect/tests/rust_cli.rs`.)* Remaining aspirational files: `ordering`
+     and `dependent_flows` need **`f:use`** (+ a live service); `http_service` no longer waits on
+     `ctx:param` (dropped) — it rewrites to explicit `test_each`/`describe` (+ a live service).
 
 ### Phase 2 — Compose the North Star (the capstone)
 
