@@ -217,7 +217,12 @@ exactly the "batteries-included, no capability ceilings" pitch. Implemented in `
    `level = "layout"` (sorted relative paths — the render shape, default for a directory) or `"content"`
    (paths + bytes, `=== path ===` sections). Anti-rot default lives in the API (broad dir → cheap shape;
    opt into content). Verified: a layout snapshot catches an added file with a `+ path` diff.
-   **Phase C** (remaining) = unused-snapshot flagging. Design + rationale: `docs/plans/snapshots.md`.
+   **Phase C DONE:** `--unreferenced ignore|warn|delete` flags/removes `.snap` files no test
+   referenced (`warn` fails the run so CI catches rot). Opt-in and **full-run-only** — skipped with a
+   note under any selection — and it only scans dirs where a snapshot *was* referenced, so a
+   deselected file's snapshots are never examined (no false positives). Shared cross-worker registry
+   (`SnapshotRegistry`) + `unreferenced_snapshots`. **Snapshots complete** (A+B+C). Design:
+   `docs/plans/snapshots.md`.
 8. **Selectors** — tag expressions (`--tags`), `-k` name filter, `--last-failed`, sharding.
 9. **Reporters — DONE.** JUnit XML (`--junit PATH`, a *file* sink that composes with any `--format`,
    the CI lingua franca) and TAP (`--format tap`, a stdout stream) both landed as `Reporter`s over the

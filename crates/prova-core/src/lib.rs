@@ -14,8 +14,8 @@ mod suite;
 
 pub use engine::{
     Selection,
-    discover_path, discover_path_with, inspect_plugin, run_path, run_path_with, up, watch, Endpoint,
-    Module, PluginReport, PluginShape, PortMode, RunConfig,
+    discover_path, discover_path_with, inspect_plugin, run_path, run_path_with, unreferenced_snapshots,
+    up, watch, Endpoint, Module, PluginReport, PluginShape, PortMode, RunConfig, SnapshotRegistry,
 };
 pub use layout::{RootedSystemLayout, SystemLayout, XdgSystemLayout};
 pub use model::{

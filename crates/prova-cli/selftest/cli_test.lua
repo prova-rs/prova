@@ -107,6 +107,28 @@ prova.test("snapshots: a layout snapshot catches an added file", function(t)
   t:expect(changed.stdout):contains("+ src/extra.rs")
 end)
 
+prova.test("snapshots: --unreferenced flags an orphaned snapshot on a full run", function(t)
+  local dir = fs.tempdir()
+  local test = dir .. "/unref_test.lua"
+  fs.write(test, 'prova.test("a", function(t) t:expect("x"):matches_snapshot() end)\n' ..
+                 'prova.test("b", function(t) t:expect("y"):matches_snapshot() end)\n')
+  t:expect(run("-u " .. test).code):equals(0)              -- write both snaps
+
+  -- Drop test "b" → its snapshot is now orphaned.
+  fs.write(test, 'prova.test("a", function(t) t:expect("x"):matches_snapshot() end)\n')
+  local warned = run("--unreferenced warn " .. test)
+  t:expect(warned.code):equals(1)                          -- warn fails the run so CI catches rot
+  t:expect(warned.stderr):contains("unreferenced snapshot")
+
+  -- A filtered run skips the check (soundness), so it passes.
+  local filtered = run("--unreferenced warn -k a " .. test)
+  t:expect(filtered.stderr):contains("skipped on a filtered run")
+
+  -- delete removes the orphan; a subsequent full run is clean.
+  t:expect(run("--unreferenced delete " .. test).code):equals(0)
+  t:expect(run("--unreferenced warn " .. test).code):equals(0)
+end)
+
 prova.test("an unknown flag is a usage error (exit 2)", function(t)
   local r = run("--definitely-not-a-flag")
   t:expect(r.code):equals(2)

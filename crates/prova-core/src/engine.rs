@@ -137,6 +137,41 @@ impl PortMode {
     }
 }
 
+/// A thread-safe set of every `.snap` file referenced during a run — shared across worker Lua states
+/// so the CLI can find untouched (orphaned) snapshots afterward.
+pub type SnapshotRegistry = std::sync::Arc<std::sync::Mutex<std::collections::HashSet<PathBuf>>>;
+
+/// Find orphaned `.snap` files after a run: those present on disk in a `snapshots/` dir that a test
+/// *did* reference, but which were not themselves referenced. Only dirs with at least one referenced
+/// snapshot are scanned — so a fully-deselected test file's snapshots are never examined (no false
+/// positives from selection). Returns sorted paths. Sound only on a full run; the caller gates on that.
+pub fn unreferenced_snapshots(registry: &SnapshotRegistry) -> Vec<PathBuf> {
+    let touched = match registry.lock() {
+        Ok(set) => set.clone(),
+        Err(_) => return Vec::new(),
+    };
+    let mut dirs: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    for snap in &touched {
+        if let Some(dir) = snap.parent() {
+            dirs.insert(dir.to_path_buf());
+        }
+    }
+    let mut orphans = Vec::new();
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.extension().and_then(|e| e.to_str()) == Some("snap") && !touched.contains(&p) {
+                orphans.push(p);
+            }
+        }
+    }
+    orphans.sort();
+    orphans
+}
+
 #[derive(Clone)]
 pub struct RunConfig {
     pub concurrency: usize,
@@ -148,6 +183,9 @@ pub struct RunConfig {
     /// When set (`--update-snapshots`), `matches_snapshot` (re)writes `.snap` files and passes,
     /// instead of comparing against them.
     pub update_snapshots: bool,
+    /// If present, every `.snap` a `matches_snapshot` references is recorded here (shared across
+    /// workers), so the caller can reconcile untouched snapshots (`--unreferenced`) after a full run.
+    snapshot_registry: Option<SnapshotRegistry>,
     modules: Vec<Module>,
     /// Extra disk roots the plugin searcher consults (e.g. the global `data_dir/plugins`).
     plugin_roots: Vec<std::path::PathBuf>,
@@ -166,6 +204,7 @@ impl Default for RunConfig {
             selection: Selection::default(),
             ports: PortMode::default(),
             update_snapshots: false,
+            snapshot_registry: None,
             modules: Vec::new(),
             plugin_roots: Vec::new(),
             named_plugins: std::collections::BTreeMap::new(),
@@ -207,6 +246,13 @@ impl RunConfig {
     /// Enable snapshot-update mode (`--update-snapshots`): `matches_snapshot` (re)writes `.snap` files.
     pub fn with_update_snapshots(mut self, update: bool) -> Self {
         self.update_snapshots = update;
+        self
+    }
+
+    /// Record every referenced `.snap` into `registry`, so the caller can reconcile unreferenced
+    /// snapshots after the run (`--unreferenced`).
+    pub fn with_snapshot_tracking(mut self, registry: SnapshotRegistry) -> Self {
+        self.snapshot_registry = Some(registry);
         self
     }
 
@@ -389,6 +435,8 @@ struct RunState {
     file_paths: Vec<PathBuf>,
     /// When set, `matches_snapshot` writes/overwrites snapshots instead of comparing (`--update-snapshots`).
     update_snapshots: bool,
+    /// Shared registry of referenced `.snap` files, for unreferenced-snapshot reconciliation.
+    snapshot_registry: Option<SnapshotRegistry>,
 }
 
 impl RunState {
@@ -641,6 +689,8 @@ struct SnapshotCtx {
     update: bool,
     /// Increments per *unnamed* `matches_snapshot` in this test, so several are distinct.
     counter: usize,
+    /// Shared registry to record each referenced `.snap` into (for unreferenced reconciliation).
+    registry: Option<SnapshotRegistry>,
 }
 
 /// Injected into every body/factory. `own_scope` is the scope its `defer`/`tempdir` target and the
@@ -1118,7 +1168,7 @@ impl UserData for Matcher {
 
             // Resolve the `.snap`/`.snap.new` paths + update flag + a header source label from the
             // per-test snapshot context (advancing the auto-name counter for an unnamed snapshot).
-            let (snap, snap_new, update, source) = {
+            let (snap, snap_new, update, source, registry) = {
                 let mut r = this.run.borrow_mut();
                 let ctx = r.snapshot.as_mut().ok_or_else(|| {
                     mlua::Error::RuntimeError(
@@ -1139,8 +1189,17 @@ impl UserData for Matcher {
                     ctx.dir.join(format!("{base}.snap.new")),
                     ctx.update,
                     format!("{} / {}", ctx.key_base, key),
+                    ctx.registry.clone(),
                 )
             };
+
+            // Record this `.snap` as referenced (whatever the outcome), so an unreferenced-snapshot
+            // reconcile can tell orphaned files from ones a test still points at.
+            if let Some(reg) = &registry {
+                if let Ok(mut set) = reg.lock() {
+                    set.insert(snap.clone());
+                }
+            }
 
             let stored_doc = format_snapshot(&source, &actual);
 
@@ -2578,6 +2637,7 @@ async fn run_one(
             key_base: slugify(&item.path),
             update: state.update_snapshots,
             counter: 0,
+            registry: state.snapshot_registry.clone(),
         });
     }
     let test_scope = Rc::new(RefCell::new(ScopeState::default()));
@@ -2996,6 +3056,7 @@ fn execute_collected(
             files: RefCell::new(HashMap::new()),
             file_paths: col.file_paths.clone(),
             update_snapshots: config.update_snapshots,
+            snapshot_registry: config.snapshot_registry.clone(),
         });
         (plan, deselected, state)
     };
@@ -3140,6 +3201,7 @@ fn load_topology(
         files: RefCell::new(HashMap::new()),
         file_paths: col.borrow().file_paths.clone(),
         update_snapshots: false, // snapshots are a test-mode concern, not for inhabited topologies
+        snapshot_registry: None,
     });
     Ok((lua, state, id))
 }
@@ -3418,6 +3480,30 @@ mod tests {
         // layout on a file, or an unknown level, is an error.
         assert!(serialize_path(&root.join("Cargo.toml"), Some("layout")).is_err());
         assert!(serialize_path(&root, Some("bogus")).is_err());
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn unreferenced_snapshots_flags_only_untouched_in_touched_dirs() {
+        let root = std::env::temp_dir().join("prova-unref-test");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("snapshots")).unwrap();
+        let referenced = root.join("snapshots/t__alpha.snap");
+        let orphan = root.join("snapshots/t__beta.snap");
+        std::fs::write(&referenced, "a").unwrap();
+        std::fs::write(&orphan, "b").unwrap();
+        // A `.snap.new` and a non-snap file must be ignored.
+        std::fs::write(root.join("snapshots/t__alpha.snap.new"), "x").unwrap();
+        std::fs::write(root.join("snapshots/notes.txt"), "x").unwrap();
+
+        let reg: SnapshotRegistry = std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashSet::new(),
+        ));
+        reg.lock().unwrap().insert(referenced.clone()); // only alpha was referenced
+
+        let orphans = unreferenced_snapshots(&reg);
+        assert_eq!(orphans, vec![orphan], "only the untouched .snap in a touched dir");
 
         std::fs::remove_dir_all(&root).unwrap();
     }

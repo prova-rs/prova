@@ -57,6 +57,7 @@ options:
       --node PATH           select an exact node path (repeatable) — re-run what a report named
       --last-failed         select only the nodes that failed in the previous run
   -u, --update-snapshots    (re)write snapshots instead of comparing (matches_snapshot)
+      --unreferenced M      snapshots no test used: ignore (default) | warn | delete (full runs only)
       --list                discover tests without running them (respects selection)
   -V, --version             print version
   -h, --help                print this help";
@@ -770,6 +771,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     let mut cli_junit: Option<String> = None;
     let mut cli_jobs: Option<usize> = None;
     let mut update_snapshots = false;
+    let mut unreferenced = String::from("ignore"); // ignore | warn | delete
     let mut list = false;
     let mut explicit_paths: Vec<String> = Vec::new();
     let mut profile: Option<String> = None;
@@ -843,6 +845,17 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         // `--junit PATH`: write a JUnit XML report to a file, alongside whatever --format prints.
         if let Some(v) = value_flag(&arg, &mut args, &["--junit"]) {
             cli_junit = Some(v);
+            continue;
+        }
+        // `--unreferenced ignore|warn|delete`: what to do with `.snap` files no test referenced.
+        if let Some(v) = value_flag(&arg, &mut args, &["--unreferenced"]) {
+            match v.as_str() {
+                "ignore" | "warn" | "delete" => unreferenced = v,
+                other => {
+                    eprintln!("prova: unknown --unreferenced {other:?} (expected ignore|warn|delete)");
+                    return ExitCode::from(2);
+                }
+            }
             continue;
         }
         match arg.as_str() {
@@ -1022,6 +1035,26 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     }
     config.selection = selection;
 
+    // `--unreferenced warn|delete`: track referenced `.snap` files so we can reconcile orphans after
+    // the run. Sound only on a **full** run — a selection (`-k`/`--tags`/`--node`/`--last-failed`)
+    // would make unrun tests' snapshots look orphaned — so skip (with a note) when a filter is active.
+    let snapshot_registry = if unreferenced != "ignore" {
+        if config.selection.is_empty() {
+            let reg: prova_core::SnapshotRegistry = std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashSet::new(),
+            ));
+            config = config.with_snapshot_tracking(reg.clone());
+            Some(reg)
+        } else {
+            eprintln!(
+                "prova: --unreferenced is skipped on a filtered run (it needs the full suite to be sound)"
+            );
+            None
+        }
+    } else {
+        None
+    };
+
     // IDE integration: on a manifest run (not read-only `--list`), refresh the annotation folder
     // (core + plugin `---@meta` stubs) and manage `.luarc.json` per `[luals] manage`, so
     // `require("<plugin>")` completes in the editor with no manual wiring. Never blocks the run — a
@@ -1074,7 +1107,9 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     match run_suites(&suites, &mut reporter, &config) {
         Ok(summary) => {
             store_last_failed(&home, &reporter.failed);
-            if summary.is_success() {
+            // Reconcile unreferenced snapshots (only when tracking was enabled on a full run).
+            let orphaned = reconcile_unreferenced(snapshot_registry.as_ref(), &unreferenced);
+            if summary.is_success() && !(unreferenced == "warn" && orphaned) {
                 ExitCode::SUCCESS
             } else {
                 ExitCode::FAILURE
@@ -1085,6 +1120,39 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+/// Apply the `--unreferenced` policy to `.snap` files no test referenced this run. `warn` lists them
+/// (and the caller fails the run so CI catches rot); `delete` removes them. Returns whether any orphan
+/// was found. A no-op when tracking was off (filtered run / policy `ignore`).
+fn reconcile_unreferenced(registry: Option<&prova_core::SnapshotRegistry>, policy: &str) -> bool {
+    let Some(reg) = registry else {
+        return false;
+    };
+    let orphans = prova_core::unreferenced_snapshots(reg);
+    if orphans.is_empty() {
+        return false;
+    }
+    match policy {
+        "delete" => {
+            eprintln!("prova: deleting {} unreferenced snapshot(s):", orphans.len());
+            for p in &orphans {
+                let _ = std::fs::remove_file(p);
+                eprintln!("  deleted {}", p.display());
+            }
+        }
+        _ => {
+            eprintln!(
+                "prova: {} unreferenced snapshot(s) (no test referenced them; \
+                 `--unreferenced delete` to remove):",
+                orphans.len()
+            );
+            for p in &orphans {
+                eprintln!("  {}", p.display());
+            }
+        }
+    }
+    true
 }
 
 /// A resolved manifest run: what to discover, how, and the resolved plugin + IDE settings.
