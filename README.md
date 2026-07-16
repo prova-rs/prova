@@ -61,6 +61,9 @@ parametrization) in one static binary with no runtime to install.
 
 - [`docs/design/foundations.md`](docs/design/foundations.md) — the thesis: orthogonal
   primitives, classic footguns, and how Prova aims to subsume the acceptance-testing landscape
+- [`docs/design/proof-driven-development.md`](docs/design/proof-driven-development.md) — the
+  practice Prova is an instrument for: agents don't tell you it works, they hand you a proof
+  that does
 - [`docs/design/api.md`](docs/design/api.md) — the fixture model + assertion surface (start here)
 - [`library/prova.lua`](library/prova.lua), [`library/modules.lua`](library/modules.lua) —
   LuaLS annotations: authoritative API surface + editor completion/hover

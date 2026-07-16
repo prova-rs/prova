@@ -2,7 +2,9 @@
 
 > Companion to [`api.md`](api.md). That doc specifies the authoring surface; this one is the
 > thesis behind it — the primitives and footguns that decide whether Prova becomes the
-> one-stop acceptance-testing tool or just adds to the pile.
+> one-stop acceptance-testing tool or just adds to the pile. For the thesis behind the
+> *practice* — why these primitives matter more when an agent holds the pen, and why "done"
+> means a green proof — see [`proof-driven-development.md`](proof-driven-development.md).
 
 ## Thesis: orthogonal primitives, not a feature pile
 

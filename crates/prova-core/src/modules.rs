@@ -267,7 +267,7 @@ function prova.containerized(spec)
     -- returns a table merged into the result. The reserved names are `client`/`url`/`container`/`host`/`port`.
     if type(spec.extra) == "function" then
       for k, v in pairs(spec.extra(url, opts, container)) do
-        if k ~= "client" and k ~= "url" and k ~= "container" then res[k] = v end
+        if k ~= "client" and k ~= "url" and k ~= "container" and k ~= "host" and k ~= "port" then res[k] = v end
       end
     end
     if spec.client then

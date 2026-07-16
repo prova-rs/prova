@@ -5,6 +5,12 @@ above the mechanics in [plugin-system.md](plugin-system.md) and the grammar in
 [namespacing.md](namespacing.md). Where plugin-system.md answers *how a plugin loads*, this answers
 *what the ecosystem is, how capabilities are tiered, and how they progress.*
 
+> Why this matters for the *practice*: an open plugin ecosystem is what lets a proof bring
+> **any** kind of system into existence and exercise it from the outside — the
+> "black-box shrinks native to a convenience" idea below is exactly what makes a proof
+> self-provisioning and reproducible. See
+> [proof-driven-development.md](proof-driven-development.md).
+
 ## The thesis: batteries **and** an ecosystem
 
 "Batteries included" alone can never match pytest's flexibility — a fixed binary is a ceiling. A pure
