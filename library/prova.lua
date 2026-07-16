@@ -425,6 +425,25 @@ function prova.parse.json(s) end
 ---@return T
 function prova.retry(fn, opts) end
 
+---The address a resource is reached at from a given vantage. The host vantage (`resource.url`/
+---`host`/`port`) is the mapped port a host process — the test runner — uses; the network vantage
+---(`resource.network`) is the alias + container port an in-network consumer — a containerized SUT
+---joined to the same topology network — uses.
+---@class prova.NetworkVantage
+---@field url string      # connection URL at the network authority (alias:container_port)
+---@field host string     # the network alias (DNS name on the topology network)
+---@field port integer    # the CONTAINER port (not the mapped host port)
+---@field alias string    # the alias this resource answers to
+
+---The standard resource shape a containerized recipe/plugin returns.
+---@class prova.ContainerResource
+---@field url string                    # host-vantage connection URL (127.0.0.1:mapped_port)
+---@field host string                   # "127.0.0.1"
+---@field port integer                  # the mapped host port
+---@field container any                 # the docker Container handle
+---@field client? any                   # the attached client (when the spec provides one)
+---@field network? prova.NetworkVantage # present when provisioned on a network (opts.network + opts.alias)
+
 ---@class prova.ContainerizedSpec
 ---@field name? string                         # namespace name, for error messages
 ---@field image string                         # base image repo (e.g. "redis"); `opts.image` fully overrides
@@ -442,10 +461,12 @@ function prova.retry(fn, opts) end
 ---Build a grammar-conformant resource namespace (`{ client?, container }`) from a compact spec — the
 ---scaffolding every containerized recipe/plugin is authored through, so first-party and third-party
 ---resources come out the same shape (the tier-agnostic interface). The generated
----`container(ctx, opts?)` provisions via docker, waits, ties teardown to the scope, and returns
----`{ url, container }`, attaching a managed `client` only when the spec provides a `client` factory.
+---`container(ctx, opts?)` provisions via docker, waits, ties teardown to the scope, and returns a
+---`prova.ContainerResource`, attaching a managed `client` only when the spec provides a `client`
+---factory. `opts.network` (a `docker.network()` handle or name) + `opts.alias` join the resource to
+---a topology network and populate `resource.network` — how a containerized SUT reaches it.
 ---@param spec prova.ContainerizedSpec
----@return { client?: fun(url: string, opts: table): any, container: fun(ctx: prova.Context, opts?: table): table }
+---@return { client?: fun(url: string, opts: table): any, container: fun(ctx: prova.Context, opts?: table): prova.ContainerResource }
 function prova.containerized(spec) end
 
 ---@param fn fun(t: prova.TestContext)

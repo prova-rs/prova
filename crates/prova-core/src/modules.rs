@@ -270,8 +270,12 @@ function prova.containerized(spec)
     local w = spec.wait or { port = primary }
     local wait = { port = w.port, log = w.log, timeout = timeout }
 
+    -- `network`/`alias` (from a topology) join the container to a user-defined network so an
+    -- in-network consumer — a containerized SUT — can reach it by DNS. Host publishing is unchanged,
+    -- so the resource is dual-homed.
     local container = ctx:manage(docker.run{
       image = image, ports = ports, env = env, command = spec.command, wait = wait,
+      network = opts.network, alias = opts.alias,
     })
 
     local hp = container:host_port(primary)
@@ -279,6 +283,17 @@ function prova.containerized(spec)
     -- The standard resource shape: client/url/container, plus the primary endpoint split out as
     -- host/port so env wiring is `DbHost = res.host, DbPort = res.port` — no host_port() ceremony.
     local res = { url = url, container = container, host = "127.0.0.1", port = hp }
+
+    -- The network vantage: when joined with an alias, expose the address an in-network consumer
+    -- uses — the alias + the CONTAINER port (not the mapped host port), and the url rewritten from
+    -- the host authority to the network authority. `resource.network = { url, host, port, alias }`.
+    if opts.alias then
+      local host_authority = "127.0.0.1:" .. hp
+      local net_authority = opts.alias .. ":" .. primary
+      local at = url:find(host_authority, 1, true)   -- plain find (no Lua-pattern surprises)
+      local net_url = at and (url:sub(1, at - 1) .. net_authority .. url:sub(at + #host_authority)) or url
+      res.network = { url = net_url, host = opts.alias, port = primary, alias = opts.alias }
+    end
     -- Extra resource fields beyond the trio (e.g. s3 credentials): `spec.extra(url, opts, container)`
     -- returns a table merged into the result. The reserved names are `client`/`url`/`container`/`host`/`port`.
     if type(spec.extra) == "function" then
