@@ -524,6 +524,36 @@ function prova.retry(fn, opts) end
 ---@return { client?: fun(url: string, opts: table): any, container: fun(ctx: prova.Context, opts?: table): prova.ContainerResource }
 function prova.containerized(spec) end
 
+--- Register a project-wide capability, from the optional `prova.lua` companion beside `prova.toml`.
+---
+--- The escape hatch for a predicate no name-and-version can express — a GPU, a live kind cluster, a
+--- licence file. It is a NAMED predicate rather than an inline function, and that is the point: a
+--- skip has to say what was missing, and `function: 0x7f9a…` says nothing. Once registered, the name
+--- works in BOTH directions of the contract: `requires = { "gpu" }` (skip if unmet) and
+--- `must_run = ["gpu"]` in prova.toml (fail if unmet).
+---
+--- The predicate answers:
+---   `true`             → available
+---   a version string   → available AND comparable: `requires = { "gpu >= 2.0" }`
+---   `false` / `nil`    → unavailable
+---
+--- It runs ONCE, at load, and only its verdict is kept. Not an optimization: `must_run` is checked
+--- before any suite exists, and a capability that answered differently for two suites in one run
+--- would be a coin flip, not a capability.
+---
+--- Registering over a built-in (`docker`, `unix`, …) is refused — `requires = { "docker" }` must
+--- mean the same thing in every project.
+---
+--- ```lua
+--- -- prova.lua, next to prova.toml
+--- prova.capability("gpu",          function() return shell.run({"nvidia-smi"}):ok() end)
+--- prova.capability("kind-cluster", function() return #kind_clusters() > 0 end)
+--- prova.capability("cuda",         function() return probe_cuda_version() end)  -- "12.4.0"
+--- ```
+---@param name string                          # the capability name used in `requires` / `must_run`
+---@param predicate fun(): boolean|string|nil  # true/false, or a version string
+function prova.capability(name, predicate) end
+
 --- Run `fn` before EVERY test in this file (and nested groups). For per-test setup that needs no value — prefer a `prova.fixture` when the setup PRODUCES something, since a fixture is lazy, cached, and tears down with its scope.
 ---@param fn fn: fun(t: prova.TestContext)
 function prova.before_each(fn) end

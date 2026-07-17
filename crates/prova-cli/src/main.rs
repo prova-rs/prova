@@ -1470,6 +1470,44 @@ fn resolve_from_manifest(
         return Err(ExitCode::from(2));
     }
 
+    let manage = resolved.luals.manage().map_err(|e| {
+        eprintln!("prova: {e}");
+        ExitCode::from(2)
+    })?;
+
+    // Apply the run environment before tests execute.
+    for (key, value) in &resolved.env {
+        std::env::set_var(key, value);
+    }
+
+    // Resolve declared plugins relative to the home directory (git sources fetched into cache).
+    let plugins_resolved = plugins::resolve_plugins(
+        &resolved.plugins,
+        &home.dir,
+        layout,
+        &resolved.sources,
+        PROVA_VERSION,
+    )
+    .map_err(|e| {
+        eprintln!("prova: {e}");
+        ExitCode::from(2)
+    })?;
+
+    // The optional `prova.lua` companion — loaded with the manifest, and BEFORE the `must_run`
+    // precondition below. That order is the whole reason this is a project-level companion rather
+    // than something in `suite.lua`: a capability registered at suite-load time would not exist yet
+    // at the moment a profile's guarantee is checked, so `must_run = ["gpu"]` could never work.
+    let companion = home.dir.join("prova.lua");
+    if companion.is_file() {
+        if let Err(e) = prova_core::load_project_config(&companion, &engine_config(1, layout, &plugins_resolved, Some(home))) {
+            // An error, never a warning: a companion that failed to load would leave every
+            // capability it meant to register silently missing, so every gated test would skip and
+            // the run would be green. That is the vacuous green, one level out from the suite.
+            eprintln!("prova: {e}");
+            return Err(ExitCode::from(2));
+        }
+    }
+
     // `must_run` — the guarantees this context makes, checked BEFORE anything runs.
     //
     // A precondition rather than a post-hoc audit of which skips were forgivable: you learn at
@@ -1506,28 +1544,6 @@ fn resolve_from_manifest(
         );
         return Err(ExitCode::from(2));
     }
-    let manage = resolved.luals.manage().map_err(|e| {
-        eprintln!("prova: {e}");
-        ExitCode::from(2)
-    })?;
-
-    // Apply the run environment before tests execute.
-    for (key, value) in &resolved.env {
-        std::env::set_var(key, value);
-    }
-
-    // Resolve declared plugins relative to the home directory (git sources fetched into cache).
-    let plugins_resolved = plugins::resolve_plugins(
-        &resolved.plugins,
-        &home.dir,
-        layout,
-        &resolved.sources,
-        PROVA_VERSION,
-    )
-    .map_err(|e| {
-        eprintln!("prova: {e}");
-        ExitCode::from(2)
-    })?;
 
     let jobs = cli_jobs.or(resolved.jobs).unwrap_or(1);
     let format = match cli_format {

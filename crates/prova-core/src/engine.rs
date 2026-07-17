@@ -2718,6 +2718,40 @@ fn unmet_reason(expr: &str) -> Option<String> {
 /// Is a capability available on this host? Known capabilities have detectors; anything else is
 /// treated as "a tool of that name on PATH" (so `requires = { "kubectl" }` just works). A missing
 /// capability never fails a test — it skips it, visibly.
+/// Capabilities registered by the project's `prova.lua` companion — name → (available, version).
+///
+/// **Answers, not closures, and evaluated once.** The predicate runs at load and its verdict is
+/// stored, for three reasons that are really one: `must_run` is a PRECONDITION checked before any
+/// suite exists, so there is no Lua state to call back into; each suite gets its own `Lua` (mlua
+/// handles are `!Send`), so a stored closure could not be shared across them anyway; and a
+/// capability that answered differently for two suites in one run would not be a capability, it
+/// would be a coin flip. One evaluation, one answer, every consumer.
+static REGISTERED_CAPS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, Option<semver::Version>>>> =
+    std::sync::OnceLock::new();
+
+fn registered_caps() -> &'static std::sync::Mutex<HashMap<String, Option<semver::Version>>> {
+    REGISTERED_CAPS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+/// Record a capability the project registered. `version` is `None` when the predicate answered a
+/// bare `true` (available, no version to compare); absent from the map entirely means the predicate
+/// said no, or that nobody registered the name.
+pub fn register_capability(name: &str, version: Option<semver::Version>) {
+    registered_caps()
+        .lock()
+        .expect("registered capabilities")
+        .insert(name.to_string(), version);
+}
+
+/// Is `name` a capability this build defines itself? Registering over one is refused: `docker` means
+/// something specific (a daemon that answers AND runs linux containers), and letting a project
+/// redefine it would make `requires = { "docker" }` mean different things in different repos —
+/// silently, which is the worst kind.
+pub fn is_builtin_capability(name: &str) -> bool {
+    matches!(name, "docker" | "github" | "network" | "internet" | "unix" | "windows")
+        || native_capability_compiled(name).is_some()
+}
+
 /// A capability expression: a name, optionally with a semver constraint — `"docker"`,
 /// `"dotnet >= 9"`, `"node ^20"`, `"git >= 1.0, < 3.0"`.
 ///
@@ -2770,6 +2804,11 @@ impl<'a> CapabilityExpr<'a> {
 /// "is this ≥ 9?" when the version is unknowable is "cannot confirm", and a gate that cannot confirm
 /// must not wave the suite through.
 pub fn capability_version(name: &str) -> Option<semver::Version> {
+    // A registered capability's predicate already answered — including its version, if it reported
+    // one. Consult it before any probe: the project's own answer is authoritative for its own name.
+    if let Some(v) = registered_caps().lock().expect("registered caps").get(name) {
+        return v.clone();
+    }
     let raw = match name {
         // Docker's SERVER version — the daemon is the thing a suite depends on, and it can differ
         // from the CLI talking to it. `docker --version` would report the client and quietly answer
@@ -2865,6 +2904,15 @@ pub fn capability_expr_status(expr: &str) -> Result<Option<String>, String> {
 /// precondition check cannot drift from the runtime's skip decision; two probes that disagreed would
 /// mean a suite skipping for a capability the gate believed present.
 pub fn capability_available(name: &str) -> bool {
+    // A registered capability is present iff its predicate said so. Checked first, but registering
+    // over a built-in is refused at load, so this cannot shadow `docker`.
+    if registered_caps()
+        .lock()
+        .expect("registered caps")
+        .contains_key(name)
+    {
+        return true;
+    }
     match name {
         // The docker daemon must be reachable *and* the feature compiled in. Retry a few times: a
         // single `docker info` can transiently fail when the daemon is momentarily busy (heavy
@@ -3541,6 +3589,87 @@ fn execute_collected(
 /// functions (a plugin's `container()`, `shell.run`, `prova.sleep`) work exactly as they do in
 /// tests. Everything `ctx:defer`/`ctx:manage` registered is torn down — success *or* error —
 /// inside that same runtime before this returns, so provisioned resources never outlive the eval.
+/// Load the project's optional `prova.lua` companion — the project-level home for
+/// `prova.capability(name, fn)`.
+///
+/// **Why a companion and not `suite.lua`** (docs/design/test-topology.md): a capability is a
+/// project-wide vocabulary, so registering it per-suite would leave it invisible to sibling suites
+/// and to `must_run` — and `must_run` is a PRECONDITION checked before any suite loads, so a
+/// suite-registered capability would not exist yet at the moment it is needed. Loading with the
+/// manifest is what makes `must_run = ["gpu"]` possible at all.
+///
+/// Each predicate is evaluated HERE, at load, and its verdict stored — see [`REGISTERED_CAPS`].
+/// The predicate may answer:
+///   - `true`            → available, no version
+///   - a version string  → available, and comparable (`requires = { "gpu >= 2.0" }`)
+///   - `false` / `nil`   → unavailable
+///
+/// A companion that fails to load is an **error**, never a warning: every capability it meant to
+/// register would silently go missing, so every gated test would skip and the run would be green —
+/// the vacuous green, one level further out than the suite.
+pub fn load_project_config(path: &std::path::Path, config: &RunConfig) -> Result<(), String> {
+    let src = std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let (lua, _col) = build_lua("config".to_string(), config)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+
+    let prova: Table = lua
+        .globals()
+        .get("prova")
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let register = lua
+        .create_function(|_, (name, verdict): (String, Value)| {
+            if is_builtin_capability(&name) {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "prova.capability({name:?}): {name:?} is a built-in capability and cannot be \
+                     redefined — `requires = {{ {name:?} }}` must mean the same thing in every project"
+                )));
+            }
+            match verdict {
+                // Unavailable: not registered at all, so it reads as absent everywhere.
+                Value::Nil | Value::Boolean(false) => {}
+                // Available, no version.
+                Value::Boolean(true) => register_capability(&name, None),
+                // Available, and it reported a version to compare against.
+                Value::String(s) => {
+                    let raw = s.to_str()?.to_string();
+                    let v = parse_first_version(&raw).ok_or_else(|| {
+                        mlua::Error::RuntimeError(format!(
+                            "prova.capability({name:?}): returned {raw:?}, which is not a version \
+                             (expected true/false, or a version string like \"2.4.0\")"
+                        ))
+                    })?;
+                    register_capability(&name, Some(v));
+                }
+                other => {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "prova.capability({name:?}): the predicate returned {}, expected a boolean \
+                         or a version string",
+                        other.type_name()
+                    )))
+                }
+            }
+            Ok(())
+        })
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+
+    // `prova.capability(name, fn)` — the predicate runs NOW, and only its answer survives.
+    let registrar = lua
+        .create_function(move |_, (name, f): (String, mlua::Function)| {
+            let verdict: Value = f.call(())?;
+            register.call::<()>((name, verdict))
+        })
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    prova
+        .set("capability", registrar)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+
+    lua.load(&src)
+        .set_name(path.to_string_lossy().as_ref())
+        .exec()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(())
+}
+
 pub fn eval_snippet(code: &str, config: &RunConfig) -> mlua::Result<serde_json::Value> {
     let (lua, col) = build_lua("eval".to_string(), config)?;
 

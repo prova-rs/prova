@@ -24,6 +24,15 @@
 //! [profiles.ci.plugins]         # CI-only capabilities, still pinned in-repo (not an out-of-band input)
 //! toxiproxy = { git = "https://github.com/acme/prova-toxiproxy", tag = "v1" }
 //!
+//! ```
+//!
+//! An optional `prova.lua` beside this file is the project's Lua companion (the pairing archetect
+//! uses for archetype.yaml + archetype.lua). It is where `prova.capability(name, fn)` registers a
+//! project-wide predicate — a GPU, a kind cluster — for a capability no name-and-version can
+//! express. It loads WITH the manifest, which is what lets `must_run` guarantee one: the
+//! precondition is checked before any suite exists, so a suite-registered capability would not yet.
+//!
+//! ```toml
 //! [suites.grpc]                 # an explicit suite: these files share one state (Scope.Suite)
 //! paths = ["services/grpc"]     # (a directory's own `suite.lua` is the zero-config alternative)
 //! setup = "services/grpc/suite.lua"
