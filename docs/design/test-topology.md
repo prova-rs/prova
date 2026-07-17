@@ -221,6 +221,77 @@ is designed now, because a skip/fail contract drafted against Docker alone would
 Third-slot naming (`{ client, url, handle }` with `container` kept as the Docker-case alias) is
 §3(a), and lands with it.
 
+## `prova.lua` — the companion, and why the vocabulary stays strings
+
+**Built:** `requires = { "dotnet >= 9" }` / `must_run = ["dotnet >= 9"]`. One grammar, both
+directions, parsed by one engine function (`capability_expr_status`) so the two halves cannot
+disagree about what a string means. Real semver; versions probed from the tool and padded to three
+components (tools are inconsistent — `git version 2.54.0`, `8.0.421`, `GNU bash, version 5.3.9(1)`);
+docker reports its **server** version, the thing a suite actually depends on. Three outcomes, because
+they are three different days: **absent** (install it), **too old** (upgrade it), **malformed** (an
+*error* — a constraint that can never parse would skip forever and read as green).
+
+This closed a real failure: an archetype said `requires = { "dotnet" }`, the box had SDK 8.0.421, the
+project targets net9.0 → the gate said "available" and the suite died on NETSDK1045 instead of
+skipping.
+
+### Why an expression is a string, not a Lua predicate
+
+Not because TOML cannot hold functions — that is true but shallow, and makes the *format* the reason.
+The real one survives any config format:
+
+> **A predicate that cannot name itself cannot explain a skip.**
+
+A skip is an unanswered question; an unattributable skip is a vacuous green wearing a hat.
+`"dotnet >= 9"` reports as *"dotnet 8.0.421 does not satisfy >= 9"* — actionable. An anonymous
+closure reports as `function: 0x7f9a…`. It also cannot be memoized by identity (probes shell out —
+`resolve_requires` caches per expression string), cannot appear in a CLI flag or an MCP argument, and
+cannot be validated by a plugin browser.
+
+### So an arbitrary predicate gets a NAME — in `prova.lua`
+
+```lua
+-- prova.lua — OPTIONAL, project-level, loaded with the manifest
+prova.capability("gpu",          function() return probe_cuda() end)
+prova.capability("kind-cluster", function() return #kind_clusters() > 0 end)
+```
+
+Then `requires = { "gpu" }` and `must_run = ["gpu"]` both work, skips stay attributable, and the
+escape hatch exists without forking the vocabulary. The two-layer move again: the convenience never
+removes the primitive.
+
+**It must be a project-level companion, not `suite.lua`** — for two reasons, the second structural:
+
+1. **Scope.** A capability is a project-wide vocabulary. Registered per-suite it would be invisible to
+   sibling suites and to `must_run` (which lives in `prova.toml`, project-level), and N copies could
+   silently disagree — the copy-paste failure that produced both the duplicated docker probes and the
+   near-miss on the test semaphore's lock path.
+2. **Ordering.** `must_run` is a PRECONDITION, checked before suites load. A suite-registered
+   capability does not exist yet at that moment, so `must_run = ["gpu"]` could never work. A
+   project-level companion loads with the manifest:
+
+   ```
+   prova.toml  → what to run, pins, must_run     (declaration; machine-editable)
+   prova.lua   → prova.capability("gpu", fn)     (behavior; project-global)
+     ↓ precondition check — now sees "gpu"
+   suites      → collect, then execute
+   ```
+
+**The split stays the one this codebase already keeps: TOML declares, Lua computes.** TOML keeps the
+properties the registry/plugin-browser arc needs — an agent can add a plugin with `toml_edit`
+(comments preserved), and CI can read what a project runs without executing it. Lua gets only what
+TOML structurally cannot hold. It is the same pairing as `archetype.yaml` + `archetype.lua`, so it is
+one fewer idiom to learn.
+
+**The entry test, so it does not become a dumping ground:** *does this need to exist before any suite
+loads AND be visible to every suite?* Capabilities pass. Fixtures do not (they are suite state).
+`prova.lua` is optional — no file means today's behavior, exactly.
+
+The one caveat worth stating out loud: **`suite.config{}` already is Lua config**, so the project
+runs two config languages today. That split is defensible (the suite is the *program*; the manifest is
+the *declaration*), but if it ever reads as arbitrary rather than principled, this decision reopens —
+and `prova.capability()` deepens the Lua side rather than shrinking it.
+
 ## Open
 
 - **The capability vocabulary is open by design** (binary-on-PATH fallback), which makes
