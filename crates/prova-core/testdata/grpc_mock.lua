@@ -170,8 +170,9 @@ prova.test("is grammar-shaped: url, host, port", function(t)
   t:expect(m.url):equals("http://127.0.0.1:" .. m.port)
 end)
 
+-- `allow_handler_errors` because the error path IS the subject here; strictness is the default.
 prova.test("a raising handler answers Internal and records the error", function(t)
-  local m = grpc.mock(t, { proto = t:use(proto) })
+  local m = grpc.mock(t, { proto = t:use(proto), allow_handler_errors = true })
   m:on{ method = "pricing.Pricing/Health" }:reply(function() error("handler blew up") end)
 
   local c = grpc.client(m.url)

@@ -340,6 +340,10 @@ function MockServer:stop() end
 ---@field record? string        # write forwarded exchanges to this cassette on teardown (needs `passthrough`)
 ---@field replay? string        # answer from a cassette; no dependency, no network (excludes `passthrough`)
 ---@field redact? string[]      # extra header names to redact in the cassette (auth/cookies are redacted anyway)
+---@field allow_handler_errors? boolean  # a raising `:reply` handler normally FAILS the owning scope at
+---                                      #   teardown (a SUT with a fallback would otherwise swallow the
+---                                      #   500 and hide prova's own bug). Set true when the error path
+---                                      #   is the subject of the test.
 
 --- Provision a mock HTTP server, tied to `ctx`'s scope. The fourth facet: `client` attaches to a
 --- real dependency, `container` provisions a real one, `wait_for` probes one — `mock` provisions a
@@ -647,6 +651,8 @@ function GrpcMock:stop() end
 ---@class prova.GrpcMockOpts
 ---@field proto string|string[]         # `.proto` path(s), compiled at runtime (pure Rust; no protoc)
 ---@field includes? string[]            # import paths (default: each proto's own directory)
+---@field allow_handler_errors? boolean # a raising `:reply` handler normally FAILS the owning scope at
+---                                     #   teardown; set true when the error path is the subject
 
 --- Provision a mock gRPC server, tied to `ctx`'s scope.
 ---

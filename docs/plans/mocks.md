@@ -293,15 +293,23 @@ CI quirk):
   observable — `m:received()[1].error` is asserted in the proof — but a suite that never looks would
   read a broken handler as a legitimate dependency failure.
 
-  **Unblocked 2026-07-17.** This was called "small" and was not: it routed through `api.md` §Open
-  questions #2 and the `let _ =` at `engine.rs` that *discarded* teardown errors, so a mock had no
-  way to report anything — nothing was listening. That is now fixed (teardown failures are reported
-  as `<scope> ⟶ teardown` leaves), so the remaining work is small and local: `stop()` raises when the
-  journal holds handler errors, and `ctx:manage` turns that into a reported failure for free.
-  One design question left, and it is a real one: the proof
-  `a raising handler answers 500 and records the error` *deliberately* raises, so the strict default
-  needs an explicit opt-out (`http.mock(ctx, { allow_handler_errors = true })` or similar) rather
-  than magic like "did the test call `received()`".
+  **CLOSED 2026-07-17.** It was called "small" and was not: it routed through `api.md` §Open
+  questions #2 and the `let _ =` that *discarded* teardown errors — a mock had no way to report
+  anything because **nothing was listening**. With teardown failures now reported as
+  `<scope> ⟶ teardown` leaves, the fix became what it should have been: `stop()` raises when the
+  mock holds reply-handler errors, `ctx:manage` calls `stop()` at scope end, and the existing
+  machinery reports it. **No mock-specific reporting path exists**, which is the point.
+
+  Strict by default, with **`allow_handler_errors = true`** as the opt-out — explicit, because the
+  alternative ("did the test happen to call `received()`?") is a contract nobody can read. Both
+  facets behave identically.
+
+  Two details the proof forced. Handler errors are tracked **separately from the journal's `error`
+  field**: that field also covers a dead upstream and a replay miss, which are the *dependency*
+  misbehaving (a 502 is a true report), not our bug — conflating them would have failed the
+  `dead upstream surfaces as 502` proof. And the strict case is proved with a **SUT that swallows the
+  500**, because that is the only shape where the old behaviour was actually dangerous; a test that
+  asserts on the journal never had the problem.
 - **Phase A′ — the aspirational examples.** `examples/aspirational/{ordering,dependent_flows,http_service}.lua`
   are non-runnable for exactly one reason — *"they reference a live service (`http://localhost:8080`
   with no server behind it)"* (`examples/aspirational/README.md:1-12`). `http.mock` is now the server

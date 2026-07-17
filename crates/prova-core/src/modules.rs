@@ -1434,6 +1434,13 @@ mod mock {
         replay: Option<Replay>,
         redact: Vec<String>,
         recorded: Vec<Entry>,
+        /// Errors from *our own* stubs — a handler that raised, returned the wrong shape, or whose
+        /// reply would not parse. Tracked apart from the journal's `error` field, which also covers
+        /// a dead upstream and a replay miss: those are the *dependency* misbehaving (a 502 is a
+        /// true report), whereas these are prova-side bugs wearing the dependency's clothes.
+        handler_errors: Vec<String>,
+        /// Opt out of strictness, for a test whose subject *is* the error path.
+        allow_handler_errors: bool,
     }
 
     /// `Rc`/`RefCell` rather than `Arc`/`Mutex` on purpose: every task that touches this is
@@ -1492,6 +1499,8 @@ mod mock {
         if let Some(o) = opts {
             init.passthrough = o.get::<Option<String>>("passthrough")?;
             init.record = o.get::<Option<String>>("record")?;
+            init.allow_handler_errors =
+                o.get::<Option<bool>>("allow_handler_errors")?.unwrap_or(false);
             let replay_path = o.get::<Option<String>>("replay")?;
             if let Some(t) = o.get::<Option<Table>>("redact")? {
                 for h in t.sequence_values::<String>() {
@@ -1814,6 +1823,14 @@ mod mock {
         source: &'static str,
         error: Option<String>,
     ) -> Response<Full<Bytes>> {
+        // A stub-sourced error is *our* bug, not the dependency's: track it so `stop()` can fail the
+        // owning scope. Without this a SUT with a retry or a fallback swallows the 500 and the suite
+        // goes green over a broken handler, blaming the dependency for flakiness.
+        if source == "stub" {
+            if let Some(e) = &error {
+                state.borrow_mut().handler_errors.push(e.clone());
+            }
+        }
         // Record *every* request, matched or not. An unmatched call is usually the most interesting
         // thing a mock can tell you — it is the SUT doing something you did not predict.
         state.borrow_mut().journal.push(Recorded {
@@ -2092,14 +2109,45 @@ mod mock {
             // `stop` is what `ctx:manage` calls; idempotent, so an explicit stop plus scope teardown
             // is not an error. The cassette is written here rather than per-request so a suite that
             // fails mid-way still leaves a coherent file — teardown runs on failure too.
+            //
+            // Raising here is how a handler error reaches a report: a handler runs on a server task,
+            // outside any test's stack, so there is nowhere for it to land at the time. `ctx:manage`
+            // calls this at scope end and a raising teardown is its own reported leaf — so this needs
+            // no mock-specific reporting path at all.
             methods.add_method("stop", |_, this, ()| {
                 if let Some(tx) = this.shutdown.borrow_mut().take() {
                     let _ = tx.send(());
                     write_cassette(&this.state)?;
                 }
+                let errs = take_handler_errors(&this.state);
+                if !errs.is_empty() {
+                    return Err(handler_error_report("http.mock", &errs));
+                }
                 Ok(())
             });
         }
+    }
+
+    /// Drain the handler errors — so an explicit `m:stop()` followed by scope teardown reports once,
+    /// not twice.
+    fn take_handler_errors(state: &Shared) -> Vec<String> {
+        let mut s = state.borrow_mut();
+        if s.allow_handler_errors {
+            s.handler_errors.clear();
+            return Vec::new();
+        }
+        std::mem::take(&mut s.handler_errors)
+    }
+
+    pub(super) fn handler_error_report(ns: &str, errs: &[String]) -> mlua::Error {
+        let n = errs.len();
+        let plural = if n == 1 { "" } else { "s" };
+        mlua::Error::RuntimeError(format!(
+            "{ns}: {n} reply-handler error{plural} — the mock's own stub failed, so a green run here \
+             would be reporting prova's bug as the dependency's. First: {}\n\
+             If the error path is the subject of the test, pass `allow_handler_errors = true`.",
+            errs[0]
+        ))
     }
 
     fn write_cassette(state: &Shared) -> mlua::Result<()> {
@@ -3823,6 +3871,10 @@ mod grpc_mock {
     struct MockState {
         stubs: Vec<Stub>,
         journal: Vec<Recorded>,
+        /// See the http facet: errors from our own stubs, tracked apart from a status the mock
+        /// legitimately answered with.
+        handler_errors: Vec<String>,
+        allow_handler_errors: bool,
     }
 
     type Shared = Rc<RefCell<MockState>>;
@@ -3887,6 +3939,9 @@ mod grpc_mock {
     /// with the compiler's own diagnostic, not a mystery `Unimplemented` at the first call.
     fn start(lua: &Lua, opts: &Table) -> mlua::Result<GrpcMock> {
         let (pool, fds_bytes) = compile_schema(opts)?;
+        let allow_handler_errors = opts
+            .get::<Option<bool>>("allow_handler_errors")?
+            .unwrap_or(false);
 
         let reflect_v1 = tonic_reflection::server::Builder::configure()
             .register_encoded_file_descriptor_set(&fds_bytes)
@@ -3909,7 +3964,10 @@ mod grpc_mock {
         let listener = tokio::net::TcpListener::from_std(std_listener)
             .map_err(|e| err(format!("grpc.mock: from_std: {e}")))?;
 
-        let state: Shared = Rc::new(RefCell::new(MockState::default()));
+        let state: Shared = Rc::new(RefCell::new(MockState {
+            allow_handler_errors,
+            ..Default::default()
+        }));
         let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
 
         let accept_state = state.clone();
@@ -4205,6 +4263,11 @@ mod grpc_mock {
         matched: bool,
         error: Option<String>,
     ) {
+        // Only a *stub's* failure counts as a handler error. A mock that deliberately answers
+        // `NotFound` is doing its job; a handler that raised is our bug.
+        if let Some(e) = &error {
+            state.borrow_mut().handler_errors.push(e.clone());
+        }
         state.borrow_mut().journal.push(Recorded {
             method: method.to_string(),
             request: request.clone(),
@@ -4380,9 +4443,23 @@ mod grpc_mock {
                 Ok(out)
             });
 
+            // Raises on a reply-handler error, exactly as the http facet does — see there for why
+            // this rides `ctx:manage` teardown rather than inventing a reporting path.
             methods.add_method("stop", |_, this, ()| {
                 if let Some(tx) = this.shutdown.borrow_mut().take() {
                     let _ = tx.send(());
+                }
+                let errs = {
+                    let mut s = this.state.borrow_mut();
+                    if s.allow_handler_errors {
+                        s.handler_errors.clear();
+                        Vec::new()
+                    } else {
+                        std::mem::take(&mut s.handler_errors)
+                    }
+                };
+                if !errs.is_empty() {
+                    return Err(super::mock::handler_error_report("grpc.mock", &errs));
                 }
                 Ok(())
             });

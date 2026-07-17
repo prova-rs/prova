@@ -140,8 +140,10 @@ prova.test("query strings are parsed and do not defeat path matching", function(
   t:expect(r.query.limit):equals("2")
 end)
 
+-- `allow_handler_errors` because the error path IS the subject here. Without it this scope fails at
+-- teardown, by design — see testdata/mock_handler_errors.lua.
 prova.test("a raising handler answers 500 and records the error", function(t)
-  local m = http.mock(t)
+  local m = http.mock(t, { allow_handler_errors = true })
   m:on{ path = "/boom" }:reply(function() error("handler blew up") end)
 
   local res = http.get(m.url .. "/boom")
