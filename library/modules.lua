@@ -233,6 +233,87 @@ function HttpClient:wait_for(path, opts) end
 ---@return prova.HttpClient
 function http.client(opts) end
 
+-- ---------------------------------------------------------------------------------------------
+-- http.mock — the `mock` facet: provision a *fake* one
+-- ---------------------------------------------------------------------------------------------
+
+--- A request as the mock saw it. A handler's argument and a journal entry are the **same shape**, so
+--- `req.path` in a handler and `m:received()[1].path` in an assertion mean the same thing.
+---@class prova.MockRequest
+---@field method string                    # "GET", "POST", … (uppercase)
+---@field path string                      # path only; the query string is parsed into `query`
+---@field query table<string,string>       # parsed and percent-decoded
+---@field headers table<string,string>     # header names lowercased (HTTP names are case-insensitive)
+---@field body string                      # the raw request bytes
+---@field json? any                        # the body decoded, when it parses as JSON; nil otherwise
+---@field status? integer                  # journal only: the status the mock answered with
+---@field matched? boolean                 # journal only: whether any stub matched
+---@field error? string                    # journal only: why a handler failed, if it did
+
+--- A stub's response. `json` and `body` are mutually exclusive — a response has one body.
+---@class prova.MockReply
+---@field status? integer                  # default 200
+---@field json? any                        # encoded as JSON; sets content-type unless you set it
+---@field body? string                     # a raw body
+---@field headers? table<string,string>
+---@field delay? string                    # hold the response this long ("250ms") — fault injection
+
+--- What a request must look like for a stub to answer it. Omitted fields don't constrain, so
+--- `m:on{ path = "/x" }` matches any method. **First matching stub wins**, in declaration order.
+---@class prova.MockMatch
+---@field method? string                   # matched case-insensitively
+---@field path? string                     # exact
+---@field path_matches? string             # a Lua pattern (the same dialect as `:matches(pat)`)
+
+---@class prova.MockStub
+local MockStub = {}
+
+--- Answer matching requests with `reply` — a response table (terse), or a **function** taking the
+--- request and returning one (general). The function is real Lua, run on this Lua state at request
+--- time while the coroutine driving the SUT is suspended, so it can compute from the request and
+--- close over test locals. That is why there is no response-templating language to learn.
+---@param reply prova.MockReply|fun(req: prova.MockRequest): prova.MockReply
+function MockStub:reply(reply) end
+
+--- A mock HTTP server: a real server, in this process, that you stub and then assert on. Grammar-
+--- shaped like any resource — wire `m.url` into the system under test exactly as you would a
+--- database's, and it is torn down with the scope that owns it.
+---@class prova.MockServer
+---@field url string       # "http://127.0.0.1:<port>"
+---@field host string      # "127.0.0.1"
+---@field port integer     # the bound port (random, so parallel tests don't collide)
+local MockServer = {}
+
+--- Register a stub. Returns the stub so you can `:reply(…)` it.
+---@param match prova.MockMatch
+---@return prova.MockStub
+function MockServer:on(match) end
+
+--- Everything the mock was asked, in order — **as data**, for the ordinary matchers to assert on
+--- (`t:expect(m:received()):has_length(1)`). There is no `verify(count, pattern)` DSL because
+--- `t:expect` already exists. Unmatched requests are recorded too: a call you did not predict is
+--- usually the most interesting thing a mock can tell you.
+---@param filter? { method?: string, path?: string }
+---@return prova.MockRequest[]
+function MockServer:received(filter) end
+
+--- Stop serving. Idempotent — the owning scope calls this too.
+function MockServer:stop() end
+
+--- Provision a mock HTTP server, tied to `ctx`'s scope.
+---
+--- The fourth facet: `client` attaches to a real dependency, `container` provisions a real one,
+--- `wait_for` probes one — `mock` provisions a **fake** one. Reach for it on the boundary you cannot
+--- run (a partner API), for behavior the real thing won't produce on demand (a 5xx, a timeout), or to
+--- assert on the **interaction itself** — the one question a real dependency cannot answer. If you
+--- *can* run the real thing, run it: that is what `prova.containerized` is for.
+---
+--- The listener is bound before this returns, so the first request cannot race it — no `prova.retry`.
+---@param ctx prova.Context|prova.TestContext
+---@param opts? table
+---@return prova.MockServer
+function http.mock(ctx, opts) end
+
 ------------------------------------------------------------------------------------------
 -- archetect (plugin: in-process render via archetect-core)
 ------------------------------------------------------------------------------------------

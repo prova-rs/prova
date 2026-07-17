@@ -861,6 +861,10 @@ mod http {
         // http.client{ base_url, headers?, timeout? } → a reusable REST client that prefixes base_url
         // and merges default headers (per-call headers/timeout override).
         http.set("client", client_fn(lua)?)?;
+        // http.mock(ctx, opts?) → the `mock` facet: a real HTTP server, in-process, that you stub and
+        // then assert on. `client` attaches to a real one, `mock` provisions a fake one.
+        #[cfg(feature = "mock")]
+        http.set("mock", super::mock::mock_fn(lua)?)?;
         Ok(http)
     }
 
@@ -1133,6 +1137,578 @@ mod http {
         Ok((status, timeout, every))
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// mock — the `mock` facet: an in-process stub/record server (`http.mock`)
+// ---------------------------------------------------------------------------------------------
+
+/// `http.mock` — the fourth facet, alongside `client` (attach to a real one), `container`
+/// (provision a real one), and `wait_for` (probe one). It provisions a *fake* one: a real HTTP
+/// server, in this process, that you stub, drive, and then assert on.
+///
+/// **It is not for the dependency you can run.** Prova's whole containerized-topology arc exists so
+/// a test can drive the real thing; a mock earns its place on the boundary you cannot own (a partner
+/// API), the behavior the real thing will not produce on demand (a 5xx, a timeout), and — the one
+/// with no substitute — the *interaction itself*: a real dependency answers "did it work", never
+/// "did we call it exactly once with the right idempotency key". See `docs/plans/mocks.md`.
+///
+/// **Handlers are Lua, and that is the point.** A stub's reply may be a table (terse) or a function
+/// (general). The function runs on this very Lua state while the test coroutine that drove the SUT
+/// is suspended — which is only possible because the engine is async to the ground (`engine.rs`:
+/// bodies are `call_async`'d futures in a `FuturesUnordered`) and because `block_on_local` polls a
+/// `LocalSet` alongside them. That is why there is no response-templating mini-language here: the
+/// thing WireMock invented Handlebars to approximate is just a Lua closure.
+///
+/// **Readiness is a contract, as with `docker.run`'s `wait`.** The listener is bound *synchronously*
+/// before `http.mock` returns, so the first request cannot race the bind and no caller needs a
+/// `prova.retry`. In-process is what buys that — there is no daemon in the middle to lie about it.
+#[cfg(feature = "mock")]
+mod mock {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::time::Duration;
+
+    use bytes::Bytes;
+    use http_body_util::{BodyExt, Full};
+    use hyper::body::Incoming;
+    use hyper::service::service_fn;
+    use hyper::{Request, Response};
+    use mlua::{
+        Function, Lua, LuaSerdeExt, ObjectLike, Table, UserData, UserDataFields, UserDataMethods,
+        Value,
+    };
+
+    use crate::model::parse_duration;
+
+    /// A resolved response — what a `:reply{…}` table parsed to, or what a handler's returned table
+    /// parsed to. One type for both paths, so a handler cannot express a response a declarative stub
+    /// can't (and vice versa).
+    #[derive(Clone)]
+    struct ReplySpec {
+        status: u16,
+        body: Vec<u8>,
+        headers: Vec<(String, String)>,
+        delay: Option<Duration>,
+    }
+
+    impl ReplySpec {
+        fn plain(status: u16, msg: &str) -> Self {
+            ReplySpec {
+                status,
+                body: msg.as_bytes().to_vec(),
+                headers: vec![("content-type".into(), "text/plain".into())],
+                delay: None,
+            }
+        }
+    }
+
+    #[derive(Clone)]
+    enum Reply {
+        /// `m:on{…}` was called but `:reply(…)` never was. A silent 200 would make a forgotten reply
+        /// look like a passing test, so this answers 501 and records why.
+        Unset,
+        Data(ReplySpec),
+        Handler(Function),
+    }
+
+    struct Stub {
+        method: Option<String>,
+        path: Option<String>,
+        path_matches: Option<String>,
+        reply: Reply,
+    }
+
+    /// The request as both the handler and the journal see it — deliberately the *same shape*, so
+    /// `req.path` in a handler and `m:received()[1].path` in an assertion are the same field.
+    struct RequestData {
+        method: String,
+        path: String,
+        query: Vec<(String, String)>,
+        headers: Vec<(String, String)>,
+        body: Vec<u8>,
+    }
+
+    struct Recorded {
+        req: RequestData,
+        status: u16,
+        matched: bool,
+        error: Option<String>,
+    }
+
+    #[derive(Default)]
+    struct MockState {
+        stubs: Vec<Stub>,
+        journal: Vec<Recorded>,
+    }
+
+    /// `Rc`/`RefCell` rather than `Arc`/`Mutex` on purpose: every task that touches this is
+    /// `spawn_local`'d onto the same thread as the Lua state, so a cross-thread lock would be
+    /// ceremony around a contention that cannot happen.
+    type Shared = Rc<RefCell<MockState>>;
+
+    struct MockServer {
+        url: String,
+        host: String,
+        port: u16,
+        state: Shared,
+        shutdown: RefCell<Option<tokio::sync::oneshot::Sender<()>>>,
+    }
+
+    struct StubHandle {
+        state: Shared,
+        idx: usize,
+    }
+
+    /// `http.mock(ctx, opts?)` → a managed mock server.
+    pub(crate) fn mock_fn(lua: &Lua) -> mlua::Result<Function> {
+        lua.create_function(|lua, (ctx, _opts): (Value, Option<Table>)| {
+            let server = start(lua)?;
+            let ud = lua.create_userdata(server)?;
+            // Tie the server's life to the caller's scope, exactly as a container's is. Going
+            // through `ctx:manage` rather than reimplementing teardown means a mock is reaped by
+            // the same LIFO machinery, in the same order, as every other resource — including under
+            // `prova up`, where the scope is held until a signal rather than ending with a test.
+            match ctx {
+                Value::UserData(c) => {
+                    let _: Value = c.call_method("manage", &ud)?;
+                }
+                Value::Nil => {
+                    return Err(mlua::Error::RuntimeError(
+                        "http.mock(ctx): pass the test or fixture context (`t` / `ctx`) so the \
+                         server is torn down with the scope"
+                            .into(),
+                    ))
+                }
+                other => {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "http.mock(ctx): expected the test or fixture context, got a {}",
+                        other.type_name()
+                    )))
+                }
+            }
+            Ok(ud)
+        })
+    }
+
+    /// Bind synchronously (so the port is known and the socket is accepting before we return), then
+    /// `spawn_local` the accept loop onto the engine's `LocalSet`.
+    fn start(lua: &Lua) -> mlua::Result<MockServer> {
+        let std_listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .map_err(|e| mlua::Error::RuntimeError(format!("http.mock: bind: {e}")))?;
+        std_listener
+            .set_nonblocking(true)
+            .map_err(|e| mlua::Error::RuntimeError(format!("http.mock: set_nonblocking: {e}")))?;
+        let port = std_listener
+            .local_addr()
+            .map_err(|e| mlua::Error::RuntimeError(format!("http.mock: local_addr: {e}")))?
+            .port();
+        let listener = tokio::net::TcpListener::from_std(std_listener)
+            .map_err(|e| mlua::Error::RuntimeError(format!("http.mock: from_std: {e}")))?;
+
+        let state: Shared = Rc::new(RefCell::new(MockState::default()));
+        let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
+
+        let accept_state = state.clone();
+        let accept_lua = lua.clone();
+        // `spawn_local`, never `tokio::spawn`: this task holds a `Lua` handle (to call handlers),
+        // and mlua handles are `!Send`. See `engine::block_on_local` for why a `LocalSet` exists.
+        tokio::task::spawn_local(async move {
+            loop {
+                tokio::select! {
+                    _ = &mut rx => break,
+                    accepted = listener.accept() => {
+                        let Ok((stream, _peer)) = accepted else { break };
+                        let io = hyper_util::rt::TokioIo::new(stream);
+                        let conn_state = accept_state.clone();
+                        let conn_lua = accept_lua.clone();
+                        tokio::task::spawn_local(async move {
+                            let svc = service_fn(move |req: Request<Incoming>| {
+                                let s = conn_state.clone();
+                                let l = conn_lua.clone();
+                                async move { handle(l, s, req).await }
+                            });
+                            // http1 specifically: it puts no `Send` bound on the service or its
+                            // future, which is what lets a Lua handler live inside one. axum and
+                            // anything tower-shaped bound it `Send` and cannot express this.
+                            let _ = hyper::server::conn::http1::Builder::new()
+                                .serve_connection(io, svc)
+                                .await;
+                        });
+                    }
+                }
+            }
+        });
+
+        Ok(MockServer {
+            url: format!("http://127.0.0.1:{port}"),
+            host: "127.0.0.1".to_string(),
+            port,
+            state,
+            shutdown: RefCell::new(Some(tx)),
+        })
+    }
+
+    async fn handle(
+        lua: Lua,
+        state: Shared,
+        req: Request<Incoming>,
+    ) -> Result<Response<Full<Bytes>>, std::convert::Infallible> {
+        let rd = read_request(req).await;
+
+        // Resolve the match and clone the reply out before doing anything that can re-enter Lua: a
+        // handler may legitimately call `m:on{…}` or `m:received()`, which borrows this same
+        // RefCell. Holding a borrow across an await into Lua would panic at runtime.
+        let matched_idx = match find_match(&lua, &state, &rd) {
+            Ok(i) => i,
+            Err(e) => {
+                return Ok(respond(
+                    &state,
+                    rd,
+                    ReplySpec::plain(500, &format!("mock: matching failed: {e}")),
+                    false,
+                    Some(e.to_string()),
+                ))
+            }
+        };
+        let reply = matched_idx.map(|i| state.borrow().stubs[i].reply.clone());
+
+        let (spec, error) = match reply {
+            None => (
+                ReplySpec::plain(404, "prova http.mock: no matching stub"),
+                None,
+            ),
+            Some(Reply::Unset) => (
+                ReplySpec::plain(501, "prova http.mock: stub matched but has no :reply(…)"),
+                Some("stub matched but has no :reply(…)".to_string()),
+            ),
+            Some(Reply::Data(d)) => (d, None),
+            Some(Reply::Handler(f)) => run_handler(&lua, f, &rd).await,
+        };
+
+        if let Some(d) = spec.delay {
+            tokio::time::sleep(d).await;
+        }
+        Ok(respond(&state, rd, spec, matched_idx.is_some(), error))
+    }
+
+    /// Call a Lua reply handler. An error here must not be silent: it answers 500 *and* lands in the
+    /// journal, so a broken handler is visible to an assertion rather than looking like the
+    /// dependency legitimately failed.
+    async fn run_handler(lua: &Lua, f: Function, rd: &RequestData) -> (ReplySpec, Option<String>) {
+        let req_tbl = match req_to_lua(lua, rd) {
+            Ok(t) => t,
+            Err(e) => return (ReplySpec::plain(500, "mock: handler input"), Some(e.to_string())),
+        };
+        match f.call_async::<Value>(req_tbl).await {
+            Ok(Value::Table(t)) => match parse_reply(lua, &t) {
+                Ok(s) => (s, None),
+                Err(e) => (
+                    ReplySpec::plain(500, &format!("mock: handler reply: {e}")),
+                    Some(e.to_string()),
+                ),
+            },
+            Ok(other) => {
+                let msg = format!(
+                    "mock: handler must return a response table, returned a {}",
+                    other.type_name()
+                );
+                (ReplySpec::plain(500, &msg), Some(msg))
+            }
+            Err(e) => (
+                ReplySpec::plain(500, &format!("mock: handler raised: {e}")),
+                Some(e.to_string()),
+            ),
+        }
+    }
+
+    fn respond(
+        state: &Shared,
+        req: RequestData,
+        spec: ReplySpec,
+        matched: bool,
+        error: Option<String>,
+    ) -> Response<Full<Bytes>> {
+        // Record *every* request, matched or not. An unmatched call is usually the most interesting
+        // thing a mock can tell you — it is the SUT doing something you did not predict.
+        state.borrow_mut().journal.push(Recorded {
+            req,
+            status: spec.status,
+            matched,
+            error,
+        });
+
+        let mut builder = Response::builder().status(spec.status);
+        for (k, v) in &spec.headers {
+            builder = builder.header(k.as_str(), v.as_str());
+        }
+        builder
+            .body(Full::new(Bytes::from(spec.body)))
+            .unwrap_or_else(|e| {
+                Response::builder()
+                    .status(500)
+                    .body(Full::new(Bytes::from(format!("mock: bad response: {e}"))))
+                    .expect("500 with a plain body is always constructible")
+            })
+    }
+
+    async fn read_request(req: Request<Incoming>) -> RequestData {
+        let method = req.method().as_str().to_string();
+        let uri = req.uri().clone();
+        let path = uri.path().to_string();
+        let query = uri
+            .query()
+            .map(|q| form_urlencoded::parse(q.as_bytes()).into_owned().collect())
+            .unwrap_or_default();
+        let headers = req
+            .headers()
+            .iter()
+            .map(|(k, v)| {
+                // Lowercase: HTTP header names are case-insensitive, so a journal that preserved the
+                // sender's casing would make `r.headers["X-Idempotency-Key"]` work or not depending
+                // on which client wrote the request. One spelling, always.
+                (
+                    k.as_str().to_ascii_lowercase(),
+                    v.to_str().unwrap_or_default().to_string(),
+                )
+            })
+            .collect();
+        let body = req
+            .into_body()
+            .collect()
+            .await
+            .map(|c| c.to_bytes().to_vec())
+            .unwrap_or_default();
+        RequestData {
+            method,
+            path,
+            query,
+            headers,
+            body,
+        }
+    }
+
+    /// First match wins — insertion order. A later, more specific stub does not override an earlier
+    /// general one, because "most specific wins" needs a specificity ranking, and every ranking is a
+    /// rule you have to know before you can read a test.
+    fn find_match(lua: &Lua, state: &Shared, rd: &RequestData) -> mlua::Result<Option<usize>> {
+        // Collect the patterns first: matching calls back into Lua (`string.match`), and Lua could
+        // re-enter this RefCell.
+        let candidates: Vec<(usize, Option<String>)> = {
+            let s = state.borrow();
+            s.stubs
+                .iter()
+                .enumerate()
+                .filter(|(_, stub)| {
+                    stub.method
+                        .as_ref()
+                        .is_none_or(|m| rd.method.eq_ignore_ascii_case(m))
+                        && stub.path.as_ref().is_none_or(|p| &rd.path == p)
+                })
+                .map(|(i, stub)| (i, stub.path_matches.clone()))
+                .collect()
+        };
+        for (i, pat) in candidates {
+            match pat {
+                None => return Ok(Some(i)),
+                // Lua patterns, not regex — `path_matches` must mean exactly what `:matches(pat)`
+                // means everywhere else in the assertion surface, so ask Lua rather than reimplement.
+                Some(p) => {
+                    let string: Table = lua.globals().get("string")?;
+                    let matcher: Function = string.get("match")?;
+                    let r: Value = matcher.call((rd.path.clone(), p))?;
+                    if !matches!(r, Value::Nil) {
+                        return Ok(Some(i));
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    fn req_to_lua(lua: &Lua, rd: &RequestData) -> mlua::Result<Table> {
+        let t = lua.create_table()?;
+        t.set("method", rd.method.clone())?;
+        t.set("path", rd.path.clone())?;
+        let q = lua.create_table()?;
+        for (k, v) in &rd.query {
+            q.set(k.clone(), v.clone())?;
+        }
+        t.set("query", q)?;
+        let h = lua.create_table()?;
+        for (k, v) in &rd.headers {
+            h.set(k.clone(), v.clone())?;
+        }
+        t.set("headers", h)?;
+        t.set("body", lua.create_string(&rd.body)?)?;
+        // `json` is a convenience, not a contract: nil when the body isn't JSON. Unlike the http
+        // client's `res:json()` (which raises), a request body you didn't send isn't your bug — and
+        // a handler wants to branch on shape, not defend against a raise.
+        if let Ok(jv) = serde_json::from_slice::<serde_json::Value>(&rd.body) {
+            t.set("json", lua.to_value(&jv)?)?;
+        }
+        Ok(t)
+    }
+
+    fn recorded_to_lua(lua: &Lua, r: &Recorded) -> mlua::Result<Table> {
+        let t = req_to_lua(lua, &r.req)?;
+        t.set("status", r.status)?;
+        t.set("matched", r.matched)?;
+        if let Some(e) = &r.error {
+            t.set("error", e.clone())?;
+        }
+        Ok(t)
+    }
+
+    fn parse_reply(lua: &Lua, t: &Table) -> mlua::Result<ReplySpec> {
+        let status = t.get::<Option<u16>>("status")?.unwrap_or(200);
+        if !(100..=599).contains(&status) {
+            return Err(mlua::Error::RuntimeError(format!(
+                "mock reply: status must be 100..599, got {status}"
+            )));
+        }
+
+        let mut headers: Vec<(String, String)> = Vec::new();
+        if let Some(h) = t.get::<Option<Table>>("headers")? {
+            for pair in h.pairs::<String, String>() {
+                let (k, v) = pair?;
+                headers.push((k.to_ascii_lowercase(), v));
+            }
+        }
+
+        let json = t.get::<Option<Value>>("json")?.filter(|v| !v.is_nil());
+        let body_str = t.get::<Option<String>>("body")?;
+        if json.is_some() && body_str.is_some() {
+            return Err(mlua::Error::RuntimeError(
+                "mock reply: has both `json` and `body` — a response has one body, not two".into(),
+            ));
+        }
+
+        let body = match (json, body_str) {
+            (Some(j), _) => {
+                let jv: serde_json::Value = lua.from_value(j)?;
+                let bytes = serde_json::to_vec(&jv).map_err(|e| {
+                    mlua::Error::RuntimeError(format!("mock reply: encoding `json`: {e}"))
+                })?;
+                if !headers.iter().any(|(k, _)| k == "content-type") {
+                    headers.push(("content-type".into(), "application/json".into()));
+                }
+                bytes
+            }
+            (None, Some(b)) => b.into_bytes(),
+            (None, None) => Vec::new(),
+        };
+
+        let delay = match t.get::<Option<String>>("delay")? {
+            Some(s) => Some(parse_duration(&s).ok_or_else(|| {
+                mlua::Error::RuntimeError(format!("mock reply: bad `delay` duration {s:?}"))
+            })?),
+            None => None,
+        };
+
+        Ok(ReplySpec {
+            status,
+            body,
+            headers,
+            delay,
+        })
+    }
+
+    impl UserData for MockServer {
+        fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
+            // The grammar's fields, same as any resource: wire `m.url` into the SUT exactly the way
+            // you wire a database's.
+            fields.add_field_method_get("url", |_, this| Ok(this.url.clone()));
+            fields.add_field_method_get("host", |_, this| Ok(this.host.clone()));
+            fields.add_field_method_get("port", |_, this| Ok(this.port));
+        }
+
+        fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+            // m:on{ method?, path?, path_matches? } → a stub handle to :reply on.
+            methods.add_method("on", |lua, this, spec: Table| {
+                let stub = Stub {
+                    method: spec
+                        .get::<Option<String>>("method")?
+                        .map(|m| m.to_ascii_uppercase()),
+                    path: spec.get::<Option<String>>("path")?,
+                    path_matches: spec.get::<Option<String>>("path_matches")?,
+                    reply: Reply::Unset,
+                };
+                let idx = {
+                    let mut s = this.state.borrow_mut();
+                    s.stubs.push(stub);
+                    s.stubs.len() - 1
+                };
+                lua.create_userdata(StubHandle {
+                    state: this.state.clone(),
+                    idx,
+                })
+            });
+
+            // m:received(filter?) → the journal, as plain Lua tables. Deliberately *data*, not a
+            // `verify(count, pattern)` DSL: `t:expect` already asserts, and the matchers were never
+            // stringly-typed. A new matcher only if the journal proves to need one.
+            methods.add_method("received", |lua, this, filter: Option<Table>| {
+                let (want_method, want_path) = match &filter {
+                    Some(f) => (
+                        f.get::<Option<String>>("method")?,
+                        f.get::<Option<String>>("path")?,
+                    ),
+                    None => (None, None),
+                };
+                let out = lua.create_table()?;
+                let s = this.state.borrow();
+                let mut n = 0;
+                for r in s.journal.iter() {
+                    if let Some(m) = &want_method {
+                        if !r.req.method.eq_ignore_ascii_case(m) {
+                            continue;
+                        }
+                    }
+                    if let Some(p) = &want_path {
+                        if &r.req.path != p {
+                            continue;
+                        }
+                    }
+                    n += 1;
+                    out.set(n, recorded_to_lua(lua, r)?)?;
+                }
+                Ok(out)
+            });
+
+            // `stop` is what `ctx:manage` calls; idempotent, so an explicit stop plus scope teardown
+            // is not an error.
+            methods.add_method("stop", |_, this, ()| {
+                if let Some(tx) = this.shutdown.borrow_mut().take() {
+                    let _ = tx.send(());
+                }
+                Ok(())
+            });
+        }
+    }
+
+    impl UserData for StubHandle {
+        fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+            methods.add_method("reply", |lua, this, v: Value| {
+                let reply = match v {
+                    // The primitive. `topologies.md`: the convenience never removes it.
+                    Value::Function(f) => Reply::Handler(f),
+                    // The convenience — and the form `prova up` can serve with no test in scope, and
+                    // that a cassette round-trips to.
+                    Value::Table(t) => Reply::Data(parse_reply(lua, &t)?),
+                    other => {
+                        return Err(mlua::Error::RuntimeError(format!(
+                            "mock :reply expects a response table or a handler function, got a {}",
+                            other.type_name()
+                        )))
+                    }
+                };
+                this.state.borrow_mut().stubs[this.idx].reply = reply;
+                Ok(())
+            });
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // docker (testcontainers-style ephemeral dependencies, via the typed bollard daemon client)
 // ---------------------------------------------------------------------------------------------

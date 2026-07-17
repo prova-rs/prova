@@ -2545,10 +2545,15 @@ name = "prova-core"
 version = "0.2.8"
 dependencies = [
  "bollard",
+ "bytes",
  "dirs 5.0.1",
+ "form_urlencoded",
  "fs2",
  "futures",
  "glob",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "mlua",
  "prost",
  "prost-reflect",

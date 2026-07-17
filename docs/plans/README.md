@@ -24,8 +24,16 @@ outcome into the design docs and trim it here.
 - **Plugin LuaCATS/IDE support** — done and pushed: declaring a plugin in `prova.toml` auto-syncs its
   annotation stub so `require("<name>")` completes in-editor with zero manual wiring.
 
-## Plans — both tracks resolved
+## Plans — two tracks resolved, one open
 
+- [mocks.md](mocks.md) — virtualize the dependency you can't run, and assert on the interactions you
+  can't otherwise see. **Open — Phase A (`http.mock`) landed 2026-07-16; B–E open.** `mock` is a
+  fourth facet (`http.mock`, then `grpc.mock`/`net.mock`), core-native rather than the plugin
+  `foundations.md:154` assumes, with passthrough/record/replay as one option on the same object.
+  Phase A proved the load-bearing bet: **a stub's reply can be a Lua function**, run on the live Lua
+  state while the coroutine driving the SUT is suspended — so no response-templating language is
+  needed, now or later. Next: **C is the valuable one** (observe/passthrough + alias interposition),
+  B is the user-facing ask (`grpc.mock`).
 - [topology.md](topology.md) — the "one definition, multiple consumers" holy grail. **Resolved.**
   Attached + detached modes, three verb-selected port modes (fixed host ports / external reachability),
   and `prova watch` (the inhabited dev loop) all land. Remaining items are future/plugin-side and

@@ -3106,6 +3106,26 @@ fn new_runtime() -> mlua::Result<tokio::runtime::Runtime> {
         .map_err(|e| mlua::Error::RuntimeError(format!("failed to start async runtime: {e}")))
 }
 
+/// Drive `fut` to completion on `rt`, alongside any task `spawn_local`'d from within it.
+///
+/// **Why a `LocalSet` and not plain `block_on`.** Test bodies are concurrent *futures* in a
+/// `FuturesUnordered` (see `run_plan`), never `tokio::spawn`ed — so nothing here has ever needed to
+/// be `Send`, and mlua's handles aren't (no `send` feature: a `Lua` is pinned to its thread). That
+/// is fine until something must outlive the call that created it and still touch Lua: an
+/// `http.mock` server is spawned by one test and answers requests *while another coroutine is
+/// suspended*, so its task holds Lua handles and cannot be `tokio::spawn`ed at any price — that
+/// bound is on `spawn`, not on the runtime flavor, so `rt-multi-thread` would not help either.
+/// `spawn_local` is the mechanism for exactly this, and it requires a `LocalSet` to be the thing
+/// being polled. `run_until` polls the local task set and `fut` together, so a mock server is
+/// driven whenever a test awaits — which is the whole runtime assumption `http.mock` rests on.
+///
+/// Cheap and total: one allocation per run, and every `block_on` in the engine goes through here so
+/// no execution path is quietly the odd one out where a local task silently never runs.
+fn block_on_local<F: std::future::Future>(rt: &tokio::runtime::Runtime, fut: F) -> F::Output {
+    let local = tokio::task::LocalSet::new();
+    local.block_on(rt, fut)
+}
+
 pub fn run_path(path: &Path, reporter: &mut dyn Reporter) -> mlua::Result<Summary> {
     run_path_with(path, reporter, &RunConfig::default())
 }
@@ -3222,7 +3242,7 @@ fn execute_collected(
     let rt = new_runtime()?;
     let mut summary = Summary::default();
     summary.deselected = deselected;
-    rt.block_on(async {
+    block_on_local(&rt, async {
         let started = Instant::now();
         run_plan(lua, &plan, &state, config, reporter, &mut summary).await;
         // Scopes tear down inner→outer: every file scope, then the suite (test scopes already torn
@@ -3301,7 +3321,7 @@ fn eval_with_state(
     };
     lua.globals().set("ctx", lua.create_userdata(ctx)?)?;
 
-    let value = rt.block_on(async {
+    let value = block_on_local(rt, async {
         let outcome = chunk.call_async::<Value>(()).await;
         // Tear the transient scope down inside the same runtime, success OR error (mirroring
         // execute_collected), so whatever the snippet provisioned is reaped before we return.
@@ -3396,7 +3416,7 @@ pub fn up(
     let (lua, _col, state, id) = load_topology(files, name, config)?;
 
     let rt = new_runtime()?;
-    rt.block_on(async {
+    block_on_local(&rt, async {
         let result = provision_and_hold(&lua, &state, id, name, on_ready).await;
         // Always tear down whatever got provisioned — a clean signal, or a mid-provision failure.
         teardown_file_scopes(&state).await;
@@ -3420,7 +3440,7 @@ pub fn watch(
     mut on_error: impl FnMut(&mlua::Error),
 ) -> mlua::Result<()> {
     let rt = new_runtime()?;
-    rt.block_on(async {
+    block_on_local(&rt, async {
         let mut reapply = false;
         loop {
             // Build a fresh state each pass so a changed definition is actually re-read.
@@ -3618,7 +3638,7 @@ pub fn hold_topology(
 ) -> mlua::Result<HeldTopology> {
     let (lua, col, state, id) = load_topology(files, name, config)?;
     let rt = new_runtime()?;
-    let provisioned = rt.block_on(async {
+    let provisioned = block_on_local(&rt, async {
         match provision(&lua, &state, id, name).await {
             Ok(v) => Ok(v),
             Err(e) => {
@@ -3729,7 +3749,7 @@ impl HeldTopology {
         let mut summary = Summary::default();
         summary.deselected = deselected;
         // The holder's runtime, not a fresh one: held resources may be bound to it.
-        self.rt.block_on(async {
+        block_on_local(&self.rt, async {
             let started = Instant::now();
             run_plan(&self.lua, &plan, &state, &config, reporter, &mut summary).await;
             // Tear down the run's own scopes only. The injected instance is a cached value with no
@@ -3773,7 +3793,7 @@ impl HeldTopology {
     /// (`ctx:defer`/`ctx:manage`, LIFO), consuming the holder. Driven by the MCP `down` tool or by
     /// server shutdown — never by a warm run.
     pub fn teardown(self) {
-        self.rt.block_on(async {
+        block_on_local(&self.rt, async {
             teardown_file_scopes(&self.state).await;
             teardown_scope(&self.state.suite).await;
         });
@@ -3878,11 +3898,12 @@ pub fn discover_path_with(path: &Path, config: &RunConfig) -> mlua::Result<Vec<S
 
 /// A lint report for a plugin module: the grammar facets it exposes and any conformance issues.
 /// What kind of namespace a plugin returned. A plugin is *any* Lua module that returns a table; the
-/// resource shape (`client`/`container`/`wait_for`) is one common kind, but a library of helpers is
+/// resource shape (`client`/`container`/`wait_for`/`mock`) is one common kind, but a library of helpers is
 /// equally valid — so lint classifies rather than requiring a fixed shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PluginShape {
-    /// Exposes resource facets (`container`/`client`/`wait_for`) — a provisioned/attachable resource.
+    /// Exposes resource facets (`container`/`client`/`wait_for`/`mock`) — a provisioned, attachable, or
+    /// virtualized resource.
     Resource,
     /// A table with no resource facets — a helper library (custom matchers, builders, DSLs, …).
     Library,
@@ -3892,7 +3913,7 @@ pub enum PluginShape {
 pub struct PluginReport {
     /// The plugin's shape, if it returned a table (`None` only when it returned a non-table).
     pub shape: Option<PluginShape>,
-    /// Resource facet names found on the namespace (`client`/`container`/`wait_for`). Empty for a
+    /// Resource facet names found on the namespace (`client`/`container`/`wait_for`/`mock`). Empty for a
     /// library — which is fine, not an error.
     pub facets: Vec<String>,
     /// Conformance problems that make the plugin *invalid* — non-table return, or a malformed facet.
@@ -3927,7 +3948,7 @@ pub fn inspect_plugin(path: &Path, config: &RunConfig) -> mlua::Result<PluginRep
 
     // Recognized resource facets, in grammar order. A present facet must be a function; a malformed
     // one is an issue. Absent facets are fine — that just means this isn't a resource plugin.
-    for facet in ["client", "container", "wait_for"] {
+    for facet in ["client", "container", "wait_for", "mock"] {
         match ns.get::<Value>(facet)? {
             Value::Nil => {}
             Value::Function(_) => report.facets.push(facet.to_string()),

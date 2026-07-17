@@ -48,6 +48,30 @@ prost-reflect = { version = "0.16.5", features = ["serde"], optional = true }
 # Maintained serde_yaml fork. Feature-gated (default on); light, pure-Rust.
 serde_yaml_ng = { version = "0.10.0", optional = true }
 serde = { version = "1", optional = true }
+# The `mock` facet (`http.mock`) — an in-process stub/record server for the dependency you can't run.
+#
+# **Raw hyper, deliberately not axum.** A stub's response may be a *Lua function*, and mlua handles
+# are `!Send`, so the service future that calls one is `!Send`. axum (and anything tower-shaped)
+# bounds its handlers `Send`, which rules it out at the type level — no amount of wrapping recovers
+# it. hyper's `server::conn::http1` puts no `Send` bound on the service or its future, so the
+# connection future is driven on the engine's existing current-thread runtime via `spawn_local`,
+# right next to the test coroutine it is answering. That constraint chose the dep.
+#
+# Cost is zero: every crate here is already compiled into this binary via bollard/tonic/reqwest, so
+# this is a declaration, not a new stack. Feature-gated (default on) alongside `http`.
+hyper = { version = "1", default-features = false, features = [
+    "server",
+    "http1",
+], optional = true }
+hyper-util = { version = "0.1", default-features = false, features = [
+    "tokio",
+], optional = true }
+http-body-util = { version = "0.1", optional = true }
+bytes = { version = "1", optional = true }
+# Query-string parsing for a recorded request's `query` table. Already compiled (reqwest → url →
+# form_urlencoded); declared rather than hand-rolled because percent-decoding is a well-known place
+# to introduce a quiet bug for no benefit.
+form_urlencoded = { version = "1", optional = true }
 
 [dev-dependencies]
 # A cross-process file lock, for serializing the docker-heavy integration tests (tests/common/mod.rs).
@@ -59,8 +83,19 @@ serde = { version = "1", optional = true }
 fs2 = "0.4"
 
 [features]
-default = ["http", "sqlite", "docker", "grpc", "graphql", "yaml"]
+default = ["http", "sqlite", "docker", "grpc", "graphql", "yaml", "mock"]
 http = ["dep:reqwest"]
+# The `mock` facet on protocol namespaces — `http.mock` today; `grpc.mock`/`net.mock` later. Implies
+# `http`: a mock is asserted on through the same journal the `http` client's types already describe,
+# and there is no coherent build with a mock server but no client to drive it.
+mock = [
+    "http",
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:http-body-util",
+    "dep:bytes",
+    "dep:form_urlencoded",
+]
 # GraphQL over HTTP (POST { query, variables } → { data, errors }); shares reqwest with `http`.
 graphql = ["dep:reqwest"]
 # SQL databases — one namespace per engine (feature = namespace = global), all returning the same
