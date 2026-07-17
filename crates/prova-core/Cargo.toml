@@ -57,7 +57,7 @@ prost-reflect = { version = "0.16.5", features = ["serde"], optional = true }
 # `http`'s `:json()` does for JSON. General black-box-testing capability, not archetype-specific.
 # Maintained serde_yaml fork. Feature-gated (default on); light, pure-Rust.
 serde_yaml_ng = { version = "0.10.0", optional = true }
-serde = { version = "1", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
 # The `mock` facet (`http.mock`) — an in-process stub/record server for the dependency you can't run.
 #
 # **Raw hyper, deliberately not axum.** A stub's response may be a *Lua function*, and mlua handles
@@ -100,6 +100,9 @@ http = ["dep:reqwest"]
 # and there is no coherent build with a mock server but no client to drive it.
 mock = [
     "http",
+    # Cassettes are serde-derived structs. `serde` is already compiled (reqwest), and `derive` is
+    # additive for the `yaml` feature that also uses it.
+    "dep:serde",
     "dep:hyper",
     "dep:hyper-util",
     "dep:http-body-util",

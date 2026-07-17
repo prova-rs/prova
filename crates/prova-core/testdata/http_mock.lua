@@ -149,6 +149,49 @@ prova.test("a raising handler answers 500 and records the error", function(t)
   t:expect(m:received()[1].error):contains("handler blew up")
 end)
 
+-- `route` exists because the alternative is spelling one path twice — `path_matches = "^/orders/"`
+-- to match, and `req.path:match("/orders/(.+)$")` to extract — in two languages free to drift.
+prova.test("route captures path params", function(t)
+  local m = http.mock(t)
+  m:on{ method = "GET", route = "/orders/:id" }:reply(function(req)
+    return { status = 200, json = { saw = req.params.id } }
+  end)
+  m:on{ route = "/t/:tenant/u/:user" }:reply(function(req)
+    return { status = 200, json = { t = req.params.tenant, u = req.params.user } }
+  end)
+
+  t:expect(http.get(m.url .. "/orders/o-42"):json().saw):equals("o-42")
+  local both = http.get(m.url .. "/t/acme/u/bob"):json()
+  t:expect(both.t):equals("acme")
+  t:expect(both.u):equals("bob")
+end)
+
+-- Segment-wise matching, which is the reason to have this rather than a hand-rolled `(.+)$`: that
+-- pattern happily swallows a `/` and matches a sub-resource it was never meant to.
+prova.test("a route param does not swallow a slash", function(t)
+  local m = http.mock(t)
+  m:on{ route = "/orders/:id" }:reply{ status = 200, body = "one" }
+
+  t:expect(http.get(m.url .. "/orders/o-1").body):equals("one")
+  t:expect(http.get(m.url .. "/orders/o-1/items").status):equals(404) -- a different route entirely
+  t:expect(http.get(m.url .. "/orders/").status):equals(404)          -- an empty param is not a param
+end)
+
+-- A literal colon is legal in a path and real APIs use it (Google spells custom methods
+-- `/v1/models/x:predict`). `path` staying exact is what keeps those expressible.
+prova.test("path stays exact and does not interpret a colon", function(t)
+  local m = http.mock(t)
+  m:on{ path = "/v1/models/x:predict" }:reply{ status = 200, body = "predicted" }
+  t:expect(http.get(m.url .. "/v1/models/x:predict").body):equals("predicted")
+end)
+
+prova.test("params appear in the journal too", function(t)
+  local m = http.mock(t)
+  m:on{ route = "/orders/:id" }:reply{ status = 200 }
+  http.get(m.url .. "/orders/o-7")
+  t:expect(m:received()[1].params.id):equals("o-7")
+end)
+
 prova.test("is grammar-shaped: url, host, port", function(t)
   local m = http.mock(t)
   t:expect(m.host):equals("127.0.0.1")

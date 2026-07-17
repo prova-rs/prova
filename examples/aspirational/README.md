@@ -13,9 +13,26 @@ The files were deliberately dropped from the `*_test.lua` naming so `prova` disc
 
 | File | Showcases | Needs |
 |------|-----------|-------|
-| `ordering.lua` | flow + `depends_on` + resource gating | a live service |
-| `dependent_flows.lua` | flow-to-flow DAG (diamond) | a live service |
-| `http_service.lua` | render → build → boot → probe, table-driven | a live service |
+| `dependent_flows.lua` | flow-to-flow DAG (diamond) | a live service — **can graduate**, same as `ordering` did |
+| `http_service.lua` | render → build → boot → probe, table-driven | a **real** service: archetect + cargo (Phase 2 capstone) |
+
+**A distinction worth keeping straight**, now that `http.mock` exists: "needs a live service" meant
+two different things in this table, and only one of them is a mock's business.
+
+- In `ordering.lua`/`dependent_flows.lua` the service is **scaffolding** — the *primitives* (flows,
+  DAG edges, resource gating) are what's on show, and the API is just something to order calls
+  against. A stateful `http.mock` is a legitimate stand-in, and that is exactly how `ordering`
+  graduated.
+- In `http_service.lua` the service **is the system under test** — the whole point is render → build
+  → boot → probe. Standing a mock in for it would be mocking the SUT, which is a non-goal
+  (`docs/plans/mocks.md`): the test would pass while proving nothing. It waits on the Phase 2
+  capstone, exactly as it always did.
+
+**Graduated (2026-07-16):** `ordering.lua` → [`../ordering_test.lua`](../ordering_test.lua), against a
+stateful `http.mock` — no docker, no network, no build. It doubles as the worked example of a
+**stateful fake**: a `:reply` handler is real Lua, so the fake's state is an ordinary table the
+fixture closes over and the ordinary matchers assert on
+(`t:expect(svc.orders[id].status):equals("cancelled")`). No state API required.
 
 **Graduated (2026-07-15):** the capstone, kitchen-sink, and suite examples once lived here as
 design sketches using `postgres.container` / `mysql.container` / … as built-in globals. The resource

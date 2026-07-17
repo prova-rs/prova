@@ -322,11 +322,41 @@ CI quirk):
   owning test at scope end). The server's "method not in the schema" branch is **unreachable from
   `grpc.client`** by construction (reflection and dispatch share one descriptor set), so it is
   covered only by inspection — it exists for a real SUT calling a method the mock's proto omits.
-- **Phase C — passthrough / record / replay, and the network vantage.** The observe dial, plus the
-  shim + alias interposition (decision 5). Cassette format is a snapshot in all but name; reuse the
-  machinery rather than inventing a file format. The two halves ship together because interposing on
-  an alias with nothing to forward *to* is not a feature — passthrough is what makes the alias
-  takeover worth doing.
+- **Phase C1 — passthrough / record / replay, host vantage. DONE (2026-07-16).** The observe dial as
+  one option on the same object: `{ passthrough = url }` forwards unmatched requests to the real
+  dependency and records the exchange; `{ record = … }` writes a cassette; `{ replay = … }` answers
+  from one with no dependency at all. Stubs always win, so *partial* mocking works. 12 proofs in
+  `testdata/mock_proxy.lua` / `tests/mock_proxy.rs` — hermetic (the "real service" each proxy
+  forwards to is another `http.mock`), ~38ms.
+
+  **The drift proof is the one that matters**: record against the real service, `stop()` it, replay —
+  the *same assertions* pass with the dependency gone. That is the answer to the objection that sinks
+  most mocking, and it is only an answer because both sides run the identical test.
+
+  Decisions worth keeping: replay is **strict** (an unrecorded call 404s rather than being invented —
+  letting the SUT drift silently is the exact failure a cassette exists to catch) and **consumes**
+  entries per (method, path, query), so a recorded sequence reproduces instead of collapsing onto its
+  first answer, while different endpoints stay order-independent. Cassettes **redact** auth/cookie
+  headers by default — recording real traffic writes real traffic to a file someone will commit, and
+  a live bearer token in the repo is an incident, not a bug. The in-memory journal is *not* redacted,
+  because that is where you assert auth was sent.
+
+  **The plan originally bundled this with the alias work and that was wrong.** "Interposing on an
+  alias with nothing to forward to is not a feature" is true; the converse is not. Passthrough is
+  fully valuable in the host vantage, where the SUT is simply pointed at `m.url` like any mock — so
+  the observe capability had no business waiting behind an image, a `release.yml` change, and a
+  platform split.
+- **Phase C2 — the network vantage.** Bind `0.0.0.0` (opt-in — it is a real LAN exposure) +
+  `extra_hosts` through `docker.run`/`prova.containerized`. Not proxy-specific at all: it is how *any*
+  containerized SUT reaches *any* host-bound mock. **Wants Linux CI, not a laptop** — on Docker
+  Desktop a `127.0.0.1` bind passes, so the mutation check that would prove this can only fail on
+  Linux, and a green here would be precisely the false confidence that prompted the warning.
+- **Phase C3 — alias interposition (the shim).** Deferred behind a trigger: a SUT with **no injection
+  point** (a third-party image, a discovery name baked at build time). **The shim is built locally
+  with `docker.build`, not published** — it is a dumb TCP forwarder whose contract ("listen here, pump
+  bytes there") cannot change, so there is nothing to version and nothing to skew. That answers the
+  "what does a dev build do with no published shim" question by deleting it, and takes `release.yml`
+  out of this plan entirely.
 - **Phase D — `net.mock`.** One byte-stream namespace, transport as an option (`{ listen = "tcp" }` /
   `{ listen = "unix", path = … }`) — TCP and Unix-stream are the same API at a different address, so
   two thin namespaces would be over-namespacing. **Unix sockets get their vantage for free where it
@@ -393,6 +423,37 @@ reason, green, **then mutation-check the green**, then `tests/<name>.rs` for CI.
 - **Trigger discipline (`north-star-roadmap.md:165-169`).** Phases D and E have no consumer yet.
   D's trigger: a real suite that needs fault injection or a socket daemon. E's trigger: a GraphQL SUT
   with a GraphQL dependency. Do not build them ahead of one.
+
+### Stateful fakes: already expressible, and that is the finding
+
+Asked (2026-07-16) for "helpers for creating stateful mocks/proxies, and to assert over state changes
+on the Proxy/Mock". The honest answer is that **the raw capability already is the feature**, and it
+falls out of decision 3 rather than needing anything new: a `:reply` handler is real Lua, so a fake's
+state is an ordinary table the fixture closes over — and because it is an ordinary table, `t:expect`
+already asserts over it. `examples/ordering_test.lua` is the worked proof: create → read back →
+cancel against a fake that really stores orders, then
+`t:expect(svc.orders[id].status):equals("cancelled")`. No state API, no mini-language, no new concept.
+This is what a templating language costs you and a real language does not.
+
+Writing that example did surface exactly one piece of real boilerplate, so exactly one helper was
+built: **`route`**. Without it a stateful fake spells every path *twice* — `path_matches = "^/orders/"`
+to match and `req.path:match("/orders/(.+)$")` to extract — in two languages free to drift.
+`route = "/orders/:id"` → `req.params.id` is one spelling, and matching segment-wise fixes the bug the
+hand-rolled version ships with by default (`(.+)$` swallows a `/` and matches the sub-resource). It is
+its own key rather than an extension of `path` because a literal colon is legal and real APIs use it
+(`/v1/models/x:predict`).
+
+**What was NOT built, and its trigger.** A mock-owned state box with per-request snapshots —
+`http.mock(ctx, { state = {…} })`, handlers taking `(req, s)`, and `m:states()` returning the state
+after each request, pairing 1:1 with the journal so a snapshot shows *what the SUT did* next to *what
+that did to the world*. It is genuinely more than a closure (the closure gives you the current state;
+this gives you the **transition history**, which is what "assert over state changes" reads as at its
+most ambitious), and `m:states()` would slot into the existing snapshot protocol. But there is no
+consumer: the one real stateful fake we have wanted a `route`, not a state box, and its state
+assertion was a one-liner against a plain table. Per `north-star-roadmap.md:165-169`, that makes it
+speculative infrastructure. **Trigger:** a suite that hand-rolls a transition log next to its fake
+(`table.insert(transitions, …)` inside handlers) — that copy-paste appearing twice is the signal, and
+until it does the closure is not a workaround, it is the answer.
 
 ### The reveal Phase C makes possible — recorded, not scheduled
 

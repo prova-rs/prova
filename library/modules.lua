@@ -246,9 +246,11 @@ function http.client(opts) end
 ---@field headers table<string,string>     # header names lowercased (HTTP names are case-insensitive)
 ---@field body string                      # the raw request bytes
 ---@field json? any                        # the body decoded, when it parses as JSON; nil otherwise
+---@field params table<string,string>      # captures from the stub's `route` (empty for other stubs)
 ---@field status? integer                  # journal only: the status the mock answered with
----@field matched? boolean                 # journal only: whether any stub matched
----@field error? string                    # journal only: why a handler failed, if it did
+---@field matched? boolean                 # journal only: whether a *stub* matched
+---@field source? string                   # journal only: "stub" | "passthrough" | "replay" | "unmatched"
+---@field error? string                    # journal only: why a handler or upstream failed, if it did
 
 --- A stub's response. `json` and `body` are mutually exclusive — a response has one body.
 ---@class prova.MockReply
@@ -262,8 +264,10 @@ function http.client(opts) end
 --- `m:on{ path = "/x" }` matches any method. **First matching stub wins**, in declaration order.
 ---@class prova.MockMatch
 ---@field method? string                   # matched case-insensitively
----@field path? string                     # exact
+---@field path? string                     # exact — a literal `:` is NOT a param (`/models/x:predict`)
 ---@field path_matches? string             # a Lua pattern (the same dialect as `:matches(pat)`)
+---@field route? string                    # a template: "/orders/:id" → `req.params.id`. Segment-wise,
+---                                        #   so a param never swallows a `/`.
 
 ---@class prova.MockStub
 local MockStub = {}
@@ -300,7 +304,29 @@ function MockServer:received(filter) end
 --- Stop serving. Idempotent — the owning scope calls this too.
 function MockServer:stop() end
 
+--- The observe dial. A proxy is not a second concept: it is a mock whose *unmatched* requests are
+--- forwarded rather than 404'd. Stubs always win, so you can stub one endpoint and let the rest reach
+--- the real service (partial mocking).
+---@class prova.MockOpts
+---@field passthrough? string   # forward unmatched requests to this base URL — the dependency stays REAL
+---@field record? string        # write forwarded exchanges to this cassette on teardown (needs `passthrough`)
+---@field replay? string        # answer from a cassette; no dependency, no network (excludes `passthrough`)
+---@field redact? string[]      # extra header names to redact in the cassette (auth/cookies are redacted anyway)
+
 --- Provision a mock HTTP server, tied to `ctx`'s scope.
+---
+--- **Stateful fakes need no extra API.** A `:reply` handler is real Lua, so state is an ordinary
+--- table your fixture closes over, and the ordinary matchers assert on it:
+--- ```lua
+--- local orders = {}
+--- m:on{ method = "POST", path = "/orders" }:reply(function(req)
+---   orders[id] = { id = id, status = "open" }; return { status = 201, json = orders[id] }
+--- end)
+--- m:on{ method = "GET", route = "/orders/:id" }:reply(function(req)
+---   return orders[req.params.id] and { json = orders[req.params.id] } or { status = 404 }
+--- end)
+--- t:expect(orders["o-1"].status):equals("cancelled")   -- assert the state change directly
+--- ```
 ---
 --- The fourth facet: `client` attaches to a real dependency, `container` provisions a real one,
 --- `wait_for` probes one — `mock` provisions a **fake** one. Reach for it on the boundary you cannot
@@ -310,7 +336,7 @@ function MockServer:stop() end
 ---
 --- The listener is bound before this returns, so the first request cannot race it — no `prova.retry`.
 ---@param ctx prova.Context|prova.TestContext
----@param opts? table
+---@param opts? prova.MockOpts
 ---@return prova.MockServer
 function http.mock(ctx, opts) end
 

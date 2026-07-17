@@ -19,5 +19,5 @@ fn http_mock_stubs_records_and_runs_lua_handlers() {
     let mut reporter = NullReporter;
     let summary = run_path(&path, &mut reporter).expect("run http_mock.lua");
     assert_eq!(summary.failed, 0, "failed");
-    assert_eq!(summary.passed, 14, "passed");
+    assert_eq!(summary.passed, 18, "passed");
 }
