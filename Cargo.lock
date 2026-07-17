@@ -2639,7 +2639,7 @@ dependencies = [
 
 [[package]]
 name = "prova-archetect"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "archetect-api",
  "archetect-core",
@@ -2650,7 +2650,7 @@ dependencies = [
 
 [[package]]
 name = "prova-cli"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "fs2",
  "prova-archetect",
@@ -2666,7 +2666,7 @@ dependencies = [
 
 [[package]]
 name = "prova-core"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "bollard",
  "bytes",
