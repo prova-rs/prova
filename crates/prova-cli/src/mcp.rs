@@ -327,6 +327,13 @@ struct DownRequest {
     name: String,
 }
 
+#[derive(Deserialize, JsonSchema)]
+struct IntrospectRequest {
+    /// Case-insensitive substring, matched across name and summary — `"shell"`, `"retry"`,
+    /// `"tempdir"`. Omit for the whole surface.
+    filter: Option<String>,
+}
+
 fn to_selection(args: &SelectionArgs) -> Selection {
     Selection {
         keywords: args.keywords.clone().unwrap_or_default(),
@@ -517,6 +524,27 @@ impl ProvaMcpServer {
         let _serialized = self.run_lock.lock().await;
         let env = self.env.clone();
         blocking(move || list_blocking(&env, req)).await
+    }
+
+    #[tool(
+        name = "introspect",
+        description = "Discover prova's API surface WITHOUT reading its source: every function, method, and value shape as { name, signature, summary }. `filter` narrows by substring across name+summary (e.g. \"shell\", \"tempdir\", \"ShellResult\"). Start here — it answers what to call, how to call it, and what comes back, so you don't have to probe with eval. Parsed from the same LuaCATS stubs that drive editor completion, so it cannot drift from what an author sees."
+    )]
+    async fn introspect(&self, Parameters(req): Parameters<IntrospectRequest>) -> CallToolResult {
+        // No Lua environment needed — the surface is static, so introspection never provisions,
+        // never blocks on a run, and works before a manifest exists.
+        let all = prova_core::help::core_entries();
+        let entries = match req.filter.as_deref().map(str::trim) {
+            Some(n) if !n.is_empty() => prova_core::help::filter(&all, n),
+            _ => all,
+        };
+        let rows: Vec<_> = entries
+            .iter()
+            .map(|e| json!({ "name": e.name, "signature": e.signature, "summary": e.summary }))
+            .collect();
+        CallToolResult::success(vec![Content::text(
+            json!({ "entries": rows }).to_string(),
+        )])
     }
 
     #[tool(
