@@ -216,6 +216,12 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    // Unix-only, because the assertion below is only meaningful where `is_alive` is real: off unix
+    // it is a stub that assumes every pid is alive (detached `up` is a unix story — SIGTERM is how
+    // the held process runs its teardown). Asserting a bogus pid is dead on Windows was asserting
+    // behavior the platform stub does not have, which is why this test — not the code — was the
+    // thing that had been red there.
+    #[cfg(unix)]
     #[test]
     fn is_alive_reports_self_and_not_a_bogus_pid() {
         assert!(is_alive(std::process::id()));
