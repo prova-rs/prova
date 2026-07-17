@@ -3,6 +3,8 @@ use std::process::{Command, Stdio};
 
 use prova_core::{run_path, NullReporter};
 
+mod common;
+
 fn docker_available() -> bool {
     Command::new("docker")
         .args(["info"])
@@ -21,6 +23,7 @@ fn docker_available() -> bool {
 /// an image that does not exist. Runs where docker is present, skips (never fails) where it is absent.
 #[test]
 fn docker_build_proof_runs_or_skips_gracefully() {
+    let _docker = common::docker_guard();
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/docker_build.lua");
     let mut reporter = NullReporter;
     let summary = run_path(&path, &mut reporter).expect("run docker_build.lua");

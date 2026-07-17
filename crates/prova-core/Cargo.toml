@@ -49,6 +49,15 @@ prost-reflect = { version = "0.16.5", features = ["serde"], optional = true }
 serde_yaml_ng = { version = "0.10.0", optional = true }
 serde = { version = "1", optional = true }
 
+[dev-dependencies]
+# A cross-process file lock, for serializing the docker-heavy integration tests (tests/common/mod.rs).
+# `cargo test` runs each test BINARY as its own process, in parallel, and `--test-threads` bounds only
+# the threads WITHIN a binary — so all eight docker binaries pile onto one daemon at once and
+# container starts time out. That is a recurring flake, not a logic failure (it times out; a real
+# failure fails fast). Needs to be a crate rather than a raw flock because the CI matrix includes
+# Windows.
+fs2 = "0.4"
+
 [features]
 default = ["http", "sqlite", "docker", "grpc", "graphql", "yaml"]
 http = ["dep:reqwest"]

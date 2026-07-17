@@ -3,6 +3,8 @@ use std::process::{Command, Stdio};
 
 use prova_core::{run_path, NullReporter};
 
+mod common;
+
 fn docker_available() -> bool {
     Command::new("docker")
         .args(["info"])
@@ -23,6 +25,7 @@ fn docker_available() -> bool {
 /// SDK, no toolchain. Runs where docker is present, skips (never fails) where it is absent.
 #[test]
 fn container_app_proof_runs_or_skips_gracefully() {
+    let _docker = common::docker_guard();
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/container_app.lua");
     let mut reporter = NullReporter;
     let summary = run_path(&path, &mut reporter).expect("run container_app.lua");

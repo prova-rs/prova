@@ -3,6 +3,8 @@ use std::process::{Command, Stdio};
 
 use prova_core::{run_path, NullReporter};
 
+mod common;
+
 fn docker_available() -> bool {
     Command::new("docker")
         .args(["info"])
@@ -18,6 +20,7 @@ fn docker_available() -> bool {
 /// (via `requires`) where it is absent. Either way, nothing fails.
 #[test]
 fn grpc_module_calls_real_server_or_skips() {
+    let _docker = common::docker_guard();
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/grpc_test.lua");
     let mut reporter = NullReporter;
     let summary = run_path(&path, &mut reporter).expect("run grpc_test.lua");
