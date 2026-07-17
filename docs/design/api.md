@@ -628,8 +628,26 @@ Authoring quality is a first-class goal, so the LSP story is settled before the 
 ## Open questions (to resolve while prototyping the engine)
 
 1. **`describe` scoping** — labeling-only (current) vs. real nested fixture scope (jest).
-2. **Fixture finalization on failure** — if a test fails mid-way, teardown still runs; do
-   we surface teardown errors as separate failures or attach them to the test?
+2. ~~**Fixture finalization on failure** — surface teardown errors as separate failures or attach
+   them to the test?~~ **Resolved 2026-07-17: separate leaves.** A raising teardown is reported as
+   its own node, `<scope> ⟶ teardown`, counted in `failed`.
+
+   Attaching to a test cannot work in general — a `file`-scoped fixture tears down after *every*
+   test in its file, so no single test owns the failure, and picking one would blame whichever test
+   happened to sort last. It is also the wrong place: the teardown ran *after* the body passed, so
+   the defect is not in the test. It needed no new reporting concept; `Event::NodeFinished` already
+   carries a path, an outcome, and a message.
+
+   **A teardown leaf never gates.** It does not cascade-skip a flow's later steps and does not skip
+   a `depends_on` dependent: those gate on whether the unit's *work* passed, and a dependent's
+   premise still holds when only a cleanup raised. (The first implementation got this wrong and
+   skipped a flow's remaining steps; `testdata/teardown_errors.lua` is what caught it.) Every
+   teardown still runs even when an earlier one raises — one bad `defer` must not strand the
+   cleanups registered around it.
+
+   Why it mattered more than its size suggests: teardown errors were previously **discarded**
+   (`let _ = …`), and `ctx:manage` teardown is what stops containers — so a cleanup that raised was
+   a leaked container the run reported as green.
 3. **Parallelism vs. `suite`/`file` fixtures** — a `file`-scoped fixture is naturally
    serialized within its file; across files we can parallelize freely. Confirm the cache
    is keyed so parallel workers don't double-instantiate a `suite` fixture (needs a

@@ -495,7 +495,16 @@ impl RunState {
 
 /// Async so a `ctx:defer` callback can `await` (e.g. `proc:stop()` to kill a spawned process, or any
 /// async resource cleanup). Sync callbacks just complete immediately under `call_async`.
-async fn teardown_scope(scope: &Rc<RefCell<ScopeState>>) {
+///
+/// Returns whatever raised, so the caller can report it. **Teardown errors used to be discarded**
+/// (`let _ = …`), which mattered far more than "a TODO": `ctx:manage` teardown is what stops
+/// containers, so a cleanup that raised was a *leaked container the run reported as green*. The
+/// failure could not be seen, only noticed later as a stray container.
+///
+/// Every teardown still runs even if an earlier one raises. One bad `defer` must not strand the
+/// cleanups registered around it, or a single mistake leaks every resource behind it.
+#[must_use = "teardown errors must be reported, not dropped — that was the bug this returns to fix"]
+async fn teardown_scope(scope: &Rc<RefCell<ScopeState>>) -> Vec<String> {
     let (teardowns, tempdirs) = {
         let mut s = scope.borrow_mut();
         (
@@ -503,13 +512,40 @@ async fn teardown_scope(scope: &Rc<RefCell<ScopeState>>) {
             std::mem::take(&mut s.tempdirs),
         )
     };
+    let mut errors = Vec::new();
     // LIFO: last registered runs first, so a fixture's cleanup runs before its dependencies'.
     for f in teardowns.into_iter().rev() {
-        let _ = f.call_async::<()>(()).await; // TODO: surface teardown errors as findings
+        if let Err(e) = f.call_async::<()>(()).await {
+            errors.push(e.to_string());
+        }
     }
     for dir in tempdirs.into_iter().rev() {
         let _ = std::fs::remove_dir_all(&dir);
     }
+    errors
+}
+
+/// A scope's teardown failures, as their own reported leaf.
+///
+/// **Why separate leaves rather than blaming a test** (resolving `docs/design/api.md` §Open
+/// questions #2). A `Scope.File` fixture tears down after *every* test in the file, so no single
+/// test owns the failure — attributing it to one would blame whichever test happened to sort last.
+/// And a teardown failure is not the test's fault: it happened *after* the body passed, so turning
+/// that test red would report a defect in the wrong place. It is its own event, so it gets its own
+/// node: `<scope> ⟶ teardown`, counted in `failed` like any other. That needs no new reporting
+/// concept — `Event::NodeFinished` already carries a path, an outcome, and a message.
+fn teardown_results(label: &str, errors: Vec<String>) -> Vec<NodeResult> {
+    errors
+        .into_iter()
+        .map(|message| NodeResult {
+            path: format!("{label} ⟶ teardown"),
+            outcome: Outcome::Failed,
+            duration: Duration::ZERO,
+            assertions: 0,
+            message: Some(message),
+            teardown: true,
+        })
+        .collect()
 }
 
 pub(crate) fn make_tempdir() -> std::io::Result<PathBuf> {
@@ -2761,14 +2797,24 @@ struct NodeResult {
     duration: Duration,
     assertions: usize,
     message: Option<String>,
+    /// True for a `⟶ teardown` leaf.
+    ///
+    /// Reported exactly like any other node — but it **never gates**. A cleanup that raised is not
+    /// the work failing: the body already passed. So it must not cascade-skip a flow's later steps,
+    /// and must not skip a `depends_on` dependent, either of which would report a defect in code
+    /// that is fine. It is reported *because it happened*, not because the work failed. The flag
+    /// makes that structural rather than positional — the first proof written here caught the
+    /// alternative (keying on "any failed result") skipping a flow's remaining steps.
+    teardown: bool,
 }
 
+/// Returns the test's own node, plus a `⟶ teardown` node per teardown failure (usually none).
 async fn run_one(
     lua: &Lua,
     item: &PlanItem,
     state: &Rc<RunState>,
     flow_scope: Option<Rc<RefCell<ScopeState>>>,
-) -> NodeResult {
+) -> Vec<NodeResult> {
     let run = Rc::new(RefCell::new(TestRun::default()));
     // Snapshot context: where this test's `.snap` files live and how they're keyed. Absent when the
     // source file has no recorded path (e.g. a topology run), which makes `matches_snapshot` error.
@@ -2813,14 +2859,19 @@ async fn run_one(
             Ok(r) => r,
             Err(_elapsed) => {
                 let assertions = run.borrow().assertions;
-                teardown_scope(&test_scope).await; // teardown still runs after a timeout
-                return NodeResult {
+                // Teardown still runs after a timeout — and a timed-out test is exactly when a
+                // cleanup is most likely to raise, so its errors are reported rather than dropped.
+                let errors = teardown_scope(&test_scope).await;
+                let mut out = vec![NodeResult {
                     path: item.path.clone(),
                     outcome: Outcome::Failed,
                     duration: start.elapsed(),
                     assertions,
                     message: Some(format!("timed out after {budget:?}")),
-                };
+                    teardown: false,
+                }];
+                out.extend(teardown_results(&item.path, errors));
+                return out;
             }
         },
         None => call.await,
@@ -2842,15 +2893,18 @@ async fn run_one(
         (outcome, message, r.assertions)
     };
 
-    teardown_scope(&test_scope).await;
+    let errors = teardown_scope(&test_scope).await;
 
-    NodeResult {
+    let mut out = vec![NodeResult {
         path: item.path.clone(),
         outcome,
         duration,
         assertions,
         message,
-    }
+        teardown: false,
+    }];
+    out.extend(teardown_results(&item.path, errors));
+    out
 }
 
 /// A flow is one unit: its steps run serially, in order, on one worker, sharing a `flow`-scope
@@ -2870,19 +2924,37 @@ async fn run_flow(lua: &Lua, steps: &[PlanItem], state: &Rc<RunState>) -> Vec<No
                 duration: Duration::ZERO,
                 assertions: 0,
                 message: Some(reason.clone()),
+                teardown: false,
             });
             continue;
         }
-        let result = run_one(lua, step, state, Some(flow_scope.clone())).await;
-        if result.outcome == Outcome::Failed {
+        let step_results = run_one(lua, step, state, Some(flow_scope.clone())).await;
+        if step_results
+            .iter()
+            .any(|r| !r.teardown && r.outcome == Outcome::Failed)
+        {
             let failed = step_name(&step.path);
             cascade = Some(format!("skipped: earlier step {failed:?} failed"));
         }
-        results.push(result);
+        results.extend(step_results);
     }
 
-    teardown_scope(&flow_scope).await;
+    let errors = teardown_scope(&flow_scope).await;
+    let label = steps
+        .first()
+        .map(|s| flow_label(&s.path))
+        .unwrap_or("flow")
+        .to_string();
+    results.extend(teardown_results(&label, errors));
     results
+}
+
+/// A flow's own name — the step path minus its trailing step segment.
+fn flow_label(step_path: &str) -> &str {
+    match step_path.rfind(" › ") {
+        Some(i) => &step_path[..i],
+        None => step_path,
+    }
 }
 
 /// The last path segment — the step's own name, for the cascade-skip message.
@@ -2892,7 +2964,7 @@ fn step_name(path: &str) -> &str {
 
 async fn run_unit(lua: &Lua, unit: &PlanUnit, state: &Rc<RunState>) -> Vec<NodeResult> {
     match unit {
-        PlanUnit::Test(item) => vec![run_one(lua, item, state, None).await],
+        PlanUnit::Test(item) => run_one(lua, item, state, None).await,
         PlanUnit::Flow { steps } => run_flow(lua, steps, state).await,
     }
 }
@@ -2900,9 +2972,13 @@ async fn run_unit(lua: &Lua, unit: &PlanUnit, state: &Rc<RunState>) -> Vec<NodeR
 /// The unit-level outcome used for dependency gating: a unit failed if any of its leaf results
 /// failed; else passed if any passed; else it was entirely skipped.
 fn unit_outcome(results: &[NodeResult]) -> Outcome {
-    if results.iter().any(|r| r.outcome == Outcome::Failed) {
+    // Teardown leaves are excluded: `depends_on` gates on whether the unit's *work* passed, and a
+    // dependent's premise ("the upstream did its job") still holds when only a cleanup raised.
+    // Gating on it would cascade-skip a whole subgraph over a leaked container.
+    let work = || results.iter().filter(|r| !r.teardown);
+    if work().any(|r| r.outcome == Outcome::Failed) {
         Outcome::Failed
-    } else if results.iter().any(|r| r.outcome == Outcome::Passed) {
+    } else if work().any(|r| r.outcome == Outcome::Passed) {
         Outcome::Passed
     } else {
         Outcome::Skipped
@@ -2920,6 +2996,7 @@ fn skip_leaf(unit: &PlanUnit, reason: &str) -> Vec<NodeResult> {
             duration: Duration::ZERO,
             assertions: 0,
             message: Some(reason.to_string()),
+            teardown: false,
         })
         .collect()
 }
@@ -3246,9 +3323,11 @@ fn execute_collected(
         let started = Instant::now();
         run_plan(lua, &plan, &state, config, reporter, &mut summary).await;
         // Scopes tear down inner→outer: every file scope, then the suite (test scopes already torn
-        // down per-test).
-        teardown_file_scopes(&state).await;
-        teardown_scope(&state.suite).await;
+        // down per-test). A failure in any of them is reported as its own leaf — a suite whose
+        // teardown raised has leaked something, and must not be reported green.
+        let mut late = teardown_file_scopes(&state).await;
+        late.extend(teardown_results("suite", teardown_scope(&state.suite).await));
+        emit_finished(reporter, &mut summary, &late);
         summary.duration = started.elapsed();
     });
     Ok(summary)
@@ -3870,11 +3949,30 @@ fn group_node(name: String) -> Node {
 }
 
 /// Tear down every per-file `Scope.File` instance (a suite may have several).
-async fn teardown_file_scopes(state: &RunState) {
-    let scopes: Vec<_> = state.files.borrow().values().cloned().collect();
-    for scope in scopes {
-        teardown_scope(&scope).await;
+/// Tear down every file scope, returning any failures as reported leaves.
+///
+/// Keyed by file *index* rather than a path because that is the identity the scope map carries;
+/// where a real path is known it names the node, so a report says which file leaked.
+async fn teardown_file_scopes(state: &RunState) -> Vec<NodeResult> {
+    let scopes: Vec<(usize, Rc<RefCell<ScopeState>>)> = state
+        .files
+        .borrow()
+        .iter()
+        .map(|(i, s)| (*i, s.clone()))
+        .collect();
+    let mut out = Vec::new();
+    for (idx, scope) in scopes {
+        let errors = teardown_scope(&scope).await;
+        if errors.is_empty() {
+            continue;
+        }
+        let label = match state.file_paths.get(idx) {
+            Some(p) if !p.as_os_str().is_empty() => p.to_string_lossy().to_string(),
+            _ => format!("file {idx}"),
+        };
+        out.extend(teardown_results(&label, errors));
     }
+    out
 }
 
 /// Discovery: collect the test tree without executing tests (basis for a GUI/IDE model view).
