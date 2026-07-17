@@ -179,7 +179,33 @@ one engine and one code path, and handlers work identically in both vantages. Pu
 the container would fork the implementation and strand handlers behind an admin API — i.e. it would
 reinvent WireMock's architecture and inherit its reason for needing a templating language.
 
-**The honest costs**, named so they don't surprise us in week two:
+**Three integration points C cannot skip** (two flagged from `default@` while cutting v0.2.8; the
+first is the one that "works on your laptop and breaks in CI", and it is a bug in this plan, not a
+CI quirk):
+
+1. **`http.mock` binds `127.0.0.1`, and that is not container-reachable on Linux.** The two platforms
+   fail *differently*, which is exactly why it passes locally:
+   - **Docker Desktop (mac/Win)** — `host.docker.internal` traffic egresses from the host itself, so
+     a loopback-bound server **is** reachable. Green on the laptop.
+   - **Linux** — `--add-host=host.docker.internal:host-gateway` resolves to the bridge gateway
+     (`172.17.0.1`-ish). A server bound to `127.0.0.1` is not listening on that interface, so the
+     connection is **refused**. Red in CI, and for a reason no amount of retrying fixes.
+
+   So the network vantage must bind `0.0.0.0`, which puts the mock on the LAN — a real exposure
+   change that must be **opt-in and scope-limited** (triggered by the vantage, never the default),
+   not a quiet widening of Phase A's bind.
+2. **`extra_hosts` must be threaded through `docker.run` → `prova.containerized`.** bollard's
+   `HostConfig::extra_hosts`; `host.docker.internal:host-gateway` on any container expected to reach
+   a host-bound mock. Docker Desktop provides the name anyway, so passing it always is harmless and
+   keeps one code path rather than a platform branch. **The proof must run on Linux CI** — a green
+   laptop proves nothing here, which is the whole lesson of point 1.
+3. **The shim image has to be published by `release.yml`, version-pinned to the release.** That is a
+   release-pipeline coupling C inherits: `prova up` on a fresh install must find a shim matching its
+   own version. It also raises a question the plan has not answered — **what a dev build does**, when
+   its version has no published shim (build locally? float to `:main`? refuse?). Answer it before
+   building, or every contributor hits it on day one.
+
+**The other honest costs**, named so they don't surprise us in week two:
 - **Passthrough is a triangle** — SUT → shim → host engine → real service via its *published* port.
   Traffic leaves the network and comes back. Latency is localhost-ish and fine; the real constraint is
   that a legitimately network-only resource must be auto-published for the host engine to reach it.
@@ -222,14 +248,26 @@ reinvent WireMock's architecture and inherit its reason for needing a templating
    Lua tables — assertions are the existing matchers, and no `verify(count, pattern)` DSL is added.
    The handle implements the snapshot protocol (`snapshots.md:60-65`), so a recorded conversation is a
    snapshot subject, and it feeds the "rich attachments / HTTP exchange" seam (`foundations.md:196`).
-6. **gRPC needs a schema — the client's reflection trick does not invert.** `grpc.client` learns the
-   schema *from* the server; a mock *is* the server. Descriptors come from one of three sources, in
-   build order: a `FileDescriptorSet` (buf output, zero new deps) · a `.proto` via `protox` (pure
-   Rust, no `protoc`) · **harvested from the real service over reflection** (`grpc.mock(ctx, { from =
-   real.url })` — the mock's schema is by construction the real schema; the drift answer again).
-   `DynCodec` (`modules.rs:2437-2480`) already encodes and decodes `DynamicMessage` and works
-   unchanged in the server direction. **The mock serves reflection itself**, so the existing
-   `grpc.client` drives it with no special case — which is also how we prove it is faithful.
+6. **gRPC needs a schema — the client's reflection trick does not invert. Settled in Phase B.**
+   `grpc.client` learns the schema *from* the server; a mock *is* the server, so it must be told.
+   `proto` (compiled at runtime by `protox` — pure Rust, no `protoc`, keeping the namespace's
+   "no codegen" promise on the server side too) is the landed source; a `FileDescriptorSet` and
+   **harvesting from the real service over reflection** (`{ from = real.url }` — the mock's schema is
+   *by construction* the real schema, the drift answer again) remain open and are cheap additions,
+   since both reduce to the same descriptor bytes.
+
+   Three things fell out better than planned:
+   - **`DynCodec` is genuinely direction-agnostic.** Its only parameter was *what to decode into* —
+     a client decodes the method's output, a server its input. Renaming `output` → `decode_into` and
+     sharing it was the entire change; there is one codec, not a mirror pair.
+   - **The mock serves reflection from the real `tonic-reflection` server**, so the *unmodified*
+     `grpc.client` drives it. That composes only because reflection never touches Lua, leaving it
+     free to keep its `Send` boxed future immediately beside the `!Send` app-method path.
+   - **tonic's `server` feature does not pull axum** (only `router` does), and
+     `UnaryService::Future` has **no `Send` bound** — only the request body needs one, and hyper's
+     `Incoming` has it. Combined with hyper's http2 delegating spawn to a generic `E: Executor` (so a
+     `LocalExec` over `spawn_local` keeps every stream on the Lua thread), a **Lua handler answers an
+     RPC**. The Phase A bet holds over HTTP/2, which was not a given.
 
 ## Build sequence
 
@@ -259,8 +297,31 @@ reinvent WireMock's architecture and inherit its reason for needing a templating
   are non-runnable for exactly one reason — *"they reference a live service (`http://localhost:8080`
   with no server behind it)"* (`examples/aspirational/README.md:1-12`). `http.mock` is now the server
   behind it. Cheap, and it converts three design sketches into three running proofs.
-- **Phase B — `grpc.mock`.** Descriptors (set → `.proto` → harvest), reflection server, `DynCodec`
-  reversed. This is the user-facing ask and the Phase-2-item-5 unblocker.
+- **Phase B — `grpc.mock`. DONE (2026-07-16).** `proto` via protox, reflection served from
+  `tonic-reflection`, `DynCodec` shared rather than reversed, Lua handlers over HTTP/2, statuses,
+  journal. 12 proofs in `testdata/grpc_mock.lua` / `tests/grpc_mock.rs` — green, **no docker, no
+  network**, ~56ms.
+
+  **The bar was the client, and it is met**: every case is driven by `grpc.client`, unmodified,
+  which learns the mock's schema over reflection exactly as it would a real server's. Mutation-checked
+  by ripping out reflection serving — 11 of 12 die (the survivor never builds a client), so the
+  reflection path is load-bearing rather than incidental. The `!Send` chain is checked by the
+  *compiler*, not a test: swapping `LocalExec` for `TokioExecutor` fails to build.
+
+  Sequenced ahead of C on the v0.2.8 feedback from `default@` — B needs no docker, no
+  `host.docker.internal`, no shim, no `release.yml`, so it could not inherit C's platform split. It
+  also answered the generalization question the plan could only assert: the facet's shape (`:on{}` →
+  `:reply(table|fn)`, `:received(filter)`, `url`/`host`/`port`, `ctx:manage`) carried to a second,
+  very different protocol **unchanged**. Only the vocabulary inside the tables moved
+  (`response`/`code` instead of `status`/`json`), and it moved to mirror `call_status`'s own report.
+
+  Known gaps, named: `{ from = … }` and `{ descriptors = … }` sources are not built (both reduce to
+  the same descriptor bytes, so both are cheap); **streaming RPCs are unary-only**, matching the
+  client, which is also unary-only — the mock is exactly as capable as the thing that drives it; and
+  the same handler-error gap as Phase A (answers `Internal` + journals `error`, does not yet fail the
+  owning test at scope end). The server's "method not in the schema" branch is **unreachable from
+  `grpc.client`** by construction (reflection and dispatch share one descriptor set), so it is
+  covered only by inspection — it exists for a real SUT calling a method the mock's proto omits.
 - **Phase C — passthrough / record / replay, and the network vantage.** The observe dial, plus the
   shim + alias interposition (decision 5). Cassette format is a snapshot in all but name; reuse the
   machinery rather than inventing a file format. The two halves ship together because interposing on
@@ -286,8 +347,9 @@ reason, green, **then mutation-check the green**, then `tests/<name>.rs` for CI.
 - **A, with a containerized SUT:** deferred to C with the vantage work — SUT reads a stubbed
   dependency through `m.network.url`; journal records it. Mutation-check: swap `m.network.url` →
   `m.url` and confirm red (`127.0.0.1` inside a container is that container — the trap Proof 4 caught).
-- **B:** `grpc.client(mock.url)` — the *existing, unmodified* client — drives `grpc.mock` via
-  reflection. If the real client can't tell it from a server, it is a server.
+- **B: done** — `grpc.client(mock.url)`, the *existing, unmodified* client, drives `grpc.mock` via
+  reflection. If the real client can't tell it from a server, it is a server. Mutation-checked by
+  removing reflection: 11 of 12 go red.
 - **C:** same suite green in `passthrough` and in `replay` off the cassette it recorded. That
   equivalence *is* the drift proof.
 - **C (interposition):** the bar is a **SUT with no injection point** — its dependency URL baked to

@@ -27,13 +27,22 @@ outcome into the design docs and trim it here.
 ## Plans — two tracks resolved, one open
 
 - [mocks.md](mocks.md) — virtualize the dependency you can't run, and assert on the interactions you
-  can't otherwise see. **Open — Phase A (`http.mock`) landed 2026-07-16; B–E open.** `mock` is a
-  fourth facet (`http.mock`, then `grpc.mock`/`net.mock`), core-native rather than the plugin
-  `foundations.md:154` assumes, with passthrough/record/replay as one option on the same object.
-  Phase A proved the load-bearing bet: **a stub's reply can be a Lua function**, run on the live Lua
-  state while the coroutine driving the SUT is suspended — so no response-templating language is
-  needed, now or later. Next: **C is the valuable one** (observe/passthrough + alias interposition),
-  B is the user-facing ask (`grpc.mock`).
+  can't otherwise see. **Open — Phases A (`http.mock`) and B (`grpc.mock`) landed 2026-07-16; C–E
+  open.** `mock` is a fourth facet, core-native rather than the plugin `foundations.md:154` assumes,
+  with passthrough/record/replay as one option on the same object.
+
+  The load-bearing bet held twice: **a stub's reply can be a Lua function**, run on the live Lua state
+  while the coroutine driving the SUT is suspended — over HTTP/1 *and* over HTTP/2, so there is no
+  response-templating language, now or later. B also settled generalization: the facet's shape
+  carried to a second protocol unchanged, only the vocabulary inside the tables moved. Both are
+  docker-free and network-free (26 Lua proofs, ~80ms total).
+
+  **C is next and is the valuable one** (observe/passthrough + alias interposition — assert on real
+  traffic with the real dependency). It is also the expensive one: `default@` surfaced that its host
+  vantage rests on `host.docker.internal`, which reaches a `127.0.0.1`-bound server on Docker Desktop
+  and **not** on Linux — so C owes a bind-address change, `extra_hosts` plumbing through
+  `docker.run`/`prova.containerized`, a shim image published from `release.yml`, and a proof that runs
+  on **Linux CI** (a green laptop proves nothing here). Those three are written up in the plan.
 - [topology.md](topology.md) — the "one definition, multiple consumers" holy grail. **Resolved.**
   Attached + detached modes, three verb-selected port modes (fixed host ports / external reachability),
   and `prova watch` (the inhabited dev loop) all land. Remaining items are future/plugin-side and

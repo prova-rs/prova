@@ -544,6 +544,82 @@ function grpc.client(addr, opts) end
 ---@param opts? prova.GrpcWaitOpts
 function grpc.wait_for(addr, opts) end
 
+-- ---------------------------------------------------------------------------------------------
+-- grpc.mock — the `mock` facet on the grpc namespace
+-- ---------------------------------------------------------------------------------------------
+
+--- An RPC as the mock saw it. A handler's argument and a journal entry are the **same shape**.
+---@class prova.GrpcMockCall
+---@field method string                 # "package.Service/Method"
+---@field request any                   # the decoded request message, as a table
+---@field code? string                  # journal only: the status the mock answered ("Ok", "NotFound", …)
+---@field matched? boolean              # journal only: whether any stub matched
+---@field error? string                 # journal only: why a handler failed, if it did
+
+--- What a stub answers: a `response` message, or a non-Ok `code` — not both, because an RPC returns
+--- a message or a status. `code` uses the spelling `client:call_status` **reports**, so what a
+--- failure tells you is what you write to reproduce it.
+---@class prova.GrpcMockReply
+---@field response? any                 # the reply message, as a table (default: an empty message)
+---@field code? string                  # "NotFound", "ResourceExhausted", … (default "Ok")
+---@field message? string               # the status message, for a non-Ok code
+---@field delay? string                 # hold the reply this long ("250ms") — fault injection
+
+--- Which RPCs a stub answers. Omitted fields don't constrain. **First matching stub wins**, in
+--- declaration order.
+---@class prova.GrpcMockMatch
+---@field method? string                # exact: "package.Service/Method"
+---@field method_matches? string        # a Lua pattern (the same dialect as `:matches(pat)`)
+
+---@class prova.GrpcMockStub
+local GrpcMockStub = {}
+
+--- Answer matching RPCs with `reply` — a table, or a **function** taking the call and returning one.
+--- The function is real Lua, run at request time on this Lua state while the coroutine driving the
+--- system under test is suspended, so it can compute from the request and close over test locals.
+---@param reply prova.GrpcMockReply|fun(call: prova.GrpcMockCall): prova.GrpcMockReply
+function GrpcMockStub:reply(reply) end
+
+--- A mock gRPC server: a real server, in this process. It **serves reflection**, so `grpc.client`
+--- drives it with no special case — and `m.url` wires into a system under test exactly as a real
+--- service's would.
+---@class prova.GrpcMock
+---@field url string       # "http://127.0.0.1:<port>"
+---@field host string      # "127.0.0.1"
+---@field port integer     # the bound port (random, so parallel tests don't collide)
+local GrpcMock = {}
+
+---@param match prova.GrpcMockMatch
+---@return prova.GrpcMockStub
+function GrpcMock:on(match) end
+
+--- Every RPC the mock was asked, in order — as data, for the ordinary matchers. Unstubbed calls are
+--- recorded too (they answer `Unimplemented`): a call you did not predict is usually the most
+--- interesting thing a mock can tell you.
+---@param filter? { method?: string }
+---@return prova.GrpcMockCall[]
+function GrpcMock:received(filter) end
+
+--- Stop serving. Idempotent — the owning scope calls this too.
+function GrpcMock:stop() end
+
+---@class prova.GrpcMockOpts
+---@field proto string|string[]         # `.proto` path(s), compiled at runtime (pure Rust; no protoc)
+---@field includes? string[]            # import paths (default: each proto's own directory)
+
+--- Provision a mock gRPC server, tied to `ctx`'s scope.
+---
+--- Unlike `grpc.client`, a mock **must be told its schema**: the client needs no `.proto` because it
+--- learns one *from the server* by reflection, and a mock is the server — there is nobody to learn
+--- from. Hence `proto`.
+---
+--- Reach for it on the boundary you cannot run, for status codes the real service won't produce on
+--- demand, or to assert on the **interaction itself**. If you can run the real service, run it.
+---@param ctx prova.Context|prova.TestContext
+---@param opts prova.GrpcMockOpts
+---@return prova.GrpcMock
+function grpc.mock(ctx, opts) end
+
 ------------------------------------------------------------------------------------------
 -- yaml (parse YAML text to Lua values — k8s manifests, CI configs, compose files)
 ------------------------------------------------------------------------------------------

@@ -2922,6 +2922,11 @@ mod grpc {
                 }
             })?,
         )?;
+        // grpc.mock(ctx, { proto = … }) → the `mock` facet on the grpc namespace. Unlike `client`, it
+        // must be told its schema: reflection teaches a client about a server, and a mock *is* the
+        // server, so there is nobody to learn from.
+        #[cfg(feature = "grpc-mock")]
+        grpc.set("mock", super::grpc_mock::mock_fn(lua)?)?;
         Ok(grpc)
     }
 
@@ -3061,7 +3066,7 @@ mod grpc {
             .await
             .map_err(|e| Status::unavailable(format!("grpc: service not ready: {e}")))?;
         let codec = DynCodec {
-            output: desc.output(),
+            decode_into: desc.output(), // a client decodes the reply
         };
         let mut request = Request::new(input);
         if let Some(t) = timeout {
@@ -3071,12 +3076,18 @@ mod grpc {
         Ok(resp.into_inner())
     }
 
-    // A tonic codec that speaks `DynamicMessage` on both ends: the encoder just prost-encodes the
-    // request; the decoder builds an empty message of the known output type and merges the reply
-    // bytes into it. This is the whole trick that lets one client call any method dynamically.
+    // A tonic codec that speaks `DynamicMessage` on both ends: the encoder just prost-encodes
+    // whatever message it is handed; the decoder builds an empty message of a known descriptor and
+    // merges the incoming bytes into it. This is the whole trick that lets one client call any
+    // method dynamically.
+    //
+    // It is direction-agnostic, which is why `grpc.mock` shares it rather than owning a mirror copy:
+    // the only thing that differs between the two ends is *what to decode into* — a client decodes
+    // the method's output (the reply), a server decodes its input (the request). Hence
+    // `decode_into` rather than `output`: naming it for the reply was naming it for one caller.
     #[derive(Clone)]
-    struct DynCodec {
-        output: MessageDescriptor,
+    pub(super) struct DynCodec {
+        pub(super) decode_into: MessageDescriptor,
     }
 
     impl Codec for DynCodec {
@@ -3089,31 +3100,31 @@ mod grpc {
         }
         fn decoder(&mut self) -> DynDecoder {
             DynDecoder {
-                output: self.output.clone(),
+                decode_into: self.decode_into.clone(),
             }
         }
     }
 
-    struct DynEncoder;
+    pub(super) struct DynEncoder;
     impl Encoder for DynEncoder {
         type Item = DynamicMessage;
         type Error = Status;
         fn encode(&mut self, item: DynamicMessage, dst: &mut EncodeBuf<'_>) -> Result<(), Status> {
             item.encode(dst)
-                .map_err(|e| Status::internal(format!("grpc: encoding request: {e}")))
+                .map_err(|e| Status::internal(format!("grpc: encoding message: {e}")))
         }
     }
 
-    struct DynDecoder {
-        output: MessageDescriptor,
+    pub(super) struct DynDecoder {
+        decode_into: MessageDescriptor,
     }
     impl Decoder for DynDecoder {
         type Item = DynamicMessage;
         type Error = Status;
         fn decode(&mut self, src: &mut DecodeBuf<'_>) -> Result<Option<DynamicMessage>, Status> {
-            let mut msg = DynamicMessage::new(self.output.clone());
+            let mut msg = DynamicMessage::new(self.decode_into.clone());
             msg.merge(src)
-                .map_err(|e| Status::internal(format!("grpc: decoding response: {e}")))?;
+                .map_err(|e| Status::internal(format!("grpc: decoding message: {e}")))?;
             Ok(Some(msg))
         }
     }
@@ -3262,6 +3273,691 @@ mod grpc {
             Some(t) => t.get::<Option<String>>(key)?.and_then(|s| parse_duration(&s)),
             None => None,
         })
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// grpc_mock — the `mock` facet on the grpc namespace (`grpc.mock`)
+// ---------------------------------------------------------------------------------------------
+
+/// `grpc.mock` — a real gRPC server, in this process, that you stub and then assert on.
+///
+/// **The client's central trick does not invert, and that is the whole design problem.**
+/// `grpc.client` needs no `.proto` because it learns the schema *from the server* over reflection. A
+/// mock **is** the server: there is nobody to learn from, so it must be told. `proto` compiles a
+/// `.proto` at runtime via `protox` — pure Rust, no `protoc` on PATH, which keeps the module's
+/// promise ("no codegen") intact on the server side too. (A `FileDescriptorSet` and harvesting from
+/// a live service are the other two sources; see `docs/plans/mocks.md` §6.)
+///
+/// **The mock serves reflection itself**, from the real `tonic-reflection` server. That is what lets
+/// the *unmodified* `grpc.client` drive it with no special case — and it is the honest bar: if the
+/// real client cannot tell the mock from a server, it is a server.
+///
+/// **Lua handlers survive the trip to HTTP/2**, which was not obvious. Two properties make it work,
+/// and both are load-bearing: `tonic::server::UnaryService::Future` carries **no `Send` bound** (only
+/// the request body must be Send, and hyper's `Incoming` is), and hyper's http2 delegates spawning to
+/// a generic `E: Executor` that is likewise unbounded — so a `LocalExec` built on `spawn_local` keeps
+/// the whole connection on the Lua thread. Reflection, which never touches Lua, is free to keep its
+/// `Send` boxed future right next to it.
+#[cfg(feature = "grpc-mock")]
+mod grpc_mock {
+    use std::cell::RefCell;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::rc::Rc;
+    use std::time::Duration;
+
+    use mlua::{
+        Function, Lua, LuaSerdeExt, ObjectLike, Table, UserData, UserDataFields, UserDataMethods,
+        Value,
+    };
+    use prost_reflect::{
+        DescriptorPool, DeserializeOptions, DynamicMessage, MethodDescriptor, SerializeOptions,
+    };
+    use tonic::codegen::Service as _;
+    use tonic::{Code, Request as TonicRequest, Response as TonicResponse, Status};
+
+    use super::grpc::DynCodec;
+    use crate::model::parse_duration;
+
+    fn err(msg: impl Into<String>) -> mlua::Error {
+        mlua::Error::RuntimeError(msg.into())
+    }
+
+    /// hyper's http2 spawns per-stream tasks through this. The stock `TokioExecutor` uses
+    /// `tokio::spawn` and would force `Send` all the way down to the Lua handler; `spawn_local`
+    /// keeps every stream on the thread that owns the Lua state.
+    #[derive(Clone)]
+    struct LocalExec;
+
+    impl<F> hyper::rt::Executor<F> for LocalExec
+    where
+        F: Future<Output = ()> + 'static,
+    {
+        fn execute(&self, fut: F) {
+            tokio::task::spawn_local(fut);
+        }
+    }
+
+    /// A resolved answer. `response` stays JSON rather than a built `DynamicMessage` because a stub
+    /// may match several methods (`method_matches`), so the output descriptor to build against is
+    /// not known until a call actually arrives.
+    #[derive(Clone)]
+    struct ReplySpec {
+        code: Code,
+        message: String,
+        response: Option<serde_json::Value>,
+        delay: Option<Duration>,
+    }
+
+    #[derive(Clone)]
+    enum Reply {
+        Unset,
+        Data(ReplySpec),
+        Handler(Function),
+    }
+
+    struct Stub {
+        method: Option<String>,
+        method_matches: Option<String>,
+        reply: Reply,
+    }
+
+    struct Recorded {
+        method: String,
+        request: serde_json::Value,
+        code: String,
+        matched: bool,
+        error: Option<String>,
+    }
+
+    #[derive(Default)]
+    struct MockState {
+        stubs: Vec<Stub>,
+        journal: Vec<Recorded>,
+    }
+
+    type Shared = Rc<RefCell<MockState>>;
+
+    struct GrpcMock {
+        url: String,
+        host: String,
+        port: u16,
+        state: Shared,
+        shutdown: RefCell<Option<tokio::sync::oneshot::Sender<()>>>,
+    }
+
+    struct StubHandle {
+        state: Shared,
+        idx: usize,
+    }
+
+    /// The client's options, mirrored: what `call_status` *reports* is what `:reply` *takes*. One
+    /// spelling in both directions, so a test reads the same as the failure it reproduces.
+    fn serialize_opts() -> SerializeOptions {
+        SerializeOptions::new()
+            .skip_default_fields(false)
+            .use_proto_field_name(true)
+            .stringify_64_bit_integers(false)
+    }
+
+    fn deserialize_opts() -> DeserializeOptions {
+        DeserializeOptions::new().deny_unknown_fields(false)
+    }
+
+    pub(crate) fn mock_fn(lua: &Lua) -> mlua::Result<Function> {
+        lua.create_function(|lua, (ctx, opts): (Value, Option<Table>)| {
+            let opts = opts.ok_or_else(|| {
+                err("grpc.mock(ctx, opts): a mock must be told its schema — pass `proto = \"…\"`. \
+                     Unlike grpc.client, it cannot learn one by reflection: it *is* the server.")
+            })?;
+            let server = start(lua, &opts)?;
+            let ud = lua.create_userdata(server)?;
+            match ctx {
+                Value::UserData(c) => {
+                    let _: Value = c.call_method("manage", &ud)?;
+                }
+                Value::Nil => {
+                    return Err(err(
+                        "grpc.mock(ctx, opts): pass the test or fixture context (`t` / `ctx`) so the \
+                         server is torn down with the scope",
+                    ))
+                }
+                other => {
+                    return Err(err(format!(
+                        "grpc.mock(ctx, opts): expected the test or fixture context, got a {}",
+                        other.type_name()
+                    )))
+                }
+            }
+            Ok(ud)
+        })
+    }
+
+    /// Compile the schema, stand up reflection, bind, and spawn the accept loop. Everything that can
+    /// fail does so here, synchronously — a bad `.proto` is an error at the `grpc.mock(…)` call site
+    /// with the compiler's own diagnostic, not a mystery `Unimplemented` at the first call.
+    fn start(lua: &Lua, opts: &Table) -> mlua::Result<GrpcMock> {
+        let (pool, fds_bytes) = compile_schema(opts)?;
+
+        let reflect_v1 = tonic_reflection::server::Builder::configure()
+            .register_encoded_file_descriptor_set(&fds_bytes)
+            .build_v1()
+            .map_err(|e| err(format!("grpc.mock: building reflection service: {e}")))?;
+        let reflect_v1alpha = tonic_reflection::server::Builder::configure()
+            .register_encoded_file_descriptor_set(&fds_bytes)
+            .build_v1alpha()
+            .map_err(|e| err(format!("grpc.mock: building v1alpha reflection service: {e}")))?;
+
+        let std_listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .map_err(|e| err(format!("grpc.mock: bind: {e}")))?;
+        std_listener
+            .set_nonblocking(true)
+            .map_err(|e| err(format!("grpc.mock: set_nonblocking: {e}")))?;
+        let port = std_listener
+            .local_addr()
+            .map_err(|e| err(format!("grpc.mock: local_addr: {e}")))?
+            .port();
+        let listener = tokio::net::TcpListener::from_std(std_listener)
+            .map_err(|e| err(format!("grpc.mock: from_std: {e}")))?;
+
+        let state: Shared = Rc::new(RefCell::new(MockState::default()));
+        let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
+
+        let accept_state = state.clone();
+        let accept_lua = lua.clone();
+        tokio::task::spawn_local(async move {
+            loop {
+                tokio::select! {
+                    _ = &mut rx => break,
+                    accepted = listener.accept() => {
+                        let Ok((stream, _peer)) = accepted else { break };
+                        let io = hyper_util::rt::TokioIo::new(stream);
+                        let conn_state = accept_state.clone();
+                        let conn_lua = accept_lua.clone();
+                        let conn_pool = pool.clone();
+                        let r1 = reflect_v1.clone();
+                        let r1a = reflect_v1alpha.clone();
+                        tokio::task::spawn_local(async move {
+                            let svc = hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                                let state = conn_state.clone();
+                                let lua = conn_lua.clone();
+                                let pool = conn_pool.clone();
+                                let mut r1 = r1.clone();
+                                let mut r1a = r1a.clone();
+                                async move {
+                                    let path = req.uri().path().to_string();
+                                    // Reflection is served by the real crate; it never touches Lua,
+                                    // so its Send future sits happily inside this !Send one.
+                                    let resp = if path.starts_with("/grpc.reflection.v1.ServerReflection/") {
+                                        r1.call(req).await.unwrap_or_else(|e| match e {})
+                                    } else if path.starts_with("/grpc.reflection.v1alpha.ServerReflection/") {
+                                        r1a.call(req).await.unwrap_or_else(|e| match e {})
+                                    } else {
+                                        dispatch(lua, state, pool, &path, req).await
+                                    };
+                                    Ok::<_, std::convert::Infallible>(resp)
+                                }
+                            });
+                            // gRPC is HTTP/2 with prior knowledge (no TLS, no upgrade) — exactly what
+                            // http2::Builder::serve_connection does. LocalExec is what keeps the
+                            // per-stream tasks off `tokio::spawn` and thus off the Send requirement.
+                            let _ = hyper::server::conn::http2::Builder::new(LocalExec)
+                                .serve_connection(io, svc)
+                                .await;
+                        });
+                    }
+                }
+            }
+        });
+
+        Ok(GrpcMock {
+            url: format!("http://127.0.0.1:{port}"),
+            host: "127.0.0.1".to_string(),
+            port,
+            state,
+            shutdown: RefCell::new(Some(tx)),
+        })
+    }
+
+    /// `proto` → a descriptor pool + the encoded set reflection serves. Includes default to each
+    /// file's own directory, which is what makes the common single-file case need no `includes` at
+    /// all; declare them explicitly the moment an import crosses a directory.
+    fn compile_schema(opts: &Table) -> mlua::Result<(DescriptorPool, Vec<u8>)> {
+        let protos: Vec<String> = match opts.get::<Option<Value>>("proto")? {
+            Some(Value::String(s)) => vec![s.to_string_lossy().to_string()],
+            Some(Value::Table(t)) => {
+                let mut v = Vec::new();
+                for p in t.sequence_values::<String>() {
+                    v.push(p?);
+                }
+                v
+            }
+            Some(other) => {
+                return Err(err(format!(
+                    "grpc.mock: `proto` must be a path or a list of paths, got a {}",
+                    other.type_name()
+                )))
+            }
+            None => {
+                return Err(err(
+                    "grpc.mock: pass `proto = \"path/to/service.proto\"` — a mock must be told the \
+                     schema it serves",
+                ))
+            }
+        };
+        if protos.is_empty() {
+            return Err(err("grpc.mock: `proto` is empty"));
+        }
+
+        let mut includes: Vec<String> = Vec::new();
+        if let Some(t) = opts.get::<Option<Table>>("includes")? {
+            for p in t.sequence_values::<String>() {
+                includes.push(p?);
+            }
+        }
+        if includes.is_empty() {
+            for p in &protos {
+                if let Some(parent) = std::path::Path::new(p).parent() {
+                    let d = parent.to_string_lossy().to_string();
+                    if !d.is_empty() && !includes.contains(&d) {
+                        includes.push(d);
+                    }
+                }
+            }
+        }
+
+        let fds = protox::compile(&protos, &includes).map_err(|e| {
+            // protox's own diagnostic names the file, line, and column. Surface it verbatim rather
+            // than flattening it into "bad proto".
+            err(format!("grpc.mock: compiling {protos:?}: {e}"))
+        })?;
+        let bytes = prost::Message::encode_to_vec(&fds);
+        // Decode from bytes rather than converting types: it keeps this independent of whether
+        // protox and prost-reflect happen to agree on a prost-types version.
+        let pool = DescriptorPool::decode(bytes.as_slice())
+            .map_err(|e| err(format!("grpc.mock: building descriptor pool: {e}")))?;
+        Ok((pool, bytes))
+    }
+
+    /// Route one non-reflection request to the dynamic unary handler.
+    async fn dispatch(
+        lua: Lua,
+        state: Shared,
+        pool: DescriptorPool,
+        path: &str,
+        req: hyper::Request<hyper::body::Incoming>,
+    ) -> hyper::Response<tonic::body::Body> {
+        // "/pkg.Service/Method" → "pkg.Service/Method"
+        let full = path.trim_start_matches('/').to_string();
+        let Some(desc) = lookup_method(&pool, &full) else {
+            // A method the *schema* doesn't define. Distinct from one it defines that nobody
+            // stubbed: this is "your test is wrong", that is "add a stub".
+            return status_only(Status::new(
+                Code::Unimplemented,
+                format!("grpc.mock: no method {full:?} in the schema it was given"),
+            ));
+        };
+        let codec = DynCodec {
+            decode_into: desc.input(), // a server decodes the request
+        };
+        let mut grpc = tonic::server::Grpc::new(codec);
+        let svc = DynService {
+            lua,
+            state,
+            method: full,
+            output: desc.output(),
+        };
+        grpc.unary(svc, req).await
+    }
+
+    fn lookup_method(pool: &DescriptorPool, full: &str) -> Option<MethodDescriptor> {
+        let (service, method) = full.split_once('/')?;
+        pool.get_service_by_name(service)?
+            .methods()
+            .find(|m| m.name() == method)
+    }
+
+    fn status_only(status: Status) -> hyper::Response<tonic::body::Body> {
+        status.into_http()
+    }
+
+    /// The bridge from tonic's server machinery to Lua. Its `Future` is deliberately a plain
+    /// (non-`Send`) boxed future — the property that makes this whole facet possible.
+    struct DynService {
+        lua: Lua,
+        state: Shared,
+        method: String,
+        output: prost_reflect::MessageDescriptor,
+    }
+
+    impl tonic::server::UnaryService<DynamicMessage> for DynService {
+        type Response = DynamicMessage;
+        type Future =
+            Pin<Box<dyn Future<Output = Result<TonicResponse<DynamicMessage>, Status>> + 'static>>;
+
+        fn call(&mut self, request: TonicRequest<DynamicMessage>) -> Self::Future {
+            let lua = self.lua.clone();
+            let state = self.state.clone();
+            let method = self.method.clone();
+            let output = self.output.clone();
+            Box::pin(async move { answer(lua, state, method, output, request.into_inner()).await })
+        }
+    }
+
+    async fn answer(
+        lua: Lua,
+        state: Shared,
+        method: String,
+        output: prost_reflect::MessageDescriptor,
+        request: DynamicMessage,
+    ) -> Result<TonicResponse<DynamicMessage>, Status> {
+        let req_json = message_to_json(&request)
+            .map_err(|e| Status::internal(format!("grpc.mock: decoding request: {e}")))?;
+
+        let matched_idx = match find_match(&lua, &state, &method) {
+            Ok(i) => i,
+            Err(e) => {
+                record(&state, &method, &req_json, "Internal", false, Some(e.to_string()));
+                return Err(Status::internal(format!("grpc.mock: matching failed: {e}")));
+            }
+        };
+        // Clone the reply out before awaiting into Lua: a handler may re-enter this same RefCell.
+        let reply = matched_idx.map(|i| state.borrow().stubs[i].reply.clone());
+
+        let (spec, error) = match reply {
+            None => (
+                ReplySpec {
+                    code: Code::Unimplemented,
+                    message: format!("grpc.mock: no stub for {method:?}"),
+                    response: None,
+                    delay: None,
+                },
+                None,
+            ),
+            Some(Reply::Unset) => (
+                ReplySpec {
+                    code: Code::Internal,
+                    message: format!("grpc.mock: stub for {method:?} has no :reply(…)"),
+                    response: None,
+                    delay: None,
+                },
+                Some(format!("stub for {method:?} has no :reply(…)")),
+            ),
+            Some(Reply::Data(d)) => (d, None),
+            Some(Reply::Handler(f)) => run_handler(&lua, f, &method, &req_json).await,
+        };
+
+        if let Some(d) = spec.delay {
+            tokio::time::sleep(d).await;
+        }
+
+        if spec.code != Code::Ok {
+            record(
+                &state,
+                &method,
+                &req_json,
+                &format!("{:?}", spec.code),
+                matched_idx.is_some(),
+                error,
+            );
+            return Err(Status::new(spec.code, spec.message));
+        }
+
+        let json = spec.response.unwrap_or(serde_json::Value::Object(Default::default()));
+        let msg = DynamicMessage::deserialize_with_options(output, &json, &deserialize_opts())
+            .map_err(|e| {
+                let m = format!("grpc.mock: building the reply for {method:?}: {e}");
+                record(&state, &method, &req_json, "Internal", true, Some(m.clone()));
+                Status::internal(m)
+            })?;
+        record(&state, &method, &req_json, "Ok", matched_idx.is_some(), error);
+        Ok(TonicResponse::new(msg))
+    }
+
+    async fn run_handler(
+        lua: &Lua,
+        f: Function,
+        method: &str,
+        req_json: &serde_json::Value,
+    ) -> (ReplySpec, Option<String>) {
+        let internal = |m: String| {
+            (
+                ReplySpec {
+                    code: Code::Internal,
+                    message: m.clone(),
+                    response: None,
+                    delay: None,
+                },
+                Some(m),
+            )
+        };
+        let tbl = match req_to_lua(lua, method, req_json) {
+            Ok(t) => t,
+            Err(e) => return internal(format!("grpc.mock: handler input: {e}")),
+        };
+        match f.call_async::<Value>(tbl).await {
+            Ok(Value::Table(t)) => match parse_reply(lua, &t) {
+                Ok(s) => (s, None),
+                Err(e) => internal(format!("grpc.mock: handler reply: {e}")),
+            },
+            Ok(other) => internal(format!(
+                "grpc.mock: handler must return a reply table, returned a {}",
+                other.type_name()
+            )),
+            Err(e) => internal(format!("grpc.mock: handler raised: {e}")),
+        }
+    }
+
+    fn record(
+        state: &Shared,
+        method: &str,
+        request: &serde_json::Value,
+        code: &str,
+        matched: bool,
+        error: Option<String>,
+    ) {
+        state.borrow_mut().journal.push(Recorded {
+            method: method.to_string(),
+            request: request.clone(),
+            code: code.to_string(),
+            matched,
+            error,
+        });
+    }
+
+    fn find_match(lua: &Lua, state: &Shared, method: &str) -> mlua::Result<Option<usize>> {
+        let candidates: Vec<(usize, Option<String>)> = {
+            let s = state.borrow();
+            s.stubs
+                .iter()
+                .enumerate()
+                .filter(|(_, stub)| stub.method.as_ref().is_none_or(|m| m == method))
+                .map(|(i, stub)| (i, stub.method_matches.clone()))
+                .collect()
+        };
+        for (i, pat) in candidates {
+            match pat {
+                None => return Ok(Some(i)),
+                Some(p) => {
+                    let string: Table = lua.globals().get("string")?;
+                    let matcher: Function = string.get("match")?;
+                    let r: Value = matcher.call((method.to_string(), p))?;
+                    if !matches!(r, Value::Nil) {
+                        return Ok(Some(i));
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    fn message_to_json(msg: &DynamicMessage) -> Result<serde_json::Value, String> {
+        let mut ser = serde_json::Serializer::new(Vec::new());
+        msg.serialize_with_options(&mut ser, &serialize_opts())
+            .map_err(|e| e.to_string())?;
+        serde_json::from_slice(&ser.into_inner()).map_err(|e| e.to_string())
+    }
+
+    fn req_to_lua(lua: &Lua, method: &str, req_json: &serde_json::Value) -> mlua::Result<Table> {
+        let t = lua.create_table()?;
+        t.set("method", method.to_string())?;
+        t.set("request", lua.to_value(req_json)?)?;
+        Ok(t)
+    }
+
+    fn recorded_to_lua(lua: &Lua, r: &Recorded) -> mlua::Result<Table> {
+        let t = lua.create_table()?;
+        t.set("method", r.method.clone())?;
+        t.set("request", lua.to_value(&r.request)?)?;
+        t.set("code", r.code.clone())?;
+        t.set("matched", r.matched)?;
+        if let Some(e) = &r.error {
+            t.set("error", e.clone())?;
+        }
+        Ok(t)
+    }
+
+    /// Parse `code` the way the client *prints* it (`format!("{:?}", status.code())` → `NotFound`),
+    /// so what a failure reports is what you write to reproduce it. Accepted case-insensitively;
+    /// an unknown name is rejected at the call site with the valid set, never silently downgraded to
+    /// `Unknown` — a status that quietly became the wrong status is a test that lies.
+    fn parse_code(name: &str) -> mlua::Result<Code> {
+        const NAMES: &[(&str, Code)] = &[
+            ("ok", Code::Ok),
+            ("cancelled", Code::Cancelled),
+            ("unknown", Code::Unknown),
+            ("invalidargument", Code::InvalidArgument),
+            ("deadlineexceeded", Code::DeadlineExceeded),
+            ("notfound", Code::NotFound),
+            ("alreadyexists", Code::AlreadyExists),
+            ("permissiondenied", Code::PermissionDenied),
+            ("resourceexhausted", Code::ResourceExhausted),
+            ("failedprecondition", Code::FailedPrecondition),
+            ("aborted", Code::Aborted),
+            ("outofrange", Code::OutOfRange),
+            ("unimplemented", Code::Unimplemented),
+            ("internal", Code::Internal),
+            ("unavailable", Code::Unavailable),
+            ("dataloss", Code::DataLoss),
+            ("unauthenticated", Code::Unauthenticated),
+        ];
+        let key = name.replace(['_', '-'], "").to_ascii_lowercase();
+        NAMES
+            .iter()
+            .find(|(n, _)| *n == key)
+            .map(|(_, c)| *c)
+            .ok_or_else(|| {
+                err(format!(
+                    "grpc.mock: unknown status code {name:?}. Valid: Ok, Cancelled, Unknown, \
+                     InvalidArgument, DeadlineExceeded, NotFound, AlreadyExists, PermissionDenied, \
+                     ResourceExhausted, FailedPrecondition, Aborted, OutOfRange, Unimplemented, \
+                     Internal, Unavailable, DataLoss, Unauthenticated"
+                ))
+            })
+    }
+
+    fn parse_reply(lua: &Lua, t: &Table) -> mlua::Result<ReplySpec> {
+        let code = match t.get::<Option<String>>("code")? {
+            Some(name) => parse_code(&name)?,
+            None => Code::Ok,
+        };
+        let message = t.get::<Option<String>>("message")?.unwrap_or_default();
+        let response = match t.get::<Option<Value>>("response")?.filter(|v| !v.is_nil()) {
+            Some(v) => Some(lua.from_value::<serde_json::Value>(v)?),
+            None => None,
+        };
+        if code != Code::Ok && response.is_some() {
+            return Err(err(
+                "grpc.mock reply: has both a non-Ok `code` and a `response` — an RPC answers with a \
+                 message or a status, not both",
+            ));
+        }
+        let delay = match t.get::<Option<String>>("delay")? {
+            Some(s) => Some(parse_duration(&s).ok_or_else(|| {
+                err(format!("grpc.mock reply: bad `delay` duration {s:?}"))
+            })?),
+            None => None,
+        };
+        Ok(ReplySpec {
+            code,
+            message,
+            response,
+            delay,
+        })
+    }
+
+    impl UserData for GrpcMock {
+        fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
+            fields.add_field_method_get("url", |_, this| Ok(this.url.clone()));
+            fields.add_field_method_get("host", |_, this| Ok(this.host.clone()));
+            fields.add_field_method_get("port", |_, this| Ok(this.port));
+        }
+
+        fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+            methods.add_method("on", |lua, this, spec: Table| {
+                let stub = Stub {
+                    method: spec.get::<Option<String>>("method")?,
+                    method_matches: spec.get::<Option<String>>("method_matches")?,
+                    reply: Reply::Unset,
+                };
+                let idx = {
+                    let mut s = this.state.borrow_mut();
+                    s.stubs.push(stub);
+                    s.stubs.len() - 1
+                };
+                lua.create_userdata(StubHandle {
+                    state: this.state.clone(),
+                    idx,
+                })
+            });
+
+            methods.add_method("received", |lua, this, filter: Option<Table>| {
+                let want_method = match &filter {
+                    Some(f) => f.get::<Option<String>>("method")?,
+                    None => None,
+                };
+                let out = lua.create_table()?;
+                let s = this.state.borrow();
+                let mut n = 0;
+                for r in s.journal.iter() {
+                    if let Some(m) = &want_method {
+                        if &r.method != m {
+                            continue;
+                        }
+                    }
+                    n += 1;
+                    out.set(n, recorded_to_lua(lua, r)?)?;
+                }
+                Ok(out)
+            });
+
+            methods.add_method("stop", |_, this, ()| {
+                if let Some(tx) = this.shutdown.borrow_mut().take() {
+                    let _ = tx.send(());
+                }
+                Ok(())
+            });
+        }
+    }
+
+    impl UserData for StubHandle {
+        fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+            methods.add_method("reply", |lua, this, v: Value| {
+                let reply = match v {
+                    Value::Function(f) => Reply::Handler(f),
+                    Value::Table(t) => Reply::Data(parse_reply(lua, &t)?),
+                    other => {
+                        return Err(err(format!(
+                            "grpc.mock :reply expects a reply table or a handler function, got a {}",
+                            other.type_name()
+                        )))
+                    }
+                };
+                this.state.borrow_mut().stubs[this.idx].reply = reply;
+                Ok(())
+            });
+        }
     }
 }
 

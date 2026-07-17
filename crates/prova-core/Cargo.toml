@@ -40,6 +40,16 @@ bollard = { version = "0.18", optional = true }
 # `http`'s no-TLS stance. Feature-gated (default on); `prova-core` still builds `--no-default-features`.
 tonic = { version = "0.14", default-features = false, features = ["channel"], optional = true }
 tonic-reflection = { version = "0.14", default-features = false, optional = true }
+# `grpc.mock` — the server half. `tonic/server` brings the framing+trailers machinery (`server::Grpc`)
+# and, importantly, does NOT pull axum: only tonic's `router` feature does, and we route by path
+# ourselves. That matters because `UnaryService::Future` carries **no `Send` bound** (only the request
+# body must be Send, and hyper's `Incoming` is), which is the one property that lets a **Lua** handler
+# answer an RPC. `h2` is already in the graph via hyper, so this is close to free.
+#
+# `protox` compiles `.proto` at runtime, in pure Rust — no `protoc` on PATH, matching the client's
+# "tests need no codegen" stance. A mock must know the schema it serves: the client learns it *from*
+# the server by reflection, and that trick does not invert.
+protox = { version = "0.9", optional = true }
 prost = { version = "0.14", optional = true }
 prost-types = { version = "0.14", optional = true }
 prost-reflect = { version = "0.16.5", features = ["serde"], optional = true }
@@ -83,7 +93,7 @@ form_urlencoded = { version = "1", optional = true }
 fs2 = "0.4"
 
 [features]
-default = ["http", "sqlite", "docker", "grpc", "graphql", "yaml", "mock"]
+default = ["http", "sqlite", "docker", "grpc", "graphql", "yaml", "mock", "grpc-mock"]
 http = ["dep:reqwest"]
 # The `mock` facet on protocol namespaces — `http.mock` today; `grpc.mock`/`net.mock` later. Implies
 # `http`: a mock is asserted on through the same journal the `http` client's types already describe,
@@ -95,6 +105,21 @@ mock = [
     "dep:http-body-util",
     "dep:bytes",
     "dep:form_urlencoded",
+]
+# `grpc.mock` — additive over `mock` + `grpc`. Separate from `mock` so a build can keep the HTTP mock
+# (cheap: no new crates) without paying for protox and tonic's server stack.
+grpc-mock = [
+    "mock",
+    "grpc",
+    "dep:protox",
+    "tonic/server",
+    # tonic-reflection's generated server uses `tonic::codegen::*`. Serving reflection from the real
+    # crate (rather than hand-rolling a bidi stream) is what makes `grpc.client(mock.url)` work with
+    # no special case — and it composes because reflection never touches Lua, so its `Send` future is
+    # free to be Send while the app-method path next to it is not.
+    "tonic/codegen",
+    "tonic-reflection/server",
+    "hyper/http2",
 ]
 # GraphQL over HTTP (POST { query, variables } → { data, errors }); shares reqwest with `http`.
 graphql = ["dep:reqwest"]
