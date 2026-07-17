@@ -1078,7 +1078,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
 
     // Resolve the run. Explicit path args bypass the manifest (paths relative to cwd, no IDE
     // management); otherwise read the home's `prova.toml` (paths relative to the home dir).
-    let (base_dir, paths, jobs, format, declared, mut plugins_resolved, sources, manage) =
+    let (base_dir, paths, jobs, format, declared, mut plugins_resolved, sources, manage, capabilities) =
         if !explicit_paths.is_empty() {
             (
                 PathBuf::from("."),
@@ -1089,6 +1089,9 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                 plugins::ResolvedPlugins::default(),
                 BTreeMap::new(),
                 Manage::Never,
+                // Explicit-path runs bypass the manifest, so there is no companion — built-in
+                // capabilities still work; registered ones are simply absent.
+                prova_core::Capabilities::default(),
             )
         } else {
             let Some(home) = &home else {
@@ -1107,6 +1110,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                     r.plugins,
                     r.sources,
                     r.manage,
+                    r.capabilities,
                 ),
                 Err(code) => return code,
             }
@@ -1135,7 +1139,8 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     // The plugin searcher consults the global install dir plus any manifest-declared plugins.
     let mut config =
         engine_config(jobs, &layout, &plugins_resolved, home.as_ref())
-            .with_update_snapshots(update_snapshots);
+            .with_update_snapshots(update_snapshots)
+            .with_capabilities(capabilities);
 
     // `--last-failed`: fold the previous run's failed node paths into the selection as exact nodes.
     if last_failed {
@@ -1303,6 +1308,10 @@ struct ManifestRun {
     plugins: plugins::ResolvedPlugins,
     sources: BTreeMap<String, String>,
     manage: Manage,
+    /// Capabilities the project's `prova.lua` registered — carried into the run's `RunConfig` so
+    /// `requires` resolution sees the same vocabulary the `must_run` precondition just checked. Per
+    /// resolve, so the warm MCP's projects don't share.
+    capabilities: prova_core::Capabilities,
 }
 
 /// If a linted plugin ships no LuaCATS stub (`library/<canonical>.lua`), return an advisory message.
@@ -1498,15 +1507,23 @@ fn resolve_from_manifest(
     // than something in `suite.lua`: a capability registered at suite-load time would not exist yet
     // at the moment a profile's guarantee is checked, so `must_run = ["gpu"]` could never work.
     let companion = home.dir.join("prova.lua");
-    if companion.is_file() {
-        if let Err(e) = prova_core::load_project_config(&companion, &engine_config(1, layout, &plugins_resolved, Some(home))) {
+    let capabilities = if companion.is_file() {
+        match prova_core::load_project_config(
+            &companion,
+            &engine_config(1, layout, &plugins_resolved, Some(home)),
+        ) {
+            Ok(caps) => caps,
             // An error, never a warning: a companion that failed to load would leave every
             // capability it meant to register silently missing, so every gated test would skip and
             // the run would be green. That is the vacuous green, one level out from the suite.
-            eprintln!("prova: {e}");
-            return Err(ExitCode::from(2));
+            Err(e) => {
+                eprintln!("prova: {e}");
+                return Err(ExitCode::from(2));
+            }
         }
-    }
+    } else {
+        prova_core::Capabilities::default()
+    };
 
     // `must_run` — the guarantees this context makes, checked BEFORE anything runs.
     //
@@ -1522,7 +1539,7 @@ fn resolve_from_manifest(
     let where_ = profile.as_deref().unwrap_or("run");
     let mut unmet: Vec<String> = Vec::new();
     for cap in &resolved.must_run {
-        match prova_core::capability_expr_status(cap) {
+        match capabilities.expr_status(cap) {
             // Satisfied.
             Ok(None) => {}
             // Unmet: absent, or the wrong version. The reason distinguishes them, because "install
@@ -1566,6 +1583,7 @@ fn resolve_from_manifest(
         plugins: plugins_resolved,
         sources: resolved.sources,
         manage,
+        capabilities,
     })
 }
 

@@ -199,6 +199,10 @@ pub struct RunConfig {
     /// `prova.home`. See `with_project`.
     project_root: Option<std::path::PathBuf>,
     project_home: Option<std::path::PathBuf>,
+    /// Capabilities the project's `prova.lua` companion registered — per run, so two projects
+    /// resolved in one process don't share a vocabulary. Empty when there is no companion; built-in
+    /// capabilities (`docker`, `unix`, tools on PATH) work regardless.
+    capabilities: Capabilities,
 }
 
 impl Default for RunConfig {
@@ -215,6 +219,7 @@ impl Default for RunConfig {
             plugin_namespaces: std::collections::BTreeMap::new(),
             project_root: None,
             project_home: None,
+            capabilities: Capabilities::default(),
         }
     }
 }
@@ -240,6 +245,13 @@ impl RunConfig {
             concurrency,
             ..Default::default()
         }
+    }
+
+    /// Attach the project's registered capabilities (from `prova.lua`), so `requires` resolution
+    /// during the run sees the same vocabulary the `must_run` precondition did.
+    pub fn with_capabilities(mut self, caps: Capabilities) -> Self {
+        self.capabilities = caps;
+        self
     }
 
     /// Set the host port binding strategy (`Auto` for tests, `Fixed` for an inhabited topology stood
@@ -2036,6 +2048,28 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
 
     lua.globals().set("prova", prova)?;
 
+    // `runtime.*` — the companion's config DSL — is NOT available in a test/eval/topology state.
+    // Accessing ANY member here raises a clear error instead of a baffling nil, because `runtime`
+    // configures the environment tests run *in*, and only `prova.lua` loads early enough (with the
+    // manifest, before any test) to do that. `load_project_config` overwrites this stub with the
+    // working table when it loads the companion. Keeping it off `prova` — the authoring surface — is
+    // what makes the boundary self-evident.
+    {
+        let stub = lua.create_table()?;
+        let mt = lua.create_table()?;
+        mt.set(
+            "__index",
+            lua.create_function(|_, (_t, key): (Table, String)| {
+                Err::<mlua::Value, _>(mlua::Error::RuntimeError(format!(
+                    "runtime.{key} is only available in prova.lua (the project companion), not in a \
+                     test — the runtime config DSL loads with the manifest, before any test runs"
+                )))
+            })?,
+        )?;
+        stub.set_metatable(Some(mt))?;
+        lua.globals().set("runtime", stub)?;
+    }
+
     // The typed fixture-scope constants: `Scope.Test` / `Scope.Flow` / `Scope.File` / `Scope.Suite`.
     lua.globals().set("Scope", make_scope_global(&lua)?)?;
 
@@ -2642,7 +2676,7 @@ fn unit_name(leaf: &Leaf) -> &str {
 /// other leaf takes it shared, so RW semantics alone enforce "never concurrent with anything".
 const SERIAL_TOKEN: &str = "__prova_serial__";
 
-fn build_plan(col: &Collector) -> mlua::Result<Plan> {
+fn build_plan(col: &Collector, caps: &Capabilities) -> mlua::Result<Plan> {
     let mut leaves = Vec::new();
     let mut node_leaves = HashMap::new();
     collect_leaves(
@@ -2673,7 +2707,7 @@ fn build_plan(col: &Collector) -> mlua::Result<Plan> {
     }
     // Resolve `requires`: a leaf with an unavailable capability is pre-skipped (not failed).
     // Detect each distinct capability once — some detectors shell out (e.g. `docker info`).
-    resolve_requires(&mut leaves);
+    resolve_requires(&mut leaves, caps);
     Ok(Plan { leaves })
 }
 
@@ -2687,14 +2721,14 @@ fn build_plan(col: &Collector) -> mlua::Result<Plan> {
 ///   - **too old**   → "requires \"dotnet >= 9\" (dotnet 8.0.421 does not satisfy >= 9)"
 ///   - **malformed** → an error, not a skip: a constraint that can never parse would skip forever
 ///                     and read as green, which is the vacuous green this contract exists to remove.
-fn resolve_requires(leaves: &mut [Leaf]) {
+fn resolve_requires(leaves: &mut [Leaf], caps: &Capabilities) {
     let mut cache: HashMap<String, Option<String>> = HashMap::new();
     for leaf in leaves.iter_mut() {
         for cap in &leaf.requires {
             // `None` = satisfied; `Some(reason)` = not, and why. Memoized: version probes shell out.
             let unmet = cache
                 .entry(cap.clone())
-                .or_insert_with(|| unmet_reason(cap))
+                .or_insert_with(|| caps.unmet_reason(cap))
                 .clone();
             if let Some(reason) = unmet {
                 leaf.precondition_skip = Some(format!("skipped: {reason}"));
@@ -2704,43 +2738,79 @@ fn resolve_requires(leaves: &mut [Leaf]) {
     }
 }
 
-/// Why `expr` is unmet, or `None` if it is satisfied — the skip-side phrasing over
-/// [`capability_expr_status`]. A malformed expression is reported as the reason rather than folded
-/// into "absent": the author needs to see the typo, not go hunting for a tool that was never named.
-fn unmet_reason(expr: &str) -> Option<String> {
-    match capability_expr_status(expr) {
-        Ok(None) => None,
-        Ok(Some(reason)) => Some(format!("requires {expr:?} ({reason})")),
-        Err(e) => Some(e),
-    }
-}
-
-/// Is a capability available on this host? Known capabilities have detectors; anything else is
-/// treated as "a tool of that name on PATH" (so `requires = { "kubectl" }` just works). A missing
-/// capability never fails a test — it skips it, visibly.
-/// Capabilities registered by the project's `prova.lua` companion — name → (available, version).
+/// Capabilities the project registered in its `prova.lua` companion — name → its reported version
+/// (`None` = available but versionless).
 ///
-/// **Answers, not closures, and evaluated once.** The predicate runs at load and its verdict is
-/// stored, for three reasons that are really one: `must_run` is a PRECONDITION checked before any
-/// suite exists, so there is no Lua state to call back into; each suite gets its own `Lua` (mlua
-/// handles are `!Send`), so a stored closure could not be shared across them anyway; and a
-/// capability that answered differently for two suites in one run would not be a capability, it
-/// would be a coin flip. One evaluation, one answer, every consumer.
-static REGISTERED_CAPS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, Option<semver::Version>>>> =
-    std::sync::OnceLock::new();
+/// **Per run, not global.** This lives in [`RunConfig`], so two projects resolved in one process —
+/// the warm MCP resolving one at startup, then `run { project }` — cannot see each other's
+/// vocabulary. It was a process-global static once, and that leaked across projects
+/// (`tests/capability_isolation.rs`).
+///
+/// **Answers, not closures, evaluated once at load.** Three reasons that are one: `must_run` is a
+/// precondition checked before any suite exists (nothing to call back into); each suite gets its own
+/// `Lua` and mlua handles are `!Send` (a stored closure could not cross states); and a capability
+/// that answered differently for two suites in one run would be a coin flip, not a capability.
+#[derive(Clone, Default, Debug)]
+pub struct Capabilities(std::collections::BTreeMap<String, Option<semver::Version>>);
 
-fn registered_caps() -> &'static std::sync::Mutex<HashMap<String, Option<semver::Version>>> {
-    REGISTERED_CAPS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
-}
+impl Capabilities {
+    /// Record a registered capability. `version` is `None` for a bare `true` predicate (available,
+    /// no version to compare).
+    pub fn register(&mut self, name: &str, version: Option<semver::Version>) {
+        self.0.insert(name.to_string(), version);
+    }
 
-/// Record a capability the project registered. `version` is `None` when the predicate answered a
-/// bare `true` (available, no version to compare); absent from the map entirely means the predicate
-/// said no, or that nobody registered the name.
-pub fn register_capability(name: &str, version: Option<semver::Version>) {
-    registered_caps()
-        .lock()
-        .expect("registered capabilities")
-        .insert(name.to_string(), version);
+    /// Available = registered by the project, OR a built-in the host provides. Registered wins, but
+    /// registering over a built-in is refused at load, so this cannot shadow `docker`.
+    pub fn available(&self, name: &str) -> bool {
+        self.0.contains_key(name) || builtin_available(name)
+    }
+
+    /// The version a constraint compares against: the project's reported version if registered, else
+    /// a probed built-in version. `None` = no version to compare, which makes a constraint
+    /// unsatisfiable — "cannot confirm" is not "satisfied".
+    pub fn version(&self, name: &str) -> Option<semver::Version> {
+        if let Some(v) = self.0.get(name) {
+            return v.clone();
+        }
+        builtin_version(name)
+    }
+
+    /// Is this capability expression satisfied here, and if not, why?
+    ///
+    /// - `Ok(None)`         — satisfied.
+    /// - `Ok(Some(reason))` — unmet: absent, or the wrong version (phrased for a human).
+    /// - `Err(e)`           — the expression is malformed (a config error, not an environment one).
+    ///
+    /// The one function both halves of the contract call — `requires` (skip on unmet) and `must_run`
+    /// (fail on unmet) — so they can never disagree about what a string means. Name before version,
+    /// so an absent tool never reaches a probe and `windows >= 10` short-circuits on unix.
+    pub fn expr_status(&self, expr: &str) -> Result<Option<String>, String> {
+        let parsed = CapabilityExpr::parse(expr)?;
+        if !self.available(parsed.name) {
+            return Ok(Some(format!("{:?} is unavailable", parsed.name)));
+        }
+        let Some(req) = parsed.req else { return Ok(None) };
+        match self.version(parsed.name) {
+            Some(v) if req.matches(&v) => Ok(None),
+            Some(v) => Ok(Some(format!("{} {v} does not satisfy {req}", parsed.name))),
+            None => Ok(Some(format!(
+                "{}'s version could not be determined, so {req} cannot be confirmed",
+                parsed.name
+            ))),
+        }
+    }
+
+    /// Why `expr` is unmet, or `None` if satisfied — the skip-side phrasing over `expr_status`. A
+    /// malformed expression is reported as the reason rather than folded into "absent": the author
+    /// needs to see the typo, not hunt for a tool that was never named.
+    fn unmet_reason(&self, expr: &str) -> Option<String> {
+        match self.expr_status(expr) {
+            Ok(None) => None,
+            Ok(Some(reason)) => Some(format!("requires {expr:?} ({reason})")),
+            Err(e) => Some(e),
+        }
+    }
 }
 
 /// Is `name` a capability this build defines itself? Registering over one is refused: `docker` means
@@ -2803,12 +2873,7 @@ impl<'a> CapabilityExpr<'a> {
 /// could not answer. A constraint against `None` is **unsatisfiable**, because the honest response to
 /// "is this ≥ 9?" when the version is unknowable is "cannot confirm", and a gate that cannot confirm
 /// must not wave the suite through.
-pub fn capability_version(name: &str) -> Option<semver::Version> {
-    // A registered capability's predicate already answered — including its version, if it reported
-    // one. Consult it before any probe: the project's own answer is authoritative for its own name.
-    if let Some(v) = registered_caps().lock().expect("registered caps").get(name) {
-        return v.clone();
-    }
+fn builtin_version(name: &str) -> Option<semver::Version> {
     let raw = match name {
         // Docker's SERVER version — the daemon is the thing a suite depends on, and it can differ
         // from the CLI talking to it. `docker --version` would report the client and quietly answer
@@ -2880,39 +2945,12 @@ fn run_capture(program: &str, args: &[&str]) -> Option<String> {
 ///
 /// This is the one function both halves of the contract call — `requires` (skip on unmet) and
 /// `must_run` (fail on unmet). They must never disagree about what a string means.
-pub fn capability_expr_status(expr: &str) -> Result<Option<String>, String> {
-    let parsed = CapabilityExpr::parse(expr)?;
-    if !capability_available(parsed.name) {
-        return Ok(Some(format!("{:?} is unavailable", parsed.name)));
-    }
-    let Some(req) = parsed.req else { return Ok(None) };
-    match capability_version(parsed.name) {
-        Some(v) if req.matches(&v) => Ok(None),
-        Some(v) => Ok(Some(format!("{} {v} does not satisfy {req}", parsed.name))),
-        // Present, but its version cannot be established — so the constraint cannot be *confirmed*,
-        // and "cannot confirm" is not "satisfied".
-        None => Ok(Some(format!(
-            "{}'s version could not be determined, so {req} cannot be confirmed",
-            parsed.name
-        ))),
-    }
-}
-
-/// Is `name` available here? The single probe behind both halves of the skip/fail contract: a test's
-/// `requires` (skip when absent) and a profile's `must_run` (fail when absent) ask the SAME question
-/// of the SAME vocabulary — they differ only in what the answer means. Public so the CLI's
-/// precondition check cannot drift from the runtime's skip decision; two probes that disagreed would
-/// mean a suite skipping for a capability the gate believed present.
-pub fn capability_available(name: &str) -> bool {
-    // A registered capability is present iff its predicate said so. Checked first, but registering
-    // over a built-in is refused at load, so this cannot shadow `docker`.
-    if registered_caps()
-        .lock()
-        .expect("registered caps")
-        .contains_key(name)
-    {
-        return true;
-    }
+/// Is `name` a built-in capability this host provides? The base layer under [`Capabilities`]: a
+/// project's registered names are consulted first (in `Capabilities::available`), then this answers
+/// for `docker`, the platform predicates, compiled-in native clients, and finally any tool-of-that-
+/// name on PATH (so `requires = { "kubectl" }` just works). A missing capability never fails a test
+/// — it skips it, visibly.
+fn builtin_available(name: &str) -> bool {
     match name {
         // The docker daemon must be reachable *and* the feature compiled in. Retry a few times: a
         // single `docker info` can transiently fail when the daemon is momentarily busy (heavy
@@ -3546,7 +3584,7 @@ fn execute_collected(
 ) -> mlua::Result<Summary> {
     let (plan, deselected, state) = {
         let col = col.borrow();
-        let (plan, deselected) = apply_selection(build_plan(&col)?, &config.selection);
+        let (plan, deselected) = apply_selection(build_plan(&col, &config.capabilities)?, &config.selection);
         let state = Rc::new(RunState {
             defs: col.fixtures.clone(),
             suite: Rc::new(RefCell::new(ScopeState::default())),
@@ -3590,7 +3628,7 @@ fn execute_collected(
 /// tests. Everything `ctx:defer`/`ctx:manage` registered is torn down — success *or* error —
 /// inside that same runtime before this returns, so provisioned resources never outlive the eval.
 /// Load the project's optional `prova.lua` companion — the project-level home for
-/// `prova.capability(name, fn)`.
+/// `runtime.capability(name, fn)` (and the `runtime.*` config DSL generally).
 ///
 /// **Why a companion and not `suite.lua`** (docs/design/test-topology.md): a capability is a
 /// project-wide vocabulary, so registering it per-suite would leave it invisible to sibling suites
@@ -3607,42 +3645,48 @@ fn execute_collected(
 /// A companion that fails to load is an **error**, never a warning: every capability it meant to
 /// register would silently go missing, so every gated test would skip and the run would be green —
 /// the vacuous green, one level further out than the suite.
-pub fn load_project_config(path: &std::path::Path, config: &RunConfig) -> Result<(), String> {
+pub fn load_project_config(
+    path: &std::path::Path,
+    config: &RunConfig,
+) -> Result<Capabilities, String> {
     let src = std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     let (lua, _col) = build_lua("config".to_string(), config)
         .map_err(|e| format!("{}: {e}", path.display()))?;
 
-    let prova: Table = lua
-        .globals()
-        .get("prova")
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    let register = lua
-        .create_function(|_, (name, verdict): (String, Value)| {
+    // The companion's registrations accumulate HERE — a per-load value, returned to the caller, not
+    // a process global. Two projects loaded in one process (the warm MCP) each get their own.
+    let caps = std::rc::Rc::new(std::cell::RefCell::new(Capabilities::default()));
+    let caps_w = caps.clone();
+
+    let registrar = lua
+        .create_function(move |_, (name, f): (String, mlua::Function)| {
             if is_builtin_capability(&name) {
                 return Err(mlua::Error::RuntimeError(format!(
-                    "prova.capability({name:?}): {name:?} is a built-in capability and cannot be \
+                    "runtime.capability({name:?}): {name:?} is a built-in capability and cannot be \
                      redefined — `requires = {{ {name:?} }}` must mean the same thing in every project"
                 )));
             }
+            // The predicate runs NOW, at load; only its answer survives (see `Capabilities`).
+            let verdict: Value = f.call(())?;
             match verdict {
-                // Unavailable: not registered at all, so it reads as absent everywhere.
+                // Unavailable → not registered, so it reads as absent everywhere.
                 Value::Nil | Value::Boolean(false) => {}
                 // Available, no version.
-                Value::Boolean(true) => register_capability(&name, None),
+                Value::Boolean(true) => caps_w.borrow_mut().register(&name, None),
                 // Available, and it reported a version to compare against.
                 Value::String(s) => {
                     let raw = s.to_str()?.to_string();
                     let v = parse_first_version(&raw).ok_or_else(|| {
                         mlua::Error::RuntimeError(format!(
-                            "prova.capability({name:?}): returned {raw:?}, which is not a version \
+                            "runtime.capability({name:?}): returned {raw:?}, which is not a version \
                              (expected true/false, or a version string like \"2.4.0\")"
                         ))
                     })?;
-                    register_capability(&name, Some(v));
+                    caps_w.borrow_mut().register(&name, Some(v));
                 }
                 other => {
                     return Err(mlua::Error::RuntimeError(format!(
-                        "prova.capability({name:?}): the predicate returned {}, expected a boolean \
+                        "runtime.capability({name:?}): the predicate returned {}, expected a boolean \
                          or a version string",
                         other.type_name()
                     )))
@@ -3652,22 +3696,28 @@ pub fn load_project_config(path: &std::path::Path, config: &RunConfig) -> Result
         })
         .map_err(|e| format!("{}: {e}", path.display()))?;
 
-    // `prova.capability(name, fn)` — the predicate runs NOW, and only its answer survives.
-    let registrar = lua
-        .create_function(move |_, (name, f): (String, mlua::Function)| {
-            let verdict: Value = f.call(())?;
-            register.call::<()>((name, verdict))
-        })
+    // `runtime` — the Lua-shaped configuration DSL for the whole runtime, available ONLY here in the
+    // companion. It is deliberately NOT on `prova` (the test-authoring surface): configuring the
+    // environment tests run *in* is a different job from writing tests, and keeping it a separate
+    // global is what makes "you can't call this in a test" a self-evident error rather than a
+    // baffling nil on `prova`.
+    let runtime = lua
+        .create_table()
         .map_err(|e| format!("{}: {e}", path.display()))?;
-    prova
+    runtime
         .set("capability", registrar)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    lua.globals()
+        .set("runtime", runtime)
         .map_err(|e| format!("{}: {e}", path.display()))?;
 
     lua.load(&src)
         .set_name(path.to_string_lossy().as_ref())
         .exec()
         .map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(())
+
+    let out = caps.borrow().clone();
+    Ok(out)
 }
 
 pub fn eval_snippet(code: &str, config: &RunConfig) -> mlua::Result<serde_json::Value> {
@@ -4106,7 +4156,7 @@ impl HeldTopology {
 
         let (plan, deselected, state) = {
             let col = self.col.borrow();
-            let (plan, deselected) = apply_selection(build_plan(&col)?, selection);
+            let (plan, deselected) = apply_selection(build_plan(&col, &self.config.capabilities)?, selection);
 
             // A fresh run state — the run's own scopes, so its teardown reaps only what it built.
             let state = Rc::new(RunState {
@@ -4310,7 +4360,7 @@ pub fn discover_path(path: &Path) -> mlua::Result<Vec<String>> {
 pub fn discover_path_with(path: &Path, config: &RunConfig) -> mlua::Result<Vec<String>> {
     let (_lua, col) = read_and_collect(path, config)?;
     let col = col.borrow();
-    let (plan, _deselected) = apply_selection(build_plan(&col)?, &config.selection);
+    let (plan, _deselected) = apply_selection(build_plan(&col, &config.capabilities)?, &config.selection);
     Ok(plan
         .leaves
         .iter()

@@ -1,5 +1,5 @@
 --- Prova testing Prova: `prova.lua` — the optional project-level companion — and the
---- `prova.capability(name, fn)` registration it exists to host.
+--- `runtime.capability(name, fn)` registration it exists to host.
 ---
 --- Why a companion rather than `suite.lua`, per docs/design/test-topology.md. Two reasons, and the
 --- second is structural rather than a preference:
@@ -24,7 +24,7 @@ local prova_bin = assert(os.getenv("PROVA_BIN"), "PROVA_BIN not set")
 --- from "capability never registered" — both skip, both name `gpu`, both fail must_run. Every one of
 --- those assertions passed against the unimplemented feature until the marker was added.
 local function predicate(verdict)
-  return 'prova.capability("gpu", function()\n'
+  return 'runtime.capability("gpu", function()\n'
       .. '  fs.write(os.getenv("PROVA_SELFTEST_MARK"), "ran")\n'
       .. '  return ' .. verdict .. '\n'
       .. 'end)\n'
@@ -135,7 +135,7 @@ prova.test("the predicate is evaluated ONCE per run, not per test", function(t)
   fs.write(dir .. "/prova.toml", '[run]\npaths = ["suite.lua"]\n[luals]\nmanage = "never"\n')
   fs.write(dir .. "/prova.lua", table.concat({
     'local n = 0',
-    'prova.capability("counted", function()',
+    'runtime.capability("counted", function()',
     '  n = n + 1',
     '  fs.write(os.getenv("PROVA_SELFTEST_COUNT_FILE"), tostring(n))',
     '  return true',
@@ -155,7 +155,7 @@ prova.test("registering over a built-in capability is refused", function(t)
   -- `docker` means something specific (a daemon that answers AND runs linux containers). Letting a
   -- project redefine it would make `requires = { "docker" }` mean different things in different
   -- repos — and silently, which is the worst kind.
-  local dir = project('prova.capability("docker", function() return true end)\n')
+  local dir = project('runtime.capability("docker", function() return true end)\n')
   local r = shell.run(prova_bin, { cwd = dir })
   t:expect(r.code):equals(2)
   t:expect(r.stderr .. r.stdout):contains("docker")
@@ -204,7 +204,7 @@ prova.test("a predicate returning a version satisfies a constraint", function(t)
   -- class of thing.
   local dir = fs.tempdir()
   fs.write(dir .. "/prova.toml", '[run]\npaths = ["suite.lua"]\n[luals]\nmanage = "never"\n')
-  fs.write(dir .. "/prova.lua", 'prova.capability("gpu", function() return "2.4.0" end)\n')
+  fs.write(dir .. "/prova.lua", 'runtime.capability("gpu", function() return "2.4.0" end)\n')
   fs.write(dir .. "/suite.lua", table.concat({
     'prova.test("ok", { requires = { "gpu >= 2.0" } }, function(t) t:expect(1):equals(1) end)',
     'prova.test("too new", { requires = { "gpu >= 9.0" } }, function(t) error("must not run") end)',
@@ -219,9 +219,22 @@ end)
 prova.test("a version-reporting predicate's skip says what it found", function(t)
   local dir = fs.tempdir()
   fs.write(dir .. "/prova.toml", '[run]\npaths = ["suite.lua"]\n[luals]\nmanage = "never"\n')
-  fs.write(dir .. "/prova.lua", 'prova.capability("gpu", function() return "2.4.0" end)\n')
+  fs.write(dir .. "/prova.lua", 'runtime.capability("gpu", function() return "2.4.0" end)\n')
   fs.write(dir .. "/suite.lua",
     'prova.test("too new", { requires = { "gpu >= 9.0" } }, function(t) error("must not run") end)')
   local r = shell.run(prova_bin .. " --format json", { cwd = dir })
   t:expect(r.stdout, "reports the found version, not just the constraint"):contains("2.4.0")
+end)
+
+------------------------------------------------------------------------------------------
+-- E. runtime.* is companion-only — calling it in a test is a DESIGNED error
+------------------------------------------------------------------------------------------
+
+prova.test("runtime.capability in a test raises a clear error, not a nil", function(t)
+  -- The boundary the `runtime` namespace exists to make self-evident: it configures the environment
+  -- tests run IN, so it is not available while a test runs. A metatable turns any `runtime.*` access
+  -- in this state into a message pointing at prova.lua, rather than a baffling "call a nil value".
+  local ok, err = pcall(function() runtime.capability("x", function() return true end) end)
+  t:expect(ok, "calling it from a test must fail"):is_false()
+  t:expect(tostring(err), "and the error must point at prova.lua"):contains("prova.lua")
 end)

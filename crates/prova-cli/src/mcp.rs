@@ -117,9 +117,9 @@ pub fn run(args: Vec<String>) -> ExitCode {
         }
     };
 
-    let (mut plugins_resolved, sources, paths, declared, jobs) = match &home {
+    let (mut plugins_resolved, sources, paths, declared, jobs, capabilities) = match &home {
         Some(home) => match crate::resolve_from_manifest(home, profile, None, None, &layout) {
-            Ok(r) => (r.plugins, r.sources, r.paths, r.suites, r.jobs),
+            Ok(r) => (r.plugins, r.sources, r.paths, r.suites, r.jobs, r.capabilities),
             Err(code) => return code,
         },
         None => (
@@ -128,6 +128,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
             Vec::new(),
             BTreeMap::new(),
             1,
+            prova_core::Capabilities::default(),
         ),
     };
     if let Err(code) = crate::layer_cli_plugins(&cli_plugins, &layout, &sources, &mut plugins_resolved)
@@ -143,6 +144,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
         declared,
         jobs,
         plugins: plugins_resolved,
+        capabilities,
     });
 
     // A current-thread runtime, deliberately: warm tools are stateful (up → run → down), so tool
@@ -205,6 +207,9 @@ struct McpEnv {
     declared: BTreeMap<String, SuiteDecl>,
     jobs: usize,
     plugins: plugins::ResolvedPlugins,
+    /// Capabilities the startup project's `prova.lua` registered. Per-project calls re-resolve their
+    /// own (see `CallEnv`), so two projects served by one warm server never share a vocabulary.
+    capabilities: prova_core::Capabilities,
 }
 
 /// The manifest-resolved inputs one tool call runs with.
@@ -217,6 +222,9 @@ struct CallEnv {
     declared: BTreeMap<String, SuiteDecl>,
     jobs: usize,
     plugins: plugins::ResolvedPlugins,
+    /// This call's registered capabilities — the startup set, or the project's own on a `project`
+    /// re-resolve. Never the process's: capabilities are per-resolve, not global.
+    capabilities: prova_core::Capabilities,
 }
 
 impl McpEnv {
@@ -256,6 +264,7 @@ impl McpEnv {
                 declared: self.declared.clone(),
                 jobs: self.jobs,
                 plugins: self.plugins.clone(),
+                capabilities: self.capabilities.clone(),
             }),
             Some(p) => {
                 let p = if p.is_empty() { None } else { Some(p.to_string()) };
@@ -284,6 +293,7 @@ impl McpEnv {
                     declared: run.suites,
                     jobs: run.jobs,
                     plugins: run.plugins,
+                    capabilities: run.capabilities,
                 })
             }
         }
@@ -716,7 +726,8 @@ fn run_blocking(env: &McpEnv, req: RunRequest) -> Result<(serde_json::Value, boo
     }
 
     let jobs = req.jobs.map(|n| (n as usize).max(1)).unwrap_or(call.jobs);
-    let mut config = crate::engine_config(jobs, &env.layout, &call.plugins, Some(&call.home));
+    let mut config = crate::engine_config(jobs, &env.layout, &call.plugins, Some(&call.home))
+        .with_capabilities(call.capabilities.clone());
     config.selection = selection;
 
     let mut reporter = FailureCollector::default();
@@ -753,7 +764,8 @@ fn list_blocking(env: &McpEnv, req: SelectionArgs) -> Result<(serde_json::Value,
     }
 
     let suites = crate::collect_suites(&call.base_dir, &call.declared, &call.paths)?;
-    let mut config = crate::engine_config(1, &env.layout, &call.plugins, Some(&call.home));
+    let mut config = crate::engine_config(1, &env.layout, &call.plugins, Some(&call.home))
+        .with_capabilities(call.capabilities.clone());
     config.selection = selection;
 
     let mut nodes: Vec<serde_json::Value> = Vec::new();
@@ -808,7 +820,9 @@ fn up_blocking(
 
     let call = env.resolve_call(req.profile.as_deref(), req.project.as_deref())?;
     let files = topology_files(&call)?;
-    let config = crate::engine_config(1, &env.layout, &call.plugins, Some(&call.home)).with_ports(
+    let config = crate::engine_config(1, &env.layout, &call.plugins, Some(&call.home))
+        .with_capabilities(call.capabilities.clone())
+        .with_ports(
         if req.fixed.unwrap_or(false) {
             PortMode::Fixed
         } else {

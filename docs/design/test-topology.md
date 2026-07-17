@@ -77,7 +77,7 @@ the same probes. `must_run = ["kind"]` means kind must be on PATH. There is no p
 proofs, written before the implementation and driven red→green). `[run] must_run` and
 `[profiles.<name>] must_run` are the **union** — a guarantee is additive, because a context that could
 *retract* one would let the strictest bar be silenced by selecting a laxer profile. The CLI checks
-them through `prova_core::capability_available` — the engine's own probe, not a second copy, so the
+them through `Capabilities::expr_status` — the engine's own probe, not a second copy, so the
 gate cannot disagree with the runtime about what a skip meant. The home-vs-cwd split below is **not**
 built yet.
 
@@ -224,7 +224,7 @@ Third-slot naming (`{ client, url, handle }` with `container` kept as the Docker
 ## `prova.lua` — the companion, and why the vocabulary stays strings
 
 **Built:** `requires = { "dotnet >= 9" }` / `must_run = ["dotnet >= 9"]`. One grammar, both
-directions, parsed by one engine function (`capability_expr_status`) so the two halves cannot
+directions, parsed by one engine method (`Capabilities::expr_status`) so the two halves cannot
 disagree about what a string means. Real semver; versions probed from the tool and padded to three
 components (tools are inconsistent — `git version 2.54.0`, `8.0.421`, `GNU bash, version 5.3.9(1)`);
 docker reports its **server** version, the thing a suite actually depends on. Three outcomes, because
@@ -252,8 +252,8 @@ cannot be validated by a plugin browser.
 
 ```lua
 -- prova.lua — OPTIONAL, project-level, loaded with the manifest
-prova.capability("gpu",          function() return probe_cuda() end)
-prova.capability("kind-cluster", function() return #kind_clusters() > 0 end)
+runtime.capability("gpu",          function() return probe_cuda() end)
+runtime.capability("kind-cluster", function() return #kind_clusters() > 0 end)
 ```
 
 Then `requires = { "gpu" }` and `must_run = ["gpu"]` both work, skips stay attributable, and the
@@ -272,7 +272,7 @@ removes the primitive.
 
    ```
    prova.toml  → what to run, pins, must_run     (declaration; machine-editable)
-   prova.lua   → prova.capability("gpu", fn)     (behavior; project-global)
+   prova.lua   → runtime.capability("gpu", fn)     (behavior; project-global)
      ↓ precondition check — now sees "gpu"
    suites      → collect, then execute
    ```
@@ -290,7 +290,7 @@ loads AND be visible to every suite?* Capabilities pass. Fixtures do not (they a
 The one caveat worth stating out loud: **`suite.config{}` already is Lua config**, so the project
 runs two config languages today. That split is defensible (the suite is the *program*; the manifest is
 the *declaration*), but if it ever reads as arbitrary rather than principled, this decision reopens —
-and `prova.capability()` deepens the Lua side rather than shrinking it.
+and `runtime.capability()` deepens the Lua side rather than shrinking it.
 
 ## Open
 

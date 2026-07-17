@@ -524,7 +524,13 @@ function prova.retry(fn, opts) end
 ---@return { client?: fun(url: string, opts: table): any, container: fun(ctx: prova.Context, opts?: table): prova.ContainerResource }
 function prova.containerized(spec) end
 
---- Register a project-wide capability, from the optional `prova.lua` companion beside `prova.toml`.
+--- `runtime.*` — the Lua-shaped configuration DSL for the whole runtime. Available ONLY in the
+--- optional `prova.lua` companion beside `prova.toml`; calling it from a test raises (it configures
+--- the environment tests run *in*, and only the companion loads early enough to do that).
+---@class prova.runtime
+runtime = {}
+
+--- Register a project-wide capability.
 ---
 --- The escape hatch for a predicate no name-and-version can express — a GPU, a live kind cluster, a
 --- licence file. It is a NAMED predicate rather than an inline function, and that is the point: a
@@ -546,13 +552,13 @@ function prova.containerized(spec) end
 ---
 --- ```lua
 --- -- prova.lua, next to prova.toml
---- prova.capability("gpu",          function() return shell.run({"nvidia-smi"}):ok() end)
---- prova.capability("kind-cluster", function() return #kind_clusters() > 0 end)
---- prova.capability("cuda",         function() return probe_cuda_version() end)  -- "12.4.0"
+--- runtime.capability("gpu",          function() return shell.run({"nvidia-smi"}):ok() end)
+--- runtime.capability("kind-cluster", function() return #kind_clusters() > 0 end)
+--- runtime.capability("cuda",         function() return probe_cuda_version() end)  -- "12.4.0"
 --- ```
 ---@param name string                          # the capability name used in `requires` / `must_run`
 ---@param predicate fun(): boolean|string|nil  # true/false, or a version string
-function prova.capability(name, predicate) end
+function runtime.capability(name, predicate) end
 
 --- Run `fn` before EVERY test in this file (and nested groups). For per-test setup that needs no value — prefer a `prova.fixture` when the setup PRODUCES something, since a fixture is lazy, cached, and tears down with its scope.
 ---@param fn fn: fun(t: prova.TestContext)
