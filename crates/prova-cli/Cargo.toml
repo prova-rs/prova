@@ -32,3 +32,9 @@ semver = "1"
 rmcp = { version = "1.4", features = ["server", "transport-io"] }
 schemars = "1.2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+
+[dev-dependencies]
+# The docker-test semaphore (see prova-core/tests/common/mod.rs, included by path from eval_cli).
+# `eval_cli` provisions a real container, so it contends with prova-core's docker binaries for one
+# daemon — cargo runs each test BINARY as its own process, in parallel, across crates too.
+fs2 = "0.4"

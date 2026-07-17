@@ -2652,6 +2652,7 @@ dependencies = [
 name = "prova-cli"
 version = "0.2.8"
 dependencies = [
+ "fs2",
  "prova-archetect",
  "prova-core",
  "rmcp",

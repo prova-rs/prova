@@ -95,6 +95,19 @@ fn no_snippet_is_a_usage_error() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+// The docker semaphore, INCLUDED BY PATH from prova-core's tests rather than copied.
+//
+// It has to be the same lock, not an equivalent one: the guard's whole contract is the lock FILE
+// PATH, and two copies that drifted on the filename would stop excluding each other silently —
+// which is the failure mode the semaphore exists to remove. `CARGO_TARGET_TMPDIR` is the same
+// `target/tmp` for every crate in the workspace, so one definition serializes across crates.
+//
+// This test provisions a real container, so it contends with prova-core's docker binaries: cargo
+// runs each test binary as its own process, in parallel, and that is true ACROSS crates too. Without
+// this it timed out at 65s under load while passing solo in 2s — the flake's signature.
+#[path = "../../prova-core/tests/common/mod.rs"]
+mod common;
+
 // The engine's own probe, not a bare `docker info`: Docker on Windows in Windows-container mode
 // answers `info` happily and then cannot pull the linux image this test runs, which is exactly how
 // this test used to fail on the Windows leg instead of skipping.
@@ -107,6 +120,7 @@ fn docker_available() -> bool {
 /// scope teardown before the process exits. Skips (like every docker test) when docker is absent.
 #[test]
 fn manifest_plugin_provisions_and_ctx_tears_down() {
+    let _docker = common::docker_guard();
     if !docker_available() {
         eprintln!("skipping: docker is not available");
         return;

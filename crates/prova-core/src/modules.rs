@@ -562,7 +562,6 @@ fn make_shell(lua: &Lua) -> mlua::Result<Table> {
     Ok(shell)
 }
 
-#[cfg(unix)]
 /// What to run: a **string** (routed through a shell, so `"cargo build --release"` works verbatim)
 /// or an **argv table** (`{"psql", "-tAc", sql}` — no shell, no quoting), mirroring `container:run`.
 ///
@@ -621,6 +620,11 @@ impl std::fmt::Display for CommandSpec {
     }
 }
 
+/// The shell that a *string* command is routed through. Two definitions, one per platform — so each
+/// needs its own `cfg`: without one on this arm it is compiled on Windows too, and collides with the
+/// Windows arm. (`CommandSpec` above must NOT be gated: it is platform-independent, and gating it was
+/// what made Windows fail to compile at all.)
+#[cfg(unix)]
 fn shell_command(cmd: &str) -> tokio::process::Command {
     let mut c = tokio::process::Command::new("sh");
     c.arg("-c").arg(cmd);
