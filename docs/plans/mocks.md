@@ -414,8 +414,11 @@ reason, green, **then mutation-check the green**, then `tests/<name>.rs` for CI.
 
 ## Remaining / open
 
-- **`http.serve_mock` in `api.md:145-153` becomes `http.mock` when this lands** — the autouse example
-  is the only place the old name appears anywhere in the repo, so the rename costs one doc edit.
+- ~~`http.serve_mock` in `api.md:145-153` becomes `http.mock`~~ — **done (2026-07-16)**, along with
+  the rest of the fold-back the `plans/README.md` charter requires: `foundations.md`'s "mock is a
+  plugin" bullet now carries the correction and its reasoning, `namespacing.md` documents the fourth
+  facet, and the roadmap's arc records it (with an explicit note that `mock` does **not** discharge
+  Phase 2 item 5 — the cross-service capstone needs both services real).
 - **`prova up` + mocks is a reveal, not a phase.** Once A lands, `prova up orders` stands up a
   topology whose third-party edges are stubbed and *holds it* — a fake-backed environment a front-end
   dev inhabits. That is `topologies.md`'s "one definition, multiple consumers" extending to the

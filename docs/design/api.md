@@ -146,11 +146,13 @@ A fixture can opt into running even when no test names it — useful for ambient
 
 ```lua
 prova.fixture("mock_registry", { scope = "suite", autouse = true }, function(ctx)
-  local server = http.serve_mock({ ["/v1/index"] = { status = 200, json = {...} } })
-  ctx:defer(function() server:stop() end)
-  return server
+  return http.mock(ctx)   -- ctx:manage'd internally; torn down with the scope
 end)
 ```
+
+(This example named a hypothetical `http.serve_mock` while the surface was being designed. The
+real thing is **`http.mock(ctx, opts?)`** — the `mock` facet; see `namespacing.md` and
+`docs/plans/mocks.md`.)
 
 (The options-table form `{ scope=..., autouse=... }` is accepted anywhere the bare scope
 string is; the string is just sugar for `{ scope = "..." }`.)

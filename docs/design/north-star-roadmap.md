@@ -80,7 +80,17 @@ The **spine and most capabilities are done**. Twelve+ increments, each with prov
 
 **North Star arc status:** render ✅ · assert layout ✅ · boot app (`shell.spawn`) ✅ · provision deps
 (`docker`) ✅ · drive HTTP ✅ · **query DB ✅** · **drive gRPC ✅** · **single-service assembly ✅** ·
-Pulsar ⛔ · cross-service assembly ⛔.
+**virtualize a dependency + assert the interaction (`mock`) ✅** · Pulsar ⛔ · cross-service assembly ⛔.
+
+**The `mock` facet (2026-07-16)** — unplanned; it was never a roadmap item, and arrived as a
+first-class request rather than a phase. `http.mock` / `grpc.mock`: the fourth facet
+(`namespacing.md`), core-native, with **Lua reply handlers** (so no response-templating language),
+a request journal asserted on by the ordinary matchers, and passthrough/record/replay on the same
+object. It matters to *this* list for one reason: item 3 of its scope — asserting on the
+**interaction itself** ("did we call it exactly once, with the right idempotency key") — is a
+question no arc entry above could answer, because a real dependency only ever tells you *whether it
+worked*. Deliberately narrow: for a service you own, running the real one is still the better
+answer, and that is what the topology arc is for. Plan + status: `docs/plans/mocks.md`.
 
 **CAPSTONE PROVEN (2026-07-12):** the hard tier, end-to-end through prova against a **real** archetype
 (`examples/service_grpc_postgres_test.lua`): render `rust-grpc-service-archetype@dev` with
@@ -203,6 +213,13 @@ exactly the "batteries-included, no capability ceilings" pitch. Implemented in `
    `docker` host-ports) → drive gRPC (Rust) + REST (Go) → query both DBs to assert cross-service
    state (e.g. an order placed via gRPC lands in Postgres, flows through Pulsar, and appears in
    MySQL via the Go consumer). Gate on `requires{docker,...}`. This is the proof of the whole thesis.
+
+   *Note (2026-07-16):* `mock` does **not** discharge this item and must not be mistaken for it. The
+   capstone's whole point is that both services are **real** — an order really crossing gRPC →
+   Postgres → Pulsar → MySQL. Mocking either service away would make it pass while proving nothing
+   (`proof-driven-development.md:87-89`). Where `mock` *does* help is at the suite's edges (a
+   third-party dependency neither service owns) and in asserting the interactions *between* the real
+   services once `mock`'s passthrough gains the network vantage — see `docs/plans/mocks.md` §C2/C3.
 
 ### Phase 3 — Scale & polish (daemon-independent, any order)
 

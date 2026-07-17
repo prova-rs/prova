@@ -17,9 +17,18 @@ section in `library/modules.lua`, one reference page in the docs.
 | `X.client(...)` | Attach to something already running (a CI service, a live environment, a locally spawned process). Named for what it returns, not what it does — some clients handshake at construction (kafka, grpc), some don't (http); the test author shouldn't care. |
 | `X.container(ctx, opts?)` | Provision an ephemeral instance via Docker, wait for readiness, attach a managed client, tie teardown to the scope. Sugar over `docker.run` + `prova.retry` + `X.client` + `ctx:manage`. |
 | `X.wait_for(...)` | Readiness polling, where the protocol supports a cheap probe (http, grpc). |
+| `X.mock(ctx, opts?)` | Provision a **fake** instance — a real server, in-process, that you stub and then assert on. Where `container` provisions the real thing, `mock` provisions a stand-in for the thing you *can't* run. Returns the resource shape plus a request journal. |
 
 Facets are optional per namespace: `sqlite` has no `container` (nothing to provision);
-`http`/`grpc`/`graphql` are protocol namespaces with no `container` either.
+`http`/`grpc`/`graphql` are protocol namespaces with no `container` either — and `mock`
+is the mirror case, meaningful only where a *protocol* can be served (`http`, `grpc`) or
+where a plugin virtualizes a specific SaaS (a `stripe` plugin's `stripe.mock(ctx)`). You
+would never mock `postgres`; you would run it.
+
+The pairing is the teachable part: **`client` attaches to a real one, `container` provisions
+a real one, `mock` provisions a fake one.** Reach for `mock` only on a boundary you cannot
+run, for behavior the real thing won't produce on demand, or to assert on the *interaction
+itself* — see `docs/plans/mocks.md` for why that scope is deliberately narrow.
 
 **One standard resource shape.** Every `X.container` returns:
 

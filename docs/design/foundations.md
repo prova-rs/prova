@@ -151,10 +151,25 @@ via provisioning modules behind the fixture boundary:
 - **container** — a testcontainers-style module (`container.run{ image=..., ports=... }`) —
   the single most-requested integration primitive of the last decade.
 - **compose / stack** — bring up a multi-service topology, tear down as a unit.
-- **mock** — a WireMock-style stub server fixture for external dependencies.
+- **mock** — a stub/record server for external dependencies. **Landed as a core facet, not a
+  plugin — this bullet's original framing was wrong**; see below.
 
 These are first-party *plugins*, not built-ins — same boundary the `archetect` render module
 sits behind — so the agnostic core never grows a Docker dependency.
+
+> **Correction (2026-07-16), on `mock`.** It shipped as `http.mock` / `grpc.mock`: a **core
+> primitive** and the fourth facet in the grammar (`namespacing.md`), not a plugin. Two things
+> this document could not have known at the time forced it. First, the reason given above for
+> plugin-ness — *"so the agnostic core never grows a Docker dependency"* — **does not apply**: an
+> in-process mock server needs no Docker at all. Second, `ecosystem.md` later settled that native
+> code is always first-party and bundled (*"a plugin author writes Lua + Docker, never native
+> code"*), and you cannot write a server in Lua — so the only plugin-shaped option was a WireMock
+> container, paying an image pull and an admin-API round-trip to put a JSON DSL between the author
+> and their assertions. Being in-process is what buys the two properties that matter: a stub's
+> reply can be a **Lua function** (no templating mini-language, ever), and readiness is a real
+> contract (the listener is bound before the call returns). Plugins still compose it —
+> `stripe.mock(ctx)` is Lua over the core primitive, exactly as `prova.containerized` is Lua over
+> `docker.run`. See `docs/plans/mocks.md`.
 
 ---
 
@@ -227,8 +242,10 @@ process's memory, it's out of scope; if it observes the system from outside, it'
   seeded determinism, the plugin/hook API.
 
 Everything domain-specific is a **plugin** (Lua-first for matchers/reporters/fixtures;
-Rust for protocols/perf): `fs`, `shell`/`process`, `http`, `container`, `compose`, `mock`,
-`grpc`, and `archetect`. New capability = new plugin, never a core fork. That plugin surface
+Rust for protocols/perf): `fs`, `shell`/`process`, `http`, `container`, `compose`, and
+`grpc`, and `archetect`. (`mock` was listed here too; it landed as a **core facet** on the
+protocol namespaces instead — a server cannot be written in Lua, and native code is always
+first-party. See the correction above.) New capability = new plugin, never a core fork. That plugin surface
 — not a bigger feature list — is what lets Prova grow to cover the landscape the way
 pytest's plugin ecosystem did, while the core stays small and correct.
 
