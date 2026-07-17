@@ -209,6 +209,9 @@ struct McpEnv {
 
 /// The manifest-resolved inputs one tool call runs with.
 struct CallEnv {
+    /// The home this call resolved against — the server's, or a `project`'s. Carried so
+    /// `engine_config` roots `prova.root`/`prova.home` at the project the call actually targets.
+    home: Home,
     base_dir: PathBuf,
     paths: Vec<String>,
     declared: BTreeMap<String, SuiteDecl>,
@@ -219,13 +222,35 @@ struct CallEnv {
 impl McpEnv {
     /// The startup resolution — or a fresh one when the call names a `profile` (the MCP analogue
     /// of `--profile`, which changes what the manifest resolves to).
-    fn resolve_call(&self, profile: Option<&str>) -> Result<CallEnv, String> {
-        let home = self
-            .home
-            .as_ref()
-            .ok_or("no prova.toml found in this directory or any parent")?;
-        match profile {
+    /// Locate the home a call targets: the server's startup home by default — the **affinity**, the
+    /// way a shell is "in" a directory — or a caller-supplied `project`, resolved exactly as a CLI
+    /// run from there would (walking up, checking each ancestor's `prova/` child).
+    ///
+    /// The affinity is a default, not a cage: an agent works across repos, and it *creates* projects.
+    /// A supplied `project` also always resolves FRESH, which is the escape hatch for the startup
+    /// snapshot — scaffold a `prova.toml` and target it in the same session, no restart.
+    fn locate(&self, project: Option<&str>) -> Result<Option<Home>, String> {
+        let Some(p) = project else { return Ok(self.home.clone()) };
+        let path = Path::new(p);
+        if path.is_file() {
+            return Ok(Some(crate::home::from_manifest_path(path)));
+        }
+        if !path.is_dir() {
+            return Err(format!("project {p:?} is not a directory or a manifest file"));
+        }
+        crate::home::find(path).map_err(|e| e.to_string())
+    }
+
+    fn resolve_call(&self, profile: Option<&str>, project: Option<&str>) -> Result<CallEnv, String> {
+        let located = self.locate(project)?;
+        let home = located.as_ref().ok_or_else(|| match project {
+            Some(p) => format!("no prova.toml found in {p:?} or any parent"),
+            None => "no prova.toml found in this directory or any parent".to_string(),
+        })?;
+        // The startup snapshot is only valid for the startup home with no profile override.
+        match if project.is_some() { Some(profile.unwrap_or_default()) } else { profile } {
             None => Ok(CallEnv {
+                home: home.clone(),
                 base_dir: home.dir.clone(),
                 paths: self.paths.clone(),
                 declared: self.declared.clone(),
@@ -233,17 +258,15 @@ impl McpEnv {
                 plugins: self.plugins.clone(),
             }),
             Some(p) => {
+                let p = if p.is_empty() { None } else { Some(p.to_string()) };
                 // `resolve_from_manifest` reports detail on stderr (the diagnostic channel).
-                let mut run = crate::resolve_from_manifest(
-                    home,
-                    Some(p.to_string()),
-                    None,
-                    None,
-                    &self.layout,
-                )
-                .map_err(|_| {
-                    format!("could not resolve profile {p:?} (details on the server's stderr)")
-                })?;
+                let mut run = crate::resolve_from_manifest(home, p.clone(), None, None, &self.layout)
+                    .map_err(|_| {
+                        format!(
+                            "could not resolve manifest at {} (profile {p:?}) — details on the server's stderr",
+                            home.manifest.display()
+                        )
+                    })?;
                 crate::layer_cli_plugins(
                     &self.cli_plugins,
                     &self.layout,
@@ -255,6 +278,7 @@ impl McpEnv {
                         .to_string()
                 })?;
                 Ok(CallEnv {
+                    home: home.clone(),
                     base_dir: home.dir.clone(),
                     paths: run.paths,
                     declared: run.suites,
@@ -284,6 +308,11 @@ struct SelectionArgs {
     last_failed: Option<bool>,
     /// Manifest profile to resolve for this call (CLI `--profile NAME`).
     profile: Option<String>,
+    /// Target ANOTHER suite: a directory to resolve from (as a CLI run there would — walking up,
+    /// checking each ancestor's `prova/` child), or a manifest path. Omit to use the server's
+    /// startup project. A `project` always resolves fresh, so a manifest you just created or edited
+    /// is picked up without restarting the server.
+    project: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema, Default)]
@@ -307,6 +336,11 @@ struct EvalRequest {
     /// global named after the topology (e.g. `return orders.db.url`), and `ctx:use(<name>)`
     /// resolves the held instance. The topology must already be held.
     topology: Option<String>,
+    /// Target ANOTHER suite: a directory to resolve from (as a CLI run there would — walking up,
+    /// checking each ancestor's `prova/` child), or a manifest path. Omit to use the server's
+    /// startup project. A `project` always resolves fresh, so a manifest you just created or edited
+    /// is picked up without restarting the server.
+    project: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -319,6 +353,11 @@ struct UpRequest {
     /// Pin each resource to its canonical host port (CLI `prova up --fixed`) instead of a random
     /// one. Only one fixed instance of a port can be up at a time.
     fixed: Option<bool>,
+    /// Target ANOTHER suite: a directory to resolve from (as a CLI run there would — walking up,
+    /// checking each ancestor's `prova/` child), or a manifest path. Omit to use the server's
+    /// startup project. A `project` always resolves fresh, so a manifest you just created or edited
+    /// is picked up without restarting the server.
+    project: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -504,7 +543,7 @@ impl ProvaMcpServer {
 
     #[tool(
         name = "run",
-        description = "Run the project's test suite with an optional selection (the MCP mirror of the CLI's -k/--tags/--node/--last-failed/--profile/--jobs flags). With `topology`, run WARM against a topology held by a prior `up`: t:use resolves the held live instance instead of provisioning (never provisions implicitly — an un-held topology is an error). Returns compact JSON: { passed, failed, skipped, deselected, duration_ms, failures: [{ path, message }] }. The result is marked isError when any node failed. Also records the failed nodes so a later run with last_failed=true (or CLI --last-failed) re-runs exactly them."
+        description = "Run the project's test suite with an optional selection (the MCP mirror of the CLI's -k/--tags/--node/--last-failed/--profile/--jobs flags). With `topology`, run WARM against a topology held by a prior `up`: t:use resolves the held live instance instead of provisioning (never provisions implicitly — an un-held topology is an error). Returns compact JSON: { passed, failed, skipped, deselected, duration_ms, failures: [{ path, message }] }. The result is marked isError when any node failed. Also records the failed nodes so a later run with last_failed=true (or CLI --last-failed) re-runs exactly them. Pass `project` (a directory or manifest path) to target ANOTHER suite anywhere on disk — the server's startup project is only the default, and a `project` resolves fresh, so a manifest you just scaffolded works without a restart."
     )]
     async fn run(&self, Parameters(req): Parameters<RunRequest>) -> CallToolResult {
         let _serialized = self.run_lock.lock().await;
@@ -518,7 +557,7 @@ impl ProvaMcpServer {
 
     #[tool(
         name = "list",
-        description = "Discover the project's test nodes without running them (the MCP mirror of `prova --list`), honoring the same selection fields as `run`. Returns compact JSON: { nodes: [{ path }] }."
+        description = "Discover the project's test nodes without running them (the MCP mirror of `prova --list`), honoring the same selection fields as `run`. Returns compact JSON: { nodes: [{ path }] }. Pass `project` (a directory or manifest path) to target ANOTHER suite anywhere on disk — the server's startup project is only the default, and a `project` resolves fresh, so a manifest you just scaffolded works without a restart."
     )]
     async fn list(&self, Parameters(req): Parameters<SelectionArgs>) -> CallToolResult {
         let _serialized = self.run_lock.lock().await;
@@ -549,7 +588,7 @@ impl ProvaMcpServer {
 
     #[tool(
         name = "eval",
-        description = "Evaluate a one-shot Lua snippet in the full prova environment (built-in modules like fs/shell/docker/http, manifest-declared plugins via require(), a real transient ctx torn down afterwards) — the MCP mirror of `prova eval`. With `topology`, evaluate WARM inside a held topology: its value is a global named after it (e.g. `return orders.db.url`). Returns the snippet's returned value as compact JSON. A raising snippet returns an error result carrying the Lua error."
+        description = "Evaluate a one-shot Lua snippet in the full prova environment (built-in modules like fs/shell/docker/http, manifest-declared plugins via require(), a real transient ctx torn down afterwards) — the MCP mirror of `prova eval`. With `topology`, evaluate WARM inside a held topology: its value is a global named after it (e.g. `return orders.db.url`). Returns the snippet's returned value as compact JSON. A raising snippet returns an error result carrying the Lua error. Pass `project` (a directory or manifest path) to target ANOTHER suite anywhere on disk — the server's startup project is only the default, and a `project` resolves fresh, so a manifest you just scaffolded works without a restart."
     )]
     async fn eval(&self, Parameters(req): Parameters<EvalRequest>) -> CallToolResult {
         let _serialized = self.run_lock.lock().await;
@@ -558,12 +597,12 @@ impl ProvaMcpServer {
             let warm = self.warm.clone();
             return blocking(move || warm_eval_blocking(&warm, &topology, req.code)).await;
         }
-        blocking(move || eval_blocking(&env, req.code)).await
+        blocking(move || eval_blocking(&env, req.code, req.project)).await
     }
 
     #[tool(
         name = "up",
-        description = "Provision a named topology (a prova.topology declaration) INSIDE the server and hold it across tool calls — the warm holder. The factory runs exactly once; subsequent run/eval calls with `topology` resolve the held live instance. Returns compact JSON: { name, resources: [{ name, url }] }. Tear it down with `down` (or server shutdown). A held environment accumulates state — down + up when isolation matters."
+        description = "Provision a named topology (a prova.topology declaration) INSIDE the server and hold it across tool calls — the warm holder. The factory runs exactly once; subsequent run/eval calls with `topology` resolve the held live instance. Returns compact JSON: { name, resources: [{ name, url }] }. Tear it down with `down` (or server shutdown). A held environment accumulates state — down + up when isolation matters. Pass `project` (a directory or manifest path) to target ANOTHER suite anywhere on disk — the server's startup project is only the default, and a `project` resolves fresh, so a manifest you just scaffolded works without a restart."
     )]
     async fn up(&self, Parameters(req): Parameters<UpRequest>) -> CallToolResult {
         let _serialized = self.run_lock.lock().await;
@@ -658,7 +697,7 @@ impl Reporter for FailureCollector {
 }
 
 fn run_blocking(env: &McpEnv, req: RunRequest) -> Result<(serde_json::Value, bool), String> {
-    let call = env.resolve_call(req.selection.profile.as_deref())?;
+    let call = env.resolve_call(req.selection.profile.as_deref(), req.selection.project.as_deref())?;
 
     let mut selection = to_selection(&req.selection);
     // `last_failed`: fold the previous run's failed node paths in, exactly like `--last-failed`.
@@ -677,7 +716,7 @@ fn run_blocking(env: &McpEnv, req: RunRequest) -> Result<(serde_json::Value, boo
     }
 
     let jobs = req.jobs.map(|n| (n as usize).max(1)).unwrap_or(call.jobs);
-    let mut config = crate::engine_config(jobs, &env.layout, &call.plugins, env.home.as_ref());
+    let mut config = crate::engine_config(jobs, &env.layout, &call.plugins, Some(&call.home));
     config.selection = selection;
 
     let mut reporter = FailureCollector::default();
@@ -704,7 +743,7 @@ fn run_blocking(env: &McpEnv, req: RunRequest) -> Result<(serde_json::Value, boo
 }
 
 fn list_blocking(env: &McpEnv, req: SelectionArgs) -> Result<(serde_json::Value, bool), String> {
-    let call = env.resolve_call(req.profile.as_deref())?;
+    let call = env.resolve_call(req.profile.as_deref(), req.project.as_deref())?;
 
     let mut selection = to_selection(&req);
     if req.last_failed.unwrap_or(false) {
@@ -714,7 +753,7 @@ fn list_blocking(env: &McpEnv, req: SelectionArgs) -> Result<(serde_json::Value,
     }
 
     let suites = crate::collect_suites(&call.base_dir, &call.declared, &call.paths)?;
-    let mut config = crate::engine_config(1, &env.layout, &call.plugins, env.home.as_ref());
+    let mut config = crate::engine_config(1, &env.layout, &call.plugins, Some(&call.home));
     config.selection = selection;
 
     let mut nodes: Vec<serde_json::Value> = Vec::new();
@@ -726,11 +765,25 @@ fn list_blocking(env: &McpEnv, req: SelectionArgs) -> Result<(serde_json::Value,
     Ok((json!({ "nodes": nodes }), false))
 }
 
-fn eval_blocking(env: &McpEnv, code: String) -> Result<(serde_json::Value, bool), String> {
+fn eval_blocking(
+    env: &McpEnv,
+    code: String,
+    project: Option<String>,
+) -> Result<(serde_json::Value, bool), String> {
     if code.trim().is_empty() {
         return Err("eval: the snippet is empty".into());
     }
-    let config = crate::engine_config(1, &env.layout, &env.plugins, env.home.as_ref());
+    // `eval` deliberately works with NO manifest (the built-ins alone are useful), so it cannot go
+    // through `resolve_call`, which requires one. A `project` still targets another suite: resolve
+    // its home + plugins so `require(...)` and `prova.root` mean what they mean *there*.
+    let (home, plugins) = match project.as_deref() {
+        None => (env.home.clone(), env.plugins.clone()),
+        Some(p) => {
+            let call = env.resolve_call(None, Some(p))?;
+            (Some(call.home), call.plugins)
+        }
+    };
+    let config = crate::engine_config(1, &env.layout, &plugins, home.as_ref());
     eval_snippet(&code, &config)
         .map(|value| (value, false))
         .map_err(|e| e.to_string())
@@ -753,9 +806,9 @@ fn up_blocking(
         ));
     }
 
-    let call = env.resolve_call(req.profile.as_deref())?;
+    let call = env.resolve_call(req.profile.as_deref(), req.project.as_deref())?;
     let files = topology_files(&call)?;
-    let config = crate::engine_config(1, &env.layout, &call.plugins, env.home.as_ref()).with_ports(
+    let config = crate::engine_config(1, &env.layout, &call.plugins, Some(&call.home)).with_ports(
         if req.fixed.unwrap_or(false) {
             PortMode::Fixed
         } else {
