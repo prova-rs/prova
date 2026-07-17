@@ -200,12 +200,35 @@ Desktop's proxy accepts it before the server inside is listening (measured: the 
   Dockerfile → run on the topology network against `postgres.container`'s `network.url` → drive CRUD
   → cross-check the DB, dropping `requires = { "dotnet" }` for `requires = { "docker" }`. That work
   lives in the archetype suites, and is what will exercise the build-cache story on a real toolchain.
-- **`wait = { port }` is a coarse signal, not a true one** — it is a false-ready against Docker
-  Desktop's port proxy (see above). Today every recipe survives it because `prova.containerized`
-  wraps client factories in `prova.retry`; a **black-box resource with no `client` factory** has no
-  such backstop and would hand back a resource that is not actually ready. Options: exec the probe
-  *inside* the container, honor a declared `HEALTHCHECK`, or document `wait` as a pre-filter and make
-  the retry explicit.
+## Readiness is a contract (done)
+
+`wait` now means what it says: when `docker.run` returns, a client's **first probe succeeds**.
+
+It did not before, and the old behavior is worth recording because the failure was invisible.
+`wait = { port }` connected to the **mapped host port** — and Docker Desktop's port proxy binds and
+accepts the moment the container starts, before anything inside is listening. So the check passed
+while the server was still booting. Worse, it could not fail *at all*: a container running
+`sleep 120`, listening on nothing, was reported ready. The signal was not weak, it was vacuous. It
+also could not see an **unpublished** port, so an in-network-only resource — a legitimate topology
+member a containerized SUT talks to by alias — was not waitable.
+
+The fix asks the **container's own kernel** instead of the host: `/proc/net/tcp{,6}` reports what the
+process inside actually bound (state `0A` = LISTEN). It rejects **loopback** binds, because a server
+bound to `127.0.0.1` inside a container answers only itself — not a sibling, not the host — which is
+exactly the case an init phase presents when it binds localhost before the real start. Where the
+image cannot answer (no `cat`/procfs — scratch or distroless), it falls back to the old host-port
+check rather than failing: coarse, but no worse than before, and not misrepresented as a true signal.
+
+Proved by `testdata/docker_readiness.lua` / `tests/docker_readiness.rs`, whose bar is deliberately
+margin-free: the prober container is started **before** the database, so no container-start latency
+pads the gap, and every probe is a **single attempt** with no `prova.retry`. Three parts — the first
+probe succeeds; an unpublished port is still waitable; a container that never listens times out
+rather than being waved through.
+
+The corroboration: Proof 1 had briefly carried a `prova.retry` to paper over the false-ready. With a
+true signal that workaround was **removed**, and the proof passes on the first attempt. Fixing a
+signal should let you delete the compensation built around it — that it did is the evidence the fix
+is real rather than a differently-shaped guess.
 
 ## The discipline this imposes now
 

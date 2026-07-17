@@ -1727,15 +1727,71 @@ pub(crate) mod docker {
         Ok(container)
     }
 
+    /// Is anything LISTENing on `port`, on an address reachable from OUTSIDE the container?
+    ///
+    /// `/proc/net/tcp{,6}` is the container's own kernel accounting — it reports what the process
+    /// inside actually bound, which is the only honest answer to "is it ready". A server bound to
+    /// LOOPBACK inside a container answers only itself, so it is NOT ready for a sibling or for the
+    /// host; init phases that briefly bind localhost before the real start are exactly the case a
+    /// naive check waves through.
+    ///
+    /// Addresses are native-endian hex, so IPv4 127.0.0.1 (0x7F000001) renders as `0100007F` — the
+    /// trailing octet pair is the address's FIRST octet. State `0A` is TCP_LISTEN.
+    fn listening_on(proc_net: &str, port: u16) -> bool {
+        proc_net.lines().any(|line| {
+            let f: Vec<&str> = line.split_whitespace().collect();
+            if f.len() < 4 || f[3] != "0A" {
+                return false;
+            }
+            let Some((addr, p)) = f[1].rsplit_once(':') else { return false };
+            if u16::from_str_radix(p, 16).ok() != Some(port) {
+                return false;
+            }
+            !is_loopback_hex(addr)
+        })
+    }
+
+    fn is_loopback_hex(addr: &str) -> bool {
+        match addr.len() {
+            8 => addr.ends_with("7F"),                          // 127.0.0.0/8
+            32 => addr == "00000000000000000000000001000000",   // ::1
+            _ => false,
+        }
+    }
+
+    /// Ask the container's kernel whether `port` is listening. `None` means the question could not be
+    /// asked — the image has no `cat` (scratch/distroless) or no procfs — and the caller should fall
+    /// back rather than treat "cannot tell" as "not ready".
+    async fn listening_in_container(container: &Container, port: u16) -> Option<bool> {
+        let cmd = vec!["cat".to_string(), "/proc/net/tcp".to_string(), "/proc/net/tcp6".to_string()];
+        // A missing /proc/net/tcp6 makes `cat` exit non-zero while still printing tcp — so judge by
+        // the output, not the exit code.
+        let (_, out, _) = container_exec(&container.client, &container.id, cmd, None).await.ok()?;
+        if !out.contains("local_address") {
+            return None;   // not a procfs table: the probe is unavailable in this image
+        }
+        Some(listening_on(&out, port))
+    }
+
     async fn wait_ready(container: &Container, wait: &Wait) -> mlua::Result<()> {
         let deadline = Instant::now() + wait.timeout;
         loop {
             let ready = if let Some(port) = wait.port {
-                match container.ports.get(&port) {
-                    Some(&host_port) => tokio::net::TcpStream::connect(("127.0.0.1", host_port))
-                        .await
-                        .is_ok(),
-                    None => false,
+                // Ask the CONTAINER, not the host. Connecting to the mapped host port is worthless as
+                // a readiness signal: Docker Desktop's port proxy binds and accepts the moment the
+                // container starts, so the check passes while the server is still booting — and never
+                // fails at all for a container that never listens. It also cannot see an UNPUBLISHED
+                // port, which an in-network-only resource legitimately has.
+                match listening_in_container(container, port).await {
+                    Some(listening) => listening,
+                    // The image cannot answer (no `cat`/procfs). Fall back to the coarse host-port
+                    // check — no worse than before, but do not pretend it is a true signal.
+                    None => match container.ports.get(&port) {
+                        Some(&host_port) => tokio::net::TcpStream::connect(("127.0.0.1", host_port))
+                            .await
+                            .is_ok(),
+                        None => false,
+                    },
                 }
             } else if let Some(pattern) = &wait.log {
                 container_logs(&container.client, &container.id)
