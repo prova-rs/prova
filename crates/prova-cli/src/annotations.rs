@@ -27,10 +27,12 @@ use crate::manifest::Manage;
 
 /// The embedded core annotation stubs (authoritative for the `prova` DSL surface), shipped into the
 /// project so consumers get completion without a checkout of the prova repo.
-const CORE_STUBS: &[(&str, &str)] = &[
-    ("prova.lua", include_str!("../../../library/prova.lua")),
-    ("modules.lua", include_str!("../../../library/modules.lua")),
-];
+///
+/// Embedded **once**, in `prova_core::help`, and consumed twice: here (→ the IDE annotation folder,
+/// for a human in an editor) and by `prova.help()` (→ structured data, for an agent driving the
+/// environment). One source, two sinks — a second copy would drift, and the stub is the copy that
+/// cannot be allowed to rot. See docs/design/agent-ergonomics.md §0.
+use prova_core::help::CORE_STUBS;
 
 /// What `setup` did, so the caller can print a concise, honest one-liner.
 #[derive(Debug, Default)]

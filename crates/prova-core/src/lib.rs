@@ -6,6 +6,7 @@
 //! structured `Event` stream consumed by `Reporter` sinks (`model`).
 
 mod engine;
+pub mod help;
 pub mod layout;
 pub mod model;
 mod modules;

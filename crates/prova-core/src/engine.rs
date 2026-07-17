@@ -1916,6 +1916,30 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
     // recipe with an advertised listener (Kafka) reads it to emit the right listener address.
     prova.set("ports", config.ports.as_str())?;
 
+    // `prova.help([filter])` — the API surface, discoverable from inside the environment being
+    // driven. Returns DATA (a list of `{name, signature, summary}`), not printed prose, so an agent
+    // can filter it and a proof can assert on it. Parsed from the same LuaCATS stubs that ship to
+    // the IDE — one source, two sinks. See `help.rs` / docs/design/agent-ergonomics.md §0.
+    prova.set(
+        "help",
+        lua.create_function(|lua, filter: Option<String>| {
+            let all = crate::help::core_entries();
+            let entries = match filter.as_deref().map(str::trim) {
+                Some(n) if !n.is_empty() => crate::help::filter(&all, n),
+                _ => all,
+            };
+            let out = lua.create_table()?;
+            for (i, e) in entries.iter().enumerate() {
+                let row = lua.create_table()?;
+                row.set("name", e.name.as_str())?;
+                row.set("signature", e.signature.as_str())?;
+                row.set("summary", e.summary.as_str())?;
+                out.set(i + 1, row)?;
+            }
+            Ok(out)
+        })?,
+    )?;
+
     lua.globals().set("prova", prova)?;
 
     // The typed fixture-scope constants: `Scope.Test` / `Scope.Flow` / `Scope.File` / `Scope.Suite`.
