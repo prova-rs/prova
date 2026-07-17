@@ -170,3 +170,64 @@ prova.test("must_run is not satisfied by deselecting the tests that need it", fu
   local r = shell.run(prova_bin .. " --profile ci -k plain", { cwd = dir })
   t:expect(r.code, "the guarantee is about the machine, not the selection"):equals(2)
 end)
+
+------------------------------------------------------------------------------------------
+-- D. Version predicates — the SAME string vocabulary, both directions
+------------------------------------------------------------------------------------------
+-- `requires` and `must_run` must keep parsing the same thing. That is why a capability expression is
+-- a STRING and not a Lua predicate: `must_run` lives in prova.toml, and TOML holds no functions. A
+-- callback-shaped predicate would fork the contract into two vocabularies, one per side.
+
+prova.test("must_run accepts a version constraint that is satisfied", function(t)
+  local dir = project('\n[profiles.ci]\nmust_run = ["git >= 1.0"]\n')
+  local r = shell.run(prova_bin .. " --profile ci", { cwd = dir })
+  t:expect(r.code):equals(0)
+end)
+
+prova.test("must_run FAILS on an unsatisfied version constraint", function(t)
+  -- The dotnet-8-vs-9 case, as a guarantee: CI promises a toolchain VERSION, not merely a binary
+  -- with the right name on PATH.
+  --
+  -- Asserting exit 2 alone would be a FALSE GREEN today: unparsed, "git >= 9999.0" is just an
+  -- unknown capability name, absent from PATH, which already exits 2 — the right code for entirely
+  -- the wrong reason. So demand the version-specific phrasing, which only real parsing produces.
+  local dir = project('\n[profiles.ci]\nmust_run = ["git >= 9999.0"]\n')
+  local r = shell.run(prova_bin .. " --profile ci", { cwd = dir })
+  local out = r.stderr .. r.stdout
+  t:expect(r.code, "a version guarantee is a guarantee"):equals(2)
+  t:expect(out, "fails for the VERSION, not for a missing binary"):contains("does not satisfy")
+  t:expect(out, "and never claims git is absent — it is right there"):never():contains("unavailable")
+end)
+
+prova.test("the must_run version failure reports the FOUND version, not just the constraint",
+           function(t)
+  -- Actionable beats correct-but-useless: "git 2.54.0 does not satisfy >= 9999.0" tells you what to
+  -- do; "git unavailable" sends you hunting for a binary that is already installed.
+  --
+  -- The found version is computed HERE, from the real tool, so this cannot pass on a message that
+  -- merely echoes the constraint back (which is how it passed before the implementation existed).
+  local probe = shell.run({ "git", "--version" })
+  local major = probe.stdout:match("(%d+)%.%d+")
+  t:expect(major, "the probe itself must work for this test to mean anything"):is_truthy()
+
+  local dir = project('\n[profiles.ci]\nmust_run = ["git >= 9999.0"]\n')
+  local r = shell.run(prova_bin .. " --profile ci", { cwd = dir })
+  local out = r.stderr .. r.stdout
+  t:expect(out, "names the constraint"):contains("9999.0")
+  t:expect(out, "and reports the version actually found"):contains("git " .. major .. ".")
+end)
+
+prova.test("a malformed constraint is an ERROR, not a silent skip", function(t)
+  -- The failure mode this closes: a typo'd constraint that quietly never matches would skip forever
+  -- and read as green — the exact vacuous green the contract exists to remove. A bad *expression* is
+  -- a config error, distinct from an unmet *constraint* (a skip) and from an absent tool.
+  --
+  -- Again the phrasing carries the weight: exit 2 alone is a false green, since an unparsed garbage
+  -- string is simply an unknown capability.
+  local dir = project('\n[profiles.ci]\nmust_run = ["git >>>> 1.0"]\n')
+  local r = shell.run(prova_bin .. " --profile ci", { cwd = dir })
+  local out = r.stderr .. r.stdout
+  t:expect(r.code, "a malformed capability expression is a config error"):equals(2)
+  t:expect(out, "says the EXPRESSION is bad, not that the tool is missing"):contains("invalid capability")
+  t:expect(out):contains("git >>>> 1.0")
+end)

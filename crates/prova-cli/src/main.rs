@@ -1477,21 +1477,32 @@ fn resolve_from_manifest(
     // caught before it wastes the run. Exit 2 (config/environment), not 1 (a test failed) — nothing
     // failed a test here; the environment cannot honor the manifest, and whoever is paged wants
     // those to read differently.
-    let missing: Vec<&String> = resolved
-        .must_run
-        .iter()
-        .filter(|cap| !prova_core::capability_available(cap))
-        .collect();
-    if !missing.is_empty() {
-        let where_ = profile.as_deref().unwrap_or("run");
-        for cap in &missing {
-            eprintln!(
-                "prova: profile {where_:?} guarantees capability {cap:?}, which is unavailable here"
-            );
+    // A capability is an expression, not just a name (`"docker"`, `"dotnet >= 9"`), and it is parsed
+    // by the ENGINE's parser — the same one `requires` uses. One vocabulary, two directions: a test
+    // states a need, a context states a guarantee, and they must never disagree about what a string
+    // means.
+    let where_ = profile.as_deref().unwrap_or("run");
+    let mut unmet: Vec<String> = Vec::new();
+    for cap in &resolved.must_run {
+        match prova_core::capability_expr_status(cap) {
+            // Satisfied.
+            Ok(None) => {}
+            // Unmet: absent, or the wrong version. The reason distinguishes them, because "install
+            // docker" and "upgrade dotnet" are different days.
+            Ok(Some(reason)) => unmet.push(format!(
+                "prova: profile {where_:?} guarantees {cap:?}, but {reason}"
+            )),
+            // The expression itself is broken — a config error, not an environment one.
+            Err(e) => unmet.push(format!("prova: profile {where_:?} declares an {e}")),
+        }
+    }
+    if !unmet.is_empty() {
+        for line in &unmet {
+            eprintln!("{line}");
         }
         eprintln!(
-            "prova: a guaranteed capability is a promise about this environment — an absent one is a \
-             broken environment, not a skipped test. Remove it from `must_run`, or run where it exists."
+            "prova: a guaranteed capability is a promise about this environment — an unmet one is a \
+             broken environment, not a skipped test. Fix the environment, or drop it from `must_run`."
         );
         return Err(ExitCode::from(2));
     }

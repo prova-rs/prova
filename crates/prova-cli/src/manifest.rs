@@ -13,10 +13,12 @@
 //!
 //! [profiles.ci]                 # `prova --profile ci` overlays this on [run]
 //! jobs = 8
-//! must_run = ["docker"]         # capabilities CI GUARANTEES: absent → fail, never skip.
+//! must_run = ["docker", "dotnet >= 9"]   # capabilities CI GUARANTEES: unmet → fail, never skip.
 //!                               # (A test's `requires` says what it needs; a profile's `must_run`
-//!                               #  says what this environment promises. Same vocabulary, and the
-//!                               #  reason a suite whose every test skipped can't exit 0 here.)
+//!                               #  says what this environment promises. Same expression grammar,
+//!                               #  and the reason a suite whose every test skipped can't exit 0
+//!                               #  here. A version constraint is the difference between "dotnet is
+//!                               #  installed" and "dotnet can build this".)
 //! [profiles.ci.env]
 //! CI = "true"
 //! [profiles.ci.plugins]         # CI-only capabilities, still pinned in-repo (not an out-of-band input)

@@ -2684,6 +2684,7 @@ dependencies = [
  "prost-types",
  "protox",
  "reqwest",
+ "semver",
  "serde",
  "serde_json",
  "serde_yaml_ng",

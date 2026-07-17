@@ -183,7 +183,23 @@ function Matcher:matches_snapshot(opts) end
 --- A capability a unit requires to run. Missing capability → the unit is SKIPPED (with a
 --- reason), never failed. A closed, validated set (plugins may register more); a typo like
 --- `"dcoker"` is rejected at collection time rather than silently ignored.
----@alias prova.Capability "docker"|"network"|"git"|"github"|string  # known caps autocomplete; any tool-on-PATH name also works
+--- A capability expression: a name, optionally with a semver constraint.
+---
+---   "docker"            -- the daemon answers, and runs LINUX containers
+---   "dotnet >= 9"       -- present AND new enough; SDK 8 skips instead of dying at build time
+---   "node ^20"          -- any semver operator; whitespace is not significant
+---   "git >= 1.0, < 3.0" -- ranges work
+---   "unix" / "windows"  -- platform predicates (no version: `cfg!` has no number)
+---
+--- Unknown names fall through to a binary-on-PATH probe, so `requires = { "kubectl" }` needs no
+--- registration. A version is probed from the tool itself (`--version`; docker reports its SERVER
+--- version, which is the thing a suite depends on) and padded to three components.
+---
+--- Unmet → the unit SKIPS, with a reason that says which of the three things went wrong: absent,
+--- too old, or a malformed expression (that one is an error — a constraint that can never parse
+--- would skip forever and read as green). The same expression grammar is what a profile's
+--- `must_run` takes in prova.toml, where an unmet one FAILS instead: one vocabulary, two directions.
+---@alias prova.Capability "docker"|"network"|"git"|"github"|"unix"|"windows"|string
 
 --- A handle to any schedulable unit — a `test`, `flow`, or `group`. Pass to `depends_on`.
 --- Units with no edge between them are mutually isolated and may run in parallel.

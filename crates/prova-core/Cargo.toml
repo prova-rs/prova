@@ -58,6 +58,11 @@ prost-reflect = { version = "0.16.5", features = ["serde"], optional = true }
 # Maintained serde_yaml fork. Feature-gated (default on); light, pure-Rust.
 serde_yaml_ng = { version = "0.10.0", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
+# Capability version predicates — `requires = { "dotnet >= 9" }`. The constraint is real semver, not
+# a hand-rolled compare: version ordering is exactly where "obviously correct" hand code is quietly
+# wrong (prereleases, ranges, `^`). prova-cli already depends on semver for archetect's own
+# `requires.archetect` gate, so the workspace resolves a single copy.
+semver = "1"
 # The `mock` facet (`http.mock`) — an in-process stub/record server for the dependency you can't run.
 #
 # **Raw hyper, deliberately not axum.** A stub's response may be a *Lua function*, and mlua handles

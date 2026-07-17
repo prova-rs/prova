@@ -2653,25 +2653,188 @@ fn build_plan(col: &Collector) -> mlua::Result<Plan> {
     Ok(Plan { leaves })
 }
 
-/// Set `precondition_skip` on any leaf whose `requires` include an unavailable capability.
+/// Set `precondition_skip` on any leaf whose `requires` are not satisfied.
+///
+/// A capability is an expression, not just a name: `"docker"` or `"dotnet >= 9"`. The skip reason
+/// distinguishes the three ways it can go unmet, because they call for different actions — install
+/// the tool, upgrade it, or fix the typo:
+///
+///   - **absent**    → "requires \"docker\" (unavailable)"
+///   - **too old**   → "requires \"dotnet >= 9\" (dotnet 8.0.421 does not satisfy >= 9)"
+///   - **malformed** → an error, not a skip: a constraint that can never parse would skip forever
+///                     and read as green, which is the vacuous green this contract exists to remove.
 fn resolve_requires(leaves: &mut [Leaf]) {
-    let mut cache: HashMap<String, bool> = HashMap::new();
+    let mut cache: HashMap<String, Option<String>> = HashMap::new();
     for leaf in leaves.iter_mut() {
         for cap in &leaf.requires {
-            let available = *cache
+            // `None` = satisfied; `Some(reason)` = not, and why. Memoized: version probes shell out.
+            let unmet = cache
                 .entry(cap.clone())
-                .or_insert_with(|| capability_available(cap));
-            if !available {
-                leaf.precondition_skip = Some(format!("skipped: requires {cap:?} (unavailable)"));
+                .or_insert_with(|| unmet_reason(cap))
+                .clone();
+            if let Some(reason) = unmet {
+                leaf.precondition_skip = Some(format!("skipped: {reason}"));
                 break;
             }
         }
     }
 }
 
+/// Why `expr` is unmet, or `None` if it is satisfied — the skip-side phrasing over
+/// [`capability_expr_status`]. A malformed expression is reported as the reason rather than folded
+/// into "absent": the author needs to see the typo, not go hunting for a tool that was never named.
+fn unmet_reason(expr: &str) -> Option<String> {
+    match capability_expr_status(expr) {
+        Ok(None) => None,
+        Ok(Some(reason)) => Some(format!("requires {expr:?} ({reason})")),
+        Err(e) => Some(e),
+    }
+}
+
 /// Is a capability available on this host? Known capabilities have detectors; anything else is
 /// treated as "a tool of that name on PATH" (so `requires = { "kubectl" }` just works). A missing
 /// capability never fails a test — it skips it, visibly.
+/// A capability expression: a name, optionally with a semver constraint — `"docker"`,
+/// `"dotnet >= 9"`, `"node ^20"`, `"git >= 1.0, < 3.0"`.
+///
+/// It is a **string**, and that is load-bearing rather than lazy. `must_run` lives in `prova.toml`,
+/// which is TOML and holds no functions, so a predicate expressible only in Lua would split the
+/// contract into two vocabularies — one for what a test needs, another for what a context
+/// guarantees. One string parses for both.
+pub struct CapabilityExpr<'a> {
+    pub name: &'a str,
+    pub req: Option<semver::VersionReq>,
+}
+
+impl<'a> CapabilityExpr<'a> {
+    /// Parse `"<name>"` or `"<name> <constraint>"`. An unparseable constraint is an **error**, never
+    /// a quiet "unavailable": a typo'd constraint that silently never matched would skip forever and
+    /// read as green — the vacuous green this whole contract exists to remove.
+    pub fn parse(expr: &'a str) -> Result<Self, String> {
+        let expr = expr.trim();
+        // The name runs until whitespace or the first constraint character, so `git>=1.0` and
+        // `git >= 1.0` are the same expression — whitespace is not meaning.
+        let split = expr
+            .find(|c: char| c.is_whitespace() || "<>=^~".contains(c))
+            .unwrap_or(expr.len());
+        let (name, rest) = expr.split_at(split);
+        let name = name.trim();
+        let rest = rest.trim();
+        if name.is_empty() {
+            return Err(format!("invalid capability expression {expr:?}: no name"));
+        }
+        if rest.is_empty() {
+            return Ok(Self { name, req: None });
+        }
+        match semver::VersionReq::parse(rest) {
+            Ok(req) => Ok(Self {
+                name,
+                req: Some(req),
+            }),
+            Err(e) => Err(format!(
+                "invalid capability expression {expr:?}: {e} \
+                 (expected a semver constraint like \">= 9\", \"^20\", or \">= 1.0, < 3.0\")"
+            )),
+        }
+    }
+}
+
+/// What version of `name` is installed, if the question is meaningful and answerable.
+///
+/// `None` means "no version to compare" — either the capability has no version concept, or its probe
+/// could not answer. A constraint against `None` is **unsatisfiable**, because the honest response to
+/// "is this ≥ 9?" when the version is unknowable is "cannot confirm", and a gate that cannot confirm
+/// must not wave the suite through.
+pub fn capability_version(name: &str) -> Option<semver::Version> {
+    let raw = match name {
+        // Docker's SERVER version — the daemon is the thing a suite depends on, and it can differ
+        // from the CLI talking to it. `docker --version` would report the client and quietly answer
+        // a different question.
+        "docker" => run_capture("docker", &["version", "--format", "{{.Server.Version}}"])?,
+        // Platform predicates are booleans, not versions: `cfg!(unix)` has no number. A future
+        // `windows >= 10` wants the OS build, which is a separate probe per platform; until that
+        // exists, say so honestly (None ⇒ a constraint cannot be satisfied) rather than invent one.
+        "unix" | "windows" => return None,
+        // The general case: ask the tool. Every candidate answers `--version` on stdout —
+        //   git    → "git version 2.54.0"
+        //   dotnet → "8.0.421"
+        //   sh     → "GNU bash, version 5.3.9(1)-release (…)"
+        // so take the first version-shaped token rather than trying to know each tool's format.
+        other => run_capture(other, &["--version"])?,
+    };
+    parse_first_version(&raw)
+}
+
+/// The first `N.N[.N]` in `text`, padded to three components.
+///
+/// Tools are inconsistent (`2.54`, `8.0.421`, `5.3.9(1)-release`) and an author should not have to
+/// care, so normalize rather than demand strict semver from arbitrary CLIs.
+fn parse_first_version(text: &str) -> Option<semver::Version> {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
+            i += 1;
+        }
+        let tok = text[start..i].trim_end_matches('.');
+        let mut parts: Vec<&str> = tok.split('.').filter(|p| !p.is_empty()).collect();
+        if parts.len() >= 2 {
+            parts.truncate(3);
+            while parts.len() < 3 {
+                parts.push("0");
+            }
+            if let Ok(v) = semver::Version::parse(&parts.join(".")) {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
+/// Run `program args…` and capture stdout, or `None` if it cannot be run.
+fn run_capture(program: &str, args: &[&str]) -> Option<String> {
+    let out = std::process::Command::new(program).args(args).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// Is this capability expression satisfied here, and if not, why?
+///
+/// - `Ok(None)`         — satisfied.
+/// - `Ok(Some(reason))` — unmet, phrased for a human: absent, or the wrong version.
+/// - `Err(e)`           — the expression itself is malformed (a config error, not an environment one).
+///
+/// The three are kept apart because they call for different actions: install the tool, upgrade it,
+/// or fix the typo. Name is checked before version, so an absent tool never reaches a version probe
+/// and `windows >= 10` short-circuits on unix without asking Windows what build it is.
+///
+/// This is the one function both halves of the contract call — `requires` (skip on unmet) and
+/// `must_run` (fail on unmet). They must never disagree about what a string means.
+pub fn capability_expr_status(expr: &str) -> Result<Option<String>, String> {
+    let parsed = CapabilityExpr::parse(expr)?;
+    if !capability_available(parsed.name) {
+        return Ok(Some(format!("{:?} is unavailable", parsed.name)));
+    }
+    let Some(req) = parsed.req else { return Ok(None) };
+    match capability_version(parsed.name) {
+        Some(v) if req.matches(&v) => Ok(None),
+        Some(v) => Ok(Some(format!("{} {v} does not satisfy {req}", parsed.name))),
+        // Present, but its version cannot be established — so the constraint cannot be *confirmed*,
+        // and "cannot confirm" is not "satisfied".
+        None => Ok(Some(format!(
+            "{}'s version could not be determined, so {req} cannot be confirmed",
+            parsed.name
+        ))),
+    }
+}
+
 /// Is `name` available here? The single probe behind both halves of the skip/fail contract: a test's
 /// `requires` (skip when absent) and a profile's `must_run` (fail when absent) ask the SAME question
 /// of the SAME vocabulary — they differ only in what the answer means. Public so the CLI's
