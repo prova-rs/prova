@@ -530,34 +530,15 @@ function prova.containerized(spec) end
 ---@class prova.runtime
 runtime = {}
 
---- Register a project-wide capability.
----
---- The escape hatch for a predicate no name-and-version can express — a GPU, a live kind cluster, a
---- licence file. It is a NAMED predicate rather than an inline function, and that is the point: a
---- skip has to say what was missing, and `function: 0x7f9a…` says nothing. Once registered, the name
---- works in BOTH directions of the contract: `requires = { "gpu" }` (skip if unmet) and
---- `must_run = ["gpu"]` in prova.toml (fail if unmet).
----
---- The predicate answers:
----   `true`             → available
----   a version string   → available AND comparable: `requires = { "gpu >= 2.0" }`
----   `false` / `nil`    → unavailable
----
---- It runs ONCE, at load, and only its verdict is kept. Not an optimization: `must_run` is checked
---- before any suite exists, and a capability that answered differently for two suites in one run
---- would be a coin flip, not a capability.
----
---- Registering over a built-in (`docker`, `unix`, …) is refused — `requires = { "docker" }` must
---- mean the same thing in every project.
----
---- ```lua
---- -- prova.lua, next to prova.toml
---- runtime.capability("gpu",          function() return shell.run({"nvidia-smi"}):ok() end)
---- runtime.capability("kind-cluster", function() return #kind_clusters() > 0 end)
---- runtime.capability("cuda",         function() return probe_cuda_version() end)  -- "12.4.0"
---- ```
+--- Register a project-wide capability — a fact about what THIS system, as configured, can test: its
+--- OS, hardware, and software. A property of the environment, not the code. Built-ins cover the
+--- common cases (`unix`/`windows`, `docker`, `dotnet >= 9`, any tool on PATH); this is the escape
+--- hatch for the rest — a GPU, a kind cluster, a licence file. The name (not the closure) is what
+--- lets a skip say what was missing; the predicate is only how it is detected. Once registered the
+--- name works in both directions: `requires = { "gpu" }` (skip if unmet) and `must_run = ["gpu"]`
+--- (fail if unmet). See docs/design/test-topology.md.
 ---@param name string                          # the capability name used in `requires` / `must_run`
----@param predicate fun(): boolean|string|nil  # true/false, or a version string
+---@param predicate fun(): boolean|string|nil  # true = available · a version string = comparable (`gpu >= 2`) · false/nil = unavailable
 function runtime.capability(name, predicate) end
 
 --- Run `fn` before EVERY test in this file (and nested groups). For per-test setup that needs no value — prefer a `prova.fixture` when the setup PRODUCES something, since a fixture is lazy, cached, and tears down with its scope.

@@ -50,6 +50,16 @@ are**, not of the test.
 
 ## The contract: `requires` states a need, the profile states a guarantee
 
+First, what a **capability** is:
+
+> A capability is what this system — its current **OS, hardware, and software** — is capable of
+> testing. A fact about the **environment**, not about the code.
+
+`unix`/`windows` (OS), `gpu` or a signing key (hardware), `docker`/`dotnet >= 9`/`kubectl` (software)
+are all the same kind of thing: a question about the machine the code runs on, not the code. That
+single fact is the root the whole contract grows from — because if a capability is a fact about the
+environment, then the two things a suite says about it are just two *directions* of that fact.
+
 The seam already exists in this codebase, and it is the same one
 [topologies.md](topologies.md#port-modes--external-reachability-done) uses for port modes: **the
 definition is decoupled from the verb.** The topology does not know about `--fixed`; the verb picks
