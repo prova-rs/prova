@@ -96,9 +96,15 @@ prova.test("snapshots: a layout snapshot catches an added file", function(t)
   fs.write(render .. "/Cargo.toml", "[package]")
   fs.write(render .. "/src/main.rs", "fn main() {}")
   -- The test file lives in `work` so its .snap lands in work/snapshots.
+  --
+  -- The path goes in as a LONG BRACKET string, not a quoted one: this generates Lua source, and on
+  -- Windows the temp path is `C:\Users\…`, whose backslashes a quoted literal would read as escape
+  -- sequences (`\U` → invalid escape → the generated file does not parse, and the run below exits 1
+  -- for a reason nothing about "layout snapshot" would lead you to). Long brackets take the string
+  -- verbatim.
   local test = work .. "/layout_test.lua"
-  fs.write(test, 'prova.test("layout", function(t) t:expect({ path = "' .. render ..
-    '" }):matches_snapshot("shape") end)\n')
+  fs.write(test, 'prova.test("layout", function(t) t:expect({ path = [[' .. render ..
+    ']] }):matches_snapshot("shape") end)\n')
 
   t:expect(run("-u " .. test).code):equals(0)     -- record the layout
   t:expect(run(test).code):equals(0)              -- unchanged → matches
