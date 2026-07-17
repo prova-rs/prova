@@ -90,7 +90,9 @@ end)
 prova.test("snapshots: a layout snapshot catches an added file", function(t)
   local work = fs.tempdir()
   local render = work .. "/render"
-  shell.run("mkdir -p " .. render .. "/src")
+  -- No mkdir: `fs.write` creates parent directories. The `mkdir -p` this used to run was both
+  -- redundant and unix-only — and, having no `check = true`, it failed SILENTLY on Windows, leaving
+  -- no render dir and failing the snapshot below for a reason that pointed nowhere near the cause.
   fs.write(render .. "/Cargo.toml", "[package]")
   fs.write(render .. "/src/main.rs", "fn main() {}")
   -- The test file lives in `work` so its .snap lands in work/snapshots.
