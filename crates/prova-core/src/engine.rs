@@ -534,6 +534,30 @@ async fn teardown_scope(scope: &Rc<RefCell<ScopeState>>) -> Vec<String> {
 /// that test red would report a defect in the wrong place. It is its own event, so it gets its own
 /// node: `<scope> ⟶ teardown`, counted in `failed` like any other. That needs no new reporting
 /// concept — `Event::NodeFinished` already carries a path, an outcome, and a message.
+/// Tear every scope down and report failures to **stderr**, for the paths with no reporter: `eval`,
+/// `up`, `watch`, `down`, and partial-provision cleanup.
+///
+/// They must go somewhere. These are exactly the paths that stop containers, so a swallowed teardown
+/// error is a resource still running after prova said it was done — the operator's machine quietly
+/// accumulating what a green run promised it had reaped.
+async fn teardown_all_and_warn(state: &RunState) {
+    let mut late = teardown_file_scopes(state).await;
+    late.extend(teardown_results("suite", teardown_scope(&state.suite).await));
+    for r in &late {
+        eprintln!(
+            "prova: {} failed: {}",
+            r.path,
+            r.message.as_deref().unwrap_or("(no message)")
+        );
+    }
+    if !late.is_empty() {
+        eprintln!(
+            "prova: {} teardown failure(s) — resources may still be running; check `docker ps`",
+            late.len()
+        );
+    }
+}
+
 fn teardown_results(label: &str, errors: Vec<String>) -> Vec<NodeResult> {
     errors
         .into_iter()
@@ -3574,8 +3598,7 @@ fn eval_with_state(
         let outcome = chunk.call_async::<Value>(()).await;
         // Tear the transient scope down inside the same runtime, success OR error (mirroring
         // execute_collected), so whatever the snippet provisioned is reaped before we return.
-        teardown_file_scopes(state).await;
-        teardown_scope(&state.suite).await;
+        teardown_all_and_warn(state).await;
         outcome
     })?;
     Ok(eval_value_to_json(lua, &value, 0))
@@ -3668,8 +3691,7 @@ pub fn up(
     block_on_local(&rt, async {
         let result = provision_and_hold(&lua, &state, id, name, on_ready).await;
         // Always tear down whatever got provisioned — a clean signal, or a mid-provision failure.
-        teardown_file_scopes(&state).await;
-        teardown_scope(&state.suite).await;
+        teardown_all_and_warn(&state).await;
         result
     })
 }
@@ -3701,8 +3723,7 @@ pub fn watch(
                         Ok::<bool, mlua::Error>(wait_for_change_or_shutdown(files).await)
                     }
                     .await;
-                    teardown_file_scopes(&state).await;
-                    teardown_scope(&state.suite).await;
+                    teardown_all_and_warn(&state).await;
                     match held {
                         // A file changed → loop and re-provision. Shutdown → done.
                         Ok(true) => {}
@@ -3892,8 +3913,7 @@ pub fn hold_topology(
             Ok(v) => Ok(v),
             Err(e) => {
                 // Partial provisioning already parked teardowns for whatever came up — reap them.
-                teardown_file_scopes(&state).await;
-                teardown_scope(&state.suite).await;
+                teardown_all_and_warn(&state).await;
                 Err(e)
             }
         }
@@ -4003,8 +4023,9 @@ impl HeldTopology {
             run_plan(&self.lua, &plan, &state, &config, reporter, &mut summary).await;
             // Tear down the run's own scopes only. The injected instance is a cached value with no
             // teardown registered here; its teardowns stay parked on the holder's state.
-            teardown_file_scopes(&state).await;
-            teardown_scope(&state.suite).await;
+            let mut late = teardown_file_scopes(&state).await;
+            late.extend(teardown_results("suite", teardown_scope(&state.suite).await));
+            emit_finished(reporter, &mut summary, &late);
             summary.duration = started.elapsed();
         });
         reporter.event(&Event::RunFinished { summary: &summary });
@@ -4041,10 +4062,14 @@ impl HeldTopology {
     /// The one true teardown: run everything the provisioning parked on the holder's scopes
     /// (`ctx:defer`/`ctx:manage`, LIFO), consuming the holder. Driven by the MCP `down` tool or by
     /// server shutdown — never by a warm run.
+    ///
+    /// There is no reporter here — nobody is running tests — so failures go to stderr. They must go
+    /// *somewhere*: this is the path that stops a held topology's containers, so a teardown that
+    /// raised is a container still running on the operator's machine after `down` said it was done.
+    /// Silence there is the worst possible answer.
     pub fn teardown(self) {
         block_on_local(&self.rt, async {
-            teardown_file_scopes(&self.state).await;
-            teardown_scope(&self.state.suite).await;
+            teardown_all_and_warn(&self.state).await;
         });
     }
 }

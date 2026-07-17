@@ -648,6 +648,13 @@ Authoring quality is a first-class goal, so the LSP story is settled before the 
    Why it mattered more than its size suggests: teardown errors were previously **discarded**
    (`let _ = …`), and `ctx:manage` teardown is what stops containers — so a cleanup that raised was
    a leaked container the run reported as green.
+
+   The paths with no reporter — `eval`, `up`, `watch`, `down`, partial-provision cleanup — report to
+   **stderr** instead, naming the scope and suggesting `docker ps`. Those are precisely the paths
+   that stop a held topology's containers, so silence there means a resource still running after
+   prova said it was done. `teardown_scope` is `#[must_use]` so a future call site cannot quietly
+   drop them again — which is not theoretical: it immediately caught six sites the first pass had
+   missed.
 3. **Parallelism vs. `suite`/`file` fixtures** — a `file`-scoped fixture is naturally
    serialized within its file; across files we can parallelize freely. Confirm the cache
    is keyed so parallel workers don't double-instantiate a `suite` fixture (needs a
