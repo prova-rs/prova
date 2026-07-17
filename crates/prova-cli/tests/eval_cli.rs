@@ -3,7 +3,7 @@
 //! container through the transient `ctx` — with teardown verified against the docker daemon.
 
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 fn eval_in(dir: &Path, args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_prova"))
@@ -95,14 +95,11 @@ fn no_snippet_is_a_usage_error() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+// The engine's own probe, not a bare `docker info`: Docker on Windows in Windows-container mode
+// answers `info` happily and then cannot pull the linux image this test runs, which is exactly how
+// this test used to fail on the Windows leg instead of skipping.
 fn docker_available() -> bool {
-    Command::new("docker")
-        .args(["info"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    prova_core::docker_runs_linux_containers()
 }
 
 /// The whole point of `prova eval`: `require` a manifest-declared plugin, provision a real

@@ -1,18 +1,15 @@
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
 
 use prova_core::{run_path, NullReporter};
 
 mod common;
 
+// Defers to the engine's own capability probe, deliberately: this asserts pass/skip counts against
+// what the engine decided, so if the two disagreed about "is docker available" the assertion would
+// invert. One source of truth. (`docker info` alone is not it — Docker on Windows in
+// Windows-container mode answers info and then cannot pull a linux image.)
 fn docker_available() -> bool {
-    Command::new("docker")
-        .args(["info"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    prova_core::docker_runs_linux_containers()
 }
 
 /// The `docker` module + `requires` gating together. Where docker is reachable, the two tests run

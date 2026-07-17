@@ -2586,7 +2586,7 @@ fn capability_available(name: &str) -> bool {
         // skip a whole test spuriously. This resolves once per run (memoized), so the cost is bounded;
         // a genuinely-absent daemon fails fast (connection-refused is instant), so the retry budget is
         // paid mostly as backoff sleeps only when the daemon is present-but-busy.
-        "docker" => cfg!(feature = "docker") && command_succeeds_retry("docker", &["info"], 8),
+        "docker" => cfg!(feature = "docker") && docker_runs_linux_containers(),
         "github" => std::env::var_os("GITHUB_TOKEN").is_some(),
         // No cheap, reliable synchronous probe; assume present (a real offline mode is future work).
         "network" | "internet" => true,
@@ -2632,6 +2632,29 @@ fn command_succeeds(program: &str, args: &[&str]) -> bool {
 /// `command_succeeds`, retried up to `attempts` times with a short backoff — for a daemon-liveness
 /// probe that can hiccup transiently. Succeeds on the first passing attempt (so when the daemon is
 /// healthy there is no delay); only a genuinely-absent daemon pays the full backoff.
+/// Can this daemon run the **Linux** containers prova's resources are?
+///
+/// Answering `docker info` is not enough, and the gap is not hypothetical: Docker on Windows in
+/// *Windows-container* mode answers `info` perfectly happily and then cannot pull
+/// `postgres:16-alpine`. A suite that says `requires = { "docker" }` means "I am about to run a
+/// linux image", so that is what the capability has to check — otherwise the gate waves the suite
+/// through and it dies later on an obscure "Docker stream error" instead of skipping. Ask the daemon
+/// what OS its containers are.
+pub fn docker_runs_linux_containers() -> bool {
+    if !command_succeeds_retry("docker", &["info"], 8) {
+        return false;
+    }
+    std::process::Command::new("docker")
+        .args(["info", "--format", "{{.OSType}}"])
+        .output()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .eq_ignore_ascii_case("linux")
+        })
+        .unwrap_or(false)
+}
+
 fn command_succeeds_retry(program: &str, args: &[&str], attempts: u32) -> bool {
     for attempt in 0..attempts {
         if command_succeeds(program, args) {
