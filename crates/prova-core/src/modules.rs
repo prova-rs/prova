@@ -206,7 +206,16 @@ fn absent_stub(lua: &Lua, name: &'static str) -> mlua::Result<Table> {
 /// even where the native client is absent (§ black-box). `opts` overrides `image`/`tag`/`timeout`/`env`
 /// at call time; `env`/`url`/`client` may read `opts`.
 ///
-/// Spec fields: `name` (for messages), `image` (base repo), `tag` (default tag), `port`/`ports`
+/// The same recipe expresses the **system under test**: give it `build` instead of `image` and its
+/// image is built from the project's own Dockerfile rather than pulled. Nothing else changes — a SUT
+/// is not a separate concept, it is a resource whose image happens to be local, so it inherits the
+/// topology auto-join, the network vantage, readiness and teardown unchanged. That is what lets a
+/// suite drop `requires = { "dotnet" }` for `requires = { "docker" }` and still test the real
+/// production artifact (see docs/design/topologies.md).
+///
+/// Spec fields: `name` (for messages), `image` (base repo, pulled) **or** `build` (built — a
+/// `{ context, dockerfile?, tag?, buildargs?, target?, pull?, nocache? }` table, or a bare string as
+/// shorthand for `{ context = … }`), `tag` (default tag; pulled images only), `port`/`ports`
 /// (published; `port` is the primary for readiness + url; a `ports` entry may be a number for a
 /// random host port or `{ container, host }` for a fixed one), `command?`, `env?` (table or
 /// `function(opts)->table`), `wait?` (`{ port|log }`, default `{ port = primary }`), `timeout?`,
@@ -217,7 +226,10 @@ fn absent_stub(lua: &Lua, name: &'static str) -> mlua::Result<Table> {
 const CONTAINERIZED_LUA: &str = r#"
 function prova.containerized(spec)
   assert(type(spec) == "table", "prova.containerized: pass a spec table")
-  assert(spec.image and spec.url, "prova.containerized: spec needs `image` and `url`")
+  assert((spec.image or spec.build) and spec.url,
+         "prova.containerized: spec needs `image` (pulled) or `build` (built), and `url`")
+  assert(not (spec.image and spec.build),
+         "prova.containerized: spec has both `image` and `build` — an image is pulled or built, not both")
   local name = spec.name or "resource"
   local ports = spec.ports
   if type(ports) == "number" then ports = { ports } end
@@ -253,11 +265,25 @@ function prova.containerized(spec)
     assert(ctx and ctx.manage, name .. ".container(ctx, opts?): pass the fixture/test context first")
     opts = opts or {}
 
+    -- The image is either PULLED (`spec.image`, a published resource) or BUILT (`spec.build`, the
+    -- system under test from its own Dockerfile). A built image is the ONLY difference between a SUT
+    -- and any other resource: everything downstream — ports, env, the network auto-join, the vantage
+    -- swap, readiness, teardown — is identical, which is the point. `opts.image` still overrides
+    -- either, so a caller can pin a prebuilt artifact (e.g. an image CI already published).
     local image = opts.image
     if not image then
-      image = spec.image
-      local tag = opts.tag or spec.tag
-      if tag then image = image .. ":" .. tag end
+      if spec.build then
+        local b = spec.build
+        if type(b) == "string" then b = { context = b } end   -- `build = "."` shorthand
+        image = docker.build{
+          context = b.context, dockerfile = b.dockerfile, tag = b.tag,
+          buildargs = b.buildargs, target = b.target, pull = b.pull, nocache = b.nocache,
+        }
+      else
+        image = spec.image
+        local tag = opts.tag or spec.tag
+        if tag then image = image .. ":" .. tag end
+      end
     end
     local timeout = opts.timeout or spec.timeout or "60s"
 

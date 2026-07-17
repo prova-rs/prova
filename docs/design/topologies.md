@@ -136,11 +136,76 @@ rather than exiting. Dependency-free mtime polling with a short settle (one save
 attached-only, pair with `--fixed` for endpoints stable across re-applies. `up` and `watch` share the
 provisioning path (`load_topology`/`provision`), so there is one definition-to-resources route, not two.
 
+## The containerized SUT — `build` instead of `image` (done)
+
+The payoff of the networked-topology arc: the **system under test runs in a container too**, wired to
+topology resources over the network. The host then needs **nothing but Docker** — no SDK, no JVM, no
+uv — and the artifact under test is the project's **real production image**, not a host-built
+approximation.
+
+The shape this landed in is the one that adds no concepts: a SUT **is** a resource, one whose image is
+*built* rather than *pulled*. `prova.containerized` takes `build` where a published resource takes
+`image`:
+
+```lua
+local app = prova.containerized{
+  name = "app",
+  build = { context = ".", dockerfile = ".platform/docker/local/Dockerfile" },
+  port = 8080,
+  env = function(opts) return { DATABASE_URL = opts.database_url } end,
+  url = function(hp) return "http://127.0.0.1:" .. hp end,
+}.container(ctx, { database_url = db.network.url })   -- wired via the DB's NETWORK vantage
+```
+
+Everything downstream is inherited unchanged — the topology auto-join, the network vantage, readiness,
+teardown, port modes — which is precisely why this is a ~15-line delta rather than a subsystem. The
+author still chooses per fixture: a host-run SUT (`shell.spawn`, resource **host** urls) or a
+containerized one (`build`, resource **network** urls). Both coexist; the convenience never removes
+the primitive.
+
+Underneath sits the primitive it needed: **`docker.build{ context, dockerfile?, tag?, buildargs?,
+target?, pull?, nocache? }`** → an image ref for `docker.run`. It shells out to the `docker` CLI (as
+`create_managed_network` already does, and at no cost in requirements — the `docker` capability gate
+already probes `docker info` through that same CLI). That is what buys **BuildKit cache mounts**
+(`RUN --mount=type=cache,target=/root/.nuget` — the answer to "naive builds are glacial") and
+**`.dockerignore`** honored client-side, both of which driving the HTTP build endpoint would have cost
+us. The default image tag is derived from the context path, so it is *stable across runs*: rebuilds
+replace the tag and hit the layer cache instead of leaking a dangling image per run.
+
+Proved end-to-end (`testdata/container_app.lua`, `tests/container_app.rs`): a real HTTP service built
+from a nested Dockerfile, running on the topology network, resolving `postgres` by DNS alias, driven
+black-box by the host runner over its published port — with rows inserted through the DB's *host*
+vantage showing up in the SUT's answers, so both vantages demonstrably address one live resource.
+Mutation-checked: swapping `db.network.url` for `db.url` fails it (`127.0.0.1` inside a container is
+that container), so the proof genuinely tests the vantage rather than passing incidentally.
+
+One latent bug surfaced on the way: `docker.run` **unconditionally pulled**, so a locally-built image
+died with a misleading "pull access denied". It now pulls only when the image is not already local —
+`docker run`'s own rule. That removed ~500ms of incidental latency from Proof 1, which promptly went
+red and exposed a **false-ready**: `wait = { port }` probes the *mapped host* port, and Docker
+Desktop's proxy accepts it before the server inside is listening (measured: the first probe after
+"ready" fails). Proof 1's precondition is now an explicit `prova.retry` — the same idiom
+`prova.containerized` uses for client factories. See "Remaining work".
+
 ## Remaining work (bounded, and named)
 
 - **Per-resource addressing** — whole-topology addressing across the verbs is done; standing up or
   referencing an *individual* resource (`prova up orders.db`) is speculative, likely a non-goal.
-- **Advertised-listener recipe (Kafka)** — plugin-side follow-up; the core port-mode signal is in place.
+- **Advertised-listener recipe (Kafka)** — plugin-side follow-up; the core port-mode signal is in
+  place. Dual-homing is free for every resource *except* Kafka, which must advertise the network alias
+  to in-network clients and the host address to host clients (`INTERNAL://kafka:9092`,
+  `EXTERNAL://127.0.0.1:<host_port>`) — the one place the containerized SUT needs plugin help.
+- **The archetype acceptance bar** — the mechanism is proved, but the bar named in the arc's hand-off
+  is converting a *real* archetype (`dotnet-rest-service-archetype`): render → build its own
+  Dockerfile → run on the topology network against `postgres.container`'s `network.url` → drive CRUD
+  → cross-check the DB, dropping `requires = { "dotnet" }` for `requires = { "docker" }`. That work
+  lives in the archetype suites, and is what will exercise the build-cache story on a real toolchain.
+- **`wait = { port }` is a coarse signal, not a true one** — it is a false-ready against Docker
+  Desktop's port proxy (see above). Today every recipe survives it because `prova.containerized`
+  wraps client factories in `prova.retry`; a **black-box resource with no `client` factory** has no
+  such backstop and would hand back a resource that is not actually ready. Options: exec the probe
+  *inside* the container, honor a declared `HEALTHCHECK`, or document `wait` as a pre-filter and make
+  the retry explicit.
 
 ## The discipline this imposes now
 

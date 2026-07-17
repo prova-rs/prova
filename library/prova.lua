@@ -447,8 +447,9 @@ function prova.retry(fn, opts) end
 
 ---@class prova.ContainerizedSpec
 ---@field name? string                         # namespace name, for error messages
----@field image string                         # base image repo (e.g. "redis"); `opts.image` fully overrides
----@field tag? string                          # default tag; `opts.tag` overrides
+---@field image? string                        # base image repo (e.g. "redis") — PULLED; `opts.image` fully overrides. Mutually exclusive with `build`
+---@field build? string|prova.DockerBuildOpts  # BUILT from a Dockerfile (the system under test) — a string is shorthand for `{ context = … }`. Mutually exclusive with `image`
+---@field tag? string                          # default tag for a pulled `image`; `opts.tag` overrides
 ---@field port? integer                        # primary published port (readiness + url); or use `ports`
 ---@field ports? integer|(integer|{ container: integer, host: integer })[]  # ports to publish; a `{container,host}` entry fixes the host port
 ---@field command? string                      # optional container command
@@ -466,6 +467,11 @@ function prova.retry(fn, opts) end
 ---`prova.ContainerResource`, attaching a managed `client` only when the spec provides a `client`
 ---factory. `opts.network` (a `docker.network()` handle or name) + `opts.alias` join the resource to
 ---a topology network and populate `resource.network` — how a containerized SUT reaches it.
+---
+---The same recipe expresses the **system under test**: give it `build` instead of `image` and the
+---image is built from the project's own Dockerfile rather than pulled. A SUT is not a separate
+---concept — it is a resource whose image is local, so it inherits the topology auto-join, the
+---network vantage, readiness and teardown unchanged, and the suite needs only Docker (no host SDK).
 ---@param spec prova.ContainerizedSpec
 ---@return { client?: fun(url: string, opts: table): any, container: fun(ctx: prova.Context, opts?: table): prova.ContainerResource }
 function prova.containerized(spec) end

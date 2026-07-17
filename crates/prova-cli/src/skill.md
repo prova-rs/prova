@@ -93,7 +93,8 @@ tempdir remove_all` (relative paths resolve against the invocation cwd). `net.fr
 userdata — not table-iterable), `http.client{ base_url }`, `http.wait_for(url, {status, timeout,
 every})`. `grpc.client(addr)` (`:call`, `:call_status`), `grpc.wait_for`. `graphql.client{ url }`
 (`:query`, `:execute`). `yaml.parse/parse_all`. `sqlite.client(url)`. `docker.run{...} →
-container` (`:host_port`, `:run(argv)`, `:exec`, `:logs`, `:stop`). `archetect.render{...}` /
+container` (`:host_port`, `:run(argv)`, `:exec`, `:logs`, `:stop`), `docker.build{...} → image`,
+`docker.network{...} → network`. `archetect.render{...}` /
 `archetect.verify(...)`. When unsure of a shape: probe it with `eval` — that is what it is for.
 
 ## Boot-then-probe: the quiet idiom
@@ -124,6 +125,32 @@ end)
 Tests `t:use(env)` it; `prova up orders` holds the same environment live (prints endpoints, tears
 down on Ctrl-C); `prova start/down/ps` manage it detached; `prova watch` re-applies on change.
 Your tests and the dev environment are one description — they cannot drift.
+
+Inside a topology factory (and ONLY there) `ctx.network` is an ambient managed network: resources
+auto-join it, aliased by recipe name. That gives each resource a second address — `res.network =
+{ url, host, port, alias }`, the alias + CONTAINER port that **in-network** consumers use. `res.url`
+(127.0.0.1 + mapped port) stays the address **the test runner** uses. Both are live at once.
+
+## The SUT in a container: `build` instead of `image`
+
+The system under test is not a special concept — it is a resource whose image is **built**:
+
+```lua
+local app = prova.containerized{
+  name = "app",
+  build = { context = ".", dockerfile = ".platform/docker/local/Dockerfile" },  -- the REAL prod image
+  port = 8080,
+  env = function(opts) return { DATABASE_URL = opts.database_url } end,
+  url = function(hp) return "http://127.0.0.1:" .. hp end,
+}.container(ctx, { database_url = db.network.url })   -- wire via the NETWORK vantage, not db.url
+```
+
+The host then needs **nothing but Docker** — `requires = { "docker" }`, no SDK/JVM/uv — and you test
+the production artifact. Drive it from the host over `app.url`; cross-check the DB over `db.url`.
+Wiring an in-network consumer to a resource's *host* url is the classic mistake: inside a container
+`127.0.0.1` is that container. `docker.build{ context, dockerfile?, tag?, buildargs? } → image` is
+the primitive underneath (BuildKit + `.dockerignore`); a host-run SUT (`shell.spawn` + host urls)
+remains equally valid — pick per fixture.
 
 ## Running: selection is your scalpel
 
