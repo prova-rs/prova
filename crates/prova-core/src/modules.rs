@@ -312,9 +312,19 @@ function prova.containerized(spec)
       alias = alias or name
     end
 
+    -- `host.docker.internal` reaches the host from inside the container: on native Linux via the
+    -- `host-gateway` mapping, on Docker Desktop it is provided already (so this is a no-op there).
+    -- Passed unconditionally so a containerized SUT can reach a host-bound `http.mock`/`grpc.mock`
+    -- (its `.network.url`) without the author threading anything through — one code path, both
+    -- platforms. An author-supplied `extra_hosts` is preserved and this is appended.
+    local extra_hosts = { "host.docker.internal:host-gateway" }
+    if opts.extra_hosts then
+      for _, h in ipairs(opts.extra_hosts) do table.insert(extra_hosts, h) end
+    end
+
     local container = ctx:manage(docker.run{
       image = image, ports = ports, env = env, command = spec.command, wait = wait,
-      network = network, alias = alias,
+      network = network, alias = alias, extra_hosts = extra_hosts,
     })
 
     local hp = container:host_port(primary)
@@ -1452,6 +1462,10 @@ mod mock {
         url: String,
         host: String,
         port: u16,
+        /// The DNS name a container/VM/pod reaches this host-bound mock at, when `network` was
+        /// requested — `host.docker.internal` by default (the Docker substrate's name for the host),
+        /// overridable for another substrate. `None` → loopback-only, no cross-substrate vantage.
+        network_host: Option<String>,
         state: Shared,
         shutdown: RefCell<Option<tokio::sync::oneshot::Sender<()>>>,
     }
@@ -1496,7 +1510,25 @@ mod mock {
     /// `spawn_local` the accept loop onto the engine's `LocalSet`.
     fn start(lua: &Lua, opts: Option<&Table>) -> mlua::Result<MockServer> {
         let mut init = MockState::default();
+        // A mock is a *host* process; a container reaches it not by a DNS alias (it is not on the
+        // docker network) but at the host gateway. `network` opts into that: it binds all interfaces
+        // (a real LAN exposure, hence off by default) and exposes a `.network` vantage the SUT wires
+        // in. `true` → `host.docker.internal`; a string overrides the host name for another substrate.
+        let mut network_host: Option<String> = None;
         if let Some(o) = opts {
+            match o.get::<Option<Value>>("network")? {
+                Some(Value::Boolean(true)) => {
+                    network_host = Some("host.docker.internal".to_string())
+                }
+                Some(Value::String(name)) => network_host = Some(name.to_string_lossy().to_string()),
+                Some(Value::Boolean(false)) | None | Some(Value::Nil) => {}
+                Some(other) => {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "http.mock: `network` must be true or a host name, got a {}",
+                        other.type_name()
+                    )))
+                }
+            }
             init.passthrough = o.get::<Option<String>>("passthrough")?;
             init.record = o.get::<Option<String>>("record")?;
             init.allow_handler_errors =
@@ -1528,7 +1560,14 @@ mod mock {
             }
         }
 
-        let std_listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+        // Loopback unless a cross-substrate vantage was asked for. Binding all interfaces is the
+        // security-relevant bit, so it is gated on the same explicit `network` request.
+        let bind_ip = if network_host.is_some() {
+            "0.0.0.0"
+        } else {
+            "127.0.0.1"
+        };
+        let std_listener = std::net::TcpListener::bind((bind_ip, 0))
             .map_err(|e| mlua::Error::RuntimeError(format!("http.mock: bind: {e}")))?;
         std_listener
             .set_nonblocking(true)
@@ -1575,9 +1614,12 @@ mod mock {
         });
 
         Ok(MockServer {
+            // `url`/`host` remain loopback: they are how *this* process (the test) probes the mock,
+            // and 0.0.0.0 includes loopback. The cross-substrate address lives on `.network`.
             url: format!("http://127.0.0.1:{port}"),
             host: "127.0.0.1".to_string(),
             port,
+            network_host,
             state,
             shutdown: RefCell::new(Some(tx)),
         })
@@ -2045,6 +2087,19 @@ mod mock {
             fields.add_field_method_get("url", |_, this| Ok(this.url.clone()));
             fields.add_field_method_get("host", |_, this| Ok(this.host.clone()));
             fields.add_field_method_get("port", |_, this| Ok(this.port));
+            // `.network` — the vantage a containerized/VM'd SUT wires in, present only when
+            // `network` was requested. Mirrors a container resource's `.network`, but the address is
+            // the host gateway rather than a DNS alias, because a mock is a host process.
+            fields.add_field_method_get("network", |lua, this| {
+                let Some(host) = &this.network_host else {
+                    return Ok(Value::Nil);
+                };
+                let t = lua.create_table()?;
+                t.set("url", format!("http://{host}:{}", this.port))?;
+                t.set("host", host.clone())?;
+                t.set("port", this.port)?;
+                Ok(Value::Table(t))
+            });
         }
 
         fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
@@ -2630,6 +2685,12 @@ pub(crate) mod docker {
         network: Option<String>,
         /// The alias to answer to on `network` (siblings resolve it by DNS). Requires `network`.
         alias: Option<String>,
+        /// `HostConfig.extra_hosts` — `"name:ip"` entries added to the container's `/etc/hosts`. The
+        /// C2 case is `"host.docker.internal:host-gateway"`: on native Linux `host-gateway` resolves
+        /// to the bridge address the host is reachable at, which is how a containerized SUT reaches a
+        /// host-bound mock. Docker Desktop provides the name anyway, so setting it always is a no-op
+        /// there and keeps one code path across platforms.
+        extra_hosts: Vec<String>,
     }
 
     impl Spec {
@@ -2724,6 +2785,9 @@ pub(crate) mod docker {
                     "docker.run `alias` requires a `network`".into(),
                 ));
             }
+            let extra_hosts = opts
+                .get::<Option<Vec<String>>>("extra_hosts")?
+                .unwrap_or_default();
             Ok(Spec {
                 image,
                 ports,
@@ -2732,6 +2796,7 @@ pub(crate) mod docker {
                 wait,
                 network,
                 alias,
+                extra_hosts,
             })
         }
     }
@@ -2798,6 +2863,7 @@ pub(crate) mod docker {
             exposed_ports: (!exposed.is_empty()).then_some(exposed),
             host_config: Some(HostConfig {
                 port_bindings: (!bindings.is_empty()).then_some(bindings),
+                extra_hosts: (!spec.extra_hosts.is_empty()).then(|| spec.extra_hosts.clone()),
                 ..Default::default()
             }),
             networking_config,
@@ -3883,6 +3949,9 @@ mod grpc_mock {
         url: String,
         host: String,
         port: u16,
+        /// See the http facet: the host-gateway name a container reaches this mock at when `network`
+        /// was requested. `None` → loopback-only.
+        network_host: Option<String>,
         state: Shared,
         shutdown: RefCell<Option<tokio::sync::oneshot::Sender<()>>>,
     }
@@ -3942,6 +4011,19 @@ mod grpc_mock {
         let allow_handler_errors = opts
             .get::<Option<bool>>("allow_handler_errors")?
             .unwrap_or(false);
+        // `network` — opt into a host-gateway vantage, binding all interfaces. Same contract as
+        // http.mock: true → host.docker.internal, a string overrides the host name.
+        let network_host: Option<String> = match opts.get::<Option<Value>>("network")? {
+            Some(Value::Boolean(true)) => Some("host.docker.internal".to_string()),
+            Some(Value::String(name)) => Some(name.to_string_lossy().to_string()),
+            Some(Value::Boolean(false)) | None | Some(Value::Nil) => None,
+            Some(other) => {
+                return Err(err(format!(
+                    "grpc.mock: `network` must be true or a host name, got a {}",
+                    other.type_name()
+                )))
+            }
+        };
 
         let reflect_v1 = tonic_reflection::server::Builder::configure()
             .register_encoded_file_descriptor_set(&fds_bytes)
@@ -3952,7 +4034,12 @@ mod grpc_mock {
             .build_v1alpha()
             .map_err(|e| err(format!("grpc.mock: building v1alpha reflection service: {e}")))?;
 
-        let std_listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+        let bind_ip = if network_host.is_some() {
+            "0.0.0.0"
+        } else {
+            "127.0.0.1"
+        };
+        let std_listener = std::net::TcpListener::bind((bind_ip, 0))
             .map_err(|e| err(format!("grpc.mock: bind: {e}")))?;
         std_listener
             .set_nonblocking(true)
@@ -4021,6 +4108,7 @@ mod grpc_mock {
             url: format!("http://127.0.0.1:{port}"),
             host: "127.0.0.1".to_string(),
             port,
+            network_host,
             state,
             shutdown: RefCell::new(Some(tx)),
         })
@@ -4403,6 +4491,16 @@ mod grpc_mock {
             fields.add_field_method_get("url", |_, this| Ok(this.url.clone()));
             fields.add_field_method_get("host", |_, this| Ok(this.host.clone()));
             fields.add_field_method_get("port", |_, this| Ok(this.port));
+            fields.add_field_method_get("network", |lua, this| {
+                let Some(host) = &this.network_host else {
+                    return Ok(Value::Nil);
+                };
+                let t = lua.create_table()?;
+                t.set("url", format!("http://{host}:{}", this.port))?;
+                t.set("host", host.clone())?;
+                t.set("port", this.port)?;
+                Ok(Value::Table(t))
+            });
         }
 
         fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {

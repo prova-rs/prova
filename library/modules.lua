@@ -314,6 +314,7 @@ function MockStub:reply(reply) end
 ---@field url string       # "http://127.0.0.1:<port>"
 ---@field host string      # "127.0.0.1"
 ---@field port integer     # the bound port (random, so parallel tests don't collide)
+---@field network? { url: string, host: string, port: integer }  # cross-substrate vantage; present only with `network`
 local MockServer = {}
 
 --- Register a stub. Returns the stub so you can `:reply(…)` it.
@@ -344,6 +345,10 @@ function MockServer:stop() end
 ---                                      #   teardown (a SUT with a fallback would otherwise swallow the
 ---                                      #   500 and hide prova's own bug). Set true when the error path
 ---                                      #   is the subject of the test.
+---@field network? boolean|string        # expose a `.network` vantage for a containerized/VM'd SUT to reach
+---                                      #   this HOST-bound mock. Binds 0.0.0.0 (a real LAN exposure, hence
+---                                      #   opt-in). `true` → `host.docker.internal`; a string overrides the
+---                                      #   host name for another substrate.
 
 --- Provision a mock HTTP server, tied to `ctx`'s scope. The fourth facet: `client` attaches to a
 --- real dependency, `container` provisions a real one, `wait_for` probes one — `mock` provisions a
@@ -477,6 +482,7 @@ function Network:stop() end
 ---@field wait? prova.DockerWait        # readiness gate
 ---@field network? prova.Network|string # a user-defined network to join at create time (handle or name)
 ---@field alias? string                 # DNS alias to answer to on `network` (requires `network`)
+---@field extra_hosts? string[]        # `"name:ip"` entries added to the container's /etc/hosts, e.g. "host.docker.internal:host-gateway" (Linux) to reach a host-bound mock
 
 ---@class prova.DockerNetworkOpts
 ---@field name? string                  # override the generated unique "prova-net-<...>" name
@@ -631,6 +637,7 @@ function GrpcMockStub:reply(reply) end
 ---@field url string       # "http://127.0.0.1:<port>"
 ---@field host string      # "127.0.0.1"
 ---@field port integer     # the bound port (random, so parallel tests don't collide)
+---@field network? { url: string, host: string, port: integer }  # cross-substrate vantage; present only with `network`
 local GrpcMock = {}
 
 ---@param match prova.GrpcMockMatch
@@ -653,6 +660,7 @@ function GrpcMock:stop() end
 ---@field includes? string[]            # import paths (default: each proto's own directory)
 ---@field allow_handler_errors? boolean # a raising `:reply` handler normally FAILS the owning scope at
 ---                                     #   teardown; set true when the error path is the subject
+---@field network? boolean|string       # expose a `.network` host-gateway vantage (binds 0.0.0.0); see http.mock
 
 --- Provision a mock gRPC server, tied to `ctx`'s scope.
 ---
