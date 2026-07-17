@@ -389,6 +389,10 @@ struct FixtureDef {
     name: String,
     scope: ScopeKind,
     factory: Function,
+    /// True when this fixture was declared via `prova.topology` (rather than `prova.fixture`). A
+    /// topology's factory context is "topology-capable": it exposes an ambient managed network on
+    /// `ctx.network`. Ordinary fixtures leave it `false`, so `ctx.network` is nil for them.
+    is_topology: bool,
 }
 
 /// Opaque handle returned by `prova.fixture`; carries the registry id `ctx:use` resolves.
@@ -421,6 +425,11 @@ struct ScopeState {
     cache: HashMap<usize, Value>,
     teardowns: Vec<Function>,
     tempdirs: Vec<PathBuf>,
+    /// The topology's ambient managed network (a `docker.network` handle), created lazily on the
+    /// first `ctx.network` access inside a topology factory and cached here on the topology's own
+    /// scope instance so repeated reads return the same handle. Its teardown is registered on this
+    /// same scope right after creation, so LIFO order reaps it *after* the containers joined to it.
+    network: Option<Value>,
 }
 
 /// Shared across the whole suite run: the fixture registry, the one suite-scope instance, and a lazy
@@ -712,6 +721,11 @@ struct Ctx {
     /// The `test_each` case for this test, exposed as `t.case` (also passed as the body's 2nd arg).
     /// `None` (→ `nil`) for ordinary tests and for fixture factory contexts.
     case: Option<Value>,
+    /// True only for the context injected into a `prova.topology` factory: it makes `ctx.network`
+    /// return the topology's ambient managed network (lazily created + scope-managed). Every other
+    /// context — test bodies, ordinary `prova.fixture` factories, `prova eval` — leaves it `false`,
+    /// so `ctx.network` is nil and resources provisioned there never auto-join a network.
+    topology: bool,
 }
 
 impl Ctx {
@@ -792,6 +806,10 @@ async fn resolve_use(lua: &Lua, this: &Ctx, target: Value) -> mlua::Result<Value
         flow_scope: this.flow_scope.clone(),
         own_scope: def.scope,
         case: None,
+        // A topology's factory context is topology-capable: `ctx.network` provisions/serves its
+        // ambient managed network. Reached through every terminal verb — `t:use`, `prova up`, and the
+        // warm MCP path all provision a topology through this one `resolve_use` seam.
+        topology: def.is_topology,
     };
     let child_ud = lua.create_userdata(child)?;
     let value: Value = def.factory.call_async(child_ud).await?;
@@ -804,6 +822,41 @@ impl UserData for Ctx {
         // `t.case` — the current `test_each` case (nil for ordinary tests).
         fields.add_field_method_get("case", |_, this| {
             Ok(this.case.clone().unwrap_or(Value::Nil))
+        });
+
+        // `ctx.network` — the topology's ambient managed docker network. Non-nil ONLY inside a
+        // `prova.topology` factory (this is the hard invariant that keeps ordinary fixtures
+        // unaffected). Created lazily on first access and cached on the topology's own scope, so
+        // repeated reads return the same handle; its teardown is registered right after creation so
+        // LIFO reaping removes it after the containers joined to it. Reading it in any non-topology
+        // context returns nil, so `prova.containerized`'s `container()` never auto-networks there.
+        fields.add_field_method_get("network", |_lua, this| {
+            if !this.topology {
+                return Ok(Value::Nil);
+            }
+            let scope = this.own_scope_state()?;
+            if let Some(v) = scope.borrow().network.clone() {
+                return Ok(v);
+            }
+            #[cfg(feature = "docker")]
+            {
+                let net_ud = crate::modules::docker::create_managed_network(_lua)?;
+                let net_val = Value::UserData(net_ud);
+                // A teardown that removes the network on scope teardown (LIFO → after its containers).
+                let teardown: Function = _lua
+                    .load("local n = ...\nreturn function() return n:stop() end")
+                    .call(net_val.clone())?;
+                {
+                    let mut s = scope.borrow_mut();
+                    s.network = Some(net_val.clone());
+                    s.teardowns.push(teardown);
+                }
+                Ok(net_val)
+            }
+            #[cfg(not(feature = "docker"))]
+            {
+                Ok(Value::Nil)
+            }
         });
     }
 
@@ -1723,6 +1776,7 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
                         name,
                         scope,
                         factory,
+                        is_topology: false,
                     });
                     id
                 };
@@ -1761,6 +1815,7 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
                         name: name.clone(),
                         scope,
                         factory,
+                        is_topology: true,
                     });
                     c.topologies.insert(name, id);
                     id
@@ -2660,6 +2715,7 @@ async fn run_one(
         flow_scope,
         own_scope: ScopeKind::Test,
         case: item.case.clone(),
+        topology: false,
     };
     let ctx_ud = lua.create_userdata(ctx).expect("create context");
 
@@ -3155,6 +3211,7 @@ fn eval_with_state(
         flow_scope: None,
         own_scope: ScopeKind::File,
         case: None,
+        topology: false,
     };
     lua.globals().set("ctx", lua.create_userdata(ctx)?)?;
 
@@ -3393,6 +3450,7 @@ async fn provision(
         flow_scope: None,
         own_scope: ScopeKind::File,
         case: None,
+        topology: false,
     };
     let handle = lua.create_userdata(FixtureHandle { id })?;
     let value = resolve_use(lua, &ctx, Value::UserData(handle)).await?;

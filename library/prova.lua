@@ -12,6 +12,7 @@
 
 ---Base context passed to fixture factories.
 ---@class prova.Context
+---@field network? prova.Network   # the topology's managed network — non-nil ONLY inside a `prova.topology` factory; resources provisioned there via `prova.containerized` auto-join it, aliased by name. Nil in ordinary fixtures and test bodies.
 local Context = {}
 
 ---Instantiate or fetch a fixture value. Lazy: the fixture is built on first use and then

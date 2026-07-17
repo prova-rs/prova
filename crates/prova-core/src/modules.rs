@@ -273,9 +273,22 @@ function prova.containerized(spec)
     -- `network`/`alias` (from a topology) join the container to a user-defined network so an
     -- in-network consumer — a containerized SUT — can reach it by DNS. Host publishing is unchanged,
     -- so the resource is dual-homed.
+    --
+    -- The topology convenience: a `prova.topology` factory exposes an ambient managed network on
+    -- `ctx.network`. When the author wrote no explicit `network`, a resource provisioned there
+    -- auto-joins that network, aliased by its recipe `name`. Explicit `opts.network` still wins, and
+    -- `ctx.network` is nil in ordinary fixtures (and test bodies), so those resources are entirely
+    -- unaffected — no network is created and no `.network` field is added.
+    local network = opts.network
+    local alias = opts.alias
+    if network == nil and ctx.network ~= nil then
+      network = ctx.network
+      alias = alias or name
+    end
+
     local container = ctx:manage(docker.run{
       image = image, ports = ports, env = env, command = spec.command, wait = wait,
-      network = opts.network, alias = opts.alias,
+      network = network, alias = alias,
     })
 
     local hp = container:host_port(primary)
@@ -287,12 +300,12 @@ function prova.containerized(spec)
     -- The network vantage: when joined with an alias, expose the address an in-network consumer
     -- uses — the alias + the CONTAINER port (not the mapped host port), and the url rewritten from
     -- the host authority to the network authority. `resource.network = { url, host, port, alias }`.
-    if opts.alias then
+    if alias then
       local host_authority = "127.0.0.1:" .. hp
-      local net_authority = opts.alias .. ":" .. primary
+      local net_authority = alias .. ":" .. primary
       local at = url:find(host_authority, 1, true)   -- plain find (no Lua-pattern surprises)
       local net_url = at and (url:sub(1, at - 1) .. net_authority .. url:sub(at + #host_authority)) or url
-      res.network = { url = net_url, host = opts.alias, port = primary, alias = opts.alias }
+      res.network = { url = net_url, host = alias, port = primary, alias = alias }
     end
     -- Extra resource fields beyond the trio (e.g. s3 credentials): `spec.extra(url, opts, container)`
     -- returns a table merged into the result. The reserved names are `client`/`url`/`container`/`host`/`port`.
@@ -1038,7 +1051,7 @@ mod http {
 // ---------------------------------------------------------------------------------------------
 
 #[cfg(feature = "docker")]
-mod docker {
+pub(crate) mod docker {
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
@@ -1053,7 +1066,7 @@ mod docker {
     use bollard::network::CreateNetworkOptions;
     use bollard::Docker;
     use futures::StreamExt;
-    use mlua::{Function, Lua, Table, UserData, UserDataFields, UserDataMethods, Value};
+    use mlua::{AnyUserData, Function, Lua, Table, UserData, UserDataFields, UserDataMethods, Value};
 
     use crate::model::parse_duration;
 
@@ -1275,6 +1288,32 @@ mod docker {
                     removed: false,
                 })
             }
+        })
+    }
+
+    /// Mint a managed user-defined bridge network **synchronously** — shelling out to
+    /// `docker network create` (the same CLI the `Drop` backstop uses) so a *synchronous* caller can
+    /// create one where it cannot `await` the bollard client. This is the seam a `prova.topology`'s
+    /// lazy `ctx.network` field getter uses: the field is read from Lua synchronously, but the network
+    /// it returns is the identical `Network` handle `docker.network()` yields — `.name`, async
+    /// `stop()`, and the `Drop` backstop — so `ctx:manage`/scope teardown reaps it exactly the same.
+    pub(crate) fn create_managed_network(lua: &Lua) -> mlua::Result<AnyUserData> {
+        let name = unique_network_name();
+        let output = std::process::Command::new("docker")
+            .args(["network", "create", "--driver", "bridge", &name])
+            .output()
+            .map_err(derr)?;
+        if !output.status.success() {
+            return Err(derr(format!(
+                "network create failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        let client = Docker::connect_with_local_defaults().map_err(derr)?;
+        lua.create_userdata(Network {
+            client,
+            name,
+            removed: false,
         })
     }
 
