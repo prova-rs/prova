@@ -313,28 +313,14 @@ function MockServer:stop() end
 ---@field replay? string        # answer from a cassette; no dependency, no network (excludes `passthrough`)
 ---@field redact? string[]      # extra header names to redact in the cassette (auth/cookies are redacted anyway)
 
---- Provision a mock HTTP server, tied to `ctx`'s scope.
----
---- **Stateful fakes need no extra API.** A `:reply` handler is real Lua, so state is an ordinary
---- table your fixture closes over, and the ordinary matchers assert on it:
---- ```lua
---- local orders = {}
---- m:on{ method = "POST", path = "/orders" }:reply(function(req)
----   orders[id] = { id = id, status = "open" }; return { status = 201, json = orders[id] }
---- end)
---- m:on{ method = "GET", route = "/orders/:id" }:reply(function(req)
----   return orders[req.params.id] and { json = orders[req.params.id] } or { status = 404 }
---- end)
---- t:expect(orders["o-1"].status):equals("cancelled")   -- assert the state change directly
---- ```
----
---- The fourth facet: `client` attaches to a real dependency, `container` provisions a real one,
---- `wait_for` probes one — `mock` provisions a **fake** one. Reach for it on the boundary you cannot
---- run (a partner API), for behavior the real thing won't produce on demand (a 5xx, a timeout), or to
---- assert on the **interaction itself** — the one question a real dependency cannot answer. If you
---- *can* run the real thing, run it: that is what `prova.containerized` is for.
----
---- The listener is bound before this returns, so the first request cannot race it — no `prova.retry`.
+--- Provision a mock HTTP server, tied to `ctx`'s scope. The fourth facet: `client` attaches to a
+--- real dependency, `container` provisions a real one, `wait_for` probes one — `mock` provisions a
+--- **fake** one. For a **stateful fake**, close over a table in your fixture and mutate it from a
+--- `:reply` handler (it is real Lua); assert on that table directly. Reach for a mock on the boundary
+--- you cannot run, for behavior the real thing won't produce on demand, or to assert on the
+--- interaction itself — if you *can* run the real thing, run it (`prova.containerized`). The listener
+--- is bound before this returns, so the first request cannot race it — no `prova.retry` needed.
+--- See `examples/ordering_test.lua` for a worked stateful fake.
 ---@param ctx prova.Context|prova.TestContext
 ---@param opts? prova.MockOpts
 ---@return prova.MockServer
