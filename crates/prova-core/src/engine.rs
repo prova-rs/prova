@@ -2636,7 +2636,12 @@ fn resolve_requires(leaves: &mut [Leaf]) {
 /// Is a capability available on this host? Known capabilities have detectors; anything else is
 /// treated as "a tool of that name on PATH" (so `requires = { "kubectl" }` just works). A missing
 /// capability never fails a test — it skips it, visibly.
-fn capability_available(name: &str) -> bool {
+/// Is `name` available here? The single probe behind both halves of the skip/fail contract: a test's
+/// `requires` (skip when absent) and a profile's `must_run` (fail when absent) ask the SAME question
+/// of the SAME vocabulary — they differ only in what the answer means. Public so the CLI's
+/// precondition check cannot drift from the runtime's skip decision; two probes that disagreed would
+/// mean a suite skipping for a capability the gate believed present.
+pub fn capability_available(name: &str) -> bool {
     match name {
         // The docker daemon must be reachable *and* the feature compiled in. Retry a few times: a
         // single `docker info` can transiently fail when the daemon is momentarily busy (heavy

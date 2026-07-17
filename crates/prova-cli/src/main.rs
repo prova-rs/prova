@@ -62,6 +62,7 @@ options:
       --tags a,b            select nodes tagged with any listed tag (repeatable; !tag excludes)
       --node PATH           select an exact node path (repeatable) — re-run what a report named
       --last-failed         select only the nodes that failed in the previous run
+      --allow-empty         a selection matching no tests is OK (default: that is an error)
   -u, --update-snapshots    (re)write snapshots instead of comparing (matches_snapshot)
       --unreferenced M      snapshots no test used: ignore (default) | warn | delete (full runs only)
       --list                discover tests without running them (respects selection)
@@ -944,6 +945,10 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     let mut cli_plugins: Vec<String> = Vec::new();
     let mut selection = prova_core::Selection::default();
     let mut last_failed = false;
+    // `--allow-empty`: opt out of the empty-selection error, for the matrix leg that legitimately
+    // selects nothing. Off by default, because a selection matching nothing is nearly always a typo
+    // and a typo must not be green.
+    let mut allow_empty = false;
 
     let mut args = cli_args.into_iter();
     while let Some(arg) = args.next() {
@@ -1026,6 +1031,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         match arg.as_str() {
             "--list" => list = true,
             "--last-failed" => last_failed = true,
+            "--allow-empty" => allow_empty = true,
             "--update-snapshots" | "-u" => update_snapshots = true,
             "--json" => cli_format = Some(Format::Json),
             "--version" | "-V" => {
@@ -1214,6 +1220,32 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     match run_suites(&suites, &mut reporter, &config) {
         Ok(summary) => {
             store_last_failed(&home, &reporter.failed);
+
+            // An explicit selection that matched NOTHING is an error, not a green run.
+            //
+            // The selection axis's instance of the contract: `-k` is *intent*, and a run that asked
+            // for something and got nothing did not succeed at it — it usually means a typo, and a
+            // typo must not be green. (Distinct from `requires`, which is *ability*: that skips, and
+            // is a declared hole rather than a mistake.) Exit 2, with the other usage errors: nothing
+            // failed a test.
+            let ran = summary.passed + summary.failed + summary.skipped;
+            if ran == 0 && !config.selection.is_empty() && !allow_empty {
+                let mut asked: Vec<String> = Vec::new();
+                asked.extend(config.selection.keywords.iter().map(|k| format!("-k {k:?}")));
+                asked.extend(config.selection.tags.iter().map(|t| format!("--tags {t:?}")));
+                asked.extend(config.selection.nodes.iter().map(|n| format!("--node {n:?}")));
+                eprintln!(
+                    "prova: selection matched no tests ({}) — {} deselected",
+                    asked.join(", "),
+                    summary.deselected
+                );
+                eprintln!(
+                    "prova: a selection that matches nothing is usually a typo; pass --allow-empty if \
+                     selecting nothing is intended here."
+                );
+                return ExitCode::from(2);
+            }
+
             // Reconcile unreferenced snapshots (only when tracking was enabled on a full run).
             let orphaned = reconcile_unreferenced(snapshot_registry.as_ref(), &unreferenced);
             if summary.is_success() && !(unreferenced == "warn" && orphaned) {
@@ -1434,6 +1466,32 @@ fn resolve_from_manifest(
         eprintln!(
             "prova: manifest {} defines no paths or suites to run",
             path.display()
+        );
+        return Err(ExitCode::from(2));
+    }
+
+    // `must_run` — the guarantees this context makes, checked BEFORE anything runs.
+    //
+    // A precondition rather than a post-hoc audit of which skips were forgivable: you learn at
+    // second one instead of after a suite has run, and a runner that silently lost its daemon is
+    // caught before it wastes the run. Exit 2 (config/environment), not 1 (a test failed) — nothing
+    // failed a test here; the environment cannot honor the manifest, and whoever is paged wants
+    // those to read differently.
+    let missing: Vec<&String> = resolved
+        .must_run
+        .iter()
+        .filter(|cap| !prova_core::capability_available(cap))
+        .collect();
+    if !missing.is_empty() {
+        let where_ = profile.as_deref().unwrap_or("run");
+        for cap in &missing {
+            eprintln!(
+                "prova: profile {where_:?} guarantees capability {cap:?}, which is unavailable here"
+            );
+        }
+        eprintln!(
+            "prova: a guaranteed capability is a promise about this environment — an absent one is a \
+             broken environment, not a skipped test. Remove it from `must_run`, or run where it exists."
         );
         return Err(ExitCode::from(2));
     }

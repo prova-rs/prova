@@ -15,7 +15,8 @@ mod suite;
 
 pub use engine::{
     Selection,
-    discover_path, discover_path_with, docker_runs_linux_containers, eval_snippet, hold_topology,
+    capability_available, discover_path, discover_path_with, docker_runs_linux_containers,
+    eval_snippet, hold_topology,
     inspect_plugin, run_path, run_path_with, unreferenced_snapshots,
     up, watch, Endpoint, HeldTopology, Module, PluginReport, PluginShape, PortMode, RunConfig,
     SnapshotRegistry,

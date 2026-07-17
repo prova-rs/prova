@@ -13,6 +13,10 @@
 //!
 //! [profiles.ci]                 # `prova --profile ci` overlays this on [run]
 //! jobs = 8
+//! must_run = ["docker"]         # capabilities CI GUARANTEES: absent → fail, never skip.
+//!                               # (A test's `requires` says what it needs; a profile's `must_run`
+//!                               #  says what this environment promises. Same vocabulary, and the
+//!                               #  reason a suite whose every test skipped can't exit 0 here.)
 //! [profiles.ci.env]
 //! CI = "true"
 //! [profiles.ci.plugins]         # CI-only capabilities, still pinned in-repo (not an out-of-band input)
@@ -152,6 +156,22 @@ pub struct Profile {
     /// through an out-of-band CI input. On a name conflict the profile's entry wins.
     #[serde(default)]
     pub plugins: BTreeMap<String, PluginSource>,
+    /// Capabilities this context **guarantees** — checked as a precondition, before anything runs.
+    ///
+    /// The other half of `requires`, and the reason they are two things: a test's `requires` is a
+    /// portable *fact about the test* ("I need docker"), true on a laptop and in CI alike. A
+    /// profile's `must_run` is *policy about the environment* ("here, docker is promised"), and it
+    /// changes when you move without the test changing at all. That is the same seam the port modes
+    /// use — the definition is decoupled from the verb.
+    ///
+    /// A guaranteed capability that is absent is a **broken environment, not a skipped test**, so it
+    /// fails the run. Without this, a suite whose every test skips exits 0, and "we answered
+    /// everything" is indistinguishable from "we could not ask anything" (docs/design/test-topology.md).
+    ///
+    /// Generic over the whole capability vocabulary — the same names and probes `requires` uses, so
+    /// `must_run = ["kind"]` needs no new detector.
+    #[serde(default)]
+    pub must_run: Vec<String>,
 }
 
 /// A fully-resolved run configuration (base `[run]` with an optional profile overlaid).
@@ -169,6 +189,11 @@ pub struct Resolved {
     pub sources: BTreeMap<String, String>,
     /// LuaLS IDE-integration policy (`[luals]`).
     pub luals: Luals,
+    /// Capabilities this run guarantees — the union of `[run] must_run` and the selected profile's.
+    /// A guarantee is **additive**: a profile promises *more* than the project baseline, never less,
+    /// because a context that could retract a guarantee would let the strictest bar be silenced by
+    /// selecting a laxer profile.
+    pub must_run: Vec<String>,
 }
 
 impl Manifest {
@@ -216,6 +241,17 @@ impl Manifest {
             }
         }
 
+        // Guarantees are the UNION of the baseline and the profile's — additive, never overriding,
+        // unlike `paths`/`jobs`/`format`. A profile promises more than the project, never less.
+        let mut must_run = base.must_run.clone();
+        if let Some(p) = overlay {
+            for cap in &p.must_run {
+                if !must_run.contains(cap) {
+                    must_run.push(cap.clone());
+                }
+            }
+        }
+
         Ok(Resolved {
             paths,
             jobs,
@@ -225,6 +261,7 @@ impl Manifest {
             plugins,
             sources: self.sources.clone(),
             luals: self.luals.clone(),
+            must_run,
         })
     }
 }
@@ -273,6 +310,7 @@ paths = ["tests/smoke"]
                 plugins: BTreeMap::new(),
                 sources: BTreeMap::new(),
                 luals: Luals::default(),
+                must_run: Vec::new(),
             }
         );
     }

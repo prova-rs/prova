@@ -73,6 +73,14 @@ must_run = ["docker", "kind", "mvn"]     # my machine owes me my whole toolchain
 `must_run` is **generic over the whole capability vocabulary** — the same names `requires` uses, with
 the same probes. `must_run = ["kind"]` means kind must be on PATH. There is no privileged capability.
 
+**Status: `must_run` + empty-selection are BUILT** (`crates/prova-cli/selftest/must_run_test.lua`, 15
+proofs, written before the implementation and driven red→green). `[run] must_run` and
+`[profiles.<name>] must_run` are the **union** — a guarantee is additive, because a context that could
+*retract* one would let the strictest bar be silenced by selecting a laxer profile. The CLI checks
+them through `prova_core::capability_available` — the engine's own probe, not a second copy, so the
+gate cannot disagree with the runtime about what a skip meant. The home-vs-cwd split below is **not**
+built yet.
+
 ### `must_run` is a precondition, not a skip-audit
 
 Check the guarantees **before running anything**, and fail with the probe's own answer:
