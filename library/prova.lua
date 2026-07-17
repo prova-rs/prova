@@ -96,6 +96,7 @@ function Matcher:never() end
 --- Deep structural equality (recurses into tables).
 ---@param x any
 function Matcher:equals(x) end
+--- Alias for `equals` (deep structural equality).
 ---@param x any
 function Matcher:eq(x) end
 --- Identity: the *same* table/function/userdata (by reference), or an equal primitive (`rawequal`).
@@ -103,10 +104,15 @@ function Matcher:eq(x) end
 --- deep-equals cannot compare.
 ---@param x any
 function Matcher:is(x) end
+--- Passes for anything except `false`/`nil` — Lua truthiness, so `0` and `""` PASS.
 function Matcher:is_truthy() end
+--- Passes for `false` or `nil` only — `0` and `""` are truthy in Lua and FAIL here.
 function Matcher:is_falsy() end
+--- Strictly the boolean `true` (not merely truthy).
 function Matcher:is_true() end
+--- Strictly the boolean `false` (not merely falsy — `nil` fails).
 function Matcher:is_false() end
+--- The subject is `nil`.
 function Matcher:is_nil() end
 ---Substring (strings) or membership (tables).
 ---@param x any
@@ -114,22 +120,32 @@ function Matcher:contains(x) end
 ---Lua-pattern match (strings).
 ---@param pattern string
 function Matcher:matches(pattern) end
+--- `#subject == n` — a string's byte length or a sequence's element count.
 ---@param n integer
 function Matcher:has_length(n) end
+--- The subject equals one of `options` (deep equality).
 ---@param options any[]
 function Matcher:is_one_of(options) end
+--- Numeric `subject > n`.
 ---@param n number
 function Matcher:gt(n) end
+--- Numeric `subject >= n`.
 ---@param n number
 function Matcher:gte(n) end
+--- Numeric `subject < n`.
 ---@param n number
 function Matcher:lt(n) end
+--- Numeric `subject <= n`.
 ---@param n number
 function Matcher:lte(n) end
 --- Filesystem-handle matchers (subject is a file/dir/tree handle):
+--- The path exists (file or directory).
 function Matcher:exists() end
+--- The path exists and is a regular file.
 function Matcher:is_file() end
+--- The path exists and is a directory.
 function Matcher:is_dir() end
+--- Empty: a zero-length string, a table with no entries, or a directory with no children.
 function Matcher:is_empty() end
 --- Assert a rendered tree (a tree/dir handle, or a path string) has no leftover template markers —
 --- no `{{`, `{%`, or `{#` in any file's contents or path segments. GitHub Actions `${{ … }}`
@@ -250,12 +266,16 @@ function GroupBuilder:group(name, opts, body) end
 ---@param label string
 ---@param body fun(g: prova.GroupBuilder)
 function GroupBuilder:describe(label, body) end
+--- Run `fn` before every test in this GROUP.
 ---@param fn fun(t: prova.TestContext)
 function GroupBuilder:before_each(fn) end
+--- Run `fn` after every test in this GROUP.
 ---@param fn fun(t: prova.TestContext)
 function GroupBuilder:after_each(fn) end
+--- Run `fn` once before this GROUP's first test.
 ---@param fn fun()
 function GroupBuilder:before_all(fn) end
+--- Run `fn` once after this GROUP's last test.
 ---@param fn fun()
 function GroupBuilder:after_all(fn) end
 
@@ -326,6 +346,7 @@ Scope = {}
 --- shared across the files). Test files reference the suite's fixtures by name, e.g. `t:use("db")`.
 ---@class prova.suite
 suite = {}
+--- Declare this suite's configuration (see `prova.SuiteConfig`). Call once, at the top of a file.
 ---@param config prova.SuiteConfig
 function suite.config(config) end
 
@@ -487,13 +508,17 @@ function prova.retry(fn, opts) end
 ---@return { client?: fun(url: string, opts: table): any, container: fun(ctx: prova.Context, opts?: table): prova.ContainerResource }
 function prova.containerized(spec) end
 
----@param fn fun(t: prova.TestContext)
+--- Run `fn` before EVERY test in this file (and nested groups). For per-test setup that needs no value — prefer a `prova.fixture` when the setup PRODUCES something, since a fixture is lazy, cached, and tears down with its scope.
+---@param fn fn: fun(t: prova.TestContext)
 function prova.before_each(fn) end
----@param fn fun(t: prova.TestContext)
+--- Run `fn` after EVERY test in this file. Prefer `ctx:defer`/`ctx:manage` for teardown that belongs to a value — those are guaranteed and LIFO; this is for file-wide cleanup.
+---@param fn fn: fun(t: prova.TestContext)
 function prova.after_each(fn) end
----@param fn fun()
+--- Run `fn` ONCE before the first test in this file. Suite-wide setup with no value; a `Scope.File` fixture is usually the better tool.
+---@param fn fn: fun()
 function prova.before_all(fn) end
----@param fn fun()
+--- Run `fn` ONCE after the last test in this file.
+---@param fn fn: fun()
 function prova.after_all(fn) end
 
 return prova

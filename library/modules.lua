@@ -11,6 +11,7 @@
 ---@class prova.FileHandle
 ---@field path string   # absolute path
 local FileHandle = {}
+--- Read this file's contents as a string.
 ---@return string contents
 function FileHandle:read() end
 
@@ -23,9 +24,11 @@ local DirHandle = {}
 ---@class prova.Tree
 ---@field path string   # absolute root
 local Tree = {}
+--- A handle to a file at `rel` within this tree — chain matchers off it (`expect(t:file("a.txt")):exists()`).
 ---@param rel string
 ---@return prova.FileHandle
 function Tree:file(rel) end
+--- A handle to a directory at `rel` within this tree.
 ---@param rel string
 ---@return prova.DirHandle
 function Tree:dir(rel) end
@@ -53,8 +56,11 @@ fs = {}
 ---Create a temp dir. Not auto-cleaned; pair with `ctx:defer` or use `ctx:tempdir()`.
 ---@return string path
 function fs.tempdir() end
+--- Delete a path and everything under it. No error if it is already gone.
 ---@param path string
 function fs.remove_all(path) end
+--- Read a whole file as a string. Raises if it does not exist — check `fs.exists` first when absence
+--- is a normal outcome rather than a bug.
 ---@param path string
 ---@return string
 function fs.read(path) end
@@ -62,12 +68,17 @@ function fs.read(path) end
 ---@param path string
 ---@param contents string
 function fs.write(path, contents) end
+--- Whether a file or directory exists.
 ---@param path string
 ---@return boolean
 function fs.exists(path) end
+--- Every path under `root` matching a glob `pattern` (`*` within a segment, `**` across segments).
+--- Returns **ABSOLUTE** paths, not paths relative to `root` — strip `root` yourself if you need
+--- relative ones (a report keyed on absolute paths differs per machine). Directories are matched too,
+--- so pattern for what you want (`"**/*.rs"`, not `"**"`). Order is unspecified — sort it.
 ---@param root string
 ---@param pattern string   # e.g. "**/*.rs"
----@return string[]
+---@return string[] absolute paths
 function fs.glob(root, pattern) end
 
 ------------------------------------------------------------------------------------------
@@ -80,6 +91,8 @@ function fs.glob(root, pattern) end
 ---@field stderr string
 ---@field duration number   # seconds
 local ShellResult = {}
+--- Whether the command succeeded (`code == 0`). Sugar for the common check — `shell.run` does not
+--- raise on a non-zero exit unless you pass `opts.check`.
 ---@return boolean          # code == 0
 function ShellResult:ok() end
 
@@ -152,30 +165,37 @@ function HttpResponse:json() end
 
 ---@class prova.http
 http = {}
+--- Issue a GET. Does **not** raise on 4xx/5xx — assert on `res.status` yourself; only a transport failure (DNS, refused, timeout) raises.
 ---@param url string
 ---@param opts? prova.HttpOpts
 ---@return prova.HttpResponse
 function http.get(url, opts) end
+--- Issue a POST. Set a body with `opts.body`/`opts.json`. Does **not** raise on 4xx/5xx — assert on `res.status`.
 ---@param url string
 ---@param opts? prova.HttpOpts
 ---@return prova.HttpResponse
 function http.post(url, opts) end
+--- Issue a PUT. Does **not** raise on 4xx/5xx — assert on `res.status`.
 ---@param url string
 ---@param opts? prova.HttpOpts
 ---@return prova.HttpResponse
 function http.put(url, opts) end
+--- Issue a PATCH. Does **not** raise on 4xx/5xx — assert on `res.status`.
 ---@param url string
 ---@param opts? prova.HttpOpts
 ---@return prova.HttpResponse
 function http.patch(url, opts) end
+--- Issue a DELETE. Does **not** raise on 4xx/5xx — assert on `res.status`.
 ---@param url string
 ---@param opts? prova.HttpOpts
 ---@return prova.HttpResponse
 function http.delete(url, opts) end
+--- Issue a HEAD — status + headers, no body. Cheap liveness/existence check.
 ---@param url string
 ---@param opts? prova.HttpOpts
 ---@return prova.HttpResponse
 function http.head(url, opts) end
+--- Issue an OPTIONS — the allowed methods/CORS preflight for a resource.
 ---@param url string
 ---@param opts? prova.HttpOpts
 ---@return prova.HttpResponse
@@ -198,34 +218,42 @@ local HttpClient = {}
 ---@param path string
 ---@param opts? prova.HttpOpts
 ---@return prova.HttpResponse
+--- Issue a GET against this client's base URL. Does **not** raise on 4xx/5xx — assert on `res.status`.
 function HttpClient:get(path, opts) end
 ---@param path string
 ---@param opts? prova.HttpOpts
 ---@return prova.HttpResponse
+--- Issue a POST against this client's base URL. Does **not** raise on 4xx/5xx.
 function HttpClient:post(path, opts) end
 ---@param path string
 ---@param opts? prova.HttpOpts
 ---@return prova.HttpResponse
+--- Issue a PUT against this client's base URL. Does **not** raise on 4xx/5xx.
 function HttpClient:put(path, opts) end
 ---@param path string
 ---@param opts? prova.HttpOpts
 ---@return prova.HttpResponse
+--- Issue a PATCH against this client's base URL. Does **not** raise on 4xx/5xx.
 function HttpClient:patch(path, opts) end
 ---@param path string
 ---@param opts? prova.HttpOpts
 ---@return prova.HttpResponse
+--- Issue a DELETE against this client's base URL. Does **not** raise on 4xx/5xx.
 function HttpClient:delete(path, opts) end
 ---@param path string
 ---@param opts? prova.HttpOpts
 ---@return prova.HttpResponse
+--- Issue a HEAD against this client's base URL — status + headers, no body.
 function HttpClient:head(path, opts) end
 ---@param path string
 ---@param opts? prova.HttpOpts
 ---@return prova.HttpResponse
+--- Issue an OPTIONS against this client's base URL.
 function HttpClient:options(path, opts) end
 ---@param path string
 ---@param opts? prova.WaitOpts
 ---@return prova.HttpResponse
+--- Poll a path until it answers as expected (readiness). Retries the real request rather than sleeping.
 function HttpClient:wait_for(path, opts) end
 
 --- Build a reusable REST client bound to a base URL and default headers.
@@ -603,6 +631,7 @@ local GrpcMock = {}
 
 ---@param match prova.GrpcMockMatch
 ---@return prova.GrpcMockStub
+--- Register a canned response for a method on this mock server.
 function GrpcMock:on(match) end
 
 --- Every RPC the mock was asked, in order — as data, for the ordinary matchers. Unstubbed calls are

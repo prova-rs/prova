@@ -226,6 +226,36 @@ function ShellResult:ok() end
         assert_eq!(ok.signature, "() -> boolean");
     }
 
+    /// Every documented FUNCTION carries a summary. This is prova's own stated requirement —
+    /// "learnable without reading its source" — enforced rather than aspired to.
+    ///
+    /// Why functions and not classes: a help entry must **answer**. A function can only answer with
+    /// prose, because a signature cannot say what it *does* or what it costs you to get wrong —
+    /// `fs.glob(root, pattern) -> string[]` cannot tell you the paths come back ABSOLUTE, and that
+    /// gap cost a real failed run. A class answers with its FIELDS: `ShellResult { code, stdout,
+    /// stderr, duration }` needs no sentence. So the bar is "can an agent act on this entry alone?"
+    ///
+    /// This lives in Rust, next to the embedded stubs, rather than as a repo-level policy: it is an
+    /// in-crate invariant over data the crate itself carries, so it belongs where `cargo test` will
+    /// find it.
+    #[test]
+    fn every_documented_function_has_a_summary() {
+        let entries = core_entries();
+        let missing: Vec<&str> = entries
+            .iter()
+            // A function entry's signature starts with its parameter list; a class's is a field shape.
+            .filter(|e| e.signature.starts_with('(') && e.summary.trim().is_empty())
+            .map(|e| e.name.as_str())
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "{} function(s) are in the stubs but say nothing about themselves, so `prova.help()` \
+             cannot answer for them and an agent must read prova's source instead:\n  {}",
+            missing.len(),
+            missing.join("\n  ")
+        );
+    }
+
     #[test]
     fn the_real_stubs_cover_what_cost_probes() {
         let all = core_entries();
