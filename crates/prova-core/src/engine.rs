@@ -2687,6 +2687,13 @@ pub fn capability_available(name: &str) -> bool {
         // paid mostly as backoff sleeps only when the daemon is present-but-busy.
         "docker" => cfg!(feature = "docker") && docker_runs_linux_containers(),
         "github" => std::env::var_os("GITHUB_TOKEN").is_some(),
+        // Platform predicates. `shell.run("…")` routes a STRING through the platform's shell — `sh -c`
+        // on unix, `cmd /C` on Windows — so a test asserting POSIX syntax (`$VAR`, `;`, `1>&2`,
+        // `sleep`) genuinely *cannot run* off unix. That is a capability question, not a bug: the
+        // honest answer is to skip, the way an absent docker daemon skips. (The argv form
+        // `shell.run{"prog", "arg"}` needs no shell and stays portable — prefer it.)
+        "unix" => cfg!(unix),
+        "windows" => cfg!(windows),
         // No cheap, reliable synchronous probe; assume present (a real offline mode is future work).
         "network" | "internet" => true,
         // A native-client capability (`kafka`, `postgres`, …) is available iff its feature was

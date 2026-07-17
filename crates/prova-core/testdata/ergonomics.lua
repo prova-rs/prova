@@ -70,12 +70,16 @@ end)
 -- Quiet-primitives surface: env scalars coerce, check=true errors carry both streams, spawned
 -- processes capture output (bounded) via proc:output().
 
-prova.test("env accepts numbers and booleans", function(t)
+-- The three below drive a SHELL STRING with POSIX syntax (`$VAR`, `;`, `1>&2`, `sleep`).
+-- `shell.run("…")` routes a string through the PLATFORM shell — `sh -c` on unix, `cmd /C` on
+-- Windows — so these genuinely cannot run off unix, and a skip is the honest answer rather than a
+-- failure. (The argv form needs no shell and stays portable; prefer it for anything that can.)
+prova.test("env accepts numbers and booleans", { requires = { "unix" } }, function(t)
   local r = shell.run("echo $PORT $FLAG", { env = { PORT = 8080, FLAG = true } })
   t:expect(r.stdout):contains("8080 true")
 end)
 
-prova.test("check=true failures carry stdout and stderr", function(t)
+prova.test("check=true failures carry stdout and stderr", { requires = { "unix" } }, function(t)
   local ok, err = pcall(function()
     shell.run("echo out-detail; echo err-detail 1>&2; exit 3", { check = true })
   end)
@@ -86,7 +90,7 @@ prova.test("check=true failures carry stdout and stderr", function(t)
   t:expect(msg):contains("out-detail")
 end)
 
-prova.test("spawned process output is captured", function(t)
+prova.test("spawned process output is captured", { requires = { "unix" } }, function(t)
   local proc = t:manage(shell.spawn("echo hello-from-spawn && sleep 5"))
   prova.retry(function()
     if proc:output():find("hello-from-spawn", 1, true) then return true end

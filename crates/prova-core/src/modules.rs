@@ -2844,6 +2844,14 @@ pub(crate) mod docker {
 
     async fn wait_ready(container: &Container, wait: &Wait) -> mlua::Result<()> {
         let deadline = Instant::now() + wait.timeout;
+        // Whether the in-container probe is usable — decided ONCE, not per poll.
+        //
+        // An image with no `cat`/procfs (scratch, distroless — `traefik/whoami` is one) can never
+        // answer, and re-asking every 250ms fires hundreds of failing exec round-trips across a long
+        // wait. That is not just waste: under parallel docker load it is slow enough to consume the
+        // readiness budget itself, turning a cheap fallback into a timeout. Ask once; if the image
+        // cannot answer, use the coarse host-port check for the rest of the wait.
+        let mut probe_usable = true;
         loop {
             let ready = if let Some(port) = wait.port {
                 // Ask the CONTAINER, not the host. Connecting to the mapped host port is worthless as
@@ -2851,7 +2859,15 @@ pub(crate) mod docker {
                 // container starts, so the check passes while the server is still booting — and never
                 // fails at all for a container that never listens. It also cannot see an UNPUBLISHED
                 // port, which an in-network-only resource legitimately has.
-                match listening_in_container(container, port).await {
+                let asked = if probe_usable {
+                    let answer = listening_in_container(container, port).await;
+                    // `None` = this image cannot answer. Latch it off; do not ask again.
+                    probe_usable = answer.is_some();
+                    answer
+                } else {
+                    None
+                };
+                match asked {
                     Some(listening) => listening,
                     // The image cannot answer (no `cat`/procfs). Fall back to the coarse host-port
                     // check — no worse than before, but do not pretend it is a true signal.
