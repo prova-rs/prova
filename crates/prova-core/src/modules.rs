@@ -1248,6 +1248,7 @@ pub(crate) mod docker {
     pub(crate) fn make(lua: &Lua) -> mlua::Result<Table> {
         let docker = lua.create_table()?;
         docker.set("run", run_fn(lua)?)?;
+        docker.set("build", build_fn(lua)?)?;
         docker.set("network", network_fn(lua)?)?;
         Ok(docker)
     }
@@ -1260,6 +1261,156 @@ pub(crate) mod docker {
                 lua.create_userdata(container)
             }
         })
+    }
+
+    /// What `docker.build` needs off the Lua opts table. `context` is the build-context directory;
+    /// `dockerfile` is relative to it (Docker's own rule — `COPY` resolves against the context root,
+    /// not the Dockerfile's directory), defaulting to `Dockerfile`.
+    struct BuildSpec {
+        context: String,
+        dockerfile: String,
+        tag: String,
+        buildargs: Vec<(String, String)>,
+        target: Option<String>,
+        pull: bool,
+        nocache: bool,
+    }
+
+    /// A default image tag derived from the context path — **stable across runs**, so a rebuild
+    /// *replaces* the previous tag instead of leaking a dangling image every run, and the builder's
+    /// layer cache hits. (Unique-per-run names are right for networks — cheap, and they must not
+    /// collide; they are wrong for images, which are expensive and want reuse.)
+    fn default_build_tag(context: &str) -> String {
+        let mut hash: u64 = 0xcbf29ce484222325;
+        for b in context.as_bytes() {
+            hash ^= *b as u64;
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        format!("prova-build-{hash:x}:latest")
+    }
+
+    impl BuildSpec {
+        fn from_table(t: &Table) -> mlua::Result<Self> {
+            let context: String = t.get::<Option<String>>("context")?.ok_or_else(|| {
+                mlua::Error::RuntimeError("docker.build: `context` (a directory) is required".into())
+            })?;
+            if !std::path::Path::new(&context).is_dir() {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "docker.build: context `{context}` is not a directory"
+                )));
+            }
+            let dockerfile = t.get::<Option<String>>("dockerfile")?.unwrap_or_else(|| "Dockerfile".to_string());
+            // Fail here rather than handing the builder a path it rejects with a murkier message.
+            if !std::path::Path::new(&context).join(&dockerfile).is_file() {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "docker.build: no dockerfile at `{dockerfile}` (relative to context `{context}`)"
+                )));
+            }
+            let tag = t.get::<Option<String>>("tag")?.unwrap_or_else(|| default_build_tag(&context));
+
+            let mut buildargs = Vec::new();
+            if let Some(args) = t.get::<Option<Table>>("buildargs")? {
+                for pair in args.pairs::<String, Value>() {
+                    let (k, v) = pair?;
+                    // Scalars coerce, so a numeric build arg stays a number on the Lua side.
+                    let v = match v {
+                        Value::String(s) => s.to_str()?.to_string(),
+                        Value::Integer(i) => i.to_string(),
+                        Value::Number(n) => n.to_string(),
+                        Value::Boolean(b) => b.to_string(),
+                        other => return Err(mlua::Error::RuntimeError(format!(
+                            "docker.build: buildarg `{k}` must be a scalar, got {}", other.type_name()
+                        ))),
+                    };
+                    buildargs.push((k, v));
+                }
+            }
+
+            Ok(BuildSpec {
+                context,
+                dockerfile,
+                tag,
+                buildargs,
+                target: t.get::<Option<String>>("target")?,
+                pull: t.get::<Option<bool>>("pull")?.unwrap_or(false),
+                nocache: t.get::<Option<bool>>("nocache")?.unwrap_or(false),
+            })
+        }
+    }
+
+    /// `docker.build{ context, dockerfile?, tag?, buildargs?, target?, pull?, nocache? }` — build a
+    /// local image from a Dockerfile and return its ref, ready for `docker.run{ image = … }`.
+    ///
+    /// This shells out to the `docker` CLI rather than driving bollard's build endpoint, for two
+    /// substantive reasons:
+    ///
+    /// - **BuildKit.** The CLI gets it by default; bollard 0.18's classic builder does not (its
+    ///   `buildkit` feature is off). BuildKit is what makes `RUN --mount=type=cache,target=…` work,
+    ///   and mounting toolchain caches (cargo registry, `~/.nuget`, pnpm store, uv) is the difference
+    ///   between a rebuild of seconds and one of minutes.
+    /// - **`.dockerignore`.** Honored client-side by the CLI. Driving the HTTP endpoint means
+    ///   assembling the context tar ourselves — and a naive tar of a real project root ships
+    ///   `target/`/`node_modules/`/`bin/obj`, which is slow enough to be unusable.
+    ///
+    /// It costs nothing in requirements: the `docker` capability gate already probes `docker info`
+    /// through this same CLI, so any test that can reach a daemon can run it (and
+    /// `create_managed_network` sets the shell-out precedent).
+    fn build_fn(lua: &Lua) -> mlua::Result<Function> {
+        lua.create_async_function(|_, opts: Table| {
+            let spec = BuildSpec::from_table(&opts);
+            async move { build(spec?).await }
+        })
+    }
+
+    async fn build(spec: BuildSpec) -> mlua::Result<String> {
+        let mut cmd = tokio::process::Command::new("docker");
+        // The dockerfile is context-relative (Docker's rule); the CLI wants a path it can open, so
+        // join it back onto the context for -f.
+        cmd.arg("build")
+            .arg("-f").arg(std::path::Path::new(&spec.context).join(&spec.dockerfile))
+            .arg("-t").arg(&spec.tag);
+        for (k, v) in &spec.buildargs {
+            cmd.arg("--build-arg").arg(format!("{k}={v}"));
+        }
+        if let Some(target) = &spec.target { cmd.arg("--target").arg(target); }
+        if spec.pull { cmd.arg("--pull"); }
+        if spec.nocache { cmd.arg("--no-cache"); }
+        cmd.arg(&spec.context);
+
+        let output = cmd.output().await.map_err(derr)?;
+        if !output.status.success() {
+            // Carry the builder's own log. BuildKit writes progress and errors to stderr, but a
+            // failing `RUN` prints the command's own output to stdout, so the diagnosis is usually
+            // split across both — include each. Never hand back a tag for an image that isn't there.
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let log = [stdout.trim(), stderr.trim()]
+                .iter()
+                .filter(|p| !p.is_empty())
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n");
+            let status = match output.status.code() {
+                Some(c) => format!("exit {c}"),
+                None => "signalled".to_string(),
+            };
+            return Err(derr(format!(
+                "build of `{}` failed ({}):\n{}", spec.dockerfile, status, tail(&log, 4000)
+            )));
+        }
+        Ok(spec.tag)
+    }
+
+    /// Keep the last `n` characters of a build log — the error is at the end, and a full BuildKit
+    /// transcript is far too long to carry in an error message.
+    fn tail(s: &str, n: usize) -> &str {
+        if s.len() <= n {
+            return s;
+        }
+        match s.char_indices().nth(s.chars().count().saturating_sub(n)) {
+            Some((at, _)) => &s[at..],
+            None => s,
+        }
     }
 
     /// `docker.network(opts?)` — create a user-defined bridge network (embedded DNS, so containers
@@ -1449,19 +1600,25 @@ pub(crate) mod docker {
     async fn start(spec: Spec) -> mlua::Result<Container> {
         let client = Docker::connect_with_local_defaults().map_err(derr)?;
 
-        // Pull the image (drain the progress stream to completion).
-        let (from_image, tag) = split_image(&spec.image);
-        let mut pull = client.create_image(
-            Some(CreateImageOptions {
-                from_image,
-                tag,
-                ..Default::default()
-            }),
-            None,
-            None,
-        );
-        while let Some(item) = pull.next().await {
-            item.map_err(derr)?;
+        // Pull the image only if it isn't already local — `docker run`'s own rule. A locally-BUILT
+        // image (docker.build) exists in no registry, so an unconditional pull fails it with a
+        // misleading "pull access denied / repository does not exist"; and for a pulled image, a
+        // tag that's already present skips a pointless registry round-trip.
+        if client.inspect_image(&spec.image).await.is_err() {
+            // Pull the image (drain the progress stream to completion).
+            let (from_image, tag) = split_image(&spec.image);
+            let mut pull = client.create_image(
+                Some(CreateImageOptions {
+                    from_image,
+                    tag,
+                    ..Default::default()
+                }),
+                None,
+                None,
+            );
+            while let Some(item) = pull.next().await {
+                item.map_err(derr)?;
+            }
         }
 
         // Publish each container port to a random host port (host_port "0").

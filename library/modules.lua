@@ -352,12 +352,27 @@ function Network:stop() end
 ---@class prova.DockerNetworkOpts
 ---@field name? string                  # override the generated unique "prova-net-<...>" name
 
+---@class prova.DockerBuildOpts
+---@field context string                # the build-context directory
+---@field dockerfile? string            # relative to `context` (default "Dockerfile"); `COPY` still resolves against the context root
+---@field tag? string                   # default: a stable tag derived from `context`, so rebuilds replace it and the layer cache hits
+---@field buildargs? table<string,string|number|boolean>
+---@field target? string                # multi-stage build target
+---@field pull? boolean                 # always re-pull the base image (default false)
+---@field nocache? boolean              # ignore the build cache (default false)
+
 ---@class prova.docker
 docker = {}
---- Start a container (detached, `--rm`) and return a handle once it is ready.
+--- Start a container (detached, `--rm`) and return a handle once it is ready. The image is pulled
+--- only if it is not already local (`docker run`'s own rule), so a locally-built image works.
 ---@param opts prova.DockerRunOpts
 ---@return prova.Container
 function docker.run(opts) end
+--- Build a local image from a Dockerfile and return its ref, ready for `docker.run{ image = … }`.
+--- Honors `.dockerignore` and BuildKit cache mounts. Raises with the builder's log if the build fails.
+---@param opts prova.DockerBuildOpts
+---@return string image                 # the image ref (the resolved `tag`)
+function docker.build(opts) end
 --- Create a user-defined bridge network (embedded DNS). Manage it with `ctx:manage`.
 ---@param opts? prova.DockerNetworkOpts
 ---@return prova.Network

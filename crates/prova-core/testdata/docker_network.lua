@@ -32,9 +32,20 @@ prova.test("a sibling container reaches a resource by network alias", { requires
     network = net,
     command = "sleep 120",                -- keep it alive so we can exec into it
   })
-  local out = client:run({
-    "env", "PGPASSWORD=secret",
-    "psql", "-h", "db", "-U", "postgres", "-tAc", "select 42",
-  })
+
+  -- Retried, because `wait = { port }` above is a *coarse* readiness signal, not a true one: it
+  -- connects to the MAPPED HOST port, and Docker Desktop's proxy accepts that connection before
+  -- postgres is listening inside the container (measured: the first probe after "ready" fails).
+  -- Retrying the real probe is the same idiom `prova.containerized` uses for its client factories.
+  --
+  -- This does NOT weaken the proof: reaching `db` by its alias is still required, and still within
+  -- the timeout. It makes the DB's boot an explicit precondition instead of an accidental one — the
+  -- probe used to be carried by the latency of a redundant image pull, so it was green by luck.
+  local out = prova.retry(function()
+    return client:run({
+      "env", "PGPASSWORD=secret",
+      "psql", "-h", "db", "-U", "postgres", "-tAc", "select 42",
+    })
+  end, { timeout = "60s", message = "sibling never reached `db` by network alias" })
   t:expect(out):contains("42")
 end)
