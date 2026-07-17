@@ -113,13 +113,17 @@ function Process:output() end
 
 ---@class prova.shell
 shell = {}
----@param command string
+--- Run a command to completion. A **string** goes through a shell, so `"cargo build --release"`
+--- works verbatim. An **argv table** (`{"psql", "-tAc", sql}`) runs the program directly — no
+--- shell, no quoting — which is how you pass content (SQL, source, JSON, paths with spaces) safely.
+---@param command string|string[]
 ---@param opts? prova.ShellOpts
 ---@return prova.ShellResult
 function shell.run(command, opts) end
 --- Start a long-running command in the background (a booted app, a mock server) and return a
 --- handle. stdout/stderr are discarded. Pair with `ctx:defer(function() proc:stop() end)`.
----@param command string
+--- Takes a shell string or an **argv table** (no shell, no quoting), exactly like `shell.run`.
+---@param command string|string[]
 ---@param opts? prova.SpawnOpts
 ---@return prova.Process
 function shell.spawn(command, opts) end

@@ -263,7 +263,18 @@ function GroupBuilder:after_all(fn) end
 --- like the `fs`/`shell`/`http`/`archetect` modules. `require("prova")` is still supported
 --- (and returns this same table) for anyone who prefers an explicit import.
 ---@class prova
+---@field root string   # the PROJECT root — the ancestor dir the manifest was found under (the repo). Anchor repo paths here: `prova.root .. "/target/debug/app"`. Nil with no manifest.
+---@field home string   # where `prova.toml` lives — the root, or its `prova/` / `.prova/` child. Anchor manifest-relative paths here. Nil with no manifest.
+---@field ports string  # host port mode: "auto" | "fixed"
 prova = {}
+
+--- The API surface, as data — every function, method, and value shape as
+--- `{ name, signature, summary }`. `filter` narrows by case-insensitive substring across name and
+--- summary. Ask this instead of guessing: `prova.help("shell")`, `prova.help("ShellResult")`.
+--- Parsed from these same stubs, so it cannot drift from what your editor completes.
+---@param filter? string
+---@return { name: string, signature: string, summary: string }[]
+function prova.help(filter) end
 
 ---Declare a fixture: a named factory producing a value, with scoped teardown and dependencies.
 ---`scope` is a `Scope` value (`Scope.Test`/`Scope.Flow`/`Scope.File`/`Scope.Suite`); omit it for

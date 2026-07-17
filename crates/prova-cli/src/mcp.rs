@@ -677,7 +677,7 @@ fn run_blocking(env: &McpEnv, req: RunRequest) -> Result<(serde_json::Value, boo
     }
 
     let jobs = req.jobs.map(|n| (n as usize).max(1)).unwrap_or(call.jobs);
-    let mut config = crate::engine_config(jobs, &env.layout, &call.plugins);
+    let mut config = crate::engine_config(jobs, &env.layout, &call.plugins, env.home.as_ref());
     config.selection = selection;
 
     let mut reporter = FailureCollector::default();
@@ -714,7 +714,7 @@ fn list_blocking(env: &McpEnv, req: SelectionArgs) -> Result<(serde_json::Value,
     }
 
     let suites = crate::collect_suites(&call.base_dir, &call.declared, &call.paths)?;
-    let mut config = crate::engine_config(1, &env.layout, &call.plugins);
+    let mut config = crate::engine_config(1, &env.layout, &call.plugins, env.home.as_ref());
     config.selection = selection;
 
     let mut nodes: Vec<serde_json::Value> = Vec::new();
@@ -730,7 +730,7 @@ fn eval_blocking(env: &McpEnv, code: String) -> Result<(serde_json::Value, bool)
     if code.trim().is_empty() {
         return Err("eval: the snippet is empty".into());
     }
-    let config = crate::engine_config(1, &env.layout, &env.plugins);
+    let config = crate::engine_config(1, &env.layout, &env.plugins, env.home.as_ref());
     eval_snippet(&code, &config)
         .map(|value| (value, false))
         .map_err(|e| e.to_string())
@@ -755,7 +755,7 @@ fn up_blocking(
 
     let call = env.resolve_call(req.profile.as_deref())?;
     let files = topology_files(&call)?;
-    let config = crate::engine_config(1, &env.layout, &call.plugins).with_ports(
+    let config = crate::engine_config(1, &env.layout, &call.plugins, env.home.as_ref()).with_ports(
         if req.fixed.unwrap_or(false) {
             PortMode::Fixed
         } else {

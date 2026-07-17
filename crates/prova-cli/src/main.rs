@@ -333,7 +333,7 @@ fn eval_subcommand(args: Vec<String>) -> ExitCode {
     if let Err(code) = layer_cli_plugins(&cli_plugins, &layout, &sources, &mut plugins_resolved) {
         return code;
     }
-    let config = engine_config(1, &layout, &plugins_resolved);
+    let config = engine_config(1, &layout, &plugins_resolved, home.as_ref());
 
     match prova_core::eval_snippet(&code, &config) {
         Ok(value) => {
@@ -542,7 +542,7 @@ fn build_topology_run(
     // Build the engine config with the declared plugins (so the topology's `require(...)` resolves).
     // `--fixed` pins ports for external reachability; the default is random (like tests), so several
     // topologies can be inhabited at once without colliding.
-    let config = engine_config(1, &layout, &run.plugins).with_ports(if fixed {
+    let config = engine_config(1, &layout, &run.plugins, Some(&home)).with_ports(if fixed {
         PortMode::Fixed
     } else {
         PortMode::Auto
@@ -1128,7 +1128,8 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     // The standalone `prova` binary ships the archetect plugin, so `archetect.render{...}` works.
     // The plugin searcher consults the global install dir plus any manifest-declared plugins.
     let mut config =
-        engine_config(jobs, &layout, &plugins_resolved).with_update_snapshots(update_snapshots);
+        engine_config(jobs, &layout, &plugins_resolved, home.as_ref())
+            .with_update_snapshots(update_snapshots);
 
     // `--last-failed`: fold the previous run's failed node paths into the selection as exact nodes.
     if last_failed {
@@ -1345,10 +1346,16 @@ fn engine_config(
     jobs: usize,
     layout: &dyn SystemLayout,
     plugins_resolved: &plugins::ResolvedPlugins,
+    home: Option<&Home>,
 ) -> RunConfig {
     let mut config = RunConfig::new(jobs)
         .with_module(prova_archetect::install)
         .with_plugin_root(layout.plugins_dir());
+    // Surface where the project is (`prova.root` / `prova.home`) so repo-local plugins can find
+    // repo artifacts. Absent when there is no manifest.
+    if let Some(h) = home {
+        config = config.with_project(h.root.clone(), h.dir.clone());
+    }
     for (name, path) in &plugins_resolved.named {
         config = config.with_named_plugin(name.clone(), path.clone());
     }

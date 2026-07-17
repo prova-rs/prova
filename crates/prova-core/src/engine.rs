@@ -195,6 +195,10 @@ pub struct RunConfig {
     /// Plugin namespaces: a plugin's canonical name → its module root dir, so a multi-file plugin can
     /// `require("<canonical>.<sub>")` its own siblings.
     plugin_namespaces: std::collections::BTreeMap<String, std::path::PathBuf>,
+    /// The project root and the manifest's home dir, surfaced to authors as `prova.root` /
+    /// `prova.home`. See `with_project`.
+    project_root: Option<std::path::PathBuf>,
+    project_home: Option<std::path::PathBuf>,
 }
 
 impl Default for RunConfig {
@@ -209,6 +213,8 @@ impl Default for RunConfig {
             plugin_roots: Vec::new(),
             named_plugins: std::collections::BTreeMap::new(),
             plugin_namespaces: std::collections::BTreeMap::new(),
+            project_root: None,
+            project_home: None,
         }
     }
 }
@@ -285,6 +291,24 @@ impl RunConfig {
 
     /// Register a plugin namespace: `require("<canonical>.<sub>")` resolves `<sub>` under `dir`, so a
     /// multi-file plugin can require its own sibling modules.
+    /// Where the project is: `root` is the ancestor the manifest was found under (the repo), `home`
+    /// is the directory `prova.toml` lives in (the root, or its `prova/` / `.prova/` child).
+    ///
+    /// Surfaced to authors as **`prova.root`** and **`prova.home`**. A repo-local plugin needs this
+    /// to locate repo artifacts — a built binary, testdata — and without it the only options were an
+    /// absolute path (unshippable) or the process cwd (an undocumented coincidence that CI breaks).
+    /// `root` anchors repo paths (`prova.root .. "/target/debug/app"`); `home` anchors
+    /// manifest-relative ones. See `docs/design/agent-ergonomics.md` §2.
+    pub fn with_project(
+        mut self,
+        root: impl Into<std::path::PathBuf>,
+        home: impl Into<std::path::PathBuf>,
+    ) -> Self {
+        self.project_root = Some(root.into());
+        self.project_home = Some(home.into());
+        self
+    }
+
     pub fn with_plugin_namespace(
         mut self,
         canonical: impl Into<String>,
@@ -1915,6 +1939,16 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
     // `prova.containerized` consults it to upgrade random ports to fixed bindings under `--fixed`; a
     // recipe with an advertised listener (Kafka) reads it to emit the right listener address.
     prova.set("ports", config.ports.as_str())?;
+
+    // Where the project is (`RunConfig::with_project`) — so a repo-local plugin can say
+    // `prova.root .. "/target/debug/miniond"` instead of hardcoding an absolute path or trusting the
+    // process cwd. Absent (nil) when there is no manifest, e.g. a bare `prova <file>` run.
+    if let Some(root) = &config.project_root {
+        prova.set("root", root.to_string_lossy().as_ref())?;
+    }
+    if let Some(home) = &config.project_home {
+        prova.set("home", home.to_string_lossy().as_ref())?;
+    }
 
     // `prova.help([filter])` — the API surface, discoverable from inside the environment being
     // driven. Returns DATA (a list of `{name, signature, summary}`), not printed prose, so an agent

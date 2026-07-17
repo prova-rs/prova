@@ -140,7 +140,27 @@ because the thing under test **is** the local machine's integration.*
 
 ---
 
-## 4. Manifest discovery walks up only — the `prova/` standard needs down
+## 4. ~~Manifest discovery walks up only~~ — **WRONG. Already implemented.**
+
+> **Retracted 2026-07-16, the same day it was filed.** `home::find` already checks, at each ancestor,
+> the directory itself **and** its `prova/` / `.prova/` child — `Home` even documents the split
+> (`root` = the project root the editor binds to; `dir` = where `prova.toml` lives, "the root itself,
+> or its `prova/` / `.prova/` child"). Verified empirically: a tree containing only
+> `prova/prova.toml` + `prova/tests/` is discovered and run from the repo root.
+>
+> **How the error happened, because it is the thesis in miniature.** I read `plugin-system.md`
+> ("found by walking up"), inferred a limitation, and filed it — without testing. I could not *ask*
+> the system what it did, so I guessed from prose, and guessed wrong. **A false bug report is the
+> same failure mode as a wasted probe**: both are what an agent does when the surface cannot answer
+> for itself. It is fitting that the one friction I invented is the one §0 predicts.
+>
+> Kept, not deleted: a retraction is a load-bearing part of a friction log. The original claim
+> follows, struck.
+
+~~The emerging convention is a `prova/` directory as a project standard; discovery walks **up** from
+cwd looking for `prova.toml`, so `<repo>/prova/prova.toml` is invisible.~~ **False — it is found.**
+
+
 
 The emerging convention (principal, 2026-07-16) is a **`prova/` directory as a project standard**:
 local plugins, the manifest, suites, and topologies in one place —
@@ -171,6 +191,12 @@ and `[plugins]` stay relative to the manifest (which they already are).
   learn** and **cost to route around**, not capability.
 - **Fix 0 (discoverability) is the one that matters.** It is why the others were found slowly, and
   it is the difference between an agent using Prova and an agent reverse-engineering it.
-- Ordering suggestion: **0.1 + 0.2** (help + introspect, one IR two sinks) → **1** (argv) → **2**
-  (root) → **4** (`prova/` discovery) → **3** (local_service, once a second such plugin exists and
-  the boilerplate is proven recurring rather than anticipated).
+- **Shipped 2026-07-16:** **0.1** `prova.help([filter])` · **0.2** the `introspect` MCP tool ·
+  **1** argv for `shell.run`/`shell.spawn` · **2** `prova.root` / `prova.home`. **4** was retracted
+  (already implemented). One correction to 0.1 as specced: there is **no IR** — the LuaCATS stubs are
+  hand-written and `annotations.rs` embeds+syncs them, so the *stub* became the single source and
+  `help()` a second sink off it (`CORE_STUBS` moved to `prova_core::help`, embedded once, consumed by
+  both). That is better than the proposed registry: a registry would have been a second place to
+  write every summary.
+- **Remaining: 3** (`local_service`) — deferred until a second local-daemon plugin proves the
+  boilerplate recurs, which is the doc's own bar for a new constructor.

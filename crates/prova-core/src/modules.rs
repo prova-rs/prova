@@ -465,8 +465,9 @@ fn make_shell(lua: &Lua) -> mlua::Result<Table> {
     let shell = lua.create_table()?;
     shell.set(
         "run",
-        lua.create_async_function(|lua, (cmd, opts): (String, Option<Table>)| async move {
+        lua.create_async_function(|lua, (cmd, opts): (mlua::Value, Option<Table>)| async move {
             // Extract options up front (owned) so nothing borrows Lua across the await.
+            let cmd = CommandSpec::parse(cmd)?;
             let cwd = opt_string(&opts, "cwd")?;
             let env = opt_env(&opts)?;
             let timeout = opt_string(&opts, "timeout")?.and_then(|s| parse_duration(&s));
@@ -477,8 +478,9 @@ fn make_shell(lua: &Lua) -> mlua::Result<Table> {
                 .flatten()
                 .unwrap_or(false);
 
-            // Run the command string through a shell so `"cargo build --release"` works verbatim.
-            let mut command = shell_command(&cmd);
+            // A string runs through a shell (`"cargo build --release"` verbatim); an argv table runs
+            // the program directly — no shell, no quoting.
+            let mut command = cmd.build();
             if let Some(dir) = &cwd {
                 command.current_dir(dir);
             }
@@ -523,10 +525,11 @@ fn make_shell(lua: &Lua) -> mlua::Result<Table> {
     // tokio process driver is available.
     shell.set(
         "spawn",
-        lua.create_function(|lua, (cmd, opts): (String, Option<Table>)| {
+        lua.create_function(|lua, (cmd, opts): (mlua::Value, Option<Table>)| {
+            let cmd = CommandSpec::parse(cmd)?;
             let cwd = opt_string(&opts, "cwd")?;
             let env = opt_env(&opts)?;
-            let mut command = shell_command(&cmd);
+            let mut command = cmd.build();
             if let Some(dir) = &cwd {
                 command.current_dir(dir);
             }
@@ -560,6 +563,64 @@ fn make_shell(lua: &Lua) -> mlua::Result<Table> {
 }
 
 #[cfg(unix)]
+/// What to run: a **string** (routed through a shell, so `"cargo build --release"` works verbatim)
+/// or an **argv table** (`{"psql", "-tAc", sql}` — no shell, no quoting), mirroring `container:run`.
+///
+/// The argv form is what makes passing *content* to a local CLI safe — SQL, Lua source, JSON, a
+/// path with spaces. There is no quoting layer to get wrong, so there is nothing to get wrong. Its
+/// absence previously forced authors to route around the API (write the payload to a temp file and
+/// pass a path) for the local half of an SDK whose containerized half had argv all along. See
+/// `docs/design/agent-ergonomics.md` §1.
+enum CommandSpec {
+    Shell(String),
+    Argv(Vec<String>),
+}
+
+impl CommandSpec {
+    fn parse(v: mlua::Value) -> mlua::Result<Self> {
+        match v {
+            mlua::Value::String(s) => Ok(Self::Shell(s.to_str()?.to_string())),
+            mlua::Value::Table(t) => {
+                let argv: Vec<String> = t.sequence_values::<String>().collect::<mlua::Result<_>>().map_err(
+                    |e| mlua::Error::RuntimeError(format!("argv entries must all be strings: {e}")),
+                )?;
+                if argv.is_empty() {
+                    return Err(mlua::Error::RuntimeError(
+                        r#"argv table is empty — expected { "program", "arg", … }"#.into(),
+                    ));
+                }
+                Ok(Self::Argv(argv))
+            }
+            other => Err(mlua::Error::RuntimeError(format!(
+                "command must be a string (run via a shell) or an argv table (no shell, no quoting), got {}",
+                other.type_name()
+            ))),
+        }
+    }
+
+    fn build(&self) -> tokio::process::Command {
+        match self {
+            Self::Shell(s) => shell_command(s),
+            Self::Argv(argv) => {
+                let mut c = tokio::process::Command::new(&argv[0]);
+                c.args(&argv[1..]);
+                c
+            }
+        }
+    }
+}
+
+/// How the command reads back in an error — the argv form joined for legibility (it is a display,
+/// not a re-runnable quoting).
+impl std::fmt::Display for CommandSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Shell(s) => f.write_str(s),
+            Self::Argv(argv) => f.write_str(&argv.join(" ")),
+        }
+    }
+}
+
 fn shell_command(cmd: &str) -> tokio::process::Command {
     let mut c = tokio::process::Command::new("sh");
     c.arg("-c").arg(cmd);
