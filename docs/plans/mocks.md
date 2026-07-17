@@ -363,11 +363,26 @@ CI quirk):
   fully valuable in the host vantage, where the SUT is simply pointed at `m.url` like any mock — so
   the observe capability had no business waiting behind an image, a `release.yml` change, and a
   platform split.
-- **Phase C2 — the network vantage.** Bind `0.0.0.0` (opt-in — it is a real LAN exposure) +
-  `extra_hosts` through `docker.run`/`prova.containerized`. Not proxy-specific at all: it is how *any*
-  containerized SUT reaches *any* host-bound mock. **Wants Linux CI, not a laptop** — on Docker
-  Desktop a `127.0.0.1` bind passes, so the mutation check that would prove this can only fail on
-  Linux, and a green here would be precisely the false confidence that prompted the warning.
+- **Phase C2 — the network vantage. DONE, proved on native Linux (2026-07-17).** `http.mock`/
+  `grpc.mock` gain `network` (opt-in `0.0.0.0` bind + a `.network` host-gateway vantage; a string
+  overrides the host for another substrate). `docker.run` gains `extra_hosts`; `prova.containerized`
+  passes `host.docker.internal:host-gateway` unconditionally. Not proxy-specific — it is how *any*
+  containerized SUT reaches *any* host-bound mock.
+
+  The mechanism is proved host-independently in `testdata/mock_network_vantage.lua` (vantage shape, a
+  real `0.0.0.0` bind reached via the host's routable IP, `extra_hosts` in a real container's
+  `/etc/hosts`). The **end-to-end** claim is proved where it can be disproved: `testdata/c2_e2e.lua`,
+  run *inside a Parallels Linux VM* by `scripts/vm-linux-proof.sh`. A containerized SUT reaches the
+  host mock via the vantage (passes on any Docker), and the mutation — a loopback-bound mock is
+  **unreachable** from the container — **passes on native Linux and FAILS on Docker Desktop**, whose
+  proxy forwards `host.docker.internal` to host loopback. That platform divergence *is* the proof: it
+  is exactly the false-confidence trap `default@` flagged, made to fail on the platform that can fail
+  it. On Docker Desktop the mutation self-skips (a claim about the environment, `test-topology.md`).
+
+  The finding worth keeping: **prova had to run *inside* the VM**, not on the Mac driving the VM's
+  daemon — otherwise `host.docker.internal` resolves to the VM, not to where the mock lives. That is a
+  new axis (*where prova runs relative to the substrate*) and it generalizes to kind / remote
+  clusters; see `docs/plans/parallels.md`.
 - **Phase C3 — alias interposition (the shim).** Deferred behind a trigger: a SUT with **no injection
   point** (a third-party image, a discovery name baked at build time). **The shim is built locally
   with `docker.build`, not published** — it is a dumb TCP forwarder whose contract ("listen here, pump

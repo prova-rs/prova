@@ -26,6 +26,10 @@ outcome into the design docs and trim it here.
 
 ## Plans — two tracks resolved, one open
 
+- [parallels.md](parallels.md) — VM-style testing, and the Linux proving ground C2 needed. **(A) the
+  Linux harness (`scripts/vm-linux-proof.sh`) — done**, proving C2 on a native-Linux VM; **(B) a
+  `parallels.vm(ctx)` resource plugin — deferred** until VM-style testing has a real consumer. Records
+  the new axis C2 exposed: *where prova runs relative to the substrate*.
 - [mocks.md](mocks.md) — virtualize the dependency you can't run, and assert on the interactions you
   can't otherwise see. **Open — Phases A (`http.mock`) and B (`grpc.mock`) landed 2026-07-16; C–E
   open.** `mock` is a fourth facet, core-native rather than the plugin `foundations.md:154` assumes,
