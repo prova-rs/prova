@@ -1,3 +1,3 @@
-# prova test suite manifest (hidden, flat). Run `prova` from anywhere in this project.
 [run]
-paths = ["proofs"]     # discover suites under proofs/; require() roots here too (default)
+paths   = ["proofs"]
+config  = "proofs/shared/config.lua"   # the companion loads from here, not the default prova.lua

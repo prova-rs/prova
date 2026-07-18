@@ -163,6 +163,10 @@ pub struct Profile {
     /// `require("shared.x")` from within `proofs/` with no extra config.
     #[serde(default)]
     pub require_roots: Vec<String>,
+    /// The companion file loaded once, pre-suite, for `runtime.*` config (capabilities). Relative to
+    /// the home. Defaults to `prova.lua` beside the manifest; point it elsewhere (e.g.
+    /// `proofs/shared/config.lua`) to keep the home clean.
+    pub config: Option<String>,
     pub jobs: Option<usize>,
     pub format: Option<String>,
     #[serde(default)]
@@ -197,6 +201,8 @@ pub struct Resolved {
     pub paths: Vec<String>,
     /// Directories `require` resolves against; defaults to `paths` when unset. See `Profile`.
     pub require_roots: Vec<String>,
+    /// The companion config file (relative to home); `None` → the `prova.lua` default. See `Profile`.
+    pub config: Option<String>,
     pub jobs: Option<usize>,
     pub format: Option<String>,
     pub env: BTreeMap<String, String>,
@@ -250,6 +256,9 @@ impl Manifest {
                 explicit
             }
         };
+        let config = overlay
+            .and_then(|p| p.config.clone())
+            .or_else(|| base.config.clone());
         let jobs = overlay.and_then(|p| p.jobs).or(base.jobs);
         let format = overlay
             .and_then(|p| p.format.clone())
@@ -286,6 +295,7 @@ impl Manifest {
         Ok(Resolved {
             paths,
             require_roots,
+            config,
             jobs,
             format,
             env,
@@ -337,6 +347,7 @@ paths = ["tests/smoke"]
                 paths: vec!["tests".into()],
                 // Defaults to `paths` when the manifest doesn't set `require_roots`.
                 require_roots: vec!["tests".into()],
+                config: None,
                 jobs: Some(4),
                 format: Some("console".into()),
                 env: env(&[("LOG", "info")]),

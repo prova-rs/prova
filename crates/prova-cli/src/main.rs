@@ -325,7 +325,7 @@ fn eval_subcommand(args: Vec<String>) -> ExitCode {
         }
     };
     let (mut plugins_resolved, sources) = match &home {
-        Some(home) => match resolve_from_manifest(home, profile, None, None, &layout) {
+        Some(home) => match resolve_from_manifest(home, profile, None, None, None, &layout) {
             Ok(r) => (r.plugins, r.sources),
             Err(code) => return code,
         },
@@ -509,7 +509,7 @@ fn build_topology_run(
     // Locate the project (the manifest tells us where topologies + plugins live).
     let home = resolve_home(manifest_path.as_deref())?;
 
-    let run = resolve_from_manifest(&home, profile, None, None, &layout)?;
+    let run = resolve_from_manifest(&home, profile, None, None, None, &layout)?;
 
     // Gather every file that could declare a topology: the run paths plus any explicit suites.
     let mut files: Vec<PathBuf> = Vec::new();
@@ -938,6 +938,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     let mut cli_jobs: Option<usize> = None;
     let mut update_snapshots = false;
     let mut unreferenced = String::from("ignore"); // ignore | warn | delete
+    let mut cli_config: Option<String> = None;
     let mut list = false;
     let mut explicit_paths: Vec<String> = Vec::new();
     let mut profile: Option<String> = None;
@@ -1028,6 +1029,13 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             }
             continue;
         }
+        // `--config PATH`: override the companion config file (else `PROVA_CONFIG`, else the manifest
+        // `config`, else `prova.lua`). Chiefly a testing affordance — point a run at a specific
+        // config without editing a manifest.
+        if let Some(v) = value_flag(&arg, &mut args, &["--config"]) {
+            cli_config = Some(v);
+            continue;
+        }
         match arg.as_str() {
             "--list" => list = true,
             "--last-failed" => last_failed = true,
@@ -1102,7 +1110,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                 );
                 return ExitCode::from(2);
             };
-            match resolve_from_manifest(home, profile, cli_jobs, cli_format, &layout) {
+            match resolve_from_manifest(home, profile, cli_jobs, cli_format, cli_config, &layout) {
                 Ok(r) => (
                     home.dir.clone(),
                     r.paths,
@@ -1465,6 +1473,7 @@ fn resolve_from_manifest(
     profile: Option<String>,
     cli_jobs: Option<usize>,
     cli_format: Option<Format>,
+    config_override: Option<String>,
     layout: &dyn SystemLayout,
 ) -> Result<ManifestRun, ExitCode> {
     let path = &home.manifest;
@@ -1517,7 +1526,13 @@ fn resolve_from_manifest(
     // precondition below. That order is the whole reason this is a project-level companion rather
     // than something in `suite.lua`: a capability registered at suite-load time would not exist yet
     // at the moment a profile's guarantee is checked, so `must_run = ["gpu"]` could never work.
-    let companion = home.dir.join("prova.lua");
+    // The companion config file, by precedence: `--config` flag, then `PROVA_CONFIG` env, then the
+    // manifest's `config`, then the `prova.lua` default. The flag and env are chiefly for tests.
+    let companion_rel = config_override
+        .or_else(|| std::env::var("PROVA_CONFIG").ok())
+        .or_else(|| resolved.config.clone())
+        .unwrap_or_else(|| "prova.lua".to_string());
+    let companion = home.dir.join(&companion_rel);
     let capabilities = if companion.is_file() {
         match prova_core::load_project_config(
             &companion,
