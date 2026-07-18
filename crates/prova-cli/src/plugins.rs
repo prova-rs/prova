@@ -438,7 +438,7 @@ fn run_git(args: &[&str], cwd: Option<&Path>) -> Result<(), String> {
 }
 
 /// Make a filesystem-safe directory component from a URL or ref (keep it recognizable).
-fn sanitize(s: &str) -> String {
+pub(crate) fn sanitize(s: &str) -> String {
     s.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '-' || c == '.' {

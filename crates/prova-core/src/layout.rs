@@ -34,6 +34,14 @@ pub trait SystemLayout: Send + Sync {
     fn plugin_cache_dir(&self) -> PathBuf {
         self.cache_dir().join("plugins")
     }
+
+    /// Root for the LuaLS core annotation stubs (`cache_dir/annotations`), which are written to a
+    /// `<version>` sub-dir and shared by every project on the machine — a project's `.luarc.json`
+    /// points straight at one. Nothing here is per-project, so nothing can be orphaned by deleting a
+    /// project. Written out of the binary, hence cache, not data.
+    fn annotations_dir(&self) -> PathBuf {
+        self.cache_dir().join("annotations")
+    }
 }
 
 /// Production layout: XDG base dirs (honoring `XDG_CONFIG_HOME` / `XDG_CACHE_HOME` /
@@ -52,15 +60,12 @@ impl XdgSystemLayout {
         let base = |env_key: &str, default: &str| -> std::io::Result<PathBuf> {
             match std::env::var_os(env_key) {
                 Some(v) if !v.is_empty() => Ok(PathBuf::from(v)),
-                _ => home
-                    .clone()
-                    .map(|h| h.join(default))
-                    .ok_or_else(|| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::NotFound,
-                            format!("cannot locate home directory (and {env_key} is unset)"),
-                        )
-                    }),
+                _ => home.clone().map(|h| h.join(default)).ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!("cannot locate home directory (and {env_key} is unset)"),
+                    )
+                }),
             }
         };
         Ok(XdgSystemLayout {
@@ -118,7 +123,10 @@ mod tests {
         assert_eq!(layout.cache_dir(), PathBuf::from("/tmp/prova-test/cache"));
         assert_eq!(layout.data_dir(), PathBuf::from("/tmp/prova-test/data"));
         // The plugin sub-dirs derive from data/cache.
-        assert_eq!(layout.plugins_dir(), PathBuf::from("/tmp/prova-test/data/plugins"));
+        assert_eq!(
+            layout.plugins_dir(),
+            PathBuf::from("/tmp/prova-test/data/plugins")
+        );
         assert_eq!(
             layout.plugin_cache_dir(),
             PathBuf::from("/tmp/prova-test/cache/plugins")

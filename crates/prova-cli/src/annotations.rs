@@ -6,16 +6,32 @@
 //!      inside the prova repo — a consumer never got them.
 //!   2. plugins shipped no annotations at all, so `require("postgres")` was opaque.
 //!
-//! On every run that has a manifest, prova refreshes a prova-owned annotation folder,
-//! `<home>/annotations/`, containing the embedded core stubs plus each resolved plugin's
-//! `library/*.lua` `---@meta` stub. A single `.luarc.json` at the project root points LuaLS at that
-//! folder, so adding a plugin to `prova.toml` makes its completions appear with no `.luarc.json`
-//! edit — the pointer never moves, only the folder's contents.
+//! `.luarc.json`'s `workspace.library` lists the annotation sources **directly**:
 //!
-//! The folder is always refreshed (prova-owned, gitignored via `annotations/.gitignore`). Only the
-//! *pointer* is gated by the `[luals] manage` policy, which auto-detects project type: a non-Lua
-//! project has no `.luarc.json` (prova sets it up); a Lua-native project already owns one (prova
-//! stays polite).
+//! - `<cache>/annotations/<prova-version>/` — the core stubs, written out of the binary once per
+//!   version and shared by every project on the machine;
+//! - each resolved plugin's own `library/` dir — the checkout under `<cache>/plugins/`, referenced
+//!   in place.
+//!
+//! Nothing is copied, and **no per-project state is stored outside the project.** That is the whole
+//! design: the only project-specific fact is *which* plugins are used, and `prova.toml` already
+//! records that, inside the repo. An earlier iteration bundled the selection into a per-project
+//! "view" directory in the cache — which bought nothing (every element was already shared) but
+//! created a two-way consistency problem, since a cache directory keyed by a project must be
+//! garbage-collected when that project disappears. Referencing the shared paths directly means
+//! there is nothing to orphan and therefore nothing to collect.
+//!
+//! The cost of the direct list is that the entry set changes when the plugin set does, so
+//! `.luarc.json` must be rewritten rather than left alone. prova rewrites files it created, and
+//! merges under `manage = "always"`; under `auto` with a user-owned file it prints a hint instead.
+//!
+//! The only project-local artifact is `.luarc.json` itself. It holds machine-local absolute paths, so
+//! it isn't shareable and shouldn't be committed — `prova init` says so once and leaves the
+//! `.gitignore` decision to the user.
+//!
+//! Only the pointer is gated by the `[luals] manage` policy, which auto-detects project type: a
+//! non-Lua project has no `.luarc.json` (prova sets it up); a Lua-native project already owns one
+//! (prova stays polite).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -33,12 +49,15 @@ use crate::manifest::Manage;
 /// environment). One source, two sinks — a second copy would drift, and the stub is the copy that
 /// cannot be allowed to rot. See docs/design/agent-ergonomics.md §0.
 use prova_core::help::CORE_STUBS;
+use prova_core::SystemLayout;
 
 /// What `setup` did, so the caller can print a concise, honest one-liner.
 #[derive(Debug, Default)]
 pub struct Outcome {
-    /// Plugin names whose `library/` stub was synced.
-    pub synced_plugins: Vec<String>,
+    /// Plugin names whose `library/` dir is listed in `workspace.library`.
+    pub linked_plugins: Vec<String>,
+    /// Where the shared core stubs live, for callers that want to name it.
+    pub core_dir: PathBuf,
     /// `.luarc.json` was created (didn't exist before).
     pub luarc_created: bool,
     /// `.luarc.json` existed and lacked our entry, and policy was `Auto` — we left it alone. The
@@ -46,37 +65,44 @@ pub struct Outcome {
     pub luarc_hint: bool,
 }
 
-/// Refresh the annotation folder and manage the `.luarc.json` pointer per `manage`. Idempotent.
+/// Refresh the annotation view and manage the `.luarc.json` pointer per `manage`. Idempotent.
 pub fn setup(
     home: &Home,
     roots: &BTreeMap<String, PathBuf>,
     manage: Manage,
+    layout: &dyn SystemLayout,
+    version: &str,
 ) -> Result<Outcome, String> {
-    let synced_plugins = sync_folder(home, roots)?;
+    let core_dir = install_core_stubs(layout, version)?;
+    let (entries, linked_plugins) = library_entries(&core_dir, roots);
     let mut outcome = Outcome {
-        synced_plugins,
+        linked_plugins,
+        core_dir,
         ..Default::default()
     };
 
     let luarc = home.root.join(".luarc.json");
     let exists = luarc.is_file();
     match (manage, exists) {
-        // Never touch the pointer; the folder is still synced above.
+        // Never touch the pointer; the core stubs are still installed above.
         (Manage::Never, _) => {}
         // Create when absent (prova owns config here — non-Lua project, or a fresh one).
         (Manage::Auto, false) | (Manage::Always, false) => {
-            write_fresh_luarc(&luarc, &library_entry(home))?;
+            write_fresh_luarc(&luarc, &entries)?;
             outcome.luarc_created = true;
         }
-        // Present + Auto: this project already owns a .luarc.json (Lua-native) — stay a polite guest.
+        // Present + Auto: either prova wrote this file (and may freely refresh a stale entry list),
+        // or the project is Lua-native and owns it — in which case stay a polite guest and hint.
         (Manage::Auto, true) => {
-            if !luarc_has_entry(&luarc, &library_entry(home)) {
+            if luarc_is_ours(&luarc) {
+                write_fresh_luarc(&luarc, &entries)?;
+            } else if !luarc_has_all(&luarc, &entries) {
                 outcome.luarc_hint = true;
             }
         }
-        // Present + Always: the explicit opt-in — merge our two keys in.
+        // Present + Always: the explicit opt-in — reconcile our entries into it.
         (Manage::Always, true) => {
-            merge_luarc(&luarc, &library_entry(home))?;
+            merge_luarc(&luarc, &entries, layout)?;
         }
     }
     Ok(outcome)
@@ -84,104 +110,127 @@ pub fn setup(
 
 /// Force-create/merge the `.luarc.json` pointer regardless of policy, and sync the folder — the
 /// behavior of `prova init`, which is the user explicitly asking prova to wire up IDE support.
-pub fn init(home: &Home, roots: &BTreeMap<String, PathBuf>) -> Result<Outcome, String> {
-    let synced_plugins = sync_folder(home, roots)?;
+pub fn init(
+    home: &Home,
+    roots: &BTreeMap<String, PathBuf>,
+    layout: &dyn SystemLayout,
+    version: &str,
+) -> Result<Outcome, String> {
+    let core_dir = install_core_stubs(layout, version)?;
+    let (entries, linked_plugins) = library_entries(&core_dir, roots);
     let luarc = home.root.join(".luarc.json");
-    let entry = library_entry(home);
     let created = if luarc.is_file() {
-        merge_luarc(&luarc, &entry)?;
+        merge_luarc(&luarc, &entries, layout)?;
         false
     } else {
-        write_fresh_luarc(&luarc, &entry)?;
+        write_fresh_luarc(&luarc, &entries)?;
         true
     };
     Ok(Outcome {
-        synced_plugins,
+        linked_plugins,
+        core_dir,
         luarc_created: created,
         luarc_hint: false,
     })
 }
 
-/// Write `<home>/annotations/`: the embedded core stubs, plus each resolved plugin's `library/*.lua`
-/// under `plugins/`. The folder is emptied first so a removed plugin's stub doesn't linger. Returns
-/// the names of plugins whose stubs were synced.
-fn sync_folder(home: &Home, roots: &BTreeMap<String, PathBuf>) -> Result<Vec<String>, String> {
-    let annotations = home.dir.join("annotations");
-    // Recreate cleanly so stale stubs (a dropped plugin) don't persist.
-    if annotations.exists() {
-        std::fs::remove_dir_all(&annotations)
-            .map_err(|e| format!("cannot clear {}: {e}", annotations.display()))?;
-    }
-    let plugins_dir = annotations.join("plugins");
-    std::fs::create_dir_all(&plugins_dir)
-        .map_err(|e| format!("cannot create {}: {e}", plugins_dir.display()))?;
-
-    // prova fully owns this dir — gitignore it in-place so a stray commit can't capture generated
-    // files, without editing any of the user's own .gitignore.
-    std::fs::write(
-        annotations.join(".gitignore"),
-        "# generated by prova — do not edit\n*\n",
-    )
-    .map_err(|e| format!("cannot write annotations/.gitignore: {e}"))?;
-
+/// Write the embedded core stubs to `<cache>/annotations/<version>/` and return that dir. Shared by
+/// every project on the machine and keyed by version, so an upgrade can't serve stale stubs and two
+/// installed versions coexist. Bounded by installed versions, not by project count.
+///
+/// Files are written only when missing or changed, so the common case is two `read`s and no write —
+/// this runs on every invocation.
+fn install_core_stubs(layout: &dyn SystemLayout, version: &str) -> Result<PathBuf, String> {
+    let dir = layout.annotations_dir().join(version);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     for (name, body) in CORE_STUBS {
-        std::fs::write(annotations.join(name), body)
-            .map_err(|e| format!("cannot write annotations/{name}: {e}"))?;
+        let path = dir.join(name);
+        let current = std::fs::read(&path).ok();
+        if current.as_deref() != Some(body.as_bytes()) {
+            std::fs::write(&path, body)
+                .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+        }
     }
+    Ok(dir)
+}
 
-    let mut synced = Vec::new();
+/// The full `workspace.library` list: the shared core stubs, then each resolved plugin's `library/`
+/// dir referenced in place. Returns the entries alongside the plugin names that contributed one (a
+/// plugin shipping no `library/` simply doesn't appear).
+fn library_entries(
+    core_dir: &Path,
+    roots: &BTreeMap<String, PathBuf>,
+) -> (Vec<String>, Vec<String>) {
+    let mut entries = vec![path_entry(core_dir)];
+    let mut linked = Vec::new();
     for (canonical, root) in roots {
         let lib = root.join("library");
-        if !lib.is_dir() {
-            continue;
-        }
-        let mut any = false;
-        for entry in
-            std::fs::read_dir(&lib).map_err(|e| format!("cannot read {}: {e}", lib.display()))?
-        {
-            let entry = entry.map_err(|e| format!("cannot read {}: {e}", lib.display()))?;
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("lua") {
-                let dest = plugins_dir.join(entry.file_name());
-                std::fs::copy(&path, &dest)
-                    .map_err(|e| format!("cannot copy {}: {e}", path.display()))?;
-                any = true;
-            }
-        }
-        if any {
-            synced.push(canonical.clone());
+        if lib.is_dir() {
+            entries.push(path_entry(&lib));
+            linked.push(canonical.clone());
         }
     }
-    synced.sort();
-    Ok(synced)
+    linked.sort();
+    (entries, linked)
 }
 
-/// The `workspace.library` entry pointing from the project root at the annotations folder, as a
-/// forward-slash relative path (`annotations`, `.prova/annotations`, or `prova/annotations`).
-fn library_entry(home: &Home) -> String {
-    let rel = home.dir.strip_prefix(&home.root).unwrap_or(Path::new(""));
-    let mut parts: Vec<String> = rel
-        .components()
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
-        .collect();
-    parts.push("annotations".to_string());
-    parts.join("/")
+/// Is a `workspace.library` entry one prova manages? True for anything under the annotations dir or
+/// the plugin checkout cache, which covers every entry prova emits for a cached plugin.
+///
+/// A plugin resolved from a **local path** is deliberately not matched: its `library/` lives wherever
+/// the user keeps it, indistinguishable from a hand-added entry. The consequence is that dropping a
+/// local plugin leaves its (still valid, still existing) path in `workspace.library` until the user
+/// removes it — strictly better than the alternative failure, deleting an entry the user added.
+fn is_managed(entry: &str, layout: &dyn SystemLayout) -> bool {
+    [layout.annotations_dir(), layout.plugin_cache_dir()]
+        .iter()
+        .any(|root| entry.starts_with(&path_entry(root)))
 }
+
+/// A `workspace.library` entry for an absolute path, forward-slashed so the JSON reads the same on
+/// every platform (LuaLS normalizes separators itself).
+fn path_entry(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+/// The exact key set prova writes into a file it owns. Used to recognize its own handiwork.
+const OUR_KEYS: [&str; 3] = [
+    "runtime.version",
+    "workspace.library",
+    "workspace.checkThirdParty",
+];
 
 /// A fresh minimal `.luarc.json` for a project prova owns the config of.
-fn write_fresh_luarc(path: &Path, library: &str) -> Result<(), String> {
+fn write_fresh_luarc(path: &Path, library: &[String]) -> Result<(), String> {
     let doc = json!({
         "runtime.version": "Lua 5.4",
-        "workspace.library": [library],
+        "workspace.library": library,
         "workspace.checkThirdParty": false,
     });
     let text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
     std::fs::write(path, text + "\n").map_err(|e| format!("cannot write {}: {e}", path.display()))
 }
 
-/// Does an existing `.luarc.json` already list our library entry? A parse failure (comments / invalid
-/// JSON) counts as "no" — we won't claim it's wired when we can't confirm it.
-fn luarc_has_entry(path: &Path, library: &str) -> bool {
+/// Did prova write this `.luarc.json`? True only when the file carries *exactly* prova's own keys and
+/// nothing else — the shape `write_fresh_luarc` produces.
+///
+/// This is what lets the entry list stay current under `auto`. Because the list now tracks the plugin
+/// set, a file prova created must be refreshed when that set changes; a file the user owns must not
+/// be. Requiring an exact key-set match errs toward "not ours": add one setting of your own and prova
+/// treats the file as yours from then on, hinting rather than rewriting.
+fn luarc_is_ours(path: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(Value::Object(map)) = serde_json::from_str::<Value>(&text) else {
+        return false;
+    };
+    map.len() == OUR_KEYS.len() && OUR_KEYS.iter().all(|k| map.contains_key(*k))
+}
+
+/// Does an existing `.luarc.json` already list every entry we'd contribute? A parse failure (comments
+/// / invalid JSON) counts as "no" — we won't claim it's wired when we can't confirm it.
+fn luarc_has_all(path: &Path, library: &[String]) -> bool {
     let Ok(text) = std::fs::read_to_string(path) else {
         return false;
     };
@@ -189,15 +238,20 @@ fn luarc_has_entry(path: &Path, library: &str) -> bool {
         return false;
     };
     match map.get("workspace.library") {
-        Some(Value::Array(items)) => items.iter().any(|v| v.as_str() == Some(library)),
+        Some(Value::Array(items)) => library
+            .iter()
+            .all(|want| items.iter().any(|v| v.as_str() == Some(want.as_str()))),
         _ => false,
     }
 }
 
-/// Merge our two keys into an existing `.luarc.json`: append the library entry if absent, and set
-/// `runtime.version` only if unset (never override the user's). Non-destructive to other keys.
+/// Reconcile our entries into an existing `.luarc.json`: drop prova-managed entries that are no
+/// longer current (a dropped plugin, a previous version's core stubs), add the ones that are missing,
+/// and leave every entry we don't manage untouched. `runtime.version` is set only if unset — never
+/// overriding the user's. Non-destructive to other keys.
+///
 /// Errors (rather than corrupts) if the file isn't parseable JSON — the caller can surface a hint.
-fn merge_luarc(path: &Path, library: &str) -> Result<(), String> {
+fn merge_luarc(path: &Path, library: &[String], layout: &dyn SystemLayout) -> Result<(), String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     let mut doc: Value = serde_json::from_str(&text).map_err(|e| {
@@ -211,17 +265,23 @@ fn merge_luarc(path: &Path, library: &str) -> Result<(), String> {
         .as_object_mut()
         .ok_or_else(|| format!("{} is not a JSON object", path.display()))?;
 
-    // workspace.library: ensure our entry is present (create the array if needed).
     match map
         .entry("workspace.library".to_string())
         .or_insert_with(|| json!([]))
     {
         Value::Array(items) => {
-            if !items.iter().any(|v| v.as_str() == Some(library)) {
-                items.push(json!(library));
+            // Sweep out our own stale entries first, so a dropped plugin doesn't accumulate.
+            items.retain(|v| match v.as_str() {
+                Some(s) => !is_managed(s, layout) || library.iter().any(|w| w == s),
+                None => true,
+            });
+            for want in library {
+                if !items.iter().any(|v| v.as_str() == Some(want.as_str())) {
+                    items.push(json!(want));
+                }
             }
         }
-        other => *other = json!([library]),
+        other => *other = json!(library),
     }
     // runtime.version: only if the user hasn't set it.
     map.entry("runtime.version".to_string())
@@ -279,75 +339,79 @@ mod tests {
         root
     }
 
-    #[test]
-    fn library_entry_reflects_home_location() {
-        let root = Path::new("/proj");
-        assert_eq!(library_entry(&home_flat(root)), "annotations");
-        assert_eq!(
-            library_entry(&home_sub(root, ".prova")),
-            ".prova/annotations"
-        );
-        assert_eq!(library_entry(&home_sub(root, "prova")), "prova/annotations");
-    }
-    fn home_flat(root: &Path) -> Home {
-        Home {
-            root: root.into(),
-            dir: root.into(),
-            manifest: root.join("prova.toml"),
-        }
-    }
-    fn home_sub(root: &Path, sub: &str) -> Home {
-        Home {
-            root: root.into(),
-            dir: root.join(sub),
-            manifest: root.join(sub).join("prova.toml"),
-        }
+    /// A layout whose cache/data/config all sit under the test's temp dir.
+    fn layout_at(root: &Path) -> prova_core::RootedSystemLayout {
+        prova_core::RootedSystemLayout::new(root.join("sys"))
     }
 
+    const V: &str = "0.0.0-test";
+
+    /// The library list must name the shared core dir and each plugin's *own* `library/` — no copy,
+    /// no per-project directory anywhere.
     #[test]
-    fn sync_writes_core_stubs_plugin_stubs_and_gitignore() {
-        let t = Tmp::new("sync");
+    fn entries_point_at_shared_sources_and_nothing_is_project_local() {
+        let t = Tmp::new("entries");
         let home = home_at(&t.0, Some(".prova"));
+        let layout = layout_at(&t.0);
+        let plugin = plugin_with_stub(&t.0, "postgres");
         let mut roots = BTreeMap::new();
-        roots.insert("postgres".to_string(), plugin_with_stub(&t.0, "postgres"));
+        roots.insert("postgres".to_string(), plugin.clone());
 
-        let synced = sync_folder(&home, &roots).unwrap();
-        assert_eq!(synced, vec!["postgres".to_string()]);
-        let anno = home.dir.join("annotations");
-        assert!(anno.join("prova.lua").is_file());
-        assert!(anno.join("modules.lua").is_file());
-        assert!(anno.join("plugins/postgres.lua").is_file());
+        let core = install_core_stubs(&layout, V).unwrap();
+        let (entries, linked) = library_entries(&core, &roots);
+
+        assert_eq!(linked, vec!["postgres".to_string()]);
         assert_eq!(
-            std::fs::read_to_string(anno.join(".gitignore"))
-                .unwrap()
-                .trim_end(),
-            "# generated by prova — do not edit\n*".trim_end()
+            entries,
+            vec![path_entry(&core), path_entry(&plugin.join("library"))]
         );
+        assert!(core.join("prova.lua").is_file());
+        assert!(core.join("modules.lua").is_file());
+        // The plugin's stub is referenced where it already lives — never duplicated.
+        assert!(plugin.join("library/postgres.lua").is_file());
+        // Nothing whatsoever was written into the project.
+        assert!(!home.dir.join("annotations").exists());
     }
 
+    /// Core stubs are shared per version, not per project — that is what removes the need for any
+    /// per-project cache state, and therefore for a back-pointer or a GC.
     #[test]
-    fn sync_is_clean_dropping_a_removed_plugin() {
-        let t = Tmp::new("drop");
-        let home = home_at(&t.0, None);
-        let mut roots = BTreeMap::new();
-        roots.insert("redis".to_string(), plugin_with_stub(&t.0, "redis"));
-        sync_folder(&home, &roots).unwrap();
-        assert!(home.dir.join("annotations/plugins/redis.lua").is_file());
+    fn core_stubs_are_shared_across_projects_and_keyed_by_version() {
+        let t = Tmp::new("shared");
+        let layout = layout_at(&t.0);
+        let one = install_core_stubs(&layout, V).unwrap();
+        let two = install_core_stubs(&layout, V).unwrap();
+        assert_eq!(one, two, "same version must resolve to one shared dir");
+        let next = install_core_stubs(&layout, "9.9.9").unwrap();
+        assert_ne!(one, next, "a different version must not reuse the dir");
+        assert!(one.join("prova.lua").is_file() && next.join("prova.lua").is_file());
+    }
 
-        // Re-sync with no plugins → the stale stub is gone.
-        sync_folder(&home, &BTreeMap::new()).unwrap();
-        assert!(!home.dir.join("annotations/plugins/redis.lua").exists());
-        assert!(home.dir.join("annotations/prova.lua").is_file());
+    /// A plugin shipping no `library/` contributes no entry (and isn't reported as linked).
+    #[test]
+    fn a_plugin_without_stubs_contributes_nothing() {
+        let t = Tmp::new("nostub");
+        let layout = layout_at(&t.0);
+        let bare = t.0.join("plugin-bare");
+        std::fs::create_dir_all(&bare).unwrap();
+        let mut roots = BTreeMap::new();
+        roots.insert("bare".to_string(), bare);
+
+        let core = install_core_stubs(&layout, V).unwrap();
+        let (entries, linked) = library_entries(&core, &roots);
+        assert_eq!(entries, vec![path_entry(&core)]);
+        assert!(linked.is_empty());
     }
 
     #[test]
     fn auto_creates_luarc_when_absent() {
         let t = Tmp::new("auto-absent");
         let home = home_at(&t.0, None);
-        let out = setup(&home, &BTreeMap::new(), Manage::Auto).unwrap();
+        let layout = layout_at(&t.0);
+        let out = setup(&home, &BTreeMap::new(), Manage::Auto, &layout, V).unwrap();
         assert!(out.luarc_created);
         let text = std::fs::read_to_string(t.0.join(".luarc.json")).unwrap();
-        assert!(text.contains("\"annotations\""), "{text}");
+        assert!(text.contains(&path_entry(&out.core_dir)), "{text}");
         assert!(text.contains("Lua 5.4"), "{text}");
     }
 
@@ -360,7 +424,8 @@ mod tests {
             "{ \"diagnostics.globals\": [\"vim\"] }",
         )
         .unwrap();
-        let out = setup(&home, &BTreeMap::new(), Manage::Auto).unwrap();
+        let layout = layout_at(&t.0);
+        let out = setup(&home, &BTreeMap::new(), Manage::Auto, &layout, V).unwrap();
         assert!(!out.luarc_created);
         assert!(out.luarc_hint);
         // The user's file is untouched.
@@ -369,6 +434,71 @@ mod tests {
             text.contains("vim") && !text.contains("annotations"),
             "{text}"
         );
+    }
+
+    /// The direct list changes when the plugin set does, so a file prova wrote must be refreshed
+    /// under `auto` — otherwise adding a plugin would silently fail to reach the editor.
+    #[test]
+    fn auto_refreshes_a_luarc_that_prova_wrote() {
+        let t = Tmp::new("auto-refresh");
+        let home = home_at(&t.0, None);
+        let layout = layout_at(&t.0);
+        let luarc = t.0.join(".luarc.json");
+
+        setup(&home, &BTreeMap::new(), Manage::Auto, &layout, V).unwrap();
+        let plugin = plugin_with_stub(&t.0, "redis");
+        let mut roots = BTreeMap::new();
+        roots.insert("redis".to_string(), plugin.clone());
+        let out = setup(&home, &roots, Manage::Auto, &layout, V).unwrap();
+
+        assert!(
+            !out.luarc_hint,
+            "prova's own file should be refreshed, not hinted about"
+        );
+        let text = std::fs::read_to_string(&luarc).unwrap();
+        assert!(
+            text.contains(&path_entry(&plugin.join("library"))),
+            "newly added plugin missing from the list: {text}"
+        );
+
+        // ...and dropping it again removes the entry, rather than accumulating.
+        setup(&home, &BTreeMap::new(), Manage::Auto, &layout, V).unwrap();
+        let text = std::fs::read_to_string(&luarc).unwrap();
+        assert!(
+            !text.contains("plugin-redis"),
+            "stale entry lingered: {text}"
+        );
+    }
+
+    /// One user-added key is enough to make the file theirs — prova must stop rewriting it.
+    #[test]
+    fn a_user_edited_luarc_stops_being_ours() {
+        let t = Tmp::new("ownership");
+        let home = home_at(&t.0, None);
+        let layout = layout_at(&t.0);
+        let luarc = t.0.join(".luarc.json");
+
+        setup(&home, &BTreeMap::new(), Manage::Auto, &layout, V).unwrap();
+        assert!(luarc_is_ours(&luarc));
+
+        let mut doc: Value =
+            serde_json::from_str(&std::fs::read_to_string(&luarc).unwrap()).unwrap();
+        doc.as_object_mut()
+            .unwrap()
+            .insert("diagnostics.globals".into(), json!(["vim"]));
+        std::fs::write(&luarc, serde_json::to_string_pretty(&doc).unwrap()).unwrap();
+
+        assert!(
+            !luarc_is_ours(&luarc),
+            "a user-added key must transfer ownership"
+        );
+        let out = setup(&home, &BTreeMap::new(), Manage::Auto, &layout, V).unwrap();
+        assert!(
+            !out.luarc_hint,
+            "entries are all present, so no hint is due"
+        );
+        let text = std::fs::read_to_string(&luarc).unwrap();
+        assert!(text.contains("vim"), "the user's key was clobbered: {text}");
     }
 
     #[test]
@@ -380,45 +510,82 @@ mod tests {
             "{ \"runtime.version\": \"Lua 5.3\", \"diagnostics.globals\": [\"vim\"], \"workspace.library\": [\"types\"] }",
         )
         .unwrap();
-        setup(&home, &BTreeMap::new(), Manage::Always).unwrap();
+        let layout = layout_at(&t.0);
+        let out = setup(&home, &BTreeMap::new(), Manage::Always, &layout, V).unwrap();
         let doc: Value =
             serde_json::from_str(&std::fs::read_to_string(t.0.join(".luarc.json")).unwrap())
                 .unwrap();
         // Our entry appended; user's library entry + version + other keys preserved.
         let lib = doc["workspace.library"].as_array().unwrap();
-        assert!(lib.iter().any(|v| v == ".prova/annotations"));
+        let ours = path_entry(&out.core_dir);
+        assert!(lib.iter().any(|v| v.as_str() == Some(ours.as_str())));
         assert!(lib.iter().any(|v| v == "types"));
         assert_eq!(doc["runtime.version"], "Lua 5.3"); // not overridden
         assert_eq!(doc["diagnostics.globals"][0], "vim");
     }
 
+    /// Merging must reclaim prova's own stale entries while never touching the user's.
     #[test]
-    fn never_syncs_folder_but_leaves_luarc() {
+    fn always_sweeps_stale_managed_entries_only() {
+        let t = Tmp::new("sweep");
+        let home = home_at(&t.0, None);
+        let layout = layout_at(&t.0);
+        let luarc = t.0.join(".luarc.json");
+        // A user entry, plus a managed entry from a version prova no longer serves.
+        let stale = path_entry(&layout.annotations_dir().join("0.0.0-ancient"));
+        std::fs::write(
+            &luarc,
+            serde_json::to_string(&json!({
+                "diagnostics.globals": ["vim"],
+                "workspace.library": ["types", stale],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        setup(&home, &BTreeMap::new(), Manage::Always, &layout, V).unwrap();
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&luarc).unwrap()).unwrap();
+        let lib = doc["workspace.library"].as_array().unwrap();
+        assert!(
+            !lib.iter().any(|v| v.as_str() == Some(stale.as_str())),
+            "stale managed entry survived: {lib:?}"
+        );
+        assert!(
+            lib.iter().any(|v| v == "types"),
+            "user entry was swept: {lib:?}"
+        );
+    }
+
+    #[test]
+    fn never_installs_stubs_but_leaves_luarc() {
         let t = Tmp::new("never");
         let home = home_at(&t.0, None);
-        let out = setup(&home, &BTreeMap::new(), Manage::Never).unwrap();
+        let layout = layout_at(&t.0);
+        let out = setup(&home, &BTreeMap::new(), Manage::Never, &layout, V).unwrap();
         assert!(!out.luarc_created && !out.luarc_hint);
         assert!(!t.0.join(".luarc.json").exists());
-        assert!(home.dir.join("annotations/prova.lua").is_file()); // folder still synced
+        assert!(out.core_dir.join("prova.lua").is_file()); // stubs still installed
     }
 
     #[test]
     fn init_creates_or_merges() {
         let t = Tmp::new("init");
         let home = home_at(&t.0, None);
-        let out = init(&home, &BTreeMap::new()).unwrap();
+        let layout = layout_at(&t.0);
+        let out = init(&home, &BTreeMap::new(), &layout, V).unwrap();
         assert!(out.luarc_created);
         // Second init merges (idempotent, still has our entry once).
-        let out2 = init(&home, &BTreeMap::new()).unwrap();
+        let out2 = init(&home, &BTreeMap::new(), &layout, V).unwrap();
         assert!(!out2.luarc_created);
         let doc: Value =
             serde_json::from_str(&std::fs::read_to_string(t.0.join(".luarc.json")).unwrap())
                 .unwrap();
+        let ours = path_entry(&out2.core_dir);
         let count = doc["workspace.library"]
             .as_array()
             .unwrap()
             .iter()
-            .filter(|v| *v == "annotations")
+            .filter(|v| v.as_str() == Some(ours.as_str()))
             .count();
         assert_eq!(count, 1);
     }

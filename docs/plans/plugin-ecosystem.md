@@ -19,9 +19,9 @@ tail.
   by canonical namespace, and the **self-contained rule** (no dependency resolver — vendor or promote
   to primitives).
 - **`prova plugin lint`** — classifies plugin shape (Resource / Library) and validates facets.
-- **Plugin LuaCATS/IDE support** — plugins ship a `library/<name>.lua` `---@meta` stub; prova syncs
-  resolved plugins' stubs into `<home>/annotations/` and manages `.luarc.json` so `require("<name>")`
-  completes with zero wiring. Baked into the archetype.
+- **Plugin LuaCATS/IDE support** — plugins ship a `library/<name>.lua` `---@meta` stub; prova points
+  `.luarc.json` at each resolved plugin's `library/` in place, so `require("<name>")` completes with
+  zero wiring and nothing is copied into the project. Baked into the archetype.
 
 ## Remaining
 

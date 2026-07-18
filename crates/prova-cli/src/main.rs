@@ -29,9 +29,9 @@ use std::time::{Duration, Instant};
 use home::Home;
 use manifest::{Manage, Manifest, SuiteDecl};
 use prova_core::{
-    discover_files, discover_path_with, discover_suites, run_suites, ConsoleReporter, JUnitReporter,
-    JsonReporter, MultiReporter, PortMode, Reporter, RunConfig, Suite, SystemLayout, TapReporter,
-    XdgSystemLayout,
+    discover_files, discover_path_with, discover_suites, run_suites, ConsoleReporter,
+    JUnitReporter, JsonReporter, MultiReporter, PortMode, Reporter, RunConfig, Suite, SystemLayout,
+    TapReporter, XdgSystemLayout,
 };
 
 const HELP: &str = "\
@@ -295,7 +295,9 @@ fn eval_subcommand(args: Vec<String>) -> ExitCode {
     }
 
     let Some(code) = code else {
-        eprintln!("usage: prova eval '<lua code>'   (or `prova eval -` to read the snippet from stdin)");
+        eprintln!(
+            "usage: prova eval '<lua code>'   (or `prova eval -` to read the snippet from stdin)"
+        );
         return ExitCode::from(2);
     };
     if code.trim().is_empty() {
@@ -430,7 +432,10 @@ fn up_subcommand(args: Vec<String>) -> ExitCode {
         Err(code) => return code,
     };
     let TopologyRun {
-        home, files, config, ..
+        home,
+        files,
+        config,
+        ..
     } = prep;
 
     // Refuse to double-provision: if a live record for this name exists, it is already up. A stale
@@ -597,7 +602,9 @@ fn watch_subcommand(args: Vec<String>) -> ExitCode {
             }
             other if name.is_none() => name = Some(other.to_string()),
             other => {
-                eprintln!("prova watch: unexpected argument {other:?} (expected one topology name)");
+                eprintln!(
+                    "prova watch: unexpected argument {other:?} (expected one topology name)"
+                );
                 return ExitCode::from(2);
             }
         }
@@ -608,12 +615,11 @@ fn watch_subcommand(args: Vec<String>) -> ExitCode {
         return ExitCode::from(2);
     };
 
-    let TopologyRun {
-        files, config, ..
-    } = match build_topology_run("watch", &name, profile, manifest_path, fixed) {
-        Ok(p) => p,
-        Err(code) => return code,
-    };
+    let TopologyRun { files, config, .. } =
+        match build_topology_run("watch", &name, profile, manifest_path, fixed) {
+            Ok(p) => p,
+            Err(code) => return code,
+        };
 
     eprintln!("prova: watching topology {name:?} (Ctrl-C to stop)…");
     let result = prova_core::watch(
@@ -628,7 +634,9 @@ fn watch_subcommand(args: Vec<String>) -> ExitCode {
             println!("\n  watching — edit the definition to re-apply, Ctrl-C to tear down");
         },
         |err| {
-            eprintln!("\n  prova watch: provisioning failed — fix the definition to retry:\n    {err}");
+            eprintln!(
+                "\n  prova watch: provisioning failed — fix the definition to retry:\n    {err}"
+            );
         },
     );
     match result {
@@ -1023,7 +1031,9 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             match v.as_str() {
                 "ignore" | "warn" | "delete" => unreferenced = v,
                 other => {
-                    eprintln!("prova: unknown --unreferenced {other:?} (expected ignore|warn|delete)");
+                    eprintln!(
+                        "prova: unknown --unreferenced {other:?} (expected ignore|warn|delete)"
+                    );
                     return ExitCode::from(2);
                 }
             }
@@ -1086,46 +1096,56 @@ fn run(cli_args: Vec<String>) -> ExitCode {
 
     // Resolve the run. Explicit path args bypass the manifest (paths relative to cwd, no IDE
     // management); otherwise read the home's `prova.toml` (paths relative to the home dir).
-    let (base_dir, paths, require_roots, jobs, format, declared, mut plugins_resolved, sources, manage, capabilities) =
-        if !explicit_paths.is_empty() {
-            (
-                PathBuf::from("."),
-                explicit_paths,
-                // Ad-hoc file runs bypass the manifest — no home to root `require` at.
-                Vec::new(),
-                cli_jobs.unwrap_or(1),
-                cli_format.unwrap_or(Format::Console),
-                BTreeMap::new(),
-                plugins::ResolvedPlugins::default(),
-                BTreeMap::new(),
-                Manage::Never,
-                // Explicit-path runs bypass the manifest, so there is no companion — built-in
-                // capabilities still work; registered ones are simply absent.
-                prova_core::Capabilities::default(),
-            )
-        } else {
-            let Some(home) = &home else {
-                eprintln!(
-                    "usage: prova <file-or-dir>...   or   prova [--profile NAME]  (reads prova.toml)"
-                );
-                return ExitCode::from(2);
-            };
-            match resolve_from_manifest(home, profile, cli_jobs, cli_format, cli_config, &layout) {
-                Ok(r) => (
-                    home.dir.clone(),
-                    r.paths,
-                    r.require_roots,
-                    r.jobs,
-                    r.format,
-                    r.suites,
-                    r.plugins,
-                    r.sources,
-                    r.manage,
-                    r.capabilities,
-                ),
-                Err(code) => return code,
-            }
+    let (
+        base_dir,
+        paths,
+        require_roots,
+        jobs,
+        format,
+        declared,
+        mut plugins_resolved,
+        sources,
+        manage,
+        capabilities,
+    ) = if !explicit_paths.is_empty() {
+        (
+            PathBuf::from("."),
+            explicit_paths,
+            // Ad-hoc file runs bypass the manifest — no home to root `require` at.
+            Vec::new(),
+            cli_jobs.unwrap_or(1),
+            cli_format.unwrap_or(Format::Console),
+            BTreeMap::new(),
+            plugins::ResolvedPlugins::default(),
+            BTreeMap::new(),
+            Manage::Never,
+            // Explicit-path runs bypass the manifest, so there is no companion — built-in
+            // capabilities still work; registered ones are simply absent.
+            prova_core::Capabilities::default(),
+        )
+    } else {
+        let Some(home) = &home else {
+            eprintln!(
+                "usage: prova <file-or-dir>...   or   prova [--profile NAME]  (reads prova.toml)"
+            );
+            return ExitCode::from(2);
         };
+        match resolve_from_manifest(home, profile, cli_jobs, cli_format, cli_config, &layout) {
+            Ok(r) => (
+                home.dir.clone(),
+                r.paths,
+                r.require_roots,
+                r.jobs,
+                r.format,
+                r.suites,
+                r.plugins,
+                r.sources,
+                r.manage,
+                r.capabilities,
+            ),
+            Err(code) => return code,
+        }
+    };
 
     // Ad-hoc `--plugin name=source` entries (e.g. CI-only extras) resolve the same way as manifest
     // plugins and layer on top, overriding a manifest plugin of the same name.
@@ -1148,10 +1168,9 @@ fn run(cli_args: Vec<String>) -> ExitCode {
 
     // The standalone `prova` binary ships the archetect plugin, so `archetect.render{...}` works.
     // The plugin searcher consults the global install dir plus any manifest-declared plugins.
-    let mut config =
-        engine_config(jobs, &layout, &plugins_resolved, home.as_ref(), &require_roots)
-            .with_update_snapshots(update_snapshots)
-            .with_capabilities(capabilities);
+    let mut config = engine_config(jobs, &layout, &plugins_resolved, home.as_ref(), &require_roots)
+        .with_update_snapshots(update_snapshots)
+        .with_capabilities(capabilities);
 
     // `--last-failed`: fold the previous run's failed node paths into the selection as exact nodes.
     if last_failed {
@@ -1169,9 +1188,8 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     // would make unrun tests' snapshots look orphaned — so skip (with a note) when a filter is active.
     let snapshot_registry = if unreferenced != "ignore" {
         if config.selection.is_empty() {
-            let reg: prova_core::SnapshotRegistry = std::sync::Arc::new(std::sync::Mutex::new(
-                std::collections::HashSet::new(),
-            ));
+            let reg: prova_core::SnapshotRegistry =
+                std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
             config = config.with_snapshot_tracking(reg.clone());
             Some(reg)
         } else {
@@ -1191,7 +1209,13 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     // stdout stays a clean event stream.
     if !list {
         if let Some(home) = &home {
-            match annotations::setup(home, &plugins_resolved.roots, manage) {
+            match annotations::setup(
+                home,
+                &plugins_resolved.roots,
+                manage,
+                &layout,
+                PROVA_VERSION,
+            ) {
                 Ok(outcome) => report_annotations(&outcome),
                 Err(err) => eprintln!("prova: IDE annotations: {err}"),
             }
@@ -1247,9 +1271,27 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             let ran = summary.passed + summary.failed + summary.skipped;
             if ran == 0 && !config.selection.is_empty() && !allow_empty {
                 let mut asked: Vec<String> = Vec::new();
-                asked.extend(config.selection.keywords.iter().map(|k| format!("-k {k:?}")));
-                asked.extend(config.selection.tags.iter().map(|t| format!("--tags {t:?}")));
-                asked.extend(config.selection.nodes.iter().map(|n| format!("--node {n:?}")));
+                asked.extend(
+                    config
+                        .selection
+                        .keywords
+                        .iter()
+                        .map(|k| format!("-k {k:?}")),
+                );
+                asked.extend(
+                    config
+                        .selection
+                        .tags
+                        .iter()
+                        .map(|t| format!("--tags {t:?}")),
+                );
+                asked.extend(
+                    config
+                        .selection
+                        .nodes
+                        .iter()
+                        .map(|n| format!("--node {n:?}")),
+                );
                 eprintln!(
                     "prova: selection matched no tests ({}) — {} deselected",
                     asked.join(", "),
@@ -1290,7 +1332,10 @@ fn reconcile_unreferenced(registry: Option<&prova_core::SnapshotRegistry>, polic
     }
     match policy {
         "delete" => {
-            eprintln!("prova: deleting {} unreferenced snapshot(s):", orphans.len());
+            eprintln!(
+                "prova: deleting {} unreferenced snapshot(s):",
+                orphans.len()
+            );
             for p in &orphans {
                 let _ = std::fs::remove_file(p);
                 eprintln!("  deleted {}", p.display());
@@ -1345,10 +1390,10 @@ fn missing_stub_warning(ns: &Option<(String, PathBuf)>) -> Option<String> {
 
 /// Print a concise, honest one-liner (to stderr) about what the IDE annotation sync did.
 fn report_annotations(outcome: &annotations::Outcome) {
-    if !outcome.synced_plugins.is_empty() {
+    if !outcome.linked_plugins.is_empty() {
         eprintln!(
-            "prova: synced IDE annotations for {}",
-            outcome.synced_plugins.join(", ")
+            "prova: IDE annotations linked for {}",
+            outcome.linked_plugins.join(", ")
         );
     }
     if outcome.luarc_created {
@@ -1596,7 +1641,9 @@ fn resolve_from_manifest(
             Some("tap") => Format::Tap,
             None | Some("console") => Format::Console,
             Some(other) => {
-                eprintln!("prova: unknown format {other:?} in manifest (expected console|json|tap)");
+                eprintln!(
+                    "prova: unknown format {other:?} in manifest (expected console|json|tap)"
+                );
                 return Err(ExitCode::from(2));
             }
         },
@@ -1690,7 +1737,6 @@ fn store_last_failed(home: &Option<home::Home>, failed: &[String]) {
         let _ = std::fs::write(path, text);
     }
 }
-
 
 /// The embedded agent skill — versioned with the binary so it can never drift from the features.
 const SKILL: &str = include_str!("skill.md");

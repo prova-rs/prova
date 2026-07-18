@@ -1,5 +1,5 @@
 //! `prova init` — scaffold a prova project: a `prova.toml` manifest, its home directory, and (unless
-//! opted out) the LuaLS IDE integration (`annotations/` + a root `.luarc.json`).
+//! opted out) the LuaLS IDE integration (a root `.luarc.json` pointing at the shared core stubs).
 //!
 //! ```text
 //! prova init                 # home in ./prova/ (visible — tests + config in one dir)
@@ -94,14 +94,32 @@ pub fn run(args: Vec<String>) -> ExitCode {
     println!("prova: wrote {}", manifest.display());
 
     if luals {
-        match annotations::init(&home, &Default::default()) {
+        let sys_layout = match prova_core::XdgSystemLayout::new() {
+            Ok(l) => l,
+            Err(err) => {
+                eprintln!("prova init: cannot locate cache directory: {err}");
+                return ExitCode::from(2);
+            }
+        };
+        match annotations::init(
+            &home,
+            &Default::default(),
+            &sys_layout,
+            crate::PROVA_VERSION,
+        ) {
             Ok(outcome) => {
                 println!(
-                    "prova: wrote {}/annotations/ (core IDE annotations)",
-                    home.dir.display()
+                    "prova: core IDE annotations at {}",
+                    outcome.core_dir.display()
                 );
                 if outcome.luarc_created {
                     println!("prova: wrote .luarc.json — open this project in your editor for completion");
+                    // The pointer is an absolute, machine-local path, so it is not shareable and
+                    // should not be committed. prova won't edit the user's .gitignore for them —
+                    // it says so once, here, and leaves the choice where it belongs.
+                    println!(
+                        "prova: note — .luarc.json holds machine-local paths; add it to .gitignore"
+                    );
                 }
                 println!("prova: plugin annotations are added automatically as you declare them and run `prova`");
             }

@@ -147,7 +147,7 @@ $ prova --all                # override: the whole project from anywhere
 ```
 
 **Exactly one home per project.** Not a nested-manifest workspace: one `[plugins]` table, one
-`annotations/`, one `.luarc.json` question, one place to look. Module autonomy is expressed by
+set of annotations, one `.luarc.json` question, one place to look. Module autonomy is expressed by
 **suites**, which are already directory-aligned — not by a second manifest.
 
 ## The canonical layout
@@ -160,7 +160,6 @@ Nothing here is new machinery; it is the existing pieces, named:
 ├── prova/                       ← THE home: the project's anchor
 │   ├── prova.toml               #   [plugins], [profiles.*] + must_run, [run] paths
 │   ├── plugins/ourthing.lua     #   locally-authored plugins
-│   ├── annotations/             #   GENERATED, self-gitignored
 │   └── suites/                  #   project-level suites (cross-cutting)
 ├── crates/prova-cli/
 │   └── prova/

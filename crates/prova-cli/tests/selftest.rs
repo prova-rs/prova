@@ -24,12 +24,23 @@ fn prova_acceptance_tests_itself() {
         })
         .collect();
     files.sort();
-    assert!(!files.is_empty(), "no *_test.lua files found in {}", selftest.display());
+    assert!(
+        !files.is_empty(),
+        "no *_test.lua files found in {}",
+        selftest.display()
+    );
 
+    // Point the whole tree (this run and every inner `prova` it spawns, which inherit the env) at a
+    // throwaway XDG home, so `cargo test` never writes to the developer's real `~/.cache/prova`.
+    // Safe to isolate because no fixture declares a git plugin, so nothing has to be re-fetched.
+    let sandbox = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("selftest-xdg");
     let output = Command::new(bin)
         .args(&files)
         .env("PROVA_BIN", bin)
         .env("PROVA_FIXTURES", &fixtures)
+        .env("XDG_CACHE_HOME", sandbox.join("cache"))
+        .env("XDG_DATA_HOME", sandbox.join("data"))
+        .env("XDG_CONFIG_HOME", sandbox.join("config"))
         .output()
         .expect("run prova on its own self-test suite");
 
