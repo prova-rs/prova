@@ -157,12 +157,6 @@ pub struct SuiteDecl {
 pub struct Profile {
     #[serde(default)]
     pub paths: Vec<String>,
-    /// Directories `require` resolves module names against (`require("shared.x")` →
-    /// `<root>/shared/x.lua`). Relative to the home. If unset, defaults to `paths` — the dirs you
-    /// discover tests in are the dirs you require against — so `paths = ["proofs"]` gives clean
-    /// `require("shared.x")` from within `proofs/` with no extra config.
-    #[serde(default)]
-    pub require_roots: Vec<String>,
     /// The companion file loaded once, pre-suite, for `runtime.*` config (capabilities). Relative to
     /// the home. Defaults to `prova.lua` beside the manifest; point it elsewhere (e.g.
     /// `proofs/shared/config.lua`) to keep the home clean.
@@ -199,8 +193,6 @@ pub struct Profile {
 #[derive(Debug, PartialEq)]
 pub struct Resolved {
     pub paths: Vec<String>,
-    /// Directories `require` resolves against; defaults to `paths` when unset. See `Profile`.
-    pub require_roots: Vec<String>,
     /// The companion config file (relative to home); `None` → the `prova.lua` default. See `Profile`.
     pub config: Option<String>,
     pub jobs: Option<usize>,
@@ -244,18 +236,6 @@ impl Manifest {
             Some(p) if !p.paths.is_empty() => p.paths.clone(),
             _ => base.paths.clone(),
         };
-        let require_roots = {
-            let explicit = match overlay {
-                Some(p) if !p.require_roots.is_empty() => p.require_roots.clone(),
-                _ => base.require_roots.clone(),
-            };
-            // Default: the discovery paths are the require roots — a test root is a source root.
-            if explicit.is_empty() {
-                paths.clone()
-            } else {
-                explicit
-            }
-        };
         let config = overlay
             .and_then(|p| p.config.clone())
             .or_else(|| base.config.clone());
@@ -294,7 +274,6 @@ impl Manifest {
 
         Ok(Resolved {
             paths,
-            require_roots,
             config,
             jobs,
             format,
@@ -345,8 +324,6 @@ paths = ["tests/smoke"]
             r,
             Resolved {
                 paths: vec!["tests".into()],
-                // Defaults to `paths` when the manifest doesn't set `require_roots`.
-                require_roots: vec!["tests".into()],
                 config: None,
                 jobs: Some(4),
                 format: Some("console".into()),

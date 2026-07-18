@@ -336,7 +336,7 @@ fn eval_subcommand(args: Vec<String>) -> ExitCode {
     if let Err(code) = layer_cli_plugins(&cli_plugins, &layout, &sources, &mut plugins_resolved) {
         return code;
     }
-    let config = engine_config(1, &layout, &plugins_resolved, home.as_ref(), &[]);
+    let config = engine_config(1, &layout, &plugins_resolved, home.as_ref());
 
     match prova_core::eval_snippet(&code, &config) {
         Ok(value) => {
@@ -548,7 +548,7 @@ fn build_topology_run(
     // Build the engine config with the declared plugins (so the topology's `require(...)` resolves).
     // `--fixed` pins ports for external reachability; the default is random (like tests), so several
     // topologies can be inhabited at once without colliding.
-    let config = engine_config(1, &layout, &run.plugins, Some(&home), &run.require_roots)
+    let config = engine_config(1, &layout, &run.plugins, Some(&home))
         .with_ports(if fixed {
             PortMode::Fixed
         } else {
@@ -1100,7 +1100,6 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     let (
         base_dir,
         paths,
-        require_roots,
         jobs,
         format,
         declared,
@@ -1112,8 +1111,6 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         (
             PathBuf::from("."),
             explicit_paths,
-            // Ad-hoc file runs bypass the manifest — no home to root `require` at.
-            Vec::new(),
             cli_jobs.unwrap_or(1),
             cli_format.unwrap_or(Format::Console),
             BTreeMap::new(),
@@ -1133,9 +1130,12 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         };
         match resolve_from_manifest(home, profile, cli_jobs, cli_format, cli_config, &layout) {
             Ok(r) => (
-                home.dir.clone(),
+                // Test `paths` resolve against the project ROOT, not the home dir — so `proofs/`
+                // lives at the root while `.prova/` (or `prova/`) is prova's config/plugins nook.
+                // (For a flat `prova.toml`, root == home, so nothing changes.) The `config`
+                // companion stays home-relative; only test discovery is root-anchored.
+                home.root.clone(),
                 r.paths,
-                r.require_roots,
                 r.jobs,
                 r.format,
                 r.suites,
@@ -1169,15 +1169,9 @@ fn run(cli_args: Vec<String>) -> ExitCode {
 
     // The standalone `prova` binary ships the archetect plugin, so `archetect.render{...}` works.
     // The plugin searcher consults the global install dir plus any manifest-declared plugins.
-    let mut config = engine_config(
-        jobs,
-        &layout,
-        &plugins_resolved,
-        home.as_ref(),
-        &require_roots,
-    )
-    .with_update_snapshots(update_snapshots)
-    .with_capabilities(capabilities);
+    let mut config = engine_config(jobs, &layout, &plugins_resolved, home.as_ref())
+        .with_update_snapshots(update_snapshots)
+        .with_capabilities(capabilities);
 
     // `--last-failed`: fold the previous run's failed node paths into the selection as exact nodes.
     if last_failed {
@@ -1365,8 +1359,6 @@ fn reconcile_unreferenced(registry: Option<&prova_core::SnapshotRegistry>, polic
 /// A resolved manifest run: what to discover, how, and the resolved plugin + IDE settings.
 struct ManifestRun {
     paths: Vec<String>,
-    /// Directories `require` resolves against (relative to home); defaults to `paths`.
-    require_roots: Vec<String>,
     jobs: usize,
     format: Format,
     suites: BTreeMap<String, SuiteDecl>,
@@ -1415,6 +1407,23 @@ fn report_annotations(outcome: &annotations::Outcome) {
 /// its discovered files under one name + optional setup), then the plain paths — a directory with a
 /// `suite.lua` is one suite (files share a state → shared `Scope.Suite`), every other file a
 /// singleton. Shared by the CLI run path and MCP mode so both consume one manifest the same way.
+/// Resolve a manifest path pattern (relative to `base_dir`) to concrete paths. A `*` makes it a
+/// glob — `"**/proofs"` matches every `proofs/` directory at any depth, the multi-crate discovery
+/// pattern; anything else is joined literally. Sorted for determinism.
+fn expand_pattern(base_dir: &Path, pattern: &str) -> Result<Vec<PathBuf>, String> {
+    if !pattern.contains('*') {
+        return Ok(vec![base_dir.join(pattern)]);
+    }
+    let joined = base_dir.join(pattern);
+    let g = joined.to_string_lossy();
+    let mut out: Vec<PathBuf> = glob::glob(&g)
+        .map_err(|e| format!("bad path pattern {pattern:?}: {e}"))?
+        .filter_map(Result::ok)
+        .collect();
+    out.sort();
+    Ok(out)
+}
+
 fn collect_suites(
     base_dir: &Path,
     declared: &BTreeMap<String, SuiteDecl>,
@@ -1438,8 +1447,10 @@ fn collect_suites(
         }
     }
     for arg in paths {
-        let found = discover_suites(&base_dir.join(arg)).map_err(|err| format!("{arg}: {err}"))?;
-        suites.extend(found);
+        for dir in expand_pattern(base_dir, arg)? {
+            let found = discover_suites(&dir).map_err(|err| format!("{arg}: {err}"))?;
+            suites.extend(found);
+        }
     }
     Ok(suites)
 }
@@ -1453,7 +1464,6 @@ fn engine_config(
     layout: &dyn SystemLayout,
     plugins_resolved: &plugins::ResolvedPlugins,
     home: Option<&Home>,
-    require_roots: &[String],
 ) -> RunConfig {
     let mut config = RunConfig::new(jobs)
         .with_module(prova_archetect::install)
@@ -1462,11 +1472,6 @@ fn engine_config(
     // repo artifacts. Absent when there is no manifest.
     if let Some(h) = home {
         config = config.with_project(h.root.clone(), h.dir.clone());
-        if !require_roots.is_empty() {
-            let abs: Vec<std::path::PathBuf> =
-                require_roots.iter().map(|r| h.dir.join(r)).collect();
-            config = config.with_require_roots(abs);
-        }
     }
     for (name, path) in &plugins_resolved.named {
         config = config.with_named_plugin(name.clone(), path.clone());
@@ -1588,7 +1593,7 @@ fn resolve_from_manifest(
     let capabilities = if companion.is_file() {
         match prova_core::load_project_config(
             &companion,
-            &engine_config(1, layout, &plugins_resolved, Some(home), &[]),
+            &engine_config(1, layout, &plugins_resolved, Some(home)),
         ) {
             Ok(caps) => caps,
             // An error, never a warning: a companion that failed to load would leave every
@@ -1657,7 +1662,6 @@ fn resolve_from_manifest(
     };
     Ok(ManifestRun {
         paths: resolved.paths,
-        require_roots: resolved.require_roots,
         jobs,
         format,
         suites: resolved.suites,

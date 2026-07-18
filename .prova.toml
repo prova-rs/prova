@@ -1,3 +1,0 @@
-[run]
-paths   = ["proofs"]
-config  = "proofs/shared/config.lua"   # the companion loads from here, not the default prova.lua
