@@ -1,7 +1,5 @@
 use std::path::PathBuf;
 
-use prova_core::{run_path, NullReporter};
-
 mod common;
 
 // Defers to the engine's own capability probe, deliberately: this asserts pass/skip counts against
@@ -19,8 +17,7 @@ fn docker_available() -> bool {
 fn grpc_module_calls_real_server_or_skips() {
     let _docker = common::docker_guard();
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/grpc_test.lua");
-    let mut reporter = NullReporter;
-    let summary = run_path(&path, &mut reporter).expect("run grpc_test.lua");
+    let summary = common::run_proof(&path);
 
     assert_eq!(
         summary.failed, 0,

@@ -41,7 +41,8 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
     #[cfg(feature = "http")]
     lua.globals().set("http", http::make(lua)?)?;
     #[cfg(feature = "sqlite")]
-    lua.globals().set("sqlite", sql::make(lua, sql::Engine::Sqlite)?)?;
+    lua.globals()
+        .set("sqlite", sql::make(lua, sql::Engine::Sqlite)?)?;
     #[cfg(feature = "grpc")]
     lua.globals().set("grpc", grpc::make(lua)?)?;
     #[cfg(feature = "graphql")]
@@ -146,7 +147,6 @@ fn make_parse(lua: &Lua) -> mlua::Result<Table> {
 /// Convert a `serde_json::Value` to a Lua value, mapping JSON `null` to Lua `nil` (so an absent
 /// field reads as nil, not a null sentinel).
 fn json_value_to_lua(lua: &Lua, v: &serde_json::Value) -> mlua::Result<mlua::Value> {
-
     use serde_json::Value as J;
     Ok(match v {
         J::Null => Value::Nil,
@@ -963,15 +963,24 @@ mod http {
         name: &'static str,
         method: reqwest::Method,
     ) {
-        methods.add_async_method(name, move |lua, this, (path, opts): (String, Option<Table>)| {
-            let url = join_url(&this.base_url, &path);
-            let prepared =
-                build_prepared(&lua, method.clone(), url, this.headers.clone(), this.timeout, opts);
-            async move {
-                let resp = send(prepared?).await?;
-                lua.create_userdata(resp)
-            }
-        });
+        methods.add_async_method(
+            name,
+            move |lua, this, (path, opts): (String, Option<Table>)| {
+                let url = join_url(&this.base_url, &path);
+                let prepared = build_prepared(
+                    &lua,
+                    method.clone(),
+                    url,
+                    this.headers.clone(),
+                    this.timeout,
+                    opts,
+                );
+                async move {
+                    let resp = send(prepared?).await?;
+                    lua.create_userdata(resp)
+                }
+            },
+        );
     }
 
     /// Join a client `base_url` with a per-call `path`. An absolute `path` (starting with a scheme)
@@ -1032,7 +1041,11 @@ mod http {
                 let encoded = serde_json::to_vec(&value).map_err(|e| {
                     mlua::Error::RuntimeError(format!("http: encoding json body: {e}"))
                 })?;
-                upsert_header(&mut headers, "content-type".into(), "application/json".into());
+                upsert_header(
+                    &mut headers,
+                    "content-type".into(),
+                    "application/json".into(),
+                );
                 body = Some(encoded);
             } else if let Some(raw) = opts.get::<Option<String>>("body")? {
                 body = Some(raw.into_bytes());
@@ -1056,7 +1069,10 @@ mod http {
     /// Insert or replace a header by case-insensitive name (so a per-call header overrides a client
     /// default rather than sending both).
     fn upsert_header(headers: &mut Vec<(String, String)>, key: String, value: String) {
-        match headers.iter_mut().find(|(k, _)| k.eq_ignore_ascii_case(&key)) {
+        match headers
+            .iter_mut()
+            .find(|(k, _)| k.eq_ignore_ascii_case(&key))
+        {
             Some(existing) => existing.1 = value,
             None => headers.push((key, value)),
         }
@@ -1520,7 +1536,9 @@ mod mock {
                 Some(Value::Boolean(true)) => {
                     network_host = Some("host.docker.internal".to_string())
                 }
-                Some(Value::String(name)) => network_host = Some(name.to_string_lossy().to_string()),
+                Some(Value::String(name)) => {
+                    network_host = Some(name.to_string_lossy().to_string())
+                }
                 Some(Value::Boolean(false)) | None | Some(Value::Nil) => {}
                 Some(other) => {
                     return Err(mlua::Error::RuntimeError(format!(
@@ -1531,8 +1549,9 @@ mod mock {
             }
             init.passthrough = o.get::<Option<String>>("passthrough")?;
             init.record = o.get::<Option<String>>("record")?;
-            init.allow_handler_errors =
-                o.get::<Option<bool>>("allow_handler_errors")?.unwrap_or(false);
+            init.allow_handler_errors = o
+                .get::<Option<bool>>("allow_handler_errors")?
+                .unwrap_or(false);
             let replay_path = o.get::<Option<String>>("replay")?;
             if let Some(t) = o.get::<Option<Table>>("redact")? {
                 for h in t.sequence_values::<String>() {
@@ -1649,7 +1668,8 @@ mod mock {
                 ))
             }
         };
-        let params: Vec<(String, String)> = hit.as_ref().map(|(_, p)| p.clone()).unwrap_or_default();
+        let params: Vec<(String, String)> =
+            hit.as_ref().map(|(_, p)| p.clone()).unwrap_or_default();
         let reply = hit
             .as_ref()
             .map(|(i, _)| state.borrow().stubs[*i].reply.clone());
@@ -1693,14 +1713,19 @@ mod mock {
             let key = replay_key(&rd.method, &rd.path, &query);
             let hit = {
                 let mut s = state.borrow_mut();
-                s.replay.as_mut().and_then(|r| r.take(&key)).map(|resp| {
-                    ReplySpec {
+                s.replay
+                    .as_mut()
+                    .and_then(|r| r.take(&key))
+                    .map(|resp| ReplySpec {
                         status: resp.status,
                         body: resp.body.clone().into_bytes(),
-                        headers: resp.headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                        headers: resp
+                            .headers
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect(),
                         delay: None,
-                    }
-                })
+                    })
             };
             return match hit {
                 Some(spec) => (spec, "replay", None),
@@ -1831,7 +1856,12 @@ mod mock {
     ) -> (ReplySpec, Option<String>) {
         let req_tbl = match req_to_lua(lua, rd, params) {
             Ok(t) => t,
-            Err(e) => return (ReplySpec::plain(500, "mock: handler input"), Some(e.to_string())),
+            Err(e) => {
+                return (
+                    ReplySpec::plain(500, "mock: handler input"),
+                    Some(e.to_string()),
+                )
+            }
         };
         match f.call_async::<Value>(req_tbl).await {
             Ok(Value::Table(t)) => match parse_reply(lua, &t) {
@@ -1982,11 +2012,7 @@ mod mock {
         Ok(None)
     }
 
-    fn req_to_lua(
-        lua: &Lua,
-        rd: &RequestData,
-        params: &[(String, String)],
-    ) -> mlua::Result<Table> {
+    fn req_to_lua(lua: &Lua, rd: &RequestData, params: &[(String, String)]) -> mlua::Result<Table> {
         let t = lua.create_table()?;
         t.set("method", rd.method.clone())?;
         t.set("path", rd.path.clone())?;
@@ -2264,7 +2290,9 @@ pub(crate) mod docker {
     use bollard::network::CreateNetworkOptions;
     use bollard::Docker;
     use futures::StreamExt;
-    use mlua::{AnyUserData, Function, Lua, Table, UserData, UserDataFields, UserDataMethods, Value};
+    use mlua::{
+        AnyUserData, Function, Lua, Table, UserData, UserDataFields, UserDataMethods, Value,
+    };
 
     use crate::model::parse_duration;
 
@@ -2276,7 +2304,11 @@ pub(crate) mod docker {
     struct Container {
         client: Docker,
         id: String,
-        ports: HashMap<u16, u16>, // container port -> mapped host port
+        ports: HashMap<u16, u16>, // container port -> mapped host port (best-effort cache)
+        /// The ports `docker.run` was asked to publish. Kept so `host_port` can distinguish a
+        /// mapping that is merely *late* (wait for it) from one that was never requested at all
+        /// (fail immediately — no amount of waiting will conjure it).
+        requested: Vec<u16>,
         /// The alias this container answers to on its user-defined network (from `docker.run`'s
         /// `alias`), if it joined one with an alias. Siblings resolve it via embedded DNS.
         alias: Option<String>,
@@ -2305,20 +2337,13 @@ pub(crate) mod docker {
             // The network alias this container was created with (nil if it joined no network, or
             // joined one without an alias). Set at create time from `docker.run`'s `alias`.
             methods.add_method("network_alias", |_, this, ()| Ok(this.alias.clone()));
-            methods.add_method("host_port", |_, this, port: u16| {
-                this.ports.get(&port).copied().ok_or_else(|| {
-                    mlua::Error::RuntimeError(format!("container port {port} was not published"))
-                })
+            methods.add_async_method("host_port", |_, this, port: u16| async move {
+                resolved_host_port(&this, port).await
             });
-            methods.add_method("endpoint", |_, this, port: u16| {
-                this.ports
-                    .get(&port)
+            methods.add_async_method("endpoint", |_, this, port: u16| async move {
+                resolved_host_port(&this, port)
+                    .await
                     .map(|hp| format!("127.0.0.1:{hp}"))
-                    .ok_or_else(|| {
-                        mlua::Error::RuntimeError(format!(
-                            "container port {port} was not published"
-                        ))
-                    })
             });
             methods.add_async_method("logs", |_, this, ()| {
                 let client = this.client.clone();
@@ -2490,21 +2515,27 @@ pub(crate) mod docker {
     impl BuildSpec {
         fn from_table(t: &Table) -> mlua::Result<Self> {
             let context: String = t.get::<Option<String>>("context")?.ok_or_else(|| {
-                mlua::Error::RuntimeError("docker.build: `context` (a directory) is required".into())
+                mlua::Error::RuntimeError(
+                    "docker.build: `context` (a directory) is required".into(),
+                )
             })?;
             if !std::path::Path::new(&context).is_dir() {
                 return Err(mlua::Error::RuntimeError(format!(
                     "docker.build: context `{context}` is not a directory"
                 )));
             }
-            let dockerfile = t.get::<Option<String>>("dockerfile")?.unwrap_or_else(|| "Dockerfile".to_string());
+            let dockerfile = t
+                .get::<Option<String>>("dockerfile")?
+                .unwrap_or_else(|| "Dockerfile".to_string());
             // Fail here rather than handing the builder a path it rejects with a murkier message.
             if !std::path::Path::new(&context).join(&dockerfile).is_file() {
                 return Err(mlua::Error::RuntimeError(format!(
                     "docker.build: no dockerfile at `{dockerfile}` (relative to context `{context}`)"
                 )));
             }
-            let tag = t.get::<Option<String>>("tag")?.unwrap_or_else(|| default_build_tag(&context));
+            let tag = t
+                .get::<Option<String>>("tag")?
+                .unwrap_or_else(|| default_build_tag(&context));
 
             let mut buildargs = Vec::new();
             if let Some(args) = t.get::<Option<Table>>("buildargs")? {
@@ -2516,9 +2547,12 @@ pub(crate) mod docker {
                         Value::Integer(i) => i.to_string(),
                         Value::Number(n) => n.to_string(),
                         Value::Boolean(b) => b.to_string(),
-                        other => return Err(mlua::Error::RuntimeError(format!(
-                            "docker.build: buildarg `{k}` must be a scalar, got {}", other.type_name()
-                        ))),
+                        other => {
+                            return Err(mlua::Error::RuntimeError(format!(
+                                "docker.build: buildarg `{k}` must be a scalar, got {}",
+                                other.type_name()
+                            )))
+                        }
                     };
                     buildargs.push((k, v));
                 }
@@ -2565,14 +2599,22 @@ pub(crate) mod docker {
         // The dockerfile is context-relative (Docker's rule); the CLI wants a path it can open, so
         // join it back onto the context for -f.
         cmd.arg("build")
-            .arg("-f").arg(std::path::Path::new(&spec.context).join(&spec.dockerfile))
-            .arg("-t").arg(&spec.tag);
+            .arg("-f")
+            .arg(std::path::Path::new(&spec.context).join(&spec.dockerfile))
+            .arg("-t")
+            .arg(&spec.tag);
         for (k, v) in &spec.buildargs {
             cmd.arg("--build-arg").arg(format!("{k}={v}"));
         }
-        if let Some(target) = &spec.target { cmd.arg("--target").arg(target); }
-        if spec.pull { cmd.arg("--pull"); }
-        if spec.nocache { cmd.arg("--no-cache"); }
+        if let Some(target) = &spec.target {
+            cmd.arg("--target").arg(target);
+        }
+        if spec.pull {
+            cmd.arg("--pull");
+        }
+        if spec.nocache {
+            cmd.arg("--no-cache");
+        }
         cmd.arg(&spec.context);
 
         let output = cmd.output().await.map_err(derr)?;
@@ -2593,7 +2635,10 @@ pub(crate) mod docker {
                 None => "signalled".to_string(),
             };
             return Err(derr(format!(
-                "build of `{}` failed ({}):\n{}", spec.dockerfile, status, tail(&log, 4000)
+                "build of `{}` failed ({}):\n{}",
+                spec.dockerfile,
+                status,
+                tail(&log, 4000)
             )));
         }
         Ok(spec.tag)
@@ -2621,7 +2666,7 @@ pub(crate) mod docker {
             };
             async move {
                 let name = name?.unwrap_or_else(unique_network_name);
-                let client = Docker::connect_with_local_defaults().map_err(derr)?;
+                let client = connect().await?;
                 client
                     .create_network(CreateNetworkOptions {
                         name: name.clone(),
@@ -2658,6 +2703,10 @@ pub(crate) mod docker {
                 String::from_utf8_lossy(&output.stderr).trim()
             )));
         }
+        // The one client that cannot negotiate: this seam is synchronous, and negotiation needs an
+        // await. Harmless here — this handle only ever removes the network again, which every API
+        // version in range agrees on. Everything version-sensitive (container create/start/inspect)
+        // goes through `connect()`.
         let client = Docker::connect_with_local_defaults().map_err(derr)?;
         lua.create_userdata(Network {
             client,
@@ -2734,7 +2783,9 @@ pub(crate) mod docker {
                     .split_whitespace()
                     .map(|w| w.to_string())
                     .collect(),
-                mlua::Value::Table(t) => t.sequence_values::<String>().collect::<mlua::Result<_>>()?,
+                mlua::Value::Table(t) => {
+                    t.sequence_values::<String>().collect::<mlua::Result<_>>()?
+                }
                 _ => Vec::new(),
             };
             let mut env = Vec::new();
@@ -2760,23 +2811,20 @@ pub(crate) mod docker {
                 }),
             };
             // `network` accepts a `docker.network` handle (read its `.name`) or a raw name string.
+            const NETWORK_EXPECT: &str =
+                "docker.run `network` must be a docker.network handle or a name string";
             let network = match opts.get::<Value>("network")? {
                 Value::Nil => None,
                 Value::String(s) => Some(s.to_str()?.to_string()),
                 Value::UserData(ud) => {
-                    let net = ud.borrow::<Network>().map_err(|_| {
-                        mlua::Error::RuntimeError(
-                            "docker.run `network` must be a docker.network handle or a name string"
-                                .into(),
-                        )
-                    })?;
+                    let net = ud
+                        .borrow::<Network>()
+                        .map_err(|_| mlua::Error::RuntimeError(NETWORK_EXPECT.into()))?;
                     Some(net.name.clone())
                 }
                 other => {
-                    return Err(mlua::Error::RuntimeError(format!(
-                        "docker.run `network` must be a docker.network handle or a name string, got {}",
-                        other.type_name()
-                    )))
+                    let msg = format!("{NETWORK_EXPECT}, got {}", other.type_name());
+                    return Err(mlua::Error::RuntimeError(msg));
                 }
             };
             let alias = opts.get::<Option<String>>("alias")?;
@@ -2805,8 +2853,25 @@ pub(crate) mod docker {
         mlua::Error::RuntimeError(format!("docker: {e}"))
     }
 
-    async fn start(spec: Spec) -> mlua::Result<Container> {
+    /// Connect to the daemon, agreeing on an API version the way the `docker` CLI does.
+    ///
+    /// `connect_with_local_defaults` alone pins bollard's compiled-in default (v1.47 in 0.18) no
+    /// matter what the daemon speaks — Docker Desktop 4.46 serves v1.51 — so prova was holding a
+    /// different conversation with the daemon than the CLI was. Negotiating removes that variable:
+    /// any behaviour difference between prova and `docker run` is then a difference in what we ask
+    /// for, not in which dialect we asked.
+    ///
+    /// Negotiation costs one `/version` round-trip and degrades safely: if it fails, keep the
+    /// default client rather than turning a working daemon into a hard error.
+    async fn connect() -> mlua::Result<Docker> {
         let client = Docker::connect_with_local_defaults().map_err(derr)?;
+        Ok(client.negotiate_version().await.unwrap_or_else(|_| {
+            Docker::connect_with_local_defaults().expect("reconnect after failed negotiation")
+        }))
+    }
+
+    async fn start(spec: Spec) -> mlua::Result<Container> {
+        let client = connect().await?;
 
         // Pull the image only if it isn't already local — `docker run`'s own rule. A locally-BUILT
         // image (docker.build) exists in no registry, so an unconditional pull fails it with a
@@ -2839,7 +2904,10 @@ pub(crate) mod docker {
                 key,
                 Some(vec![PortBinding {
                     host_ip: Some("127.0.0.1".to_string()),
-                    host_port: Some(host.map(|h| h.to_string()).unwrap_or_else(|| "0".to_string())),
+                    host_port: Some(
+                        host.map(|h| h.to_string())
+                            .unwrap_or_else(|| "0".to_string()),
+                    ),
                 }]),
             );
         }
@@ -2870,39 +2938,77 @@ pub(crate) mod docker {
             ..Default::default()
         };
 
-        let created = client
-            .create_container(None::<CreateContainerOptions<String>>, config)
-            .await
-            .map_err(derr)?;
-        let id = created.id;
-        client
-            .start_container(&id, None::<StartContainerOptions<String>>)
-            .await
-            .map_err(derr)?;
+        let requested: Vec<u16> = spec.ports.iter().map(|(p, _)| *p).collect();
 
-        let mut container = Container {
+        // Start, and recover from a runtime that exposes a port but binds nothing to it.
+        //
+        // Observed on Docker Desktop under load (~1 start in 750): the container runs, the daemon
+        // reports the port key, and its binding list stays EMPTY indefinitely — `5432/tcp=[]`. That
+        // is not the publish race above; it is a stable, wrong answer, so no amount of polling
+        // helps, and the container can never be reached from the host. The only recovery is a new
+        // container.
+        //
+        // Retries are SPACED, because measurement showed an immediate one is useless: a back-to-back
+        // recreate hit the same empty binding, and two different test binaries failed inside one
+        // run. The daemon's port plumbing wedges for a window rather than fumbling one container, so
+        // a retry has to outlast the window, not merely follow it. Few attempts, growing gaps: long
+        // enough to ride out a transient wedge, short enough that a port which genuinely cannot be
+        // published still fails promptly and says so.
+        const BACKOFF: [Duration; 2] = [Duration::from_millis(500), Duration::from_secs(2)];
+        let attempts = BACKOFF.len() + 1;
+        let mut id = String::new();
+        let mut ports = HashMap::new();
+        for attempt in 1..=attempts {
+            let created = client
+                .create_container(None::<CreateContainerOptions<String>>, config.clone())
+                .await
+                .map_err(derr)?;
+            id = created.id;
+            client
+                .start_container(&id, None::<StartContainerOptions<String>>)
+                .await
+                .map_err(derr)?;
+
+            // Short and best-effort: mappings are almost always already there, and anything merely
+            // late is re-resolved on demand by `host_port`. Nothing here blocks a container that
+            // never needed a host port.
+            let scan = published_ports(&client, &id, &requested, Duration::from_secs(2)).await;
+            ports = scan.found;
+            if scan.bound_empty.is_empty() {
+                break;
+            }
+            if attempt == attempts {
+                let mut stuck: Vec<String> =
+                    scan.bound_empty.iter().map(|p| p.to_string()).collect();
+                stuck.sort();
+                return Err(mlua::Error::RuntimeError(format!(
+                    "docker.run: this runtime exposed port(s) {} but bound nothing to them, on \
+                     {attempts} attempts over {:?} — the container cannot be reached from the host",
+                    stuck.join(", "),
+                    BACKOFF.iter().sum::<Duration>(),
+                )));
+            }
+            // Discard the unusable container before trying again, so a retry cannot leak one.
+            let _ = client
+                .remove_container(
+                    &id,
+                    Some(RemoveContainerOptions {
+                        force: true,
+                        ..Default::default()
+                    }),
+                )
+                .await;
+            tokio::time::sleep(BACKOFF[attempt - 1]).await;
+        }
+
+        let container = Container {
             client: client.clone(),
             id: id.clone(),
-            ports: HashMap::new(),
+            ports,
+            requested,
             alias: spec.alias.clone(),
             stopped: false,
         };
-
-        // Inspect for the assigned host ports.
-        let info = client.inspect_container(&id, None).await.map_err(derr)?;
-        if let Some(ports) = info.network_settings.and_then(|ns| ns.ports) {
-            for (container_port, _) in &spec.ports {
-                if let Some(Some(binds)) = ports.get(&format!("{container_port}/tcp")) {
-                    if let Some(hp) = binds
-                        .first()
-                        .and_then(|b| b.host_port.as_ref())
-                        .and_then(|s| s.parse::<u16>().ok())
-                    {
-                        container.ports.insert(*container_port, hp);
-                    }
-                }
-            }
-        }
 
         if let Some(wait) = spec.wait {
             wait_ready(&container, &wait).await?;
@@ -2926,7 +3032,9 @@ pub(crate) mod docker {
             if f.len() < 4 || f[3] != "0A" {
                 return false;
             }
-            let Some((addr, p)) = f[1].rsplit_once(':') else { return false };
+            let Some((addr, p)) = f[1].rsplit_once(':') else {
+                return false;
+            };
             if u16::from_str_radix(p, 16).ok() != Some(port) {
                 return false;
             }
@@ -2936,36 +3044,233 @@ pub(crate) mod docker {
 
     fn is_loopback_hex(addr: &str) -> bool {
         match addr.len() {
-            8 => addr.ends_with("7F"),                          // 127.0.0.0/8
-            32 => addr == "00000000000000000000000001000000",   // ::1
+            8 => addr.ends_with("7F"),                        // 127.0.0.0/8
+            32 => addr == "00000000000000000000000001000000", // ::1
             _ => false,
         }
     }
 
-    /// Ask the container's kernel whether `port` is listening. `None` means the question could not be
-    /// asked — the image has no `cat` (scratch/distroless) or no procfs — and the caller should fall
-    /// back rather than treat "cannot tell" as "not ready".
-    async fn listening_in_container(container: &Container, port: u16) -> Option<bool> {
-        let cmd = vec!["cat".to_string(), "/proc/net/tcp".to_string(), "/proc/net/tcp6".to_string()];
+    /// The mapped host port for `port` — the authoritative answer, for a caller that actually needs
+    /// one. Cache hit is the overwhelmingly common path; a miss re-asks the daemon, because under
+    /// load a mapping can arrive after `docker.run` returned.
+    ///
+    /// A port that was never requested fails immediately: waiting could not help, and this is a real
+    /// case worth answering fast (a network-only resource legitimately publishes nothing, and
+    /// `docker_readiness.lua` asserts exactly that via `pcall`).
+    async fn resolved_host_port(container: &Container, port: u16) -> mlua::Result<u16> {
+        if let Some(hp) = container.ports.get(&port) {
+            return Ok(*hp);
+        }
+        if !container.requested.contains(&port) {
+            return Err(mlua::Error::RuntimeError(format!(
+                "container port {port} was not published (docker.run was not asked to publish it)"
+            )));
+        }
+        let late = published_ports(
+            &container.client,
+            &container.id,
+            &[port],
+            Duration::from_secs(15),
+        )
+        .await;
+        if let Some(hp) = late.found.get(&port) {
+            return Ok(*hp);
+        }
+        // Say which of the three things went wrong, not just "not published": the daemon would not
+        // answer, the container died, or the mapping genuinely never appeared.
+        let why = match (
+            late.last_error,
+            exited_status(&container.client, &container.id).await,
+        ) {
+            (Some(err), _) => format!(" — docker did not answer: {err}"),
+            (None, Some(status)) => format!(" — container {status}"),
+            (None, None) => format!(
+                " — container is running but the mapping never appeared (docker reported ports: {})",
+                late.last_seen.as_deref().unwrap_or("<none>")
+            ),
+        };
+        Err(mlua::Error::RuntimeError(format!(
+            "container port {port} was not published{why}"
+        )))
+    }
+
+    /// Read the host ports the daemon has assigned so far, polling until every wanted port has a
+    /// binding or `budget` runs out. Returns whatever it found — **never an error**.
+    ///
+    /// Publishing is **not atomic with `start`**: the container is running before the daemon has
+    /// finished wiring its port mappings. Idle, that gap is imperceptible (measured: mappings are
+    /// present on the first inspect); under load it stretches, and how far depends on the runtime.
+    /// A single un-retried inspect therefore wins on one machine and loses on another — the
+    /// "works on mine" failure this polls away.
+    ///
+    /// Returning partial results rather than failing is deliberate, and is the lesson from getting
+    /// this wrong once: a missing mapping only matters to a caller that actually wants a host port.
+    /// A network-only resource — reachable by alias, nothing published — is a legitimate topology
+    /// member, and making publication an eager precondition failed those containers for a fact they
+    /// never needed. Resolution is therefore best-effort here and authoritative in `host_port`.
+    async fn published_ports(
+        client: &Docker,
+        id: &str,
+        wanted: &[u16],
+        budget: Duration,
+    ) -> PortScan {
+        const EVERY: Duration = Duration::from_millis(50);
+        let deadline = Instant::now() + budget;
+        let mut scan = PortScan::default();
+        if wanted.is_empty() {
+            return scan;
+        }
+        loop {
+            match client.inspect_container(id, None).await {
+                Ok(info) => {
+                    scan.last_error = None;
+                    if let Some(ports) = info.network_settings.and_then(|ns| ns.ports) {
+                        // Keep what the daemon actually said. When this whole scan comes up empty
+                        // the raw map is the evidence that separates "the key is absent" (the
+                        // mapping has not been wired yet) from `"9000/tcp": null` (the daemon
+                        // accepted the container but the binding failed) — two different bugs that
+                        // look identical from a missing-port error alone.
+                        scan.last_seen = Some(
+                            ports
+                                .iter()
+                                .map(|(k, v)| match v {
+                                    Some(b) => format!("{k}={b:?}"),
+                                    None => format!("{k}=null"),
+                                })
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                        );
+                        scan.bound_empty.clear();
+                        for want in wanted {
+                            if scan.found.contains_key(want) {
+                                continue;
+                            }
+                            match ports.get(&format!("{want}/tcp")) {
+                                Some(Some(binds)) => {
+                                    match binds
+                                        .first()
+                                        .and_then(|b| b.host_port.as_ref())
+                                        .and_then(|s| s.parse::<u16>().ok())
+                                    {
+                                        Some(hp) => {
+                                            scan.found.insert(*want, hp);
+                                        }
+                                        // Present, but bound to nothing. Distinct from "not there
+                                        // yet": the daemon has answered, and its answer is that
+                                        // this port has no host binding.
+                                        None => {
+                                            scan.bound_empty.insert(*want);
+                                        }
+                                    }
+                                }
+                                Some(None) => {
+                                    scan.bound_empty.insert(*want);
+                                }
+                                // Key absent entirely — still being wired. Keep polling.
+                                None => {}
+                            }
+                        }
+                    }
+                }
+                // Keep retrying — a daemon under load can refuse or time out a single inspect — but
+                // REMEMBER why. Silently swallowing this is how "the port was never published" and
+                // "we could not ask" become the same, undiagnosable message.
+                Err(e) => scan.last_error = Some(e.to_string()),
+            }
+            // Stop early on success, on a dead container (it will never publish anything more), or
+            // when the budget is spent. The caller decides whether a partial answer is a problem.
+            if scan.found.len() == wanted.len()
+                || Instant::now() >= deadline
+                || exited_status(client, id).await.is_some()
+            {
+                return scan;
+            }
+            tokio::time::sleep(EVERY).await;
+        }
+    }
+
+    /// What a port scan learned: the mappings found, and the last inspect error if the daemon was
+    /// not answering — which is a different failure from a port that is genuinely unpublished.
+    #[derive(Default)]
+    struct PortScan {
+        found: HashMap<u16, u16>,
+        /// Ports the daemon reported with an EMPTY binding list — exposed, but bound to nothing.
+        /// A stable wrong answer rather than a pending one, so the caller recreates instead of
+        /// waiting. Recomputed each inspect, so it only ever describes the latest answer.
+        bound_empty: std::collections::HashSet<u16>,
+        last_error: Option<String>,
+        /// The raw port map from the last successful inspect — evidence for the rare case where a
+        /// running container never gets a mapping.
+        last_seen: Option<String>,
+    }
+
+    /// The outcome of asking a container's own kernel whether a port is listening.
+    ///
+    /// The three cases must stay distinct. Collapsing `Failed` into `Unsupported` (as a bare
+    /// `Option` does) means one slow or refused exec — routine while a container is still coming
+    /// up — permanently downgrades readiness to the coarse host-port check for the rest of the wait.
+    enum Probe {
+        /// The container answered: this is the truth about whether the port is listening.
+        Answered(bool),
+        /// The image has no `cat`/procfs (scratch, distroless). It can never answer; stop asking.
+        Unsupported,
+        /// The exec itself failed — container not accepting execs *yet*, or a transient daemon
+        /// error. Says nothing about readiness, and nothing about future attempts. Ask again.
+        Failed,
+    }
+
+    /// Ask the container's kernel whether `port` is listening.
+    async fn listening_in_container(container: &Container, port: u16) -> Probe {
+        let cmd = vec![
+            "cat".to_string(),
+            "/proc/net/tcp".to_string(),
+            "/proc/net/tcp6".to_string(),
+        ];
         // A missing /proc/net/tcp6 makes `cat` exit non-zero while still printing tcp — so judge by
         // the output, not the exit code.
-        let (_, out, _) = container_exec(&container.client, &container.id, cmd, None).await.ok()?;
+        let Ok((_, out, _)) = container_exec(&container.client, &container.id, cmd, None).await
+        else {
+            return Probe::Failed;
+        };
         if !out.contains("local_address") {
-            return None;   // not a procfs table: the probe is unavailable in this image
+            return Probe::Unsupported; // not a procfs table: this image can never answer
         }
-        Some(listening_on(&out, port))
+        Probe::Answered(listening_on(&out, port))
+    }
+
+    /// Is the container still running? `Some(status)` describes a container that has *stopped*, for
+    /// use in an error; `None` means it is still running (or the daemon could not tell us, which we
+    /// treat as "keep waiting" rather than inventing a failure).
+    async fn exited_status(client: &Docker, id: &str) -> Option<String> {
+        let state = client.inspect_container(id, None).await.ok()?.state?;
+        // Treat "the daemon did not tell us whether it is running" as running — the same answer as
+        // before, but reached deliberately. Writing this as `state.running?` silently produced it
+        // via `?` on a `None`, so a response we failed to understand was indistinguishable from a
+        // healthy container, and would have been reported as "running but the mapping never
+        // appeared" — a confident, wrong diagnosis.
+        match state.running {
+            Some(false) => {}
+            Some(true) | None => return None,
+        }
+        let code = state.exit_code.unwrap_or_default();
+        Some(match state.error.filter(|e| !e.is_empty()) {
+            Some(err) => format!("exited with code {code} ({err})"),
+            None => format!("exited with code {code}"),
+        })
     }
 
     async fn wait_ready(container: &Container, wait: &Wait) -> mlua::Result<()> {
         let deadline = Instant::now() + wait.timeout;
-        // Whether the in-container probe is usable — decided ONCE, not per poll.
+        // Whether the in-container probe is supported — latched OFF only on a definitive
+        // `Unsupported`, never on a transient `Failed`.
         //
         // An image with no `cat`/procfs (scratch, distroless — `traefik/whoami` is one) can never
         // answer, and re-asking every 250ms fires hundreds of failing exec round-trips across a long
         // wait. That is not just waste: under parallel docker load it is slow enough to consume the
-        // readiness budget itself, turning a cheap fallback into a timeout. Ask once; if the image
-        // cannot answer, use the coarse host-port check for the rest of the wait.
-        let mut probe_usable = true;
+        // readiness budget itself, turning a cheap fallback into a timeout. So: ask once, and if the
+        // image *cannot* answer, use the coarse host-port check for the rest of the wait. An exec
+        // that merely failed is a different thing and must not latch anything.
+        let mut probe_supported = true;
         loop {
             let ready = if let Some(port) = wait.port {
                 // Ask the CONTAINER, not the host. Connecting to the mapped host port is worthless as
@@ -2973,24 +3278,28 @@ pub(crate) mod docker {
                 // container starts, so the check passes while the server is still booting — and never
                 // fails at all for a container that never listens. It also cannot see an UNPUBLISHED
                 // port, which an in-network-only resource legitimately has.
-                let asked = if probe_usable {
-                    let answer = listening_in_container(container, port).await;
-                    // `None` = this image cannot answer. Latch it off; do not ask again.
-                    probe_usable = answer.is_some();
-                    answer
+                let asked = if probe_supported {
+                    listening_in_container(container, port).await
                 } else {
-                    None
+                    Probe::Unsupported
                 };
                 match asked {
-                    Some(listening) => listening,
+                    Probe::Answered(listening) => listening,
+                    // Retry next tick; this says nothing about readiness either way.
+                    Probe::Failed => false,
                     // The image cannot answer (no `cat`/procfs). Fall back to the coarse host-port
                     // check — no worse than before, but do not pretend it is a true signal.
-                    None => match container.ports.get(&port) {
-                        Some(&host_port) => tokio::net::TcpStream::connect(("127.0.0.1", host_port))
-                            .await
-                            .is_ok(),
-                        None => false,
-                    },
+                    Probe::Unsupported => {
+                        probe_supported = false;
+                        match container.ports.get(&port) {
+                            Some(&host_port) => {
+                                tokio::net::TcpStream::connect(("127.0.0.1", host_port))
+                                    .await
+                                    .is_ok()
+                            }
+                            None => false,
+                        }
+                    }
                 }
             } else if let Some(pattern) = &wait.log {
                 container_logs(&container.client, &container.id)
@@ -3002,14 +3311,47 @@ pub(crate) mod docker {
             if ready {
                 return Ok(());
             }
+            // A container that has EXITED will never become ready. Waiting out the full timeout to
+            // say "not ready" hides the actual failure (a bad command, a missing env var, a crash)
+            // behind a slow, uninformative error. Check liveness only after the readiness probe came
+            // back false, so a container that became ready and exited immediately still counts.
+            if let Some(status) = exited_status(&container.client, &container.id).await {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "docker.run: container {} {status} before becoming ready{}",
+                    container.id,
+                    tail_logs(&container.client, &container.id).await
+                )));
+            }
             if Instant::now() >= deadline {
                 return Err(mlua::Error::RuntimeError(format!(
-                    "docker.run: container {} not ready within {:?}",
-                    container.id, wait.timeout
+                    "docker.run: container {} not ready within {:?}{}",
+                    container.id,
+                    wait.timeout,
+                    tail_logs(&container.client, &container.id).await
                 )));
             }
             tokio::time::sleep(wait.every).await;
         }
+    }
+
+    /// The last few log lines, formatted for appending to a readiness error — the single most useful
+    /// thing to know when a container did not come up. Best-effort: a container whose logs cannot be
+    /// read still produces the underlying error, just without this context.
+    async fn tail_logs(client: &Docker, id: &str) -> String {
+        const KEEP: usize = 10;
+        let Ok(logs) = container_logs(client, id).await else {
+            return String::new();
+        };
+        let lines: Vec<&str> = logs.lines().filter(|l| !l.trim().is_empty()).collect();
+        if lines.is_empty() {
+            return "\n  (container produced no log output)".to_string();
+        }
+        let start = lines.len().saturating_sub(KEEP);
+        let shown = lines[start..]
+            .iter()
+            .map(|l| format!("\n  | {l}"))
+            .collect::<String>();
+        format!("\n  last {} log line(s):{shown}", lines.len() - start)
     }
 
     async fn container_logs(client: &Docker, id: &str) -> mlua::Result<String> {
@@ -3056,7 +3398,10 @@ pub(crate) mod docker {
             .await
             .map_err(derr)?;
         let (mut stdout, mut stderr) = (String::new(), String::new());
-        if let StartExecResults::Attached { mut output, mut input } = client
+        if let StartExecResults::Attached {
+            mut output,
+            mut input,
+        } = client
             .start_exec(
                 &exec.id,
                 Some(StartExecOptions {
@@ -3609,7 +3954,11 @@ mod grpc {
             ))
         })?;
         let method = svc.methods().find(|m| m.name() == method_name);
-        method.ok_or_else(|| err(format!("grpc: method {method_name:?} not found on {service}")))
+        method.ok_or_else(|| {
+            err(format!(
+                "grpc: method {method_name:?} not found on {service}"
+            ))
+        })
     }
 
     async fn invoke(
@@ -3709,9 +4058,13 @@ mod grpc {
             if service.starts_with("grpc.reflection.") {
                 continue;
             }
-            let raw = files_for_symbol(channel, rv, service)
-                .await
-                .map_err(|e| err(format!("grpc: reflecting {service}: {} ({})", e.message(), e.code())))?;
+            let raw = files_for_symbol(channel, rv, service).await.map_err(|e| {
+                err(format!(
+                    "grpc: reflecting {service}: {} ({})",
+                    e.message(),
+                    e.code()
+                ))
+            })?;
             for bytes in raw {
                 let fdp = FileDescriptorProto::decode(bytes.as_slice())
                     .map_err(|e| err(format!("grpc: decoding file descriptor: {e}")))?;
@@ -3789,7 +4142,10 @@ mod grpc {
                             out.extend(list.service.into_iter().map(|s| s.name));
                         }
                         Some(MessageResponse::ErrorResponse(e)) => {
-                            return Err(Status::new(tonic::Code::from(e.error_code), e.error_message));
+                            return Err(Status::new(
+                                tonic::Code::from(e.error_code),
+                                e.error_message,
+                            ));
                         }
                         _ => {}
                     }
@@ -3817,7 +4173,10 @@ mod grpc {
                             out.extend(fdr.file_descriptor_proto);
                         }
                         Some(MessageResponse::ErrorResponse(e)) => {
-                            return Err(Status::new(tonic::Code::from(e.error_code), e.error_message));
+                            return Err(Status::new(
+                                tonic::Code::from(e.error_code),
+                                e.error_message,
+                            ));
                         }
                         _ => {}
                     }
@@ -3832,7 +4191,9 @@ mod grpc {
 
     fn opt_duration(opts: &Option<Table>, key: &str) -> mlua::Result<Option<Duration>> {
         Ok(match opts {
-            Some(t) => t.get::<Option<String>>(key)?.and_then(|s| parse_duration(&s)),
+            Some(t) => t
+                .get::<Option<String>>(key)?
+                .and_then(|s| parse_duration(&s)),
             None => None,
         })
     }
@@ -3977,8 +4338,10 @@ mod grpc_mock {
     pub(crate) fn mock_fn(lua: &Lua) -> mlua::Result<Function> {
         lua.create_function(|lua, (ctx, opts): (Value, Option<Table>)| {
             let opts = opts.ok_or_else(|| {
-                err("grpc.mock(ctx, opts): a mock must be told its schema — pass `proto = \"…\"`. \
-                     Unlike grpc.client, it cannot learn one by reflection: it *is* the server.")
+                err(
+                    "grpc.mock(ctx, opts): a mock must be told its schema — pass `proto = \"…\"`. \
+                     Unlike grpc.client, it cannot learn one by reflection: it *is* the server.",
+                )
             })?;
             let server = start(lua, &opts)?;
             let ud = lua.create_userdata(server)?;
@@ -3986,12 +4349,10 @@ mod grpc_mock {
                 Value::UserData(c) => {
                     let _: Value = c.call_method("manage", &ud)?;
                 }
-                Value::Nil => {
-                    return Err(err(
-                        "grpc.mock(ctx, opts): pass the test or fixture context (`t` / `ctx`) so the \
+                Value::Nil => return Err(err(
+                    "grpc.mock(ctx, opts): pass the test or fixture context (`t` / `ctx`) so the \
                          server is torn down with the scope",
-                    ))
-                }
+                )),
                 other => {
                     return Err(err(format!(
                         "grpc.mock(ctx, opts): expected the test or fixture context, got a {}",
@@ -4032,7 +4393,11 @@ mod grpc_mock {
         let reflect_v1alpha = tonic_reflection::server::Builder::configure()
             .register_encoded_file_descriptor_set(&fds_bytes)
             .build_v1alpha()
-            .map_err(|e| err(format!("grpc.mock: building v1alpha reflection service: {e}")))?;
+            .map_err(|e| {
+                err(format!(
+                    "grpc.mock: building v1alpha reflection service: {e}"
+                ))
+            })?;
 
         let bind_ip = if network_host.is_some() {
             "0.0.0.0"
@@ -4133,12 +4498,10 @@ mod grpc_mock {
                     other.type_name()
                 )))
             }
-            None => {
-                return Err(err(
-                    "grpc.mock: pass `proto = \"path/to/service.proto\"` — a mock must be told the \
+            None => return Err(err(
+                "grpc.mock: pass `proto = \"path/to/service.proto\"` — a mock must be told the \
                      schema it serves",
-                ))
-            }
+            )),
         };
         if protos.is_empty() {
             return Err(err("grpc.mock: `proto` is empty"));
@@ -4252,7 +4615,14 @@ mod grpc_mock {
         let matched_idx = match find_match(&lua, &state, &method) {
             Ok(i) => i,
             Err(e) => {
-                record(&state, &method, &req_json, "Internal", false, Some(e.to_string()));
+                record(
+                    &state,
+                    &method,
+                    &req_json,
+                    "Internal",
+                    false,
+                    Some(e.to_string()),
+                );
                 return Err(Status::internal(format!("grpc.mock: matching failed: {e}")));
             }
         };
@@ -4298,14 +4668,30 @@ mod grpc_mock {
             return Err(Status::new(spec.code, spec.message));
         }
 
-        let json = spec.response.unwrap_or(serde_json::Value::Object(Default::default()));
+        let json = spec
+            .response
+            .unwrap_or(serde_json::Value::Object(Default::default()));
         let msg = DynamicMessage::deserialize_with_options(output, &json, &deserialize_opts())
             .map_err(|e| {
                 let m = format!("grpc.mock: building the reply for {method:?}: {e}");
-                record(&state, &method, &req_json, "Internal", true, Some(m.clone()));
+                record(
+                    &state,
+                    &method,
+                    &req_json,
+                    "Internal",
+                    true,
+                    Some(m.clone()),
+                );
                 Status::internal(m)
             })?;
-        record(&state, &method, &req_json, "Ok", matched_idx.is_some(), error);
+        record(
+            &state,
+            &method,
+            &req_json,
+            "Ok",
+            matched_idx.is_some(),
+            error,
+        );
         Ok(TonicResponse::new(msg))
     }
 
@@ -4473,9 +4859,10 @@ mod grpc_mock {
             ));
         }
         let delay = match t.get::<Option<String>>("delay")? {
-            Some(s) => Some(parse_duration(&s).ok_or_else(|| {
-                err(format!("grpc.mock reply: bad `delay` duration {s:?}"))
-            })?),
+            Some(s) => Some(
+                parse_duration(&s)
+                    .ok_or_else(|| err(format!("grpc.mock reply: bad `delay` duration {s:?}")))?,
+            ),
             None => None,
         };
         Ok(ReplySpec {
@@ -4571,10 +4958,11 @@ mod grpc_mock {
                     Value::Function(f) => Reply::Handler(f),
                     Value::Table(t) => Reply::Data(parse_reply(lua, &t)?),
                     other => {
-                        return Err(err(format!(
+                        let msg = format!(
                             "grpc.mock :reply expects a reply table or a handler function, got a {}",
                             other.type_name()
-                        )))
+                        );
+                        return Err(err(msg));
                     }
                 };
                 this.state.borrow_mut().stubs[this.idx].reply = reply;
@@ -4617,7 +5005,10 @@ mod yaml {
                 let out = lua.create_table()?;
                 for (i, doc) in serde_yaml_ng::Deserializer::from_str(&text).enumerate() {
                     let value = serde_yaml_ng::Value::deserialize(doc).map_err(|e| {
-                        mlua::Error::RuntimeError(format!("yaml.parse_all: document {}: {e}", i + 1))
+                        mlua::Error::RuntimeError(format!(
+                            "yaml.parse_all: document {}: {e}",
+                            i + 1
+                        ))
                     })?;
                     out.push(lua.to_value(&value)?)?;
                 }
@@ -4757,10 +5148,7 @@ mod graphql {
                         if let Some(errors) = errors_of(&json) {
                             return Err(err(format!("graphql errors: {errors}")));
                         }
-                        let data = json
-                            .get("data")
-                            .cloned()
-                            .unwrap_or(serde_json::Value::Null);
+                        let data = json.get("data").cloned().unwrap_or(serde_json::Value::Null);
                         json_to_lua(&lua, &data)
                     }
                 },
@@ -4777,11 +5165,20 @@ mod graphql {
                         out.set("status", status)?;
                         out.set(
                             "data",
-                            json_to_lua(&lua, &json.get("data").cloned().unwrap_or(serde_json::Value::Null))?,
+                            json_to_lua(
+                                &lua,
+                                &json.get("data").cloned().unwrap_or(serde_json::Value::Null),
+                            )?,
                         )?;
                         out.set(
                             "errors",
-                            json_to_lua(&lua, &json.get("errors").cloned().unwrap_or(serde_json::Value::Null))?,
+                            json_to_lua(
+                                &lua,
+                                &json
+                                    .get("errors")
+                                    .cloned()
+                                    .unwrap_or(serde_json::Value::Null),
+                            )?,
                         )?;
                         Ok(out)
                     }

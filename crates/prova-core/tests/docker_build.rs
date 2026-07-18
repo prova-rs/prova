@@ -1,7 +1,5 @@
 use std::path::PathBuf;
 
-use prova_core::{run_path, NullReporter};
-
 mod common;
 
 // Defers to the engine's own capability probe, deliberately: this asserts pass/skip counts against
@@ -22,8 +20,7 @@ fn docker_available() -> bool {
 fn docker_build_proof_runs_or_skips_gracefully() {
     let _docker = common::docker_guard();
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/docker_build.lua");
-    let mut reporter = NullReporter;
-    let summary = run_path(&path, &mut reporter).expect("run docker_build.lua");
+    let summary = common::run_proof(&path);
 
     assert_eq!(summary.failed, 0, "never fails, docker present or not");
     if docker_available() {

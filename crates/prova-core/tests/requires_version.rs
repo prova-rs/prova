@@ -1,7 +1,5 @@
 use std::path::PathBuf;
 
-use prova_core::{run_path, NullReporter};
-
 mod common;
 
 /// Version predicates on capabilities — `requires = { "dotnet >= 9" }`.
@@ -21,8 +19,7 @@ mod common;
 fn requires_version_predicates() {
     let _docker = common::docker_guard();
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/requires_version.lua");
-    let mut reporter = NullReporter;
-    let summary = run_path(&path, &mut reporter).expect("run requires_version.lua");
+    let summary = common::run_proof(&path);
 
     // Nothing here ever *fails*: an unmet requirement is a skip, always. That is the invariant.
     assert_eq!(summary.failed, 0, "failed (an unmet requirement skips)");

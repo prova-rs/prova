@@ -4,9 +4,57 @@
 //! binary of its own.)
 
 use std::fs::File;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use fs2::FileExt;
+use prova_core::{run_path, Event, Outcome, Reporter, Summary};
+
+/// A reporter that keeps the failure messages, so a failing proof can say what went wrong.
+///
+/// `NullReporter` discards them, which made every docker flake look identical from the outside: the
+/// harness could only report `failed == 1`, and the actual message — the one naming the container,
+/// the timeout, the exit code — was thrown away. Diagnosing those failures meant re-running the Lua
+/// by hand and hoping to reproduce. Keeping the messages costs nothing and is the difference between
+/// "docker is flaky" and a specific, fixable cause.
+// This module is shared verbatim with prova-cli's tests (via `#[path]`), and not every consumer
+// needs every helper — an unused one there is expected, not a defect.
+#[allow(dead_code)]
+#[derive(Default)]
+pub struct FailureCapture {
+    pub failures: Vec<String>,
+}
+
+impl Reporter for FailureCapture {
+    fn event(&mut self, event: &Event) {
+        if let Event::NodeFinished {
+            path,
+            outcome: Outcome::Failed,
+            message,
+            ..
+        } = event
+        {
+            self.failures
+                .push(format!("{path}: {}", message.unwrap_or("(no message)")));
+        }
+    }
+}
+
+/// Run a proof file, returning its summary — and panicking with the captured failure messages if
+/// anything failed, so the harness assertion never has to report a bare count.
+#[allow(dead_code)]
+pub fn run_proof(path: &Path) -> Summary {
+    let mut reporter = FailureCapture::default();
+    let summary =
+        run_path(path, &mut reporter).unwrap_or_else(|e| panic!("run {}: {e}", path.display()));
+    assert!(
+        reporter.failures.is_empty(),
+        "{} reported {} failure(s):\n  - {}",
+        path.display(),
+        reporter.failures.len(),
+        reporter.failures.join("\n  - ")
+    );
+    summary
+}
 
 /// Held for as long as a test needs exclusive use of the Docker daemon; releases on drop.
 pub struct DockerGuard(File);
