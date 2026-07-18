@@ -33,9 +33,7 @@ use std::sync::{Arc, Mutex};
 
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{
-    CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo,
-};
+use rmcp::model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo};
 use rmcp::transport::stdio;
 use rmcp::{tool, tool_handler, tool_router, ServerHandler, ServiceExt};
 use schemars::JsonSchema;
@@ -118,10 +116,19 @@ pub fn run(args: Vec<String>) -> ExitCode {
     };
 
     let (mut plugins_resolved, sources, paths, declared, jobs, capabilities) = match &home {
-        Some(home) => match crate::resolve_from_manifest(home, profile, None, None, None, &layout) {
-            Ok(r) => (r.plugins, r.sources, r.paths, r.suites, r.jobs, r.capabilities),
-            Err(code) => return code,
-        },
+        Some(home) => {
+            match crate::resolve_from_manifest(home, profile, None, None, None, &layout) {
+                Ok(r) => (
+                    r.plugins,
+                    r.sources,
+                    r.paths,
+                    r.suites,
+                    r.jobs,
+                    r.capabilities,
+                ),
+                Err(code) => return code,
+            }
+        }
         None => (
             plugins::ResolvedPlugins::default(),
             BTreeMap::new(),
@@ -131,7 +138,8 @@ pub fn run(args: Vec<String>) -> ExitCode {
             prova_core::Capabilities::default(),
         ),
     };
-    if let Err(code) = crate::layer_cli_plugins(&cli_plugins, &layout, &sources, &mut plugins_resolved)
+    if let Err(code) =
+        crate::layer_cli_plugins(&cli_plugins, &layout, &sources, &mut plugins_resolved)
     {
         return code;
     }
@@ -152,7 +160,10 @@ pub fn run(args: Vec<String>) -> ExitCode {
     // dispatched request reaches the shared `run_lock` (a FIFO mutex) before the reader dispatches
     // the next, which preserves arrival order end to end. Blocking engine work still runs off-
     // thread via `spawn_blocking`.
-    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
         Ok(rt) => rt,
         Err(err) => {
             eprintln!("prova mcp: cannot start async runtime: {err}");
@@ -176,7 +187,8 @@ pub fn run(args: Vec<String>) -> ExitCode {
 
     // Clean shutdown = clean teardown: hang up each remaining holder's command channel (its loop
     // exits and runs the held scope's teardowns on its own thread) and wait for it to finish.
-    let leftovers: Vec<(String, WarmHandle)> = warm.lock().expect("warm registry").drain().collect();
+    let leftovers: Vec<(String, WarmHandle)> =
+        warm.lock().expect("warm registry").drain().collect();
     for (name, handle) in leftovers {
         eprintln!("prova mcp: tearing down held topology {name:?} on shutdown");
         drop(handle.tx);
@@ -238,25 +250,37 @@ impl McpEnv {
     /// A supplied `project` also always resolves FRESH, which is the escape hatch for the startup
     /// snapshot — scaffold a `prova.toml` and target it in the same session, no restart.
     fn locate(&self, project: Option<&str>) -> Result<Option<Home>, String> {
-        let Some(p) = project else { return Ok(self.home.clone()) };
+        let Some(p) = project else {
+            return Ok(self.home.clone());
+        };
         let path = Path::new(p);
         if path.is_file() {
             return Ok(Some(crate::home::from_manifest_path(path)));
         }
         if !path.is_dir() {
-            return Err(format!("project {p:?} is not a directory or a manifest file"));
+            return Err(format!(
+                "project {p:?} is not a directory or a manifest file"
+            ));
         }
         crate::home::find(path).map_err(|e| e.to_string())
     }
 
-    fn resolve_call(&self, profile: Option<&str>, project: Option<&str>) -> Result<CallEnv, String> {
+    fn resolve_call(
+        &self,
+        profile: Option<&str>,
+        project: Option<&str>,
+    ) -> Result<CallEnv, String> {
         let located = self.locate(project)?;
         let home = located.as_ref().ok_or_else(|| match project {
             Some(p) => format!("no prova.toml found in {p:?} or any parent"),
             None => "no prova.toml found in this directory or any parent".to_string(),
         })?;
         // The startup snapshot is only valid for the startup home with no profile override.
-        match if project.is_some() { Some(profile.unwrap_or_default()) } else { profile } {
+        match if project.is_some() {
+            Some(profile.unwrap_or_default())
+        } else {
+            profile
+        } {
             None => Ok(CallEnv {
                 home: home.clone(),
                 base_dir: home.dir.clone(),
@@ -267,7 +291,11 @@ impl McpEnv {
                 capabilities: self.capabilities.clone(),
             }),
             Some(p) => {
-                let p = if p.is_empty() { None } else { Some(p.to_string()) };
+                let p = if p.is_empty() {
+                    None
+                } else {
+                    Some(p.to_string())
+                };
                 // `resolve_from_manifest` reports detail on stderr (the diagnostic channel).
                 let mut run = crate::resolve_from_manifest(home, p.clone(), None, None, None, &self.layout)
                     .map_err(|_| {
@@ -419,9 +447,7 @@ enum WarmCmd {
     },
     /// Tear the held topology down and exit the holder thread. The reply confirms teardown
     /// *completed* before the `down` tool returns.
-    Down {
-        reply: std::sync::mpsc::Sender<()>,
-    },
+    Down { reply: std::sync::mpsc::Sender<()> },
 }
 
 /// A warm run's owned results, shaped to cross the holder→handler channel.
@@ -508,7 +534,9 @@ fn topology_files(call: &CallEnv) -> Result<Vec<PathBuf>, String> {
     files.sort();
     files.dedup();
     if files.is_empty() {
-        return Err("no files found to search for topologies (looked for *_test.lua / *.test.lua)".into());
+        return Err(
+            "no files found to search for topologies (looked for *_test.lua / *.test.lua)".into(),
+        );
     }
     Ok(files)
 }
@@ -591,9 +619,7 @@ impl ProvaMcpServer {
             .iter()
             .map(|e| json!({ "name": e.name, "signature": e.signature, "summary": e.summary }))
             .collect();
-        CallToolResult::success(vec![Content::text(
-            json!({ "entries": rows }).to_string(),
-        )])
+        CallToolResult::success(vec![Content::text(json!({ "entries": rows }).to_string())])
     }
 
     #[tool(
@@ -707,7 +733,10 @@ impl Reporter for FailureCollector {
 }
 
 fn run_blocking(env: &McpEnv, req: RunRequest) -> Result<(serde_json::Value, bool), String> {
-    let call = env.resolve_call(req.selection.profile.as_deref(), req.selection.project.as_deref())?;
+    let call = env.resolve_call(
+        req.selection.profile.as_deref(),
+        req.selection.project.as_deref(),
+    )?;
 
     let mut selection = to_selection(&req.selection);
     // `last_failed`: fold the previous run's failed node paths in, exactly like `--last-failed`.
@@ -726,8 +755,14 @@ fn run_blocking(env: &McpEnv, req: RunRequest) -> Result<(serde_json::Value, boo
     }
 
     let jobs = req.jobs.map(|n| (n as usize).max(1)).unwrap_or(call.jobs);
-    let mut config = crate::engine_config(jobs, &env.layout, &call.plugins, Some(&call.home), &call.paths)
-        .with_capabilities(call.capabilities.clone());
+    let mut config = crate::engine_config(
+        jobs,
+        &env.layout,
+        &call.plugins,
+        Some(&call.home),
+        &call.paths,
+    )
+    .with_capabilities(call.capabilities.clone());
     config.selection = selection;
 
     let mut reporter = FailureCollector::default();
@@ -764,8 +799,9 @@ fn list_blocking(env: &McpEnv, req: SelectionArgs) -> Result<(serde_json::Value,
     }
 
     let suites = crate::collect_suites(&call.base_dir, &call.declared, &call.paths)?;
-    let mut config = crate::engine_config(1, &env.layout, &call.plugins, Some(&call.home), &call.paths)
-        .with_capabilities(call.capabilities.clone());
+    let mut config =
+        crate::engine_config(1, &env.layout, &call.plugins, Some(&call.home), &call.paths)
+            .with_capabilities(call.capabilities.clone());
     config.selection = selection;
 
     let mut nodes: Vec<serde_json::Value> = Vec::new();
@@ -822,13 +858,11 @@ fn up_blocking(
     let files = topology_files(&call)?;
     let config = crate::engine_config(1, &env.layout, &call.plugins, Some(&call.home), &call.paths)
         .with_capabilities(call.capabilities.clone())
-        .with_ports(
-        if req.fixed.unwrap_or(false) {
+        .with_ports(if req.fixed.unwrap_or(false) {
             PortMode::Fixed
         } else {
             PortMode::Auto
-        },
-    );
+        });
 
     // Spawn the holder thread; it owns the Lua state for this topology's whole held life.
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
@@ -858,7 +892,9 @@ fn up_blocking(
         }
         Err(_) => {
             let _ = join.join();
-            Err(format!("up {name:?}: the holder thread exited unexpectedly"))
+            Err(format!(
+                "up {name:?}: the holder thread exited unexpectedly"
+            ))
         }
     }
 }

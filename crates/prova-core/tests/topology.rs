@@ -61,5 +61,8 @@ fn watch_errors_immediately_on_unknown_topology() {
         "helpful message, got: {err}"
     );
     assert_eq!(ready_calls, 0, "never provisioned");
-    assert_eq!(error_calls, 0, "load failure is returned, not sent to on_error");
+    assert_eq!(
+        error_calls, 0,
+        "load failure is returned, not sent to on_error"
+    );
 }

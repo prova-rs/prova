@@ -80,7 +80,8 @@ impl Selection {
     fn selects(&self, paths: &[&str], tags: &[String]) -> bool {
         let lower: Vec<String> = paths.iter().map(|p| p.to_lowercase()).collect();
         // Includes: with no include criteria at all, everything is a candidate.
-        let has_includes = !self.keywords.is_empty() || !self.nodes.is_empty() || !self.tags.is_empty();
+        let has_includes =
+            !self.keywords.is_empty() || !self.nodes.is_empty() || !self.tags.is_empty();
         let mut included = !has_includes;
         if !included && !self.keywords.is_empty() {
             included = self
@@ -568,7 +569,10 @@ async fn teardown_scope(scope: &Rc<RefCell<ScopeState>>) -> Vec<String> {
 /// accumulating what a green run promised it had reaped.
 async fn teardown_all_and_warn(state: &RunState) {
     let mut late = teardown_file_scopes(state).await;
-    late.extend(teardown_results("suite", teardown_scope(&state.suite).await));
+    late.extend(teardown_results(
+        "suite",
+        teardown_scope(&state.suite).await,
+    ));
     for r in &late {
         eprintln!(
             "prova: {} failed: {}",
@@ -2828,7 +2832,9 @@ impl Capabilities {
         if !self.available(parsed.name) {
             return Ok(Some(format!("{:?} is unavailable", parsed.name)));
         }
-        let Some(req) = parsed.req else { return Ok(None) };
+        let Some(req) = parsed.req else {
+            return Ok(None);
+        };
         match self.version(parsed.name) {
             Some(v) if req.matches(&v) => Ok(None),
             Some(v) => Ok(Some(format!("{} {v} does not satisfy {req}", parsed.name))),
@@ -2856,8 +2862,10 @@ impl Capabilities {
 /// redefine it would make `requires = { "docker" }` mean different things in different repos —
 /// silently, which is the worst kind.
 pub fn is_builtin_capability(name: &str) -> bool {
-    matches!(name, "docker" | "github" | "network" | "internet" | "unix" | "windows")
-        || native_capability_compiled(name).is_some()
+    matches!(
+        name,
+        "docker" | "github" | "network" | "internet" | "unix" | "windows"
+    ) || native_capability_compiled(name).is_some()
 }
 
 /// A capability expression: a name, optionally with a semver constraint — `"docker"`,
@@ -2964,7 +2972,10 @@ fn parse_first_version(text: &str) -> Option<semver::Version> {
 
 /// Run `program args…` and capture stdout, or `None` if it cannot be run.
 fn run_capture(program: &str, args: &[&str]) -> Option<String> {
-    let out = std::process::Command::new(program).args(args).output().ok()?;
+    let out = std::process::Command::new(program)
+        .args(args)
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -3622,7 +3633,8 @@ fn execute_collected(
 ) -> mlua::Result<Summary> {
     let (plan, deselected, state) = {
         let col = col.borrow();
-        let (plan, deselected) = apply_selection(build_plan(&col, &config.capabilities)?, &config.selection);
+        let (plan, deselected) =
+            apply_selection(build_plan(&col, &config.capabilities)?, &config.selection);
         let state = Rc::new(RunState {
             defs: col.fixtures.clone(),
             suite: Rc::new(RefCell::new(ScopeState::default())),
@@ -3644,7 +3656,10 @@ fn execute_collected(
         // down per-test). A failure in any of them is reported as its own leaf — a suite whose
         // teardown raised has leaked something, and must not be reported green.
         let mut late = teardown_file_scopes(&state).await;
-        late.extend(teardown_results("suite", teardown_scope(&state.suite).await));
+        late.extend(teardown_results(
+            "suite",
+            teardown_scope(&state.suite).await,
+        ));
         emit_finished(reporter, &mut summary, &late);
         summary.duration = started.elapsed();
     });
@@ -3687,9 +3702,10 @@ pub fn load_project_config(
     path: &std::path::Path,
     config: &RunConfig,
 ) -> Result<Capabilities, String> {
-    let src = std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-    let (lua, _col) = build_lua("config".to_string(), config)
-        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let src = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let (lua, _col) =
+        build_lua("config".to_string(), config).map_err(|e| format!("{}: {e}", path.display()))?;
 
     // The companion's registrations accumulate HERE — a per-load value, returned to the caller, not
     // a process global. Two projects loaded in one process (the warm MCP) each get their own.
@@ -4194,7 +4210,8 @@ impl HeldTopology {
 
         let (plan, deselected, state) = {
             let col = self.col.borrow();
-            let (plan, deselected) = apply_selection(build_plan(&col, &self.config.capabilities)?, selection);
+            let (plan, deselected) =
+                apply_selection(build_plan(&col, &self.config.capabilities)?, selection);
 
             // A fresh run state — the run's own scopes, so its teardown reaps only what it built.
             let state = Rc::new(RunState {
@@ -4217,7 +4234,11 @@ impl HeldTopology {
                     self.name
                 ))
             })?;
-            state.suite.borrow_mut().cache.insert(id, self.value.clone());
+            state
+                .suite
+                .borrow_mut()
+                .cache
+                .insert(id, self.value.clone());
             for idx in 0..=files.len() {
                 state
                     .file_scope(idx)
@@ -4241,7 +4262,10 @@ impl HeldTopology {
             // Tear down the run's own scopes only. The injected instance is a cached value with no
             // teardown registered here; its teardowns stay parked on the holder's state.
             let mut late = teardown_file_scopes(&state).await;
-            late.extend(teardown_results("suite", teardown_scope(&state.suite).await));
+            late.extend(teardown_results(
+                "suite",
+                teardown_scope(&state.suite).await,
+            ));
             emit_finished(reporter, &mut summary, &late);
             summary.duration = started.elapsed();
         });
@@ -4266,7 +4290,11 @@ impl HeldTopology {
             snapshot_registry: None,
         });
         if let Some(&id) = self.col.borrow().topologies.get(&self.name) {
-            state.suite.borrow_mut().cache.insert(id, self.value.clone());
+            state
+                .suite
+                .borrow_mut()
+                .cache
+                .insert(id, self.value.clone());
             state
                 .file_scope(0)
                 .borrow_mut()
@@ -4398,7 +4426,8 @@ pub fn discover_path(path: &Path) -> mlua::Result<Vec<String>> {
 pub fn discover_path_with(path: &Path, config: &RunConfig) -> mlua::Result<Vec<String>> {
     let (_lua, col) = read_and_collect(path, config)?;
     let col = col.borrow();
-    let (plan, _deselected) = apply_selection(build_plan(&col, &config.capabilities)?, &config.selection);
+    let (plan, _deselected) =
+        apply_selection(build_plan(&col, &config.capabilities)?, &config.selection);
     Ok(plan
         .leaves
         .iter()
@@ -4507,11 +4536,17 @@ mod tests {
         std::fs::write(root.join("src/main.rs"), "fn main() {}").unwrap();
 
         // Directory defaults to layout: sorted relative paths.
-        assert_eq!(serialize_path(&root, None).unwrap(), "Cargo.toml\nsrc/main.rs");
+        assert_eq!(
+            serialize_path(&root, None).unwrap(),
+            "Cargo.toml\nsrc/main.rs"
+        );
         // Content: `=== path ===` sections.
         let content = serialize_path(&root, Some("content")).unwrap();
         assert!(content.contains("=== Cargo.toml ===\nx"), "{content}");
-        assert!(content.contains("=== src/main.rs ===\nfn main() {}"), "{content}");
+        assert!(
+            content.contains("=== src/main.rs ===\nfn main() {}"),
+            "{content}"
+        );
         // A single file serializes to its content (any level).
         assert_eq!(serialize_path(&root.join("Cargo.toml"), None).unwrap(), "x");
         // layout on a file, or an unknown level, is an error.
@@ -4534,13 +4569,16 @@ mod tests {
         std::fs::write(root.join("snapshots/t__alpha.snap.new"), "x").unwrap();
         std::fs::write(root.join("snapshots/notes.txt"), "x").unwrap();
 
-        let reg: SnapshotRegistry = std::sync::Arc::new(std::sync::Mutex::new(
-            std::collections::HashSet::new(),
-        ));
+        let reg: SnapshotRegistry =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
         reg.lock().unwrap().insert(referenced.clone()); // only alpha was referenced
 
         let orphans = unreferenced_snapshots(&reg);
-        assert_eq!(orphans, vec![orphan], "only the untouched .snap in a touched dir");
+        assert_eq!(
+            orphans,
+            vec![orphan],
+            "only the untouched .snap in a touched dir"
+        );
 
         std::fs::remove_dir_all(&root).unwrap();
     }

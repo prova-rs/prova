@@ -26,7 +26,11 @@ fn scratch(tag: &str) -> std::path::PathBuf {
 fn expression_prints_its_value_and_exits_zero() {
     let dir = scratch("expr");
     let out = eval_in(&dir, &["return 1 + 1"]);
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "2");
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -38,7 +42,11 @@ fn statements_with_an_explicit_return_work() {
         &dir,
         &["local t = {}\nfor i = 1, 3 do t[i] = i * i end\nreturn t[3]"],
     );
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "9");
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -48,7 +56,11 @@ fn the_fs_global_is_installed() {
     let dir = scratch("fs");
     std::fs::write(dir.join("probe.txt"), "x").unwrap();
     let out = eval_in(&dir, &["return fs.exists('probe.txt')"]);
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "true");
     std::fs::remove_dir_all(&dir).ok();
 }

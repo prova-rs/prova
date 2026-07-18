@@ -380,7 +380,11 @@ impl<W: Write> Reporter for JUnitReporter<W> {
                             let _ = writeln!(w, "{head}>");
                             match &c.message {
                                 Some(m) => {
-                                    let _ = writeln!(w, "      <skipped message=\"{}\"/>", xml_escape(m));
+                                    let _ = writeln!(
+                                        w,
+                                        "      <skipped message=\"{}\"/>",
+                                        xml_escape(m)
+                                    );
                                 }
                                 None => {
                                     let _ = writeln!(w, "      <skipped/>");
@@ -474,7 +478,10 @@ impl<W: Write> Reporter for TapReporter<W> {
 /// assertion message stays inside the one `message:` key.
 fn tap_yaml_scalar(s: &str) -> String {
     let flattened = s.replace('\n', " ");
-    format!("\"{}\"", flattened.replace('\\', "\\\\").replace('"', "\\\""))
+    format!(
+        "\"{}\"",
+        flattened.replace('\\', "\\\\").replace('"', "\\\"")
+    )
 }
 
 /// Parse a duration micro-format: `"500ms"`, `"30s"`, `"2m"`, or a bare number (seconds).
@@ -552,19 +559,42 @@ mod tests {
         let xml = String::from_utf8(buf).unwrap();
 
         // Document + suite totals.
-        assert!(xml.contains(r#"<testsuites tests="3" failures="1" skipped="1""#), "{xml}");
+        assert!(
+            xml.contains(r#"<testsuites tests="3" failures="1" skipped="1""#),
+            "{xml}"
+        );
         assert!(xml.contains(r#"<testsuite name="prova" tests="3" failures="1" skipped="1""#));
         // Path split: ancestors → classname, leaf → name.
-        assert!(xml.contains(r#"classname="orders" name="creates a row""#), "{xml}");
+        assert!(
+            xml.contains(r#"classname="orders" name="creates a row""#),
+            "{xml}"
+        );
         // Top-level leaf (no ancestors) → suite name as classname.
-        assert!(xml.contains(r#"classname="prova" name="top-level check""#), "{xml}");
+        assert!(
+            xml.contains(r#"classname="prova" name="top-level check""#),
+            "{xml}"
+        );
         // Failure element + XML escaping of metacharacters in the name and message.
-        assert!(xml.contains("&lt;bad&gt; &amp; &quot;quoted&quot;"), "name escaped: {xml}");
-        assert!(xml.contains(r#"<failure message="expected 200 got 500 &lt;tag&gt; &amp; &quot;q&quot;">"#), "{xml}");
+        assert!(
+            xml.contains("&lt;bad&gt; &amp; &quot;quoted&quot;"),
+            "name escaped: {xml}"
+        );
+        assert!(
+            xml.contains(
+                r#"<failure message="expected 200 got 500 &lt;tag&gt; &amp; &quot;q&quot;">"#
+            ),
+            "{xml}"
+        );
         // Skipped element carries its reason.
-        assert!(xml.contains(r#"<skipped message="docker unavailable"/>"#), "{xml}");
+        assert!(
+            xml.contains(r#"<skipped message="docker unavailable"/>"#),
+            "{xml}"
+        );
         // Passed case is a self-closing testcase (no children).
-        assert!(xml.contains(r#"name="creates a row" time="0.002"/>"#), "{xml}");
+        assert!(
+            xml.contains(r#"name="creates a row" time="0.002"/>"#),
+            "{xml}"
+        );
     }
 
     #[test]
@@ -582,7 +612,10 @@ mod tests {
         assert_eq!(lines[2], "not ok 2 - orders › rejects <bad> & \"quoted\"");
         // Failure diagnostic YAML block, message flattened + quoted.
         assert_eq!(lines[3], "  ---");
-        assert_eq!(lines[4], r#"  message: "expected 200 got 500 <tag> & \"q\"""#);
+        assert_eq!(
+            lines[4],
+            r#"  message: "expected 200 got 500 <tag> & \"q\"""#
+        );
         assert_eq!(lines[5], "  ...");
         assert_eq!(lines[6], "ok 3 - top-level check # SKIP docker unavailable");
         // Trailing plan reflects the count.
@@ -591,7 +624,13 @@ mod tests {
 
     #[test]
     fn split_classname_handles_nesting_and_top_level() {
-        assert_eq!(split_classname("a › b › c", "prova"), ("a.b".into(), "c".into()));
-        assert_eq!(split_classname("solo", "prova"), ("prova".into(), "solo".into()));
+        assert_eq!(
+            split_classname("a › b › c", "prova"),
+            ("a.b".into(), "c".into())
+        );
+        assert_eq!(
+            split_classname("solo", "prova"),
+            ("prova".into(), "solo".into())
+        );
     }
 }

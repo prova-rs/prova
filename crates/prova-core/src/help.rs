@@ -38,7 +38,10 @@ fn split_note(s: &str) -> (String, Option<String>) {
     match s.split_once('#') {
         Some((ty, note)) => {
             let note = note.trim();
-            (ty.trim().to_string(), (!note.is_empty()).then(|| note.to_string()))
+            (
+                ty.trim().to_string(),
+                (!note.is_empty()).then(|| note.to_string()),
+            )
         }
         None => (s.trim().to_string(), None),
     }
@@ -46,7 +49,11 @@ fn split_note(s: &str) -> (String, Option<String>) {
 
 /// Collapse accumulated `---` prose lines into one summary line.
 fn collapse(prose: &[String]) -> String {
-    prose.join(" ").split_whitespace().collect::<Vec<_>>().join(" ")
+    prose
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Parse one `---@meta` LuaCATS stub into help entries.
@@ -63,24 +70,29 @@ pub fn parse_stub(src: &str) -> Vec<HelpEntry> {
     // A class stays open across its `---@field` lines and flushes when the block ends.
     let mut class: Option<(String, String, Vec<(String, String, Option<String>)>)> = None;
 
-    let flush_class = |class: &mut Option<(String, String, Vec<(String, String, Option<String>)>)>,
-                       out: &mut Vec<HelpEntry>| {
-        if let Some((name, summary, fields)) = class.take() {
-            let body = fields
-                .iter()
-                .map(|(n, ty, note)| match note {
-                    Some(note) => format!("{n}: {ty}  -- {note}"),
-                    None => format!("{n}: {ty}"),
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            out.push(HelpEntry {
-                name,
-                signature: if body.is_empty() { "{}".into() } else { format!("{{ {body} }}") },
-                summary,
-            });
-        }
-    };
+    let flush_class =
+        |class: &mut Option<(String, String, Vec<(String, String, Option<String>)>)>,
+         out: &mut Vec<HelpEntry>| {
+            if let Some((name, summary, fields)) = class.take() {
+                let body = fields
+                    .iter()
+                    .map(|(n, ty, note)| match note {
+                        Some(note) => format!("{n}: {ty}  -- {note}"),
+                        None => format!("{n}: {ty}"),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                out.push(HelpEntry {
+                    name,
+                    signature: if body.is_empty() {
+                        "{}".into()
+                    } else {
+                        format!("{{ {body} }}")
+                    },
+                    summary,
+                });
+            }
+        };
 
     for line in src.lines() {
         let t = line.trim();
@@ -139,7 +151,11 @@ pub fn parse_stub(src: &str) -> Vec<HelpEntry> {
                     None => format!("({args})"),
                 };
                 if !name.is_empty() {
-                    out.push(HelpEntry { name, signature: sig, summary: collapse(&prose) });
+                    out.push(HelpEntry {
+                        name,
+                        signature: sig,
+                        summary: collapse(&prose),
+                    });
                 }
             }
             prose.clear();
@@ -163,7 +179,10 @@ pub fn parse_stub(src: &str) -> Vec<HelpEntry> {
 
 /// Every entry from the embedded core stubs, sorted by name.
 pub fn core_entries() -> Vec<HelpEntry> {
-    let mut out: Vec<HelpEntry> = CORE_STUBS.iter().flat_map(|(_, src)| parse_stub(src)).collect();
+    let mut out: Vec<HelpEntry> = CORE_STUBS
+        .iter()
+        .flat_map(|(_, src)| parse_stub(src))
+        .collect();
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out.dedup_by(|a, b| a.name == b.name);
     out
@@ -197,8 +216,13 @@ function shell.spawn(command, opts) end
         );
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "shell.spawn");
-        assert_eq!(entries[0].signature, "(command: string, opts?: prova.SpawnOpts) -> prova.Process");
-        assert!(entries[0].summary.starts_with("Start a long-running command"));
+        assert_eq!(
+            entries[0].signature,
+            "(command: string, opts?: prova.SpawnOpts) -> prova.Process"
+        );
+        assert!(entries[0]
+            .summary
+            .starts_with("Start a long-running command"));
         // Prose wraps across lines in the stubs — it must collapse to one line.
         assert!(!entries[0].summary.contains('\n'));
     }
@@ -218,11 +242,20 @@ local ShellResult = {}
 function ShellResult:ok() end
 "#,
         );
-        let sr = entries.iter().find(|e| e.name == "prova.ShellResult").expect("class entry");
-        assert_eq!(sr.signature, "{ code: integer, stdout: string, duration: number  -- seconds }");
+        let sr = entries
+            .iter()
+            .find(|e| e.name == "prova.ShellResult")
+            .expect("class entry");
+        assert_eq!(
+            sr.signature,
+            "{ code: integer, stdout: string, duration: number  -- seconds }"
+        );
         assert_eq!(sr.summary, "The result of a finished command.");
         // The method documented under the class is its own entry.
-        let ok = entries.iter().find(|e| e.name == "ShellResult:ok").expect("method entry");
+        let ok = entries
+            .iter()
+            .find(|e| e.name == "ShellResult:ok")
+            .expect("method entry");
         assert_eq!(ok.signature, "() -> boolean");
     }
 
@@ -259,10 +292,22 @@ function ShellResult:ok() end
     #[test]
     fn the_real_stubs_cover_what_cost_probes() {
         let all = core_entries();
-        assert!(all.len() > 20, "expected a substantial surface, got {}", all.len());
+        assert!(
+            all.len() > 20,
+            "expected a substantial surface, got {}",
+            all.len()
+        );
         // Each of these was a wasted round-trip during the first dogfood (agent-ergonomics.md §0).
-        for name in ["shell.run", "shell.spawn", "prova.ShellResult", "Context:tempdir"] {
-            assert!(all.iter().any(|e| e.name == name), "help() must cover `{name}`");
+        for name in [
+            "shell.run",
+            "shell.spawn",
+            "prova.ShellResult",
+            "Context:tempdir",
+        ] {
+            assert!(
+                all.iter().any(|e| e.name == name),
+                "help() must cover `{name}`"
+            );
         }
         // Filtering is how an agent narrows 100+ entries to the one it needs.
         assert!(!filter(&all, "shell").is_empty());

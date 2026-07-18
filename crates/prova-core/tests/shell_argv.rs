@@ -8,9 +8,14 @@ use prova_core::{run_path, NullReporter};
 /// See docs/design/agent-ergonomics.md §1.
 #[test]
 fn shell_accepts_argv_as_well_as_a_shell_string() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata").join("shell_argv.lua");
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("testdata")
+        .join("shell_argv.lua");
     let mut reporter = NullReporter;
     let summary = run_path(&path, &mut reporter).expect("run");
     assert_eq!(summary.failed, 0, "argv suite had failures: {summary:?}");
-    assert!(summary.passed >= 5, "expected the whole argv suite to run, got {summary:?}");
+    assert!(
+        summary.passed >= 5,
+        "expected the whole argv suite to run, got {summary:?}"
+    );
 }

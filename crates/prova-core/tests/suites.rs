@@ -33,7 +33,10 @@ fn suite_config_requires_gates_the_whole_suite() {
     let summary = run_suites(&suites, &mut reporter, &RunConfig::new(1)).expect("run suite");
     assert_eq!(summary.failed, 0, "gated, not failed");
     assert_eq!(summary.passed, 0, "nothing runs");
-    assert_eq!(summary.skipped, 2, "both tests skip on the unmet suite requirement");
+    assert_eq!(
+        summary.skipped, 2,
+        "both tests skip on the unmet suite requirement"
+    );
 }
 
 /// A directory of ungrouped `*_test.lua` (no `suite.lua`) yields one singleton suite per file — the
@@ -42,7 +45,9 @@ fn suite_config_requires_gates_the_whole_suite() {
 fn ungrouped_files_are_singleton_suites() {
     let suites = discover_suites(&testdata("suite")).expect("discover");
     assert!(
-        suites.iter().all(|s| s.setup.is_none() && s.files.len() == 1),
+        suites
+            .iter()
+            .all(|s| s.setup.is_none() && s.files.len() == 1),
         "each ungrouped file is its own one-file suite: {:?}",
         suites.iter().map(|s| &s.name).collect::<Vec<_>>()
     );

@@ -21,7 +21,13 @@ fn teardown_errors_are_reported_and_do_not_gate() {
         .join("teardown_errors.lua");
     let mut reporter = NullReporter;
     let summary = run_path(&path, &mut reporter).expect("run teardown_errors.lua");
-    assert_eq!(summary.passed, 3, "passed (the flow's 2nd step must not be skipped)");
-    assert_eq!(summary.failed, 2, "failed (one teardown leaf per raising cleanup)");
+    assert_eq!(
+        summary.passed, 3,
+        "passed (the flow's 2nd step must not be skipped)"
+    );
+    assert_eq!(
+        summary.failed, 2,
+        "failed (one teardown leaf per raising cleanup)"
+    );
     assert_eq!(summary.skipped, 0, "skipped");
 }

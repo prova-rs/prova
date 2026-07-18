@@ -37,10 +37,16 @@ fn verify_helper_registers_and_runs_standard_checks() {
 
     assert_eq!(summary.failed, 0, "never fails, cargo present or not");
     if cargo_available() {
-        assert_eq!(summary.passed, 3, "layout + fully-rendered + build all pass");
+        assert_eq!(
+            summary.passed, 3,
+            "layout + fully-rendered + build all pass"
+        );
         assert_eq!(summary.skipped, 0, "nothing skips with cargo present");
     } else {
-        assert_eq!(summary.passed, 2, "layout + fully-rendered pass without cargo");
+        assert_eq!(
+            summary.passed, 2,
+            "layout + fully-rendered pass without cargo"
+        );
         assert_eq!(summary.skipped, 1, "the build check skips (requires cargo)");
     }
 }
@@ -80,7 +86,10 @@ fn verify_compositional_form_checks_an_existing_render_fixture() {
 
     assert_eq!(summary.failed, 0);
     // layout + fully-rendered from verify, plus the caller's own test sharing the same fixture.
-    assert_eq!(summary.passed, 3, "verify checks + the superset test all pass");
+    assert_eq!(
+        summary.passed, 3,
+        "verify checks + the superset test all pass"
+    );
 }
 
 const COMPOSITIONAL_TEMPLATE: &str = r#"

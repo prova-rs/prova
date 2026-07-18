@@ -36,7 +36,9 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
     // `archetect.verify{...}` is authoring sugar composed from prova primitives + fs/shell/yaml, so
     // it lives in Lua rather than Rust. It defines the function; the globals it uses are resolved
     // when it is *called* (at collection), by which point they all exist.
-    lua.load(VERIFY_LUA).set_name("@prova-archetect/verify").exec()?;
+    lua.load(VERIFY_LUA)
+        .set_name("@prova-archetect/verify")
+        .exec()?;
     Ok(())
 }
 
@@ -251,7 +253,9 @@ pub fn render_headless(
     let dest = Utf8PathBuf::from_path_buf(destination.to_path_buf())
         .map_err(|_| ArchetectError::GeneralError("non-UTF-8 destination".into()))?;
 
-    let _serialized = render_mutex().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _serialized = render_mutex()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     let writes = Arc::new(Mutex::new(Vec::new()));
     let handle = CapturingIoHandle {

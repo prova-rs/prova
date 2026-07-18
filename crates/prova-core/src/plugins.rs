@@ -49,8 +49,9 @@ pub(crate) fn install(
     let roots = roots.to_vec();
     let named = named.clone();
     let namespaces = namespaces.clone();
-    let searcher = lua
-        .create_function(move |lua, name: String| resolve(lua, &name, &roots, &named, &namespaces))?;
+    let searcher = lua.create_function(move |lua, name: String| {
+        resolve(lua, &name, &roots, &named, &namespaces)
+    })?;
     // Append after the built-in searchers (preload + path-based), so a plugin never shadows them.
     searchers.set(searchers.raw_len() + 1, searcher)?;
     Ok(())
@@ -84,7 +85,10 @@ fn resolve(
     if let Some((prefix, rest)) = name.split_once('.') {
         if let Some(dir) = namespaces.get(prefix) {
             let rel = rest.replace('.', "/");
-            for candidate in [dir.join(format!("{rel}.lua")), dir.join(&rel).join("init.lua")] {
+            for candidate in [
+                dir.join(format!("{rel}.lua")),
+                dir.join(&rel).join("init.lua"),
+            ] {
                 if candidate.is_file() {
                     return Ok(Value::Function(disk_loader(lua, &candidate)?));
                 }
@@ -97,7 +101,10 @@ fn resolve(
     //    → `acme/rabbitmq`.
     let rel = name.replace('.', "/");
     for root in disk_roots(roots) {
-        for candidate in [root.join(format!("{rel}.lua")), root.join(&rel).join("init.lua")] {
+        for candidate in [
+            root.join(format!("{rel}.lua")),
+            root.join(&rel).join("init.lua"),
+        ] {
             if candidate.is_file() {
                 return Ok(Value::Function(disk_loader(lua, &candidate)?));
             }

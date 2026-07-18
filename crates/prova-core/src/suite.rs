@@ -46,7 +46,13 @@ impl Suite {
     }
 
     fn run(&self, reporter: &mut dyn Reporter, config: &RunConfig) -> mlua::Result<Summary> {
-        run_suite_files(&self.name, self.setup.as_deref(), &self.files, reporter, config)
+        run_suite_files(
+            &self.name,
+            self.setup.as_deref(),
+            &self.files,
+            reporter,
+            config,
+        )
     }
 }
 
@@ -271,17 +277,17 @@ fn run_pooled(suites: &[Suite], reporter: &mut dyn Reporter, config: &RunConfig)
                         let _ = dtx.send(s.deselected);
                     }
                     Err(err) => {
-                    // Surface a collection/load error as a synthetic failed node for the suite.
-                    let path = suite.name.clone();
-                    let message = err.to_string();
-                    sink.event(&Event::NodeStarted { path: &path });
-                    sink.event(&Event::NodeFinished {
-                        path: &path,
-                        outcome: Outcome::Failed,
-                        duration: Duration::ZERO,
-                        assertions: 0,
-                        message: Some(&message),
-                    });
+                        // Surface a collection/load error as a synthetic failed node for the suite.
+                        let path = suite.name.clone();
+                        let message = err.to_string();
+                        sink.event(&Event::NodeStarted { path: &path });
+                        sink.event(&Event::NodeFinished {
+                            path: &path,
+                            outcome: Outcome::Failed,
+                            duration: Duration::ZERO,
+                            assertions: 0,
+                            message: Some(&message),
+                        });
                     }
                 }
             }

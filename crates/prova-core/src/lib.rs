@@ -14,12 +14,10 @@ mod plugins;
 mod suite;
 
 pub use engine::{
-    Selection,
-    Capabilities, discover_path, is_builtin_capability, load_project_config, discover_path_with,
-    docker_runs_linux_containers, eval_snippet, hold_topology,
-    inspect_plugin, run_path, run_path_with, unreferenced_snapshots,
-    up, watch, Endpoint, HeldTopology, Module, PluginReport, PluginShape, PortMode, RunConfig,
-    SnapshotRegistry,
+    discover_path, discover_path_with, docker_runs_linux_containers, eval_snippet, hold_topology,
+    inspect_plugin, is_builtin_capability, load_project_config, run_path, run_path_with,
+    unreferenced_snapshots, up, watch, Capabilities, Endpoint, HeldTopology, Module, PluginReport,
+    PluginShape, PortMode, RunConfig, Selection, SnapshotRegistry,
 };
 pub use layout::{RootedSystemLayout, SystemLayout, XdgSystemLayout};
 pub use model::{

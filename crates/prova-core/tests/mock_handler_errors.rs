@@ -20,6 +20,12 @@ fn mock_handler_errors_fail_the_owning_scope_unless_allowed() {
         .join("mock_handler_errors.lua");
     let mut reporter = NullReporter;
     let summary = run_path(&path, &mut reporter).expect("run mock_handler_errors.lua");
-    assert_eq!(summary.passed, 6, "passed (bodies; allow_handler_errors opts out)");
-    assert_eq!(summary.failed, 3, "failed (one teardown leaf per handler error)");
+    assert_eq!(
+        summary.passed, 6,
+        "passed (bodies; allow_handler_errors opts out)"
+    );
+    assert_eq!(
+        summary.failed, 3,
+        "failed (one teardown leaf per handler error)"
+    );
 }

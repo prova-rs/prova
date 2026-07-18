@@ -498,7 +498,10 @@ redis = "./plugins/redis-ci.lua"
         // Base run: only the project-wide plugin.
         let base = m.resolve(None).unwrap();
         assert_eq!(base.plugins.len(), 1);
-        assert_eq!(base.plugins["redis"], PluginSource::Path("./plugins/redis.lua".into()));
+        assert_eq!(
+            base.plugins["redis"],
+            PluginSource::Path("./plugins/redis.lua".into())
+        );
 
         // CI profile: adds kafka, and its redis entry wins over the project-wide one.
         let ci = m.resolve(Some("ci")).unwrap();
@@ -511,7 +514,10 @@ redis = "./plugins/redis-ci.lua"
                 ..Default::default()
             })
         );
-        assert_eq!(ci.plugins["redis"], PluginSource::Path("./plugins/redis-ci.lua".into()));
+        assert_eq!(
+            ci.plugins["redis"],
+            PluginSource::Path("./plugins/redis-ci.lua".into())
+        );
     }
 
     #[test]

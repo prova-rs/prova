@@ -3,7 +3,9 @@ use std::path::PathBuf;
 use prova_core::{discover_suites, run_suites, NullReporter, RunConfig};
 
 fn testdata(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata").join(name)
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("testdata")
+        .join(name)
 }
 
 /// The keystone of the layout plan: `require()` resolves a project-local module rooted at the home.
@@ -21,6 +23,9 @@ fn require_resolves_a_project_local_shared_module() {
     // `with_project` sets the home require roots at — exactly what the CLI derives from the manifest.
     let config = RunConfig::new(1).with_project(&root, &root);
     let summary = run_suites(&suites, &mut reporter, &config).expect("run");
-    assert_eq!(summary.failed, 0, "failed (require should resolve, not error)");
+    assert_eq!(
+        summary.failed, 0,
+        "failed (require should resolve, not error)"
+    );
     assert_eq!(summary.passed, 1, "the require-based test runs and passes");
 }

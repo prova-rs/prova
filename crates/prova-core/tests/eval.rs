@@ -56,7 +56,10 @@ fn the_full_environment_is_available() {
     assert_eq!(eval(&code).unwrap(), json!(true));
     assert_eq!(eval("return type(prova.retry)").unwrap(), json!("function"));
     // Async built-ins run (the snippet is driven through the async call path).
-    assert_eq!(eval("prova.sleep(5); return 'awaited'").unwrap(), json!("awaited"));
+    assert_eq!(
+        eval("prova.sleep(5); return 'awaited'").unwrap(),
+        json!("awaited")
+    );
 }
 
 #[test]

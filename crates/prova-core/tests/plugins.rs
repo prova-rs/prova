@@ -8,7 +8,10 @@ use prova_core::{run_path, NullReporter};
 fn require_resolves_bundled_and_disk_plugins() {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     // Point the searcher at the on-disk example plugin.
-    std::env::set_var("PROVA_PLUGIN_PATH", manifest.join("testdata").join("plugins"));
+    std::env::set_var(
+        "PROVA_PLUGIN_PATH",
+        manifest.join("testdata").join("plugins"),
+    );
 
     let path = manifest.join("testdata").join("plugin_require.lua");
     let mut reporter = NullReporter;

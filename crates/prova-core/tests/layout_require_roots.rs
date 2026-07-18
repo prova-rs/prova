@@ -3,7 +3,9 @@ use std::path::PathBuf;
 use prova_core::{discover_suites, run_suites, NullReporter, RunConfig};
 
 fn testdata(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata").join(name)
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("testdata")
+        .join(name)
 }
 
 /// The require-root is configurable, not hardwired to the home (layout plan, option 3).
@@ -24,5 +26,8 @@ fn require_resolves_against_a_configured_root() {
         .with_require_roots(vec![proofs.clone()]);
     let summary = run_suites(&suites, &mut reporter, &config).expect("run");
     assert_eq!(summary.failed, 0, "failed");
-    assert_eq!(summary.passed, 1, "require rooted at the configured dir resolves");
+    assert_eq!(
+        summary.passed, 1,
+        "require rooted at the configured dir resolves"
+    );
 }

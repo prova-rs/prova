@@ -27,11 +27,15 @@ fn describe_nests_labels_in_paths() {
         "expected 'math › adds', got: {names:?}"
     );
     assert!(
-        names.iter().any(|n| n.contains("math › nested › multiplies")),
+        names
+            .iter()
+            .any(|n| n.contains("math › nested › multiplies")),
         "expected nested label path, got: {names:?}"
     );
     assert!(
-        names.iter().any(|n| n.contains("math › nested › squares 2")),
+        names
+            .iter()
+            .any(|n| n.contains("math › nested › squares 2")),
         "expected test_each nested under describe, got: {names:?}"
     );
     // The post-describe test is back at the root (only the file-stem ancestor, no 'math').
@@ -44,7 +48,9 @@ fn describe_nests_labels_in_paths() {
         "the post-describe test must pop back to root, got: {top:?}"
     );
     assert!(
-        names.iter().any(|n| n.contains("outer › subsection › runs")),
+        names
+            .iter()
+            .any(|n| n.contains("outer › subsection › runs")),
         "expected GroupBuilder:describe nesting, got: {names:?}"
     );
 }

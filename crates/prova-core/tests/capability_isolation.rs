@@ -22,16 +22,30 @@ fn companions_do_not_leak_across_resolves() {
     let dir = std::env::temp_dir().join(format!("prova-caps-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
 
-    let a = companion(&dir, "a.lua", r#"runtime.capability("iso_a", function() return true end)"#);
-    let b = companion(&dir, "b.lua", r#"runtime.capability("iso_b", function() return true end)"#);
+    let a = companion(
+        &dir,
+        "a.lua",
+        r#"runtime.capability("iso_a", function() return true end)"#,
+    );
+    let b = companion(
+        &dir,
+        "b.lua",
+        r#"runtime.capability("iso_b", function() return true end)"#,
+    );
 
     // Each resolve returns its OWN capability set. Same process, back to back.
     let caps_a = load_project_config(&a, &cfg).expect("load A");
     let caps_b = load_project_config(&b, &cfg).expect("load B");
 
     // A saw its own, B saw its own — the sanity legs.
-    assert!(caps_a.available("iso_a"), "A's own capability present in A's set");
-    assert!(caps_b.available("iso_b"), "B's own capability present in B's set");
+    assert!(
+        caps_a.available("iso_a"),
+        "A's own capability present in A's set"
+    );
+    assert!(
+        caps_b.available("iso_b"),
+        "B's own capability present in B's set"
+    );
 
     // THE PROOF: B's set must not contain A's capability. B is a different project; it cannot inherit
     // A's vocabulary. With the process-global registry it did — this is the isolation the fix buys.

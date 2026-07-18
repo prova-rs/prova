@@ -548,11 +548,12 @@ fn build_topology_run(
     // Build the engine config with the declared plugins (so the topology's `require(...)` resolves).
     // `--fixed` pins ports for external reachability; the default is random (like tests), so several
     // topologies can be inhabited at once without colliding.
-    let config = engine_config(1, &layout, &run.plugins, Some(&home), &run.require_roots).with_ports(if fixed {
-        PortMode::Fixed
-    } else {
-        PortMode::Auto
-    });
+    let config = engine_config(1, &layout, &run.plugins, Some(&home), &run.require_roots)
+        .with_ports(if fixed {
+            PortMode::Fixed
+        } else {
+            PortMode::Auto
+        });
 
     Ok(TopologyRun {
         home,
@@ -1168,9 +1169,15 @@ fn run(cli_args: Vec<String>) -> ExitCode {
 
     // The standalone `prova` binary ships the archetect plugin, so `archetect.render{...}` works.
     // The plugin searcher consults the global install dir plus any manifest-declared plugins.
-    let mut config = engine_config(jobs, &layout, &plugins_resolved, home.as_ref(), &require_roots)
-        .with_update_snapshots(update_snapshots)
-        .with_capabilities(capabilities);
+    let mut config = engine_config(
+        jobs,
+        &layout,
+        &plugins_resolved,
+        home.as_ref(),
+        &require_roots,
+    )
+    .with_update_snapshots(update_snapshots)
+    .with_capabilities(capabilities);
 
     // `--last-failed`: fold the previous run's failed node paths into the selection as exact nodes.
     if last_failed {

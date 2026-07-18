@@ -39,7 +39,10 @@ fn config_flag_selects_the_companion() {
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("\"skipped\":1") || stdout.contains("skipped\": 1"), "default: gated test skips: {stdout}");
+    assert!(
+        stdout.contains("\"skipped\":1") || stdout.contains("skipped\": 1"),
+        "default: gated test skips: {stdout}"
+    );
 
     // With --config setup/alt.lua: capability registered → the test RUNS.
     let out = Command::new(env!("CARGO_BIN_EXE_prova"))
@@ -48,7 +51,10 @@ fn config_flag_selects_the_companion() {
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("\"passed\":1") || stdout.contains("passed\": 1"), "--config: gated test runs: {stdout}");
+    assert!(
+        stdout.contains("\"passed\":1") || stdout.contains("passed\": 1"),
+        "--config: gated test runs: {stdout}"
+    );
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -63,6 +69,9 @@ fn prova_config_env_selects_the_companion() {
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("\"passed\":1") || stdout.contains("passed\": 1"), "PROVA_CONFIG: gated test runs: {stdout}");
+    assert!(
+        stdout.contains("\"passed\":1") || stdout.contains("passed\": 1"),
+        "PROVA_CONFIG: gated test runs: {stdout}"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
