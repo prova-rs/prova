@@ -1,14 +1,5 @@
 {
-  "runtime.version": "Lua 5.4",
-  "workspace.library": [
-    "library"
-  ],
-  "workspace.checkThirdParty": false,
-  "workspace.ignoreDir": [
-    ".vscode",
-    "crates/prova-archetect/tests/fixtures",
-    "examples/fixtures"
-  ],
+  "completion.callSnippet": "Replace",
   "diagnostics.globals": [
     "fs",
     "shell",
@@ -23,6 +14,16 @@
     "Scope",
     "suite"
   ],
-  "completion.callSnippet": "Replace",
-  "hint.enable": true
+  "hint.enable": true,
+  "runtime.version": "Lua 5.4",
+  "workspace.checkThirdParty": false,
+  "workspace.ignoreDir": [
+    ".vscode",
+    "crates/prova-archetect/tests/fixtures",
+    "examples/fixtures"
+  ],
+  "workspace.library": [
+    "library",
+    "prova/annotations"
+  ]
 }

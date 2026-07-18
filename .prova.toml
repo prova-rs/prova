@@ -1,0 +1,10 @@
+# prova test suite manifest. Run `prova` from anywhere in this project.
+# Docs: https://github.com/prova-rs/prova
+
+[run]
+paths = ["."]          # discover *_test.lua here (organize into suites/ as you grow)
+
+# Declare plugins for real resources; `require("<name>")` then works in tests, and its
+# editor completions appear automatically after the next run.
+# [plugins]
+# postgres = "prova-rs/prova-postgres@v0.2.0"

@@ -1,0 +1,1 @@
+-- Marks `outer/` as a suite. Under the target rule it owns ONLY the *_test.lua in THIS directory.

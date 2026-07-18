@@ -127,10 +127,27 @@ pub fn discover_suites(root: &Path) -> std::io::Result<Vec<Suite>> {
 
 fn collect_suites(dir: &Path, out: &mut Vec<Suite>) -> std::io::Result<()> {
     let setup = dir.join("suite.lua");
-    if setup.is_file() {
-        // The whole subtree is one suite, sharing suite.lua's fixtures.
-        let files = discover_files(dir)?;
-        if !files.is_empty() {
+    let grouped = setup.is_file();
+
+    // Read this directory once, partitioning its own test files from its subdirectories.
+    let mut own_tests = Vec::new();
+    let mut subdirs = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            subdirs.push(path);
+        } else if is_test_file(&path) {
+            own_tests.push(path);
+        }
+    }
+    own_tests.sort();
+    subdirs.sort();
+
+    // Directory-scoped: a `suite.lua` owns the `*_test.lua` in THIS directory only — not the subtree.
+    // Subdirectories are always discovered independently, so a nested `suite.lua` is its own suite
+    // rather than being swallowed. Sharing across directories is `require`, never silent inheritance.
+    if grouped {
+        if !own_tests.is_empty() {
             let name = dir
                 .file_name()
                 .and_then(|s| s.to_str())
@@ -139,19 +156,17 @@ fn collect_suites(dir: &Path, out: &mut Vec<Suite>) -> std::io::Result<()> {
             out.push(Suite {
                 name,
                 setup: Some(setup),
-                files,
+                files: own_tests,
             });
         }
-        return Ok(());
-    }
-    // No suite.lua here: recurse into subdirs; ungrouped test files become singleton suites.
-    for entry in std::fs::read_dir(dir)? {
-        let path = entry?.path();
-        if path.is_dir() {
-            collect_suites(&path, out)?;
-        } else if is_test_file(&path) {
-            out.push(Suite::singleton(path));
+    } else {
+        // Ungrouped: each test file is its own singleton suite.
+        for t in own_tests {
+            out.push(Suite::singleton(t));
         }
+    }
+    for sub in subdirs {
+        collect_suites(&sub, out)?;
     }
     Ok(())
 }
