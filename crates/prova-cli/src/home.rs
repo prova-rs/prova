@@ -1,17 +1,18 @@
 //! Locating the "prova home" — the directory that owns a project's `prova.toml`, and against which
 //! every relative path in the manifest (`[run] paths`, discovered `annotations/`) is resolved.
 //!
-//! A project may keep its manifest in one of three places, so teams can choose how much prova lives
+//! A project may keep its manifest in one of four places, so teams can choose how much prova lives
 //! at the repo root:
 //!
 //! | Location | Home dir | Feel |
 //! |---|---|---|
 //! | `prova.toml` | the project root | flat — prova at the root, zero nesting |
+//! | `.prova.toml` | the project root | flat, hidden — one manifest, out of sight, tests in a named dir |
 //! | `prova/prova.toml` | `prova/` | visible — tests + config in one navigable dir |
 //! | `.prova/prova.toml` | `.prova/` | hidden — config + generated files tucked away |
 //!
 //! Discovery walks **up** from the current directory (like git finding `.git`), so `prova` works
-//! from anywhere inside a project. Finding **more than one** of the three candidates in the same
+//! from anywhere inside a project. Finding **more than one** of the candidates in the same
 //! directory is a hard error: the layout is ambiguous and prova refuses to guess which is canonical.
 
 use std::path::{Path, PathBuf};
@@ -117,6 +118,18 @@ fn at(dir: &Path) -> Result<Option<Home>, String> {
             home: dir.join(".prova"),
         });
     }
+    // `dir/.prova.toml` — a hidden *flat* manifest: home and root are both `dir`, like `prova.toml`
+    // but out of sight. A single hidden file is tidier than a whole `.prova/` directory for a project
+    // that only needs the one manifest and keeps its tests in a named dir (`proofs/`).
+    let hidden_flat = dir.join(".prova.toml");
+    if hidden_flat.is_file() {
+        found.push(Candidate {
+            label: ".prova.toml",
+            manifest: hidden_flat,
+            root: dir.to_path_buf(),
+            home: dir.to_path_buf(),
+        });
+    }
 
     match found.as_slice() {
         [] => Ok(None),
@@ -170,6 +183,19 @@ mod tests {
             home.manifest,
             t.0.canonicalize().unwrap().join("prova.toml")
         );
+    }
+
+    #[test]
+    fn hidden_file_manifest_home_is_the_root() {
+        // `.prova.toml` (a hidden FILE at the root) — home and root are both the root, like a flat
+        // `prova.toml` but tucked out of sight. This is the layout the repo itself uses.
+        let t = Tmp::new("hidden-file");
+        t.write(".prova.toml", "[run]\npaths=[\"proofs\"]\n");
+        let root = t.0.canonicalize().unwrap();
+        let home = find(&t.0).unwrap().unwrap();
+        assert_eq!(home.root, root);
+        assert_eq!(home.dir, root);
+        assert_eq!(home.manifest, root.join(".prova.toml"));
     }
 
     #[test]
