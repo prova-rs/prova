@@ -18,7 +18,9 @@ fn require_resolves_a_project_local_shared_module() {
     let root = testdata("layout_require");
     let suites = discover_suites(&root).expect("discover");
     let mut reporter = NullReporter;
-    let summary = run_suites(&suites, &mut reporter, &RunConfig::new(1)).expect("run");
+    // `with_project` sets the home require roots at — exactly what the CLI derives from the manifest.
+    let config = RunConfig::new(1).with_project(&root, &root);
+    let summary = run_suites(&suites, &mut reporter, &config).expect("run");
     assert_eq!(summary.failed, 0, "failed (require should resolve, not error)");
     assert_eq!(summary.passed, 1, "the require-based test runs and passes");
 }

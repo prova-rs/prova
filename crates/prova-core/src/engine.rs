@@ -2112,6 +2112,19 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
         &config.plugin_namespaces,
     )?;
 
+    // Root `require` at the project home, so a project's own modules resolve —
+    // `require("shared.fixtures")` → `<home>/shared/fixtures.lua`. This is the enabling piece for
+    // require-based sharing (and for the manifest `preload` list, which is manifest-triggered
+    // `require`). Prepended so a local module takes precedence over the system path; rooted at the
+    // *home*, never the cwd, because prova exposes no ambient cwd (a require that depended on where
+    // `prova` was invoked from would break the isolation the DSL promises).
+    if let Some(home) = &config.project_home {
+        let package: Table = lua.globals().get("package")?;
+        let existing: String = package.get("path")?;
+        let h = home.to_string_lossy();
+        package.set("path", format!("{h}/?.lua;{h}/?/init.lua;{existing}"))?;
+    }
+
     Ok((lua, col))
 }
 
