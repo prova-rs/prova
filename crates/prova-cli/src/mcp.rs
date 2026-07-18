@@ -726,7 +726,7 @@ fn run_blocking(env: &McpEnv, req: RunRequest) -> Result<(serde_json::Value, boo
     }
 
     let jobs = req.jobs.map(|n| (n as usize).max(1)).unwrap_or(call.jobs);
-    let mut config = crate::engine_config(jobs, &env.layout, &call.plugins, Some(&call.home))
+    let mut config = crate::engine_config(jobs, &env.layout, &call.plugins, Some(&call.home), &call.paths)
         .with_capabilities(call.capabilities.clone());
     config.selection = selection;
 
@@ -764,7 +764,7 @@ fn list_blocking(env: &McpEnv, req: SelectionArgs) -> Result<(serde_json::Value,
     }
 
     let suites = crate::collect_suites(&call.base_dir, &call.declared, &call.paths)?;
-    let mut config = crate::engine_config(1, &env.layout, &call.plugins, Some(&call.home))
+    let mut config = crate::engine_config(1, &env.layout, &call.plugins, Some(&call.home), &call.paths)
         .with_capabilities(call.capabilities.clone());
     config.selection = selection;
 
@@ -795,7 +795,7 @@ fn eval_blocking(
             (Some(call.home), call.plugins)
         }
     };
-    let config = crate::engine_config(1, &env.layout, &plugins, home.as_ref());
+    let config = crate::engine_config(1, &env.layout, &plugins, home.as_ref(), &[]);
     eval_snippet(&code, &config)
         .map(|value| (value, false))
         .map_err(|e| e.to_string())
@@ -820,7 +820,7 @@ fn up_blocking(
 
     let call = env.resolve_call(req.profile.as_deref(), req.project.as_deref())?;
     let files = topology_files(&call)?;
-    let config = crate::engine_config(1, &env.layout, &call.plugins, Some(&call.home))
+    let config = crate::engine_config(1, &env.layout, &call.plugins, Some(&call.home), &call.paths)
         .with_capabilities(call.capabilities.clone())
         .with_ports(
         if req.fixed.unwrap_or(false) {

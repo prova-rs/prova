@@ -199,6 +199,12 @@ pub struct RunConfig {
     /// `prova.home`. See `with_project`.
     project_root: Option<std::path::PathBuf>,
     project_home: Option<std::path::PathBuf>,
+    /// Directories `require` resolves module names against — prepended to `package.path`, so
+    /// `require("shared.x")` finds `<root>/shared/x.lua`. Configurable (manifest `[run] require_roots`)
+    /// rather than hardwired to the home: it lets a project put its shared code under a named dir
+    /// (`proofs/`) and keep clean `require("shared.x")` paths, and it is the seam `**/proofs`
+    /// multi-root discovery builds on. Empty → falls back to the home (the zero-config default).
+    require_roots: Vec<std::path::PathBuf>,
     /// Capabilities the project's `prova.lua` companion registered — per run, so two projects
     /// resolved in one process don't share a vocabulary. Empty when there is no companion; built-in
     /// capabilities (`docker`, `unix`, tools on PATH) work regardless.
@@ -219,6 +225,7 @@ impl Default for RunConfig {
             plugin_namespaces: std::collections::BTreeMap::new(),
             project_root: None,
             project_home: None,
+            require_roots: Vec::new(),
             capabilities: Capabilities::default(),
         }
     }
@@ -318,6 +325,13 @@ impl RunConfig {
     ) -> Self {
         self.project_root = Some(root.into());
         self.project_home = Some(home.into());
+        self
+    }
+
+    /// Set the directories `require` resolves against (manifest `[run] require_roots`, resolved to
+    /// absolute paths). Empty leaves the home as the default require-root.
+    pub fn with_require_roots(mut self, roots: Vec<std::path::PathBuf>) -> Self {
+        self.require_roots = roots;
         self
     }
 
@@ -2112,17 +2126,28 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
         &config.plugin_namespaces,
     )?;
 
-    // Root `require` at the project home, so a project's own modules resolve —
-    // `require("shared.fixtures")` → `<home>/shared/fixtures.lua`. This is the enabling piece for
+    // Root `require` at the project's require-roots, so its own modules resolve —
+    // `require("shared.fixtures")` → `<root>/shared/fixtures.lua`. This is the enabling piece for
     // require-based sharing (and for the manifest `preload` list, which is manifest-triggered
-    // `require`). Prepended so a local module takes precedence over the system path; rooted at the
-    // *home*, never the cwd, because prova exposes no ambient cwd (a require that depended on where
-    // `prova` was invoked from would break the isolation the DSL promises).
-    if let Some(home) = &config.project_home {
+    // `require`). The roots are configurable (`[run] require_roots`) so shared code can live under a
+    // named dir (`proofs/`) with clean paths; empty falls back to the home. Prepended so a local
+    // module takes precedence over the system path, and rooted at these dirs, never the cwd — a
+    // require that depended on where `prova` was invoked from would break the no-ambient-cwd
+    // isolation the DSL promises.
+    let require_roots: Vec<&std::path::PathBuf> = if config.require_roots.is_empty() {
+        config.project_home.iter().collect()
+    } else {
+        config.require_roots.iter().collect()
+    };
+    if !require_roots.is_empty() {
         let package: Table = lua.globals().get("package")?;
         let existing: String = package.get("path")?;
-        let h = home.to_string_lossy();
-        package.set("path", format!("{h}/?.lua;{h}/?/init.lua;{existing}"))?;
+        let mut prefix = String::new();
+        for root in require_roots {
+            let r = root.to_string_lossy();
+            prefix.push_str(&format!("{r}/?.lua;{r}/?/init.lua;"));
+        }
+        package.set("path", format!("{prefix}{existing}"))?;
     }
 
     Ok((lua, col))

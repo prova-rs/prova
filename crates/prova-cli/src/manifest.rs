@@ -157,6 +157,12 @@ pub struct SuiteDecl {
 pub struct Profile {
     #[serde(default)]
     pub paths: Vec<String>,
+    /// Directories `require` resolves module names against (`require("shared.x")` →
+    /// `<root>/shared/x.lua`). Relative to the home. If unset, defaults to `paths` — the dirs you
+    /// discover tests in are the dirs you require against — so `paths = ["proofs"]` gives clean
+    /// `require("shared.x")` from within `proofs/` with no extra config.
+    #[serde(default)]
+    pub require_roots: Vec<String>,
     pub jobs: Option<usize>,
     pub format: Option<String>,
     #[serde(default)]
@@ -189,6 +195,8 @@ pub struct Profile {
 #[derive(Debug, PartialEq)]
 pub struct Resolved {
     pub paths: Vec<String>,
+    /// Directories `require` resolves against; defaults to `paths` when unset. See `Profile`.
+    pub require_roots: Vec<String>,
     pub jobs: Option<usize>,
     pub format: Option<String>,
     pub env: BTreeMap<String, String>,
@@ -230,6 +238,18 @@ impl Manifest {
             Some(p) if !p.paths.is_empty() => p.paths.clone(),
             _ => base.paths.clone(),
         };
+        let require_roots = {
+            let explicit = match overlay {
+                Some(p) if !p.require_roots.is_empty() => p.require_roots.clone(),
+                _ => base.require_roots.clone(),
+            };
+            // Default: the discovery paths are the require roots — a test root is a source root.
+            if explicit.is_empty() {
+                paths.clone()
+            } else {
+                explicit
+            }
+        };
         let jobs = overlay.and_then(|p| p.jobs).or(base.jobs);
         let format = overlay
             .and_then(|p| p.format.clone())
@@ -265,6 +285,7 @@ impl Manifest {
 
         Ok(Resolved {
             paths,
+            require_roots,
             jobs,
             format,
             env,
@@ -314,6 +335,8 @@ paths = ["tests/smoke"]
             r,
             Resolved {
                 paths: vec!["tests".into()],
+                // Defaults to `paths` when the manifest doesn't set `require_roots`.
+                require_roots: vec!["tests".into()],
                 jobs: Some(4),
                 format: Some("console".into()),
                 env: env(&[("LOG", "info")]),
