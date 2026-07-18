@@ -19,6 +19,10 @@
 pub const CORE_STUBS: &[(&str, &str)] = &[
     ("prova.lua", include_str!("../../../library/prova.lua")),
     ("modules.lua", include_str!("../../../library/modules.lua")),
+    // Bundled first-party modules (`require("prova.<x>")`). Their stubs ride here so they surface in
+    // both sinks — `prova.help()` and the IDE — like any core global. (`prova.workspace` predates
+    // this and is not yet stubbed; a bundled module should be.)
+    ("double.lua", include_str!("../../../library/double.lua")),
 ];
 
 /// One documented thing: a function, a method, or a class (a value shape).

@@ -23,10 +23,12 @@ use mlua::{Lua, Value, Variadic};
 /// First-party Lua modules compiled into the binary, resolvable by `require`. Reserved for the
 /// `prova.*` namespace. This is where first-party recipes migrate as they move off `include_str!`
 /// eager-injection and onto the loadable path (see docs/design/plugin-system.md § Dogfooding).
-const BUNDLED: &[(&str, &str)] = &[(
-    "prova.workspace",
-    include_str!("plugins/prova/workspace.lua"),
-)];
+const BUNDLED: &[(&str, &str)] = &[
+    ("prova.workspace", include_str!("plugins/prova/workspace.lua")),
+    // The transport-agnostic programmable double (mock / proxy / spy, with an ordered event log).
+    // The reusable heart of http.mock/grpc.mock for an in-process, Lua-driven boundary.
+    ("prova.double", include_str!("plugins/prova/double.lua")),
+];
 
 /// Install the plugin searcher into `lua`'s `package.searchers`.
 ///
