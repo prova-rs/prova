@@ -1,0 +1,4 @@
+# prova's own test suite (proof-driven development of prova, by prova).
+[run]
+paths  = ["proofs"]      # suites live at the project root; .prova/ is the config + plugins nook
+config = "config.lua"    # the runtime companion (home-relative → .prova/config.lua)

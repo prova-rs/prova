@@ -1,0 +1,3 @@
+[plugin]
+name = "shared"
+description = "Shared helpers and fixtures for this project's proofs. Delete if unused; lift to a git repo to share."

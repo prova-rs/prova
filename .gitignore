@@ -1,12 +1,17 @@
 /target
 **/*.rs.bk
 .DS_Store
-/.prova
 *.snap.new
-# Generated LuaLS IDE artifacts from running the example suites (prova writes these into each
-# example's home dir). The annotations/ dir self-ignores; the .luarc.json pointer does not.
+# `.prova/` is SOURCE, not build output: it holds this project's manifest, its runtime companion,
+# and its local plugins. It was ignored wholesale when it existed only to hold generated LuaLS
+# annotations — which prova no longer writes into a project at all (they live in the cache now).
+# Ignoring it hid the manifest, so the proof suite could not run from a fresh clone.
+# Only genuinely generated artifacts are ignored. (This repo's own /.luarc.json is COMMITTED and
+# points at library/ — the hand-written source stubs — because prova is where they come from.)
+/.prova/annotations/
+# Generated LuaLS IDE artifacts from running the example suites. prova writes .luarc.json into each
+# example's project root; it holds machine-local absolute paths, so it is per-machine, not shared.
 examples/**/.luarc.json
-examples/**/annotations/
 # Held-topology run-state from `prova up`/`start` in the examples (self-ignores too).
 examples/**/running/
 .last-failed.json
