@@ -322,8 +322,6 @@ impl RunConfig {
         self
     }
 
-
-
     pub fn with_plugin_namespace(
         mut self,
         canonical: impl Into<String>,
@@ -2127,7 +2125,6 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
         &config.named_plugins,
         &config.plugin_namespaces,
     )?;
-
 
     Ok((lua, col))
 }

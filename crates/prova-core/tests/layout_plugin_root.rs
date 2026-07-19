@@ -3,7 +3,9 @@ use std::path::PathBuf;
 use prova_core::{discover_suites, run_suites, NullReporter, RunConfig};
 
 fn testdata(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata").join(name)
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("testdata")
+        .join(name)
 }
 
 /// A project's local plugins (`<root>/.prova/plugins/<name>/`) resolve against the project ROOT, not
@@ -18,5 +20,8 @@ fn local_plugins_resolve_against_the_project_root() {
     let config = RunConfig::new(1).with_project(&root, &root);
     let summary = run_suites(&suites, &mut reporter, &config).expect("run");
     assert_eq!(summary.failed, 0, "failed");
-    assert_eq!(summary.passed, 1, "the local .prova/plugins plugin resolves");
+    assert_eq!(
+        summary.passed, 1,
+        "the local .prova/plugins plugin resolves"
+    );
 }

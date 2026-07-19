@@ -164,7 +164,10 @@ Wired now (the "easy to install" story):
     name — `require("rabbitmq.helpers")` → `<plugin-root>/helpers.lua` — namespaced so it is stable
     regardless of the consumer's alias and never collides with another plugin. This is the sanctioned
     way to split a plugin into files (see the self-contained rule in
-    [ecosystem.md](ecosystem.md) — plugins vendor their helpers; there is no dependency resolver).
+    [ecosystem.md](ecosystem.md)). Plugins vendor their **helpers** this way (intra-plugin requires,
+    by canonical name); **inter-plugin** dependencies — a library plugin that reuses `postgres` — are
+    declared in `[dependencies]` and resolved privately per plugin, invisible to the consumer. See
+    [plugin-composition.md](plugin-composition.md).
 
 Not yet wired, deliberately deferred:
 

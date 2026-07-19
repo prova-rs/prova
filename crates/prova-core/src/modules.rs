@@ -2473,6 +2473,23 @@ pub(crate) mod docker {
         docker.set("run", run_fn(lua)?)?;
         docker.set("build", build_fn(lua)?)?;
         docker.set("network", network_fn(lua)?)?;
+        // `docker.diagnostics()` — what the container runtime got wrong that prova papered over.
+        // Process-wide and monotonic, so a caller reads it before and after and takes the delta.
+        docker.set(
+            "diagnostics",
+            lua.create_function(|lua, ()| {
+                let t = lua.create_table()?;
+                t.set(
+                    "port_bind_recoveries",
+                    PORT_BIND_RECOVERIES.load(Ordering::Relaxed),
+                )?;
+                t.set(
+                    "port_bind_failures",
+                    PORT_BIND_FAILURES.load(Ordering::Relaxed),
+                )?;
+                Ok(t)
+            })?,
+        )?;
         Ok(docker)
     }
 
@@ -2740,6 +2757,15 @@ pub(crate) mod docker {
         /// host-bound mock. Docker Desktop provides the name anyway, so setting it always is a no-op
         /// there and keeps one code path across platforms.
         extra_hosts: Vec<String>,
+        /// How many start attempts to spoil, pretending the runtime exposed the ports and bound
+        /// nothing to them. **Crate-internal test hook — never parsed from Lua.**
+        ///
+        /// The defect it simulates happens about once in 750 container starts: far too rare to
+        /// exercise by waiting, and far too consequential to leave unproven, since the recovery path
+        /// had never once executed in a test run. Injection makes it reachable on demand. It is set
+        /// only by tests constructing a `Spec` directly, so no user-facing surface grows a test-only
+        /// knob and no ordinary run can reach it.
+        fault_empty_binding: usize,
     }
 
     impl Spec {
@@ -2845,6 +2871,8 @@ pub(crate) mod docker {
                 network,
                 alias,
                 extra_hosts,
+                // Never read from Lua: the fault hook is reachable only by a test building a `Spec`.
+                fault_empty_binding: 0,
             })
         }
     }
@@ -2852,6 +2880,19 @@ pub(crate) mod docker {
     fn derr<E: std::fmt::Display>(e: E) -> mlua::Error {
         mlua::Error::RuntimeError(format!("docker: {e}"))
     }
+
+    /// Process-wide counts of runtime misbehaviour prova papered over, exposed to Lua as
+    /// `docker.diagnostics()`.
+    ///
+    /// These exist because recovery is **silent**, and a silent recovery is indistinguishable from
+    /// nothing having gone wrong. For a soak measuring one container runtime against another, that
+    /// distinction is the entire measurement: "2000 starts, all fine" and "2000 starts, 3 of which
+    /// this runtime botched and we healed" are completely different findings about that runtime.
+    ///
+    /// They count the RUNTIME's failures, not prova's retries in general — nothing increments them
+    /// on a healthy start.
+    pub(crate) static PORT_BIND_RECOVERIES: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static PORT_BIND_FAILURES: AtomicU64 = AtomicU64::new(0);
 
     /// Connect to the daemon, agreeing on an API version the way the `docker` CLI does.
     ///
@@ -2972,12 +3013,23 @@ pub(crate) mod docker {
             // Short and best-effort: mappings are almost always already there, and anything merely
             // late is re-resolved on demand by `host_port`. Nothing here blocks a container that
             // never needed a host port.
-            let scan = published_ports(&client, &id, &requested, Duration::from_secs(2)).await;
+            let mut scan = published_ports(&client, &id, &requested, Duration::from_secs(2)).await;
+            // Test hook: pretend this attempt hit the runtime defect (see `Spec::fault_empty_binding`).
+            if attempt <= spec.fault_empty_binding {
+                scan.bound_empty = requested.iter().copied().collect();
+                scan.found.clear();
+            }
             ports = scan.found;
             if scan.bound_empty.is_empty() {
+                // Recovering on a later attempt means the runtime botched an earlier one. Record it:
+                // the caller sees a working container and would otherwise never learn this happened.
+                if attempt > 1 {
+                    PORT_BIND_RECOVERIES.fetch_add(1, Ordering::Relaxed);
+                }
                 break;
             }
             if attempt == attempts {
+                PORT_BIND_FAILURES.fetch_add(1, Ordering::Relaxed);
                 let mut stuck: Vec<String> =
                     scan.bound_empty.iter().map(|p| p.to_string()).collect();
                 stuck.sort();
@@ -3094,6 +3146,43 @@ pub(crate) mod docker {
         )))
     }
 
+    /// What the daemon's port map says about one requested port.
+    ///
+    /// The three cases must stay distinct, and telling them apart is the whole difficulty: they all
+    /// read as "no host port" to a caller, but they call for opposite responses. `NotYet` means keep
+    /// waiting; `BoundNothing` means waiting is futile and the container must be replaced.
+    #[derive(Debug, PartialEq, Eq)]
+    enum PortState {
+        /// A host port is bound. The normal answer.
+        Published(u16),
+        /// The daemon has answered about this port, and its answer is that nothing is bound to it —
+        /// either an explicit null or an empty binding list. A stable wrong answer, not a pending
+        /// one: this is the runtime defect that no amount of polling fixes.
+        BoundNothing,
+        /// The port is not in the map at all — the mapping is still being wired. Poll again.
+        NotYet,
+    }
+
+    /// Classify one wanted port against a daemon port map. Pure, so the distinction above can be
+    /// proven against every shape the daemon produces without needing a daemon that misbehaves on
+    /// cue — the misbehaviour being roughly a one-in-750 event.
+    fn classify_port(ports: &HashMap<String, Option<Vec<PortBinding>>>, want: u16) -> PortState {
+        match ports.get(&format!("{want}/tcp")) {
+            Some(Some(binds)) => match binds
+                .first()
+                .and_then(|b| b.host_port.as_ref())
+                .and_then(|s| s.parse::<u16>().ok())
+            {
+                Some(hp) => PortState::Published(hp),
+                // Present, but bound to nothing: an empty list, or an entry whose host port is
+                // missing or unparseable. The daemon has spoken and the answer is "nothing".
+                None => PortState::BoundNothing,
+            },
+            Some(None) => PortState::BoundNothing,
+            None => PortState::NotYet,
+        }
+    }
+
     /// Read the host ports the daemon has assigned so far, polling until every wanted port has a
     /// binding or `budget` runs out. Returns whatever it found — **never an error**.
     ///
@@ -3145,29 +3234,14 @@ pub(crate) mod docker {
                             if scan.found.contains_key(want) {
                                 continue;
                             }
-                            match ports.get(&format!("{want}/tcp")) {
-                                Some(Some(binds)) => {
-                                    match binds
-                                        .first()
-                                        .and_then(|b| b.host_port.as_ref())
-                                        .and_then(|s| s.parse::<u16>().ok())
-                                    {
-                                        Some(hp) => {
-                                            scan.found.insert(*want, hp);
-                                        }
-                                        // Present, but bound to nothing. Distinct from "not there
-                                        // yet": the daemon has answered, and its answer is that
-                                        // this port has no host binding.
-                                        None => {
-                                            scan.bound_empty.insert(*want);
-                                        }
-                                    }
+                            match classify_port(&ports, *want) {
+                                PortState::Published(hp) => {
+                                    scan.found.insert(*want, hp);
                                 }
-                                Some(None) => {
+                                PortState::BoundNothing => {
                                     scan.bound_empty.insert(*want);
                                 }
-                                // Key absent entirely — still being wired. Keep polling.
-                                None => {}
+                                PortState::NotYet => {}
                             }
                         }
                     }
@@ -3488,6 +3562,156 @@ pub(crate) mod docker {
         match image.rsplit_once(':') {
             Some((name, tag)) if !tag.contains('/') => (name.to_string(), tag.to_string()),
             _ => (image.to_string(), "latest".to_string()),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn bind(host_port: &str) -> PortBinding {
+            PortBinding {
+                host_ip: Some("127.0.0.1".to_string()),
+                host_port: Some(host_port.to_string()),
+            }
+        }
+
+        fn map(
+            entries: Vec<(&str, Option<Vec<PortBinding>>)>,
+        ) -> HashMap<String, Option<Vec<PortBinding>>> {
+            entries
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect()
+        }
+
+        #[test]
+        fn a_bound_port_reports_its_host_port() {
+            let ports = map(vec![("5432/tcp", Some(vec![bind("55431")]))]);
+            assert_eq!(classify_port(&ports, 5432), PortState::Published(55431));
+        }
+
+        /// The distinction the whole retry design rests on. An ABSENT key means the daemon has not
+        /// wired the mapping yet (wait); a key present with nothing bound means the daemon has
+        /// answered and the answer is "nothing" (replace the container). Collapsing these is what
+        /// made a stable runtime defect look like a slow publish, and cost 15s of polling before a
+        /// misleading timeout.
+        #[test]
+        fn an_absent_key_is_pending_but_an_empty_binding_is_a_verdict() {
+            let pending = map(vec![]);
+            assert_eq!(classify_port(&pending, 5432), PortState::NotYet);
+
+            // `"5432/tcp": []` — observed on Docker Desktop under load, stable for 15s+.
+            let empty_list = map(vec![("5432/tcp", Some(vec![]))]);
+            assert_eq!(classify_port(&empty_list, 5432), PortState::BoundNothing);
+
+            // `"5432/tcp": null` — the same verdict in the daemon's other spelling.
+            let null_binding = map(vec![("5432/tcp", None)]);
+            assert_eq!(classify_port(&null_binding, 5432), PortState::BoundNothing);
+        }
+
+        /// A binding that exists but carries no usable host port is still a verdict, not a wait:
+        /// there is nothing to poll for.
+        #[test]
+        fn a_binding_without_a_usable_host_port_is_bound_nothing() {
+            let no_port = map(vec![(
+                "5432/tcp",
+                Some(vec![PortBinding {
+                    host_ip: Some("127.0.0.1".to_string()),
+                    host_port: None,
+                }]),
+            )]);
+            assert_eq!(classify_port(&no_port, 5432), PortState::BoundNothing);
+
+            let junk = map(vec![("5432/tcp", Some(vec![bind("not-a-number")]))]);
+            assert_eq!(classify_port(&junk, 5432), PortState::BoundNothing);
+        }
+
+        fn spec_with_fault(fault: usize) -> Spec {
+            Spec {
+                image: "alpine:3.20".to_string(),
+                ports: vec![(80, None)],
+                env: Vec::new(),
+                command: vec!["sleep".to_string(), "20".to_string()],
+                wait: None,
+                network: None,
+                alias: None,
+                extra_hosts: Vec::new(),
+                fault_empty_binding: fault,
+            }
+        }
+
+        /// The recovery path, executed on purpose.
+        ///
+        /// It had never run in any test: the defect it handles appears about once in 750 container
+        /// starts, so every green suite was green without touching it. This drives both outcomes —
+        /// a spoiled attempt that recovers, and a permanently spoiled one that gives up — and
+        /// checks that each is *counted*, because a silent recovery is invisible to the soak that
+        /// needs to tell a healthy runtime from a sick one.
+        ///
+        /// Both cases live in one test on purpose: the counters are process-wide, so separate tests
+        /// running in parallel in this binary would read each other's increments.
+        #[test]
+        fn injected_empty_bindings_recover_or_fail_loudly_and_are_counted() {
+            if !crate::docker_runs_linux_containers() {
+                eprintln!("skipping: docker is not available");
+                return;
+            }
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("tokio runtime");
+
+            // One spoiled attempt: prova should replace the container and hand back a working one.
+            let before = PORT_BIND_RECOVERIES.load(Ordering::Relaxed);
+            let container = rt
+                .block_on(start(spec_with_fault(1)))
+                .expect("a single spoiled attempt must be recovered, not surfaced");
+            assert!(
+                container.ports.contains_key(&80),
+                "recovered container should carry a real host port, got {:?}",
+                container.ports
+            );
+            assert_eq!(
+                PORT_BIND_RECOVERIES.load(Ordering::Relaxed) - before,
+                1,
+                "a recovery must be recorded — otherwise a soak cannot see the runtime misbehave"
+            );
+            drop(container);
+
+            // Spoiled beyond the retry budget: give up, say why, and count it as a failure.
+            let before_fail = PORT_BIND_FAILURES.load(Ordering::Relaxed);
+            let before_recover = PORT_BIND_RECOVERIES.load(Ordering::Relaxed);
+            let msg = match rt.block_on(start(spec_with_fault(99))) {
+                Ok(_) => panic!("a permanently unbindable port must not be reported as success"),
+                Err(e) => e.to_string(),
+            };
+            assert!(
+                msg.contains("bound nothing"),
+                "the error must name the runtime defect, got: {msg}"
+            );
+            assert_eq!(
+                PORT_BIND_FAILURES.load(Ordering::Relaxed) - before_fail,
+                1,
+                "giving up must be counted"
+            );
+            assert_eq!(
+                PORT_BIND_RECOVERIES.load(Ordering::Relaxed) - before_recover,
+                0,
+                "giving up is not a recovery"
+            );
+        }
+
+        /// Ports are matched exactly: another container port being published says nothing about
+        /// the one asked for, and must not be mistaken for it.
+        #[test]
+        fn other_ports_do_not_answer_for_the_one_requested() {
+            let ports = map(vec![
+                ("80/tcp", Some(vec![bind("55000")])),
+                ("5432/udp", Some(vec![bind("55001")])),
+            ]);
+            assert_eq!(classify_port(&ports, 5432), PortState::NotYet);
+            assert_eq!(classify_port(&ports, 80), PortState::Published(55000));
         }
     }
 }

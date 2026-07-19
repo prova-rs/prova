@@ -548,12 +548,11 @@ fn build_topology_run(
     // Build the engine config with the declared plugins (so the topology's `require(...)` resolves).
     // `--fixed` pins ports for external reachability; the default is random (like tests), so several
     // topologies can be inhabited at once without colliding.
-    let config = engine_config(1, &layout, &run.plugins, Some(&home))
-        .with_ports(if fixed {
-            PortMode::Fixed
-        } else {
-            PortMode::Auto
-        });
+    let config = engine_config(1, &layout, &run.plugins, Some(&home)).with_ports(if fixed {
+        PortMode::Fixed
+    } else {
+        PortMode::Auto
+    });
 
     Ok(TopologyRun {
         home,

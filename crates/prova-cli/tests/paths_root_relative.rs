@@ -10,7 +10,11 @@ fn paths_resolve_against_the_project_root() {
     let dir = std::env::temp_dir().join(format!("prova-rootpath-{}", std::process::id()));
     std::fs::create_dir_all(dir.join(".prova")).unwrap();
     std::fs::create_dir_all(dir.join("proofs")).unwrap();
-    std::fs::write(dir.join(".prova/prova.toml"), "[run]\npaths = [\"proofs\"]\n").unwrap();
+    std::fs::write(
+        dir.join(".prova/prova.toml"),
+        "[run]\npaths = [\"proofs\"]\n",
+    )
+    .unwrap();
     std::fs::write(
         dir.join("proofs/root_test.lua"),
         "prova.test(\"proofs at the root\", function(t) t:expect(1):equals(1) end)\n",
