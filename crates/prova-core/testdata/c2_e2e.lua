@@ -48,9 +48,18 @@ prova.test("a loopback-bound mock is NOT reachable from the container (the mutat
   -- `host.docker.internal` to the host's 127.0.0.1. So on Desktop this is unanswerable, and per
   -- `test-topology.md` an unanswerable question is a skip, not a failure. (This divergence is the
   -- proof: run it on both and the platforms disagree exactly where C2 says they should.)
+  -- Every Mac/Windows Docker runtime is a Linux VM whose proxy forwards `host.docker.internal` to the
+  -- host's 127.0.0.1 — Docker Desktop, OrbStack, and Rancher Desktop all do it. `docker info`'s
+  -- OperatingSystem names the runtime, so match the known VM-backed ones; the premise only holds on a
+  -- native-Linux daemon that reports a real distro (e.g. "Ubuntu 22.04").
   local info = shell.run({ "docker", "info", "--format", "{{.OperatingSystem}}" })
-  if (info.stdout or ""):find("Docker Desktop") then
-    t:skip("Docker Desktop reaches host loopback; the mutation only holds on native Linux")
+  local os_name = info.stdout or ""
+  local forwards_loopback = os_name:find("Docker Desktop")
+    or os_name:find("OrbStack")
+    or os_name:find("Rancher Desktop")
+  if forwards_loopback then
+    t:skip("this Docker runtime (" .. os_name:gsub("%s+$", "") ..
+      ") reaches host loopback; the mutation only holds on native Linux")
     return
   end
 
