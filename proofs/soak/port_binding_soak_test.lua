@@ -13,11 +13,20 @@
 -- misbehaviour is COUNTED rather than silently absorbed. The counts are the deliverable; the
 -- assertions guard the contract.
 --
--- CONCURRENCY MATTERS. The original defect appeared under PARALLEL daemon load — several test
--- binaries hammering one daemon at once — not under sequential churn, and 1200 sequential starts
--- (600 per runtime) produced zero defects. So `workers` exists to reproduce the conditions rather
--- than merely accumulate starts. A soak that only goes deeper, never wider, would keep answering a
--- question nobody asked.
+-- CONCURRENCY IS THE TRIGGER, not volume. Measured on one machine (M-series macOS):
+--
+--   sequential, 600 starts   Docker Desktop  0 defects      OrbStack  0 defects
+--   8 workers, 800 starts    Docker Desktop  1, 2, 4        OrbStack  0, 0, 0
+--                            (three rounds each; every Desktop defect was healed,
+--                             none unrecoverable, 800/800 starts usable throughout)
+--
+-- So 1200 sequential starts found nothing and ~2400 concurrent starts found seven. Depth alone was
+-- answering a question nobody asked; `workers` exists to reproduce the conditions. And OrbStack has
+-- not reproduced it at all under the same load, which is what makes this look like a Docker Desktop
+-- port-plumbing defect rather than something prova provokes.
+--
+-- Those numbers are a snapshot of one machine and two daemon versions, not a verdict on either
+-- product. Re-measure before repeating them; that is the entire point of keeping this runnable.
 --
 -- GATING. `soak` (opt-in, PROVA_SOAK) and `docker` (present). Absent either, this skips.
 --
