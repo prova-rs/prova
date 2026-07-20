@@ -3014,6 +3014,23 @@ pub(crate) mod docker {
             // late is re-resolved on demand by `host_port`. Nothing here blocks a container that
             // never needed a host port.
             let mut scan = published_ports(&client, &id, &requested, Duration::from_secs(2)).await;
+
+            // A container that has EXITED has no port bindings — the daemon clears them when it
+            // stops. That is a container which finished, not a runtime that failed to bind, and the
+            // two are indistinguishable from the port map alone.
+            //
+            // Conflating them was a real bug, and an expensive one to believe: a short-lived
+            // container (`sleep 2`, shorter than this scan) reliably produced "this runtime exposed
+            // a port and bound nothing to it", and prova then recreated a container that had simply
+            // done its job. Measured on one machine, 800 concurrent starts on the same runtime: 7
+            // such "defects" with a 2s lifetime, 0 with a 30s one, nothing else changed. It also
+            // sent the diagnosis in exactly the wrong direction — the counters attributed our
+            // misreading to Docker Desktop, and a `docker` CLI arm running the identical protocol
+            // saw zero.
+            if !scan.bound_empty.is_empty() && exited_status(&client, &id).await.is_some() {
+                scan.bound_empty.clear();
+            }
+
             // Test hook: pretend this attempt hit the runtime defect (see `Spec::fault_empty_binding`).
             if attempt <= spec.fault_empty_binding {
                 scan.bound_empty = requested.iter().copied().collect();
@@ -3700,6 +3717,50 @@ pub(crate) mod docker {
                 0,
                 "giving up is not a recovery"
             );
+        }
+
+        /// A container that finished is not a runtime that failed to bind.
+        ///
+        /// The daemon clears port bindings when a container stops, so a short-lived container looks
+        /// exactly like the runtime defect: port requested, nothing bound. prova used to believe it,
+        /// recreate a container that had simply done its job, and record the waste as evidence
+        /// against the runtime. Measured: 800 concurrent starts on one runtime produced 7 such
+        /// "defects" at a 2s container lifetime and 0 at 30s, nothing else changed — and a `docker`
+        /// CLI arm running the identical protocol saw none, which is what proved the fault was ours.
+        #[test]
+        fn a_container_that_exited_is_not_counted_as_a_runtime_defect() {
+            if !crate::docker_runs_linux_containers() {
+                eprintln!("skipping: docker is not available");
+                return;
+            }
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("tokio runtime");
+
+            let before_recover = PORT_BIND_RECOVERIES.load(Ordering::Relaxed);
+            let before_fail = PORT_BIND_FAILURES.load(Ordering::Relaxed);
+
+            // Exits immediately, so the port scan is overwhelmingly likely to meet a stopped
+            // container with its bindings already cleared — the exact shape that used to be
+            // misread.
+            let mut spec = spec_with_fault(0);
+            spec.command = vec!["true".to_string()];
+            let result = rt.block_on(start(spec));
+
+            // Whether the scan caught it before or after it exited is a race, and either outcome is
+            // legitimate — what must NEVER happen is blaming the runtime for it.
+            assert_eq!(
+                PORT_BIND_RECOVERIES.load(Ordering::Relaxed) - before_recover,
+                0,
+                "a container that exited on its own must not be recorded as a runtime bind defect"
+            );
+            assert_eq!(
+                PORT_BIND_FAILURES.load(Ordering::Relaxed) - before_fail,
+                0,
+                "a container that exited on its own must not be recorded as a bind failure"
+            );
+            drop(result);
         }
 
         /// Ports are matched exactly: another container port being published says nothing about
