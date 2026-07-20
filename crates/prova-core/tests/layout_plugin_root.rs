@@ -12,8 +12,8 @@ fn testdata(name: &str) -> PathBuf {
 ///
 /// Cargo runs this with the crate dir as cwd, never the fixture root, so a root that resolved
 /// relative to the working directory could not find `greet` here. Roots are now absolute and
-/// declared — the CLI derives them from the manifest's `[run] plugin_roots` against the project root,
-/// and an embedder passes them directly, as below. Nothing is implied by the engine.
+/// declared — the CLI derives it from the manifest's `[run] plugin_root` against the project root,
+/// and an embedder passes it directly, as below. Nothing is implied by the engine.
 #[test]
 fn local_plugins_resolve_against_the_project_root() {
     let root = testdata("layout_plugin_root");

@@ -105,9 +105,9 @@ A plugin author who follows this gets the same shape, IDE completion, and skip b
    so it wins over the disk roots below.
 3. **Intra-plugin** — `<canonical>.<sub>` resolves under the plugin's own root, so a multi-file
    plugin can require its siblings without colliding with anything else.
-4. **Declared disk roots**, each tried as `<root>/<name-with-dots-as-slashes>.lua` then
-   `.../init.lua`. These come from the manifest's `[run] plugin_roots`, resolved against the project
-   root. There is no default and no environment input — see below.
+4. **The declared plugin root**, tried as `<root>/<name-with-dots-as-slashes>.lua` then
+   `.../init.lua`. It comes from the manifest's `[run] plugin_root`, resolved against the project
+   root. There is no default, no environment input, and exactly one — see below.
 
 Appended (not prepended) so it never shadows Lua's own searchers. A miss returns a message listing
 where it looked, so `require`'s aggregate error is actionable. **No network fetch happens in the
@@ -123,7 +123,7 @@ Discovery is the only implicit step: prova walks up for `.prova.toml`, `prova.to
 [run]
 paths        = ["proofs"]            # root-relative
 config       = "config.lua"          # home-relative
-plugin_roots = [".prova/plugins"]    # root-relative; no default
+plugin_root  = ".prova/plugins"      # root-relative; no default; exactly one
 ```
 
 Removed, deliberately, in service of that: the per-user `data_dir/plugins` root, the
@@ -139,8 +139,14 @@ Two reasons this is worth the one line of ceremony:
 - **Auditability.** One file answers the question completely. That matters most when the reader is an
   agent, which cannot simply *know* a convention baked into the binary.
 
-A project declaring no roots resolves no ambient plugins, and the miss message says exactly that
-(`no plugin roots declared — add plugin_roots to [run]…`) rather than reading like a typo. The
+**One root, not a list.** The ambient root does one job — "this project's own plugins, without
+naming each one" — which is inherently one place. Everything else (a vendored plugin, one from a
+sibling package, a team's shared plugin) belongs in `[plugins]` with a name and a pinned path or git
+source: more explicit, more reproducible, and it keeps a second directory from raising a precedence
+question ("both hold `foo` — which wins?") that buys no capability.
+
+A project declaring no root resolves no ambient plugins, and the miss message says exactly that
+(`no plugin root declared — add plugin_root to [run]…`) rather than reading like a typo. The
 git-checkout cache (`cache_dir/plugins`) is not an exception to any of this: its contents are pinned
 by the manifest and reproducible from it.
 
@@ -184,8 +190,8 @@ Wired now (the "easy to install" story):
 - **XDG layout** (`layout.rs`, `SystemLayout`) — `config_dir` `~/.config/prova`, `cache_dir`
   `~/.cache/prova`, `data_dir` `~/.local/share/prova` (XDG on macOS too, like archetect;
   `XDG_*` honored). `XdgSystemLayout` for production, `RootedSystemLayout` for tests.
-- **Declared plugin roots** — `[run] plugin_roots` in the manifest, resolved against the project
-  root. The only disk roots consulted; there is no global install dir (see "Everything is declared").
+- **The declared plugin root** — `[run] plugin_root` in the manifest, resolved against the project
+  root. The only directory scanned; there is no global install dir (see "Everything is declared").
 - **Manifest-declared plugins** — `prova.toml` `[plugins]` maps a name to a local path or a **git
   source** (`{ git = "…", tag/branch/rev = "…", module = "…" }`). Git sources are fetched (shelling
   to `git`, like archetect fetches archetype sources) into `cache_dir/plugins`, pinned by ref and
@@ -278,7 +284,7 @@ and tested through the public seam with no behavior change.
 ## Status
 
 - **Done:** custom searcher (bundled → manifest-named → intra-plugin → disk roots); one bundled
-  loadable namespace (`prova.workspace`); ambient plugins via declared `[run] plugin_roots`;
+  loadable namespace (`prova.workspace`); ambient plugins via the declared `[run] plugin_root`;
   the XDG `SystemLayout`; `[plugins]` manifest sources with **git fetch + cache**,
   verified end-to-end through the real binary (`tests/plugin_git.rs`); **private plugin dependencies**
   (`prova-plugin.toml [plugins]`), scoped at load via the chunk environment and cached by path

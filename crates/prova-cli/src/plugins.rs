@@ -27,10 +27,10 @@ pub struct ResolvedPlugins {
     /// canonical name — where its `prova-plugin.toml` and `library/` annotation stub live. Used to
     /// sync IDE annotations into the project's `annotations/` dir.
     pub roots: BTreeMap<String, PathBuf>,
-    /// Directories the searcher scans for undeclared (ambient) plugins — the manifest's
-    /// `[run] plugin_roots`, absolutised against the project root. Empty unless declared: there is
-    /// no built-in root, so resolution is always readable off `prova.toml`.
-    pub search_roots: Vec<PathBuf>,
+    /// The directory scanned for undeclared (ambient) plugins — the manifest's `[run] plugin_root`,
+    /// absolutised against the project root. `None` unless declared: there is no built-in root, so
+    /// resolution is always readable off `prova.toml`.
+    pub search_root: Option<PathBuf>,
 }
 
 /// A plugin's own manifest (`prova-plugin.toml`) — the analogue of `archetype.yaml`. All fields are

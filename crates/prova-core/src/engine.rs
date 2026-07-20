@@ -2115,7 +2115,7 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
     // Search roots are exactly what the embedder declared (`with_plugin_root`) — the engine adds
     // none of its own. It used to join `<project_root>/.prova/plugins` here, which meant the answer
     // to "where do plugins come from?" was split between this file and the manifest. The CLI now
-    // passes the manifest's `[run] plugin_roots` (already absolutised against the project root), so
+    // passes the manifest's `[run] plugin_root` (already absolutised against the project root), so
     // the manifest is the single, readable source of truth and the engine has no layout opinion.
     crate::plugins::install(
         &lua,

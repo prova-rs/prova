@@ -8,7 +8,7 @@ use prova_core::{run_path_with, NullReporter, RunConfig};
 /// The disk root is passed explicitly rather than injected through `PROVA_PLUGIN_PATH`. That env var
 /// is gone: a root reachable from the environment is a root you cannot read off the project, which
 /// is the same "works on my machine" hole as a per-user plugin directory. An embedder — a test very
-/// much included — names its roots, exactly as the CLI now passes the manifest's `[run] plugin_roots`.
+/// much included — names its root, exactly as the CLI now passes the manifest's `[run] plugin_root`.
 #[test]
 fn require_resolves_bundled_and_disk_plugins() {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

@@ -6,9 +6,9 @@
 //!   1. `BUNDLED` — first-party modules embedded in the binary, reserved for the `prova.*` namespace.
 //!   2. `named` — a plugin declared in `prova.toml` (`[plugins]`), resolved to an exact file (git
 //!      checkouts are fetched into the cache and land here as a path). The manifest is authoritative.
-//!   3. the **declared** disk roots, in order — each as `<root>/<a/b>.lua` then
-//!      `<root>/<a/b>/init.lua`. The CLI derives these from the manifest's `[run] plugin_roots`,
-//!      resolved against the project root; an embedder passes them via `RunConfig::with_plugin_root`.
+//!   3. the **declared** plugin root — `<root>/<a/b>.lua` then `<root>/<a/b>/init.lua`. The CLI
+//!      derives it from the manifest's `[run] plugin_root`, resolved against the project root; an
+//!      embedder passes it via `RunConfig::with_plugin_root`.
 //!
 //! # Everything is declared
 //!
@@ -18,6 +18,11 @@
 //! directory. Each of those used to be an answer to "where could this `require` have come from?" that
 //! you could not get by reading the project — and a resolution path outside version control lets a
 //! proof pass on one machine and fail in CI with nothing in the repo to explain it.
+//!
+//! The declared root is **one** directory, not a list. An ambient root exists for a single job —
+//! "this project's own plugins, without naming each one" — and that is inherently one place. A plugin
+//! from anywhere else takes a name and a pinned source in `[plugins]`, which is more explicit and more
+//! reproducible than a second scanned directory; a list would only add a precedence question.
 //!
 //! The payoff is auditability: one file answers the question completely, which matters most when the
 //! reader is an agent that cannot simply *know* the conventions. A project that declares no roots
@@ -80,10 +85,11 @@ const BUNDLED: &[(&str, &str)] = &[
 /// the CLI already fetched into the cache). `namespaces` maps a plugin's *canonical* name to its
 /// module root directory, so a multi-file plugin can `require("<canonical>.<sub>")` its own sibling
 /// files (namespaced by canonical name, so it is stable regardless of the consumer's alias and never
-/// collides with another plugin). `roots` are the declared disk search roots — the manifest's
-/// `[run] plugin_roots`, already absolutised — and they are the *only* disk roots consulted: nothing
-/// machine-global, nothing from the environment, nothing cwd-relative (see the module docs). All are
-/// cloned into the searcher closure (the Lua state is single-threaded).
+/// collides with another plugin). `roots` carries the declared plugin root — the manifest's
+/// `[run] plugin_root`, already absolutised — and it is the *only* directory scanned: nothing
+/// machine-global, nothing from the environment, nothing cwd-relative (see the module docs). A slice
+/// rather than one path only because the embedder API (`with_plugin_root`) accumulates; the manifest
+/// declares exactly one. All are cloned into the closure (the Lua state is single-threaded).
 pub(crate) fn install(
     lua: &Lua,
     roots: &[PathBuf],
@@ -168,8 +174,8 @@ fn resolve(
     // present as an ordinary "not found" and send the reader hunting for a misspelled plugin.
     if disk_roots(roots).is_empty() {
         msg.push_str(
-            "\n\t\t(no plugin roots declared — add `plugin_roots` to [run] in prova.toml, \
-             e.g. plugin_roots = [\".prova/plugins\"])",
+            "\n\t\t(no plugin root declared — add `plugin_root` to [run] in prova.toml, \
+             e.g. plugin_root = \".prova/plugins\")",
         );
     }
     Ok(Value::String(lua.create_string(&msg)?))
@@ -317,7 +323,7 @@ fn private_deps(entry: &Path) -> BTreeMap<String, PathBuf> {
 /// This function used to add an env var (`PROVA_PLUGIN_PATH`) and a cwd-relative `./.prova/plugins`.
 /// Both are gone on purpose. A root that comes from the environment or the working directory cannot
 /// be read off the project, so "where could this `require` have come from?" had four answers, three
-/// of them invisible from the repo. Now the manifest's `[run] plugin_roots` is the whole story, which
+/// of them invisible from the repo. Now the manifest's `[run] plugin_root` is the whole story, which
 /// is what lets a reader — or an agent — audit resolution by reading one file.
 fn disk_roots(declared: &[PathBuf]) -> Vec<PathBuf> {
     declared.to_vec()

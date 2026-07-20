@@ -165,14 +165,15 @@ pub struct SuiteDecl {
 pub struct Profile {
     #[serde(default)]
     pub paths: Vec<String>,
-    /// Directories the plugin searcher consults, relative to the project **root** (like `paths`).
+    /// The directory holding this project's own plugins, relative to the project **root** (like
+    /// `paths`). No default: the one place prova scans is the one this file names.
     ///
-    /// There is no default: a root prova can resolve from is one this file names. Discovery finds
-    /// the manifest; from there everything is declared, so reading `prova.toml` tells you — or an
-    /// agent — the whole resolution graph, with nothing contributed by the environment, the working
-    /// directory, or the machine.
-    #[serde(default)]
-    pub plugin_roots: Vec<String>,
+    /// Deliberately singular. An ambient root exists for a single job — "my project's plugins, don't
+    /// make me name each one" — and that is inherently one place. A plugin from anywhere else gets a
+    /// name and a pinned source in `[plugins]` (a path or a git ref), which is both more explicit and
+    /// more reproducible than a second directory scanned by convention. A list would only add a
+    /// precedence question ("two roots both hold `foo` — which wins?") without adding capability.
+    pub plugin_root: Option<String>,
     /// The companion file loaded once, pre-suite, for `runtime.*` config (capabilities). Relative to
     /// the home. Defaults to `prova.lua` beside the manifest; point it elsewhere (e.g.
     /// `proofs/shared/config.lua`) to keep the home clean.
@@ -209,9 +210,9 @@ pub struct Profile {
 #[derive(Debug, PartialEq)]
 pub struct Resolved {
     pub paths: Vec<String>,
-    /// Plugin search roots (`[run] plugin_roots`), relative to the project root. Empty means the
-    /// project declared none — the searcher then has nowhere to look on disk, and says so.
-    pub plugin_roots: Vec<String>,
+    /// The project's plugin directory (`[run] plugin_root`), relative to the project root. `None`
+    /// means the project declared none — the searcher then has nowhere to scan, and says so.
+    pub plugin_root: Option<String>,
     /// The companion config file (relative to home); `None` → the `prova.lua` default. See `Profile`.
     pub config: Option<String>,
     pub jobs: Option<usize>,
@@ -255,12 +256,11 @@ impl Manifest {
             Some(p) if !p.paths.is_empty() => p.paths.clone(),
             _ => base.paths.clone(),
         };
-        // Overridden wholesale by a profile, like `paths` — a profile that names roots means "look
-        // here instead", not "look here as well", so a profile can never widen resolution silently.
-        let plugin_roots = match overlay {
-            Some(p) if !p.plugin_roots.is_empty() => p.plugin_roots.clone(),
-            _ => base.plugin_roots.clone(),
-        };
+        // A profile that names a root means "scan here instead" — it replaces, never adds, so
+        // selecting a profile can not widen resolution.
+        let plugin_root = overlay
+            .and_then(|p| p.plugin_root.clone())
+            .or_else(|| base.plugin_root.clone());
         let config = overlay
             .and_then(|p| p.config.clone())
             .or_else(|| base.config.clone());
@@ -299,7 +299,7 @@ impl Manifest {
 
         Ok(Resolved {
             paths,
-            plugin_roots,
+            plugin_root,
             config,
             jobs,
             format,
@@ -350,7 +350,7 @@ paths = ["tests/smoke"]
             r,
             Resolved {
                 paths: vec!["tests".into()],
-                plugin_roots: Vec::new(),
+                plugin_root: None,
                 config: None,
                 jobs: Some(4),
                 format: Some("console".into()),
@@ -481,19 +481,21 @@ redis = "acme:prova-redis@v1"
         assert_eq!(r.jobs, Some(4)); // inherited
     }
 
-    /// `plugin_roots` is the whole of on-disk plugin resolution, so both halves matter: absent means
-    /// *no* roots (never a silent default — that is the point of declaring them), and a profile that
-    /// names roots replaces rather than extends, so selecting a profile can never widen resolution.
+    /// `plugin_root` is the whole of ambient on-disk plugin resolution, so each half matters: absent
+    /// means *nothing* is scanned (never a silent default — that is the point of declaring it), and a
+    /// profile that names one replaces rather than adds, so selecting a profile cannot widen
+    /// resolution. It is singular by design: a second ambient directory would only add a precedence
+    /// question, while a plugin from elsewhere belongs in `[plugins]` with a name and a pinned source.
     #[test]
-    fn plugin_roots_are_declared_and_profile_overridable() {
+    fn plugin_root_is_declared_and_profile_overridable() {
         let m = Manifest::parse(
             r#"
 [run]
 paths = ["proofs"]
-plugin_roots = [".prova/plugins"]
+plugin_root = ".prova/plugins"
 
 [profiles.vendored]
-plugin_roots = ["vendor/plugins"]
+plugin_root = "vendor/plugins"
 
 [profiles.smoke]
 paths = ["proofs/smoke"]
@@ -502,22 +504,22 @@ paths = ["proofs/smoke"]
         .unwrap();
 
         assert_eq!(
-            m.resolve(None).unwrap().plugin_roots,
-            vec![".prova/plugins".to_string()]
+            m.resolve(None).unwrap().plugin_root.as_deref(),
+            Some(".prova/plugins")
         );
-        // Replaced wholesale, not appended to.
+        // Replaced, not added to.
         assert_eq!(
-            m.resolve(Some("vendored")).unwrap().plugin_roots,
-            vec!["vendor/plugins".to_string()]
+            m.resolve(Some("vendored")).unwrap().plugin_root.as_deref(),
+            Some("vendor/plugins")
         );
-        // A profile that says nothing about roots inherits the project's.
+        // A profile silent about the root inherits the project's.
         assert_eq!(
-            m.resolve(Some("smoke")).unwrap().plugin_roots,
-            vec![".prova/plugins".to_string()]
+            m.resolve(Some("smoke")).unwrap().plugin_root.as_deref(),
+            Some(".prova/plugins")
         );
-        // No `plugin_roots` anywhere means nothing is searched — no built-in fallback.
+        // No `plugin_root` anywhere means nothing is scanned — no built-in fallback.
         let bare = Manifest::parse("[run]\npaths = [\"proofs\"]\n").unwrap();
-        assert!(bare.resolve(None).unwrap().plugin_roots.is_empty());
+        assert!(bare.resolve(None).unwrap().plugin_root.is_none());
     }
 
     #[test]

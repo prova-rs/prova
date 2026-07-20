@@ -2,6 +2,6 @@
 [run]
 paths        = ["proofs"]            # suites live at the project root (root-relative)
 config       = "config.lua"          # the runtime companion (home-relative → .prova/config.lua)
-plugin_roots = [".prova/plugins"]    # where ambient plugins live (root-relative). No default:
-                                     # prova searches exactly the roots named here, so this file
-                                     # answers "where can a plugin come from?" on its own.
+plugin_root  = ".prova/plugins"      # this project's own plugins (root-relative). No default,
+                                     # and exactly one: anything from elsewhere gets a name and a
+                                     # pinned source in [plugins] instead.

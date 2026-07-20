@@ -1471,12 +1471,12 @@ fn engine_config(
     plugins_resolved: &plugins::ResolvedPlugins,
     home: Option<&Home>,
 ) -> RunConfig {
-    // Every search root is declared in the manifest (`[run] plugin_roots`) — nothing global, nothing
-    // from the environment, nothing from the cwd. Discovery locates `prova.toml`; from there the file
-    // names everything, so a reader (or an agent) can audit what a `require` could possibly resolve
-    // without knowing a single convention baked into this binary.
+    // The ambient plugin dir is declared in the manifest (`[run] plugin_root`) — nothing global,
+    // nothing from the environment, nothing from the cwd. Discovery locates `prova.toml`; from there
+    // the file names everything, so a reader (or an agent) can audit what a `require` could possibly
+    // resolve without knowing a single convention baked into this binary.
     let mut config = RunConfig::new(jobs).with_module(prova_archetect::install);
-    for root in &plugins_resolved.search_roots {
+    if let Some(root) = &plugins_resolved.search_root {
         config = config.with_plugin_root(root.clone());
     }
     // Surface where the project is (`prova.root` / `prova.home`) so repo-local plugins can find
@@ -1590,14 +1590,10 @@ fn resolve_from_manifest(
         ExitCode::from(2)
     })?;
 
-    // Declared search roots, absolutised against the project ROOT (like `paths`, and unlike the
-    // home-relative `config`). Nothing is added here: a project searches exactly the roots its
+    // The declared plugin dir, absolutised against the project ROOT (like `paths`, and unlike the
+    // home-relative `config`). Nothing is added here: a project scans exactly the one directory its
     // manifest names, so the file answers "where can a plugin come from?" on its own.
-    plugins_resolved.search_roots = resolved
-        .plugin_roots
-        .iter()
-        .map(|r| home.root.join(r))
-        .collect();
+    plugins_resolved.search_root = resolved.plugin_root.as_ref().map(|r| home.root.join(r));
 
     // The optional `prova.lua` companion — loaded with the manifest, and BEFORE the `must_run`
     // precondition below. That order is the whole reason this is a project-level companion rather

@@ -237,7 +237,7 @@ left open by good architecture; we are not walking through it.
 - **Plugin system** — `require("name")` resolves Lua plugins through a custom `package.searchers`
   entry (`plugins.rs`), in order: **bundled** first-party modules embedded in the binary (`prova.*`),
   **manifest-declared** plugins (`prova.toml` `[plugins]`, authoritative + pinned), then disk — every
-  **declared** disk root from the manifest's `[run] plugin_roots` (root-relative; `<a/b>.lua` or
+  **declared** plugin root from the manifest's `[run] plugin_root` (root-relative; `<a/b>.lua` or
   `<a/b>/init.lua`). **Everything is declared**: no default root, no `PROVA_PLUGIN_PATH`, no
   cwd-relative fallback, no machine-global dir — discovery finds `prova.toml`, and from there the file
   names every place a plugin may come from, so a clean clone resolves what the author's machine does
