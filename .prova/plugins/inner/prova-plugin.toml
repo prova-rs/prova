@@ -1,0 +1,3 @@
+[plugin]
+name = "inner"
+description = "A private provider — the dependency a library pulls in, which must stay invisible to that library's consumers. Exists for the plugin-isolation proof."

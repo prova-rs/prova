@@ -1,0 +1,15 @@
+[plugin]
+name = "lib"
+description = "A library plugin that privately depends on `inner`. Proves a plugin can bundle a dependency without exposing it to consumers (the bundled + isolated model)."
+
+# The per-plugin PRIVATE dependency map — the proposed surface the isolation mechanism will read (a
+# plugin declares its deps the same way a project does in prova.toml [plugins]; canonical, symmetric).
+#
+# Inert today: the searcher resolves `require("inner")` via the global `.prova/plugins` disk root, so
+# `inner` leaks into every namespace — exactly what proofs/plugins/isolation_test.lua forbids. Once the
+# loader binds a plugin-scoped `require` (with its own module cache) to this map, `inner` resolves
+# privately for `lib` and disappears from consumers. NOTE for the implementer: private deps must NOT
+# live on the shared `.prova/plugins` root, and must NOT populate the global `package.loaded` cache —
+# both are leak paths the proof will catch.
+[plugins]
+inner = { path = "../inner" }
