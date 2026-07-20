@@ -344,7 +344,7 @@ fn eval_subcommand(args: Vec<String>) -> ExitCode {
     if let Err(code) = layer_cli_plugins(&cli_plugins, &layout, &sources, &mut plugins_resolved) {
         return code;
     }
-    let config = engine_config(1, &layout, &plugins_resolved, home.as_ref());
+    let config = engine_config(1, &plugins_resolved, home.as_ref());
 
     match prova_core::eval_snippet(&code, &config) {
         Ok(value) => {
@@ -556,7 +556,7 @@ fn build_topology_run(
     // Build the engine config with the declared plugins (so the topology's `require(...)` resolves).
     // `--fixed` pins ports for external reachability; the default is random (like tests), so several
     // topologies can be inhabited at once without colliding.
-    let config = engine_config(1, &layout, &run.plugins, Some(&home)).with_ports(if fixed {
+    let config = engine_config(1, &run.plugins, Some(&home)).with_ports(if fixed {
         PortMode::Fixed
     } else {
         PortMode::Auto
@@ -1176,7 +1176,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
 
     // The standalone `prova` binary ships the archetect plugin, so `archetect.render{...}` works.
     // The plugin searcher consults the global install dir plus any manifest-declared plugins.
-    let mut config = engine_config(jobs, &layout, &plugins_resolved, home.as_ref())
+    let mut config = engine_config(jobs, &plugins_resolved, home.as_ref())
         .with_update_snapshots(update_snapshots)
         .with_capabilities(capabilities);
 
@@ -1468,13 +1468,15 @@ fn collect_suites(
 /// selection) on top.
 fn engine_config(
     jobs: usize,
-    layout: &dyn SystemLayout,
     plugins_resolved: &plugins::ResolvedPlugins,
     home: Option<&Home>,
 ) -> RunConfig {
-    let mut config = RunConfig::new(jobs)
-        .with_module(prova_archetect::install)
-        .with_plugin_root(layout.plugins_dir());
+    // Deliberately NO machine-global plugin root. A plugin reaches a project from its own
+    // `.prova/plugins/` or from a pinned git source in `prova.toml` — both of which are in version
+    // control, so a clean clone resolves exactly what this machine resolves. A per-user plugin
+    // directory would let a proof pass here and fail in CI with nothing in the repo to explain it,
+    // which is a poor trade for a tool whose job is proving things.
+    let mut config = RunConfig::new(jobs).with_module(prova_archetect::install);
     // Surface where the project is (`prova.root` / `prova.home`) so repo-local plugins can find
     // repo artifacts. Absent when there is no manifest.
     if let Some(h) = home {
@@ -1600,7 +1602,7 @@ fn resolve_from_manifest(
     let capabilities = if companion.is_file() {
         match prova_core::load_project_config(
             &companion,
-            &engine_config(1, layout, &plugins_resolved, Some(home)),
+            &engine_config(1, &plugins_resolved, Some(home)),
         ) {
             Ok(caps) => caps,
             // An error, never a warning: a companion that failed to load would leave every

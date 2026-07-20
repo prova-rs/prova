@@ -100,14 +100,55 @@ A plugin author who follows this gets the same shape, IDE completion, and skip b
 
 1. **Bundled** — first-party modules embedded in the binary (`BUNDLED` registry). Reserved for the
    `prova.*` namespace. This is where migrated recipes live (see Dogfooding).
-2. **Disk roots**, each tried as `<root>/<name-with-dots-as-slashes>.lua` then `.../init.lua`:
+2. **Manifest-declared** — a plugin named in `prova.toml [plugins]`, resolved to an exact file (a git
+   source is fetched into the cache beforehand and lands here as a path). Authoritative and pinned,
+   so it wins over the disk roots below.
+3. **Intra-plugin** — `<canonical>.<sub>` resolves under the plugin's own root, so a multi-file
+   plugin can require its siblings without colliding with anything else.
+4. **Disk roots**, each tried as `<root>/<name-with-dots-as-slashes>.lua` then `.../init.lua`:
    - every dir on `PROVA_PLUGIN_PATH` (colon-separated), then
-   - `./.prova/plugins/` (project-local).
+   - the project's `<project_root>/.prova/plugins/`, then `./.prova/plugins/`.
 
 Appended (not prepended) so it never shadows Lua's own searchers. A miss returns a message listing
 where it looked, so `require`'s aggregate error is actionable. **No network fetch happens in the
 searcher** — resolution is always from bundled code or a local file, which is the safety boundary
 (below).
+
+### No machine-global plugin directory
+
+There is deliberately **no per-user plugin dir** (a `data_dir/plugins` the searcher consults). A
+project may require only what is under version control: its own `.prova/plugins/`, or a git source
+pinned in `prova.toml`. That way a clean clone resolves exactly what the author's machine resolves.
+
+A global dir would let a proof pass on one laptop and fail in CI with nothing in the repo to explain
+the difference — "works on my machine", reintroduced into the tool whose job is to rule it out. The
+git-checkout cache (`cache_dir/plugins`) is not an exception: its contents are pinned by the
+manifest and reproducible from it.
+
+### Private dependencies (bundled + isolated)
+
+The steps above are the *consumer's* namespace: anything at the top of a plugin root is ambient —
+requirable by test suites and by other plugins alike, with nothing declared. A plugin may also
+declare its own dependencies in its `prova-plugin.toml`:
+
+```toml
+[plugins]
+inner = { path = "deps/inner" }
+```
+
+Those names resolve **for that plugin's code and nobody else's**, which is what lets a library (or a
+topology) depend on something without pushing it into its consumers' namespace. The scoping happens
+at *load*, by binding the chunk's environment — not in the searcher, which only ever receives a
+module name and could never tell who was asking; that placement is also why a dependency required
+lazily, inside a function at test time, still resolves privately. Private modules cache by path in a
+registry-side table rather than in `package.loaded`, which is keyed by name and would otherwise hand
+every consumer a reference.
+
+Consequence worth knowing: a private dependency must live *inside* its dependant, not at the top of
+`.prova/plugins/` — a top-level directory there is a project plugin and is globally requirable by
+design. And since project plugins are ambient to each other, a plugin that requires one without
+declaring it will break when lifted out to its own repo. That is an accepted trade: one rule instead
+of two, and the breakage is caught by tests at extraction time.
 
 Wired now (the "easy to install" story):
 
@@ -207,11 +248,14 @@ and tested through the public seam with no behavior change.
 
 ## Status
 
-- **Done:** custom searcher (bundled → manifest-named → disk roots); one bundled loadable namespace
-  (`prova.workspace`); disk plugins via `PROVA_PLUGIN_PATH` / `./.prova/plugins`; the XDG
-  `SystemLayout`; the global `data_dir/plugins` root; `[plugins]` manifest sources with **git
-  fetch + cache**, verified end-to-end through the real binary (`tests/plugin_git.rs`). Existing
-  globals unchanged and first-class.
+- **Done:** custom searcher (bundled → manifest-named → intra-plugin → disk roots); one bundled
+  loadable namespace (`prova.workspace`); disk plugins via `PROVA_PLUGIN_PATH` / the project's
+  `.prova/plugins`; the XDG `SystemLayout`; `[plugins]` manifest sources with **git fetch + cache**,
+  verified end-to-end through the real binary (`tests/plugin_git.rs`); **private plugin dependencies**
+  (`prova-plugin.toml [plugins]`), scoped at load via the chunk environment and cached by path
+  (`tests/plugin_private_deps.rs`, `proofs/plugins/`). Existing globals unchanged and first-class.
+- **Removed:** the machine-global `data_dir/plugins` root — nothing populated it, and it was a
+  "works on my machine" path outside version control (see above).
 - **Next:** migrate a first real recipe (e.g. `redis`) to the bundled loadable path with a parity
   test (dogfooding); `prova.use`; a `prova plugin add` subcommand; read `~/.config/prova`.
 - **Later:** the sidecar protocol for native Tier-2 plugins, if a real need appears.

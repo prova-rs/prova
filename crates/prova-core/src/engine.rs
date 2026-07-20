@@ -285,7 +285,9 @@ impl RunConfig {
         self
     }
 
-    /// Add a disk root the plugin searcher consults (typically a `SystemLayout`'s `plugins_dir`).
+    /// Add a disk root the plugin searcher consults, beyond the project's own `.prova/plugins`
+    /// (which `with_project` already implies). An embedder's extension point — the CLI passes
+    /// nothing here on purpose, so a run resolves only what the project has under version control.
     pub fn with_plugin_root(mut self, root: impl Into<std::path::PathBuf>) -> Self {
         self.plugin_roots.push(root.into());
         self

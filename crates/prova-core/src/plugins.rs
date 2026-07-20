@@ -6,9 +6,14 @@
 //!   1. `BUNDLED` — first-party modules embedded in the binary, reserved for the `prova.*` namespace.
 //!   2. `named` — a plugin declared in `prova.toml` (`[plugins]`), resolved to an exact file (git
 //!      checkouts are fetched into the cache and land here as a path). The manifest is authoritative.
-//!   3. each dir on `PROVA_PLUGIN_PATH` (colon-separated), then any extra `roots` (e.g. the global
-//!      `data_dir/plugins`), then `./.prova/plugins/` — each as `<root>/<a/b>.lua` then
+//!   3. each dir on `PROVA_PLUGIN_PATH` (colon-separated), then any extra `roots` (the project's
+//!      `<root>/.prova/plugins`), then `./.prova/plugins/` — each as `<root>/<a/b>.lua` then
 //!      `<root>/<a/b>/init.lua`.
+//!
+//! There is deliberately **no machine-global plugin directory**. Everything a project can require
+//! comes from its own `.prova/plugins/` or from a pinned git source in `prova.toml` — both under
+//! version control — so a clean clone resolves what the author's machine resolves. A per-user plugin
+//! dir would reintroduce "works on my machine" into the one tool that exists to rule it out.
 //!
 //! A module name's dots map to path separators (`acme.rabbitmq` → `acme/rabbitmq.lua`). A miss
 //! returns a string listing where we looked, so `require`'s aggregate error is actionable. The
@@ -65,9 +70,10 @@ const BUNDLED: &[(&str, &str)] = &[
 /// the CLI already fetched into the cache). `namespaces` maps a plugin's *canonical* name to its
 /// module root directory, so a multi-file plugin can `require("<canonical>.<sub>")` its own sibling
 /// files (namespaced by canonical name, so it is stable regardless of the consumer's alias and never
-/// collides with another plugin). `roots` are extra disk search roots (typically the global
-/// `data_dir/plugins`); the built-in `PROVA_PLUGIN_PATH` and `./.prova/plugins` roots are always
-/// searched too. All are cloned into the searcher closure (the Lua state is single-threaded).
+/// collides with another plugin). `roots` are extra disk search roots — in practice the project's
+/// own `<project_root>/.prova/plugins`, and nothing machine-global (see the module docs); the
+/// built-in `PROVA_PLUGIN_PATH` and `./.prova/plugins` roots are always searched too. All are cloned
+/// into the searcher closure (the Lua state is single-threaded).
 pub(crate) fn install(
     lua: &Lua,
     roots: &[PathBuf],

@@ -25,10 +25,13 @@ pub trait SystemLayout: Send + Sync {
     /// Durable application data (`~/.local/share/prova`).
     fn data_dir(&self) -> PathBuf;
 
-    /// Globally-installed plugins the searcher consults (`data_dir/plugins`).
-    fn plugins_dir(&self) -> PathBuf {
-        self.data_dir().join("plugins")
-    }
+    // NOTE: there is deliberately no `plugins_dir()` (a machine-global `data_dir/plugins` the
+    // searcher would consult). A project may require only what is in version control — its own
+    // `.prova/plugins/`, or a git source pinned in `prova.toml` — so a clean clone resolves what the
+    // author's machine resolves. A per-user plugin dir would let a proof pass locally and fail in
+    // CI with nothing in the repo to explain it. If you are about to add one back, that is why it
+    // isn't here. (`plugin_cache_dir` below is different: it holds *pinned* git checkouts, which are
+    // reproducible from the manifest.)
 
     /// Cache root for git-fetched plugin checkouts (`cache_dir/plugins`).
     fn plugin_cache_dir(&self) -> PathBuf {
@@ -122,11 +125,8 @@ mod tests {
         assert_eq!(layout.config_dir(), PathBuf::from("/tmp/prova-test/config"));
         assert_eq!(layout.cache_dir(), PathBuf::from("/tmp/prova-test/cache"));
         assert_eq!(layout.data_dir(), PathBuf::from("/tmp/prova-test/data"));
-        // The plugin sub-dirs derive from data/cache.
-        assert_eq!(
-            layout.plugins_dir(),
-            PathBuf::from("/tmp/prova-test/data/plugins")
-        );
+        // The git-checkout cache derives from cache. (There is no machine-global `plugins_dir` to
+        // assert on — see the note on the trait.)
         assert_eq!(
             layout.plugin_cache_dir(),
             PathBuf::from("/tmp/prova-test/cache/plugins")

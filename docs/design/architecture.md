@@ -237,9 +237,14 @@ left open by good architecture; we are not walking through it.
 - **Plugin system** — `require("name")` resolves Lua plugins through a custom `package.searchers`
   entry (`plugins.rs`), in order: **bundled** first-party modules embedded in the binary (`prova.*`),
   **manifest-declared** plugins (`prova.toml` `[plugins]`, authoritative + pinned), then disk — every
-  dir on `PROVA_PLUGIN_PATH`, the global **`data_dir/plugins`**, then `./.prova/plugins/`
-  (`<a/b>.lua` or `<a/b>/init.lua`). A plugin is authored exactly like a first-party recipe: one
-  namespace table following the grammar, composing primitives, `return`ed. **XDG `SystemLayout`**
+  dir on `PROVA_PLUGIN_PATH`, then the project's **`<project_root>/.prova/plugins/`**
+  (`<a/b>.lua` or `<a/b>/init.lua`). There is deliberately **no machine-global plugin dir**: a project
+  resolves only what is under version control, so a clean clone resolves what the author's machine
+  does. A plugin may also declare **private dependencies** in its own `prova-plugin.toml`
+  (`[plugins]`), which resolve for that plugin's code alone — the "bundled + isolated" model that
+  lets a library depend on something without exposing it to consumers. A plugin is authored exactly
+  like a first-party recipe: one namespace table following the grammar, composing primitives,
+  `return`ed. **XDG `SystemLayout`**
   (`layout.rs`: `config_dir`/`cache_dir`/`data_dir`, XDG on macOS too like archetect;
   `XdgSystemLayout` + `RootedSystemLayout` for tests). **`[plugins]`** maps a name to a local path or
   a git source (`{ git, tag/branch/rev, module }`); git sources are **fetched (shelling to `git`) into
