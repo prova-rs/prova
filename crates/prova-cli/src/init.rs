@@ -3,10 +3,16 @@
 //!
 //! ```text
 //! prova init                 # home in ./prova/ (visible — tests + config in one dir)
+//! prova init --list          # the catalog: which archetypes prova can scaffold from
+//! prova init <key>           # scaffold the named catalog entry
 //! prova init --hidden        # home in ./.prova/ (tucked away)
 //! prova init --flat          # manifest at ./prova.toml (no nesting)
 //! prova init --no-luals      # skip IDE wiring (sets [luals] manage = "never")
 //! ```
+//!
+//! The scaffold is selected from a [catalog](crate::catalog) — prova's built-in entries plus any
+//! `[init.*]` in `~/.config/prova/config.toml`. The catalog is resolved *before* anything touches
+//! the filesystem, so a typo'd key or a broken config never leaves a half-scaffolded project behind.
 //!
 //! `init` refuses to run if the project already has a manifest — it never clobbers an existing
 //! layout. IDE annotations are created immediately (core stubs); each plugin's stub is added on the
@@ -41,24 +47,62 @@ impl Layout {
 pub fn run(args: Vec<String>) -> ExitCode {
     let mut layout = Layout::Visible;
     let mut luals = true;
+    let mut list = false;
+    let mut key: Option<String> = None;
     for arg in &args {
         match arg.as_str() {
             "--hidden" => layout = Layout::Hidden,
             "--flat" => layout = Layout::Flat,
             "--no-luals" => luals = false,
+            "--list" => list = true,
             "-h" | "--help" => {
                 println!(
-                    "usage: prova init [--hidden | --flat] [--no-luals]\n\
+                    "usage: prova init [<key>] [--list] [--hidden | --flat] [--no-luals]\n\
                      \n\
                      scaffold a prova.toml manifest and (unless --no-luals) LuaLS IDE support.\n\
+                     <key> names a catalog entry (see --list); omit it for the default.\n\
                      default home is ./prova/ ; --hidden uses ./.prova/ ; --flat uses ./prova.toml"
                 );
                 return ExitCode::SUCCESS;
             }
-            other => {
+            other if other.starts_with('-') => {
                 eprintln!("prova init: unknown option {other:?}");
                 return ExitCode::from(2);
             }
+            other => {
+                if let Some(prior) = &key {
+                    eprintln!("prova init: expected one catalog key, got {prior:?} and {other:?}");
+                    return ExitCode::from(2);
+                }
+                key = Some(other.to_string());
+            }
+        }
+    }
+
+    // The catalog is consulted before anything touches the filesystem, so a bad key or a broken
+    // config.toml fails before a half-scaffolded project exists.
+    let sys_layout = match prova_core::XdgSystemLayout::new() {
+        Ok(l) => l,
+        Err(err) => {
+            eprintln!("prova init: cannot locate config directory: {err}");
+            return ExitCode::from(2);
+        }
+    };
+    let catalog = match crate::catalog::Catalog::load(&sys_layout) {
+        Ok(c) => c,
+        Err(err) => {
+            eprintln!("prova init: {err}");
+            return ExitCode::from(2);
+        }
+    };
+    if list {
+        catalog.print_list();
+        return ExitCode::SUCCESS;
+    }
+    if let Some(key) = &key {
+        if let Err(err) = catalog.get(key) {
+            eprintln!("prova init: {err}");
+            return ExitCode::from(2);
         }
     }
 
@@ -93,13 +137,6 @@ pub fn run(args: Vec<String>) -> ExitCode {
     println!("prova: wrote {}", manifest.display());
 
     if luals {
-        let sys_layout = match prova_core::XdgSystemLayout::new() {
-            Ok(l) => l,
-            Err(err) => {
-                eprintln!("prova init: cannot locate cache directory: {err}");
-                return ExitCode::from(2);
-            }
-        };
         // IDE wiring is one behavior, owned by `prova ide setup`; init runs it as a finishing step.
         if let Err(err) = crate::ide::wire(&home, crate::manifest::Manage::Always, &sys_layout) {
             eprintln!("prova init: IDE annotations: {err}");

@@ -14,6 +14,7 @@
 //! CLI flags override manifest values; explicit path arguments bypass the manifest entirely.
 
 mod annotations;
+mod catalog;
 mod home;
 mod ide;
 mod init;
@@ -40,6 +41,7 @@ usage:
   prova <file-or-dir>...    run the given files/dirs
   prova                     run the suite declared in prova.toml (found by walking up)
   prova init                scaffold prova.toml + LuaLS IDE support in this project
+  prova init --list         list the init catalog: the archetypes prova can scaffold from
   prova ide setup           (re)wire this project's LuaLS support: core stubs + .luarc.json
   prova eval '<code>'       run a one-shot Lua snippet in the full prova environment and print
                             the returned value (`-` reads the snippet from stdin)
