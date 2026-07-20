@@ -15,7 +15,6 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use crate::annotations;
 use crate::home::Home;
 
 /// Where the manifest goes, relative to the project root.
@@ -101,32 +100,10 @@ pub fn run(args: Vec<String>) -> ExitCode {
                 return ExitCode::from(2);
             }
         };
-        match annotations::init(
-            &home,
-            &Default::default(),
-            &sys_layout,
-            crate::PROVA_VERSION,
-        ) {
-            Ok(outcome) => {
-                println!(
-                    "prova: core IDE annotations at {}",
-                    outcome.core_dir.display()
-                );
-                if outcome.luarc_created {
-                    println!("prova: wrote .luarc.json — open this project in your editor for completion");
-                    // The pointer is an absolute, machine-local path, so it is not shareable and
-                    // should not be committed. prova won't edit the user's .gitignore for them —
-                    // it says so once, here, and leaves the choice where it belongs.
-                    println!(
-                        "prova: note — .luarc.json holds machine-local paths; add it to .gitignore"
-                    );
-                }
-                println!("prova: plugin annotations are added automatically as you declare them and run `prova`");
-            }
-            Err(err) => {
-                eprintln!("prova init: IDE annotations: {err}");
-                return ExitCode::from(2);
-            }
+        // IDE wiring is one behavior, owned by `prova ide setup`; init runs it as a finishing step.
+        if let Err(err) = crate::ide::wire(&home, crate::manifest::Manage::Always, &sys_layout) {
+            eprintln!("prova init: IDE annotations: {err}");
+            return ExitCode::from(2);
         }
     }
 

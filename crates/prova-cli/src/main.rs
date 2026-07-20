@@ -15,6 +15,7 @@
 
 mod annotations;
 mod home;
+mod ide;
 mod init;
 mod manifest;
 mod mcp;
@@ -39,6 +40,7 @@ usage:
   prova <file-or-dir>...    run the given files/dirs
   prova                     run the suite declared in prova.toml (found by walking up)
   prova init                scaffold prova.toml + LuaLS IDE support in this project
+  prova ide setup           (re)wire this project's LuaLS support: core stubs + .luarc.json
   prova eval '<code>'       run a one-shot Lua snippet in the full prova environment and print
                             the returned value (`-` reads the snippet from stdin)
   prova skill               print the agent skill (how to drive Prova); --install writes it
@@ -110,6 +112,10 @@ fn main() -> ExitCode {
         Some("init") => {
             raw.next();
             return init::run(raw.collect());
+        }
+        Some("ide") => {
+            raw.next();
+            return ide::run(raw.collect());
         }
         Some("eval") => {
             raw.next();

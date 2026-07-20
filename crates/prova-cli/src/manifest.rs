@@ -91,17 +91,25 @@ pub enum Manage {
     Never,
 }
 
-impl Luals {
-    /// Resolve the policy, defaulting to `Auto`. An unrecognized value is an error the caller surfaces.
-    pub fn manage(&self) -> Result<Manage, String> {
-        match self.manage.as_deref() {
+impl Manage {
+    /// Parse a `manage` value (`[luals] manage` or `--manage`), defaulting to `Auto` when absent. An
+    /// unrecognized value is an error the caller surfaces.
+    pub fn parse(value: Option<&str>) -> Result<Manage, String> {
+        match value {
             None | Some("auto") => Ok(Manage::Auto),
             Some("always") => Ok(Manage::Always),
             Some("never") => Ok(Manage::Never),
             Some(other) => Err(format!(
-                "invalid [luals] manage = {other:?} (expected \"auto\", \"always\", or \"never\")"
+                "invalid manage = {other:?} (expected \"auto\", \"always\", or \"never\")"
             )),
         }
+    }
+}
+
+impl Luals {
+    /// Resolve the policy, defaulting to `Auto`. An unrecognized value is an error the caller surfaces.
+    pub fn manage(&self) -> Result<Manage, String> {
+        Manage::parse(self.manage.as_deref())
     }
 }
 

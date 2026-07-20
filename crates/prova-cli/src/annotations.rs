@@ -108,32 +108,6 @@ pub fn setup(
     Ok(outcome)
 }
 
-/// Force-create/merge the `.luarc.json` pointer regardless of policy, and sync the folder — the
-/// behavior of `prova init`, which is the user explicitly asking prova to wire up IDE support.
-pub fn init(
-    home: &Home,
-    roots: &BTreeMap<String, PathBuf>,
-    layout: &dyn SystemLayout,
-    version: &str,
-) -> Result<Outcome, String> {
-    let core_dir = install_core_stubs(layout, version)?;
-    let (entries, linked_plugins) = library_entries(&core_dir, roots);
-    let luarc = home.root.join(".luarc.json");
-    let created = if luarc.is_file() {
-        merge_luarc(&luarc, &entries, layout)?;
-        false
-    } else {
-        write_fresh_luarc(&luarc, &entries)?;
-        true
-    };
-    Ok(Outcome {
-        linked_plugins,
-        core_dir,
-        luarc_created: created,
-        luarc_hint: false,
-    })
-}
-
 /// Write the embedded core stubs to `<cache>/annotations/<version>/` and return that dir. Shared by
 /// every project on the machine and keyed by version, so an upgrade can't serve stale stubs and two
 /// installed versions coexist. Bounded by installed versions, not by project count.
@@ -567,15 +541,16 @@ mod tests {
         assert!(out.core_dir.join("prova.lua").is_file()); // stubs still installed
     }
 
+    /// `setup` under `Always` is the force-create-or-merge path `prova init` / `prova ide setup`
+    /// rely on: it creates when absent and merges idempotently when present (one core entry).
     #[test]
-    fn init_creates_or_merges() {
+    fn always_creates_then_merges_idempotently() {
         let t = Tmp::new("init");
         let home = home_at(&t.0, None);
         let layout = layout_at(&t.0);
-        let out = init(&home, &BTreeMap::new(), &layout, V).unwrap();
+        let out = setup(&home, &BTreeMap::new(), Manage::Always, &layout, V).unwrap();
         assert!(out.luarc_created);
-        // Second init merges (idempotent, still has our entry once).
-        let out2 = init(&home, &BTreeMap::new(), &layout, V).unwrap();
+        let out2 = setup(&home, &BTreeMap::new(), Manage::Always, &layout, V).unwrap();
         assert!(!out2.luarc_created);
         let doc: Value =
             serde_json::from_str(&std::fs::read_to_string(t.0.join(".luarc.json")).unwrap())

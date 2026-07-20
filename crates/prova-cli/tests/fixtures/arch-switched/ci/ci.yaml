@@ -1,0 +1,2 @@
+# CI workflow for {{ project_name }} — present only when the `ci` switch is enabled.
+name: {{ project_name }}

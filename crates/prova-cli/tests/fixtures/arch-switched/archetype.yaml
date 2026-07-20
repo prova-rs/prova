@@ -1,0 +1,10 @@
+---
+description: "Switch fixture — an extra file rendered only when the `ci` switch is on"
+authors: ["prova test suite"]
+
+requires:
+  archetect: "3.0.0"
+
+templating:
+  trim_blocks: true
+  lstrip_blocks: true

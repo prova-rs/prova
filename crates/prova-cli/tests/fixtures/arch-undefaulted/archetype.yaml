@@ -1,0 +1,10 @@
+---
+description: "Undefaulted fixture — a required prompt with no default (headless must error)"
+authors: ["prova test suite"]
+
+requires:
+  archetect: "3.0.0"
+
+templating:
+  trim_blocks: true
+  lstrip_blocks: true
