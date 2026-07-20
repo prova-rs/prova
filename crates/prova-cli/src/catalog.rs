@@ -6,7 +6,7 @@
 //! ```toml
 //! [init.default]                  # a matching key REPLACES the built-in entry outright
 //! description = "Standard prova proof suite"
-//! source      = "https://github.com/prova-rs/prova-init-default-archetype.git#v1"
+//! source      = "https://github.com/prova-rs/prova-init-default-archetype.git#main"
 //! switches    = ["ci"]            # always passed to the render for this entry
 //! defaults    = true              # take the archetype's default for any unanswered prompt
 //!
@@ -70,7 +70,8 @@ impl Catalog {
             "default".to_string(),
             InitEntry {
                 description: "Standard prova proof suite (prova.toml + a first proof)".to_string(),
-                source: "https://github.com/prova-rs/prova-init-default-archetype.git#v1"
+                // Tracks the archetype's `main` while it stabilizes; pin to `#v1` once that tag is cut.
+                source: "https://github.com/prova-rs/prova-init-default-archetype.git#main"
                     .to_string(),
                 switches: Vec::new(),
                 defaults: false,
