@@ -143,9 +143,15 @@ that never existed. Keep `docker.diagnostics()` either way; it is what makes any
 
 ## Repo state
 
-- All work is committed and **local**; nothing pushed. `main@origin` is still `Release 0.2.10`.
-- `proofs/plugins/isolation_test.lua` is **deliberately red** — a spec from `prova-agents@` ("RED
-  until per-plugin dep maps land"). Not a regression; leave it alone.
-- `prova-agents@` is parked one commit behind on the pre-rebase parent and will want a rebase.
-- Rust: 163 passing. Proof suite: 16 passing, 1 red (above), 2 skipped (soak, ungated).
+- The docker/annotations/soak work through `style: cargo fmt crates/prova-core/src/plugins.rs` has
+  been **pushed** and is immutable. The three commits below it (exited-container fix, poll-load fix,
+  this document) are local and sit on top of `feat(plugins): private plugin dependencies`.
+- `proofs/plugins/isolation_test.lua` **now passes.** It was a deliberately-red spec from
+  `prova-agents@`; the feature it specified has since landed, so the whole suite is green. If you
+  read an older note calling it red, that note is stale.
+- Rust: 164 passing. Proof suite: 17 passing, 0 failing, 2 skipped (the soak arms, correctly gated
+  off without `PROVA_SOAK`).
 - `cargo fmt --check` clean workspace-wide.
+- Other workspaces (`prova-agents@`, `prova-mocks@`) are active on this line — check
+  `jj workspace list` before restructuring anything, and prefer rebasing your own commits over
+  moving theirs.
