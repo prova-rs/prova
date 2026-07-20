@@ -1,7 +1,7 @@
 # prova's own test suite (proof-driven development of prova, by prova).
 [run]
 paths        = ["proofs"]            # suites live at the project root (root-relative)
-config       = "config.lua"          # the runtime companion (home-relative → .prova/config.lua)
+config       = ".prova/config.lua"    # the runtime companion (home == root now)
 plugin_root  = ".prova/plugins"      # this project's own plugins (root-relative). No default,
                                      # and exactly one: anything from elsewhere gets a name and a
                                      # pinned source in [plugins] instead.

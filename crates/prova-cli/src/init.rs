@@ -129,7 +129,6 @@ pub fn run(args: Vec<String>) -> ExitCode {
     }
 
     let home = Home {
-        root: root.clone(),
         dir: home_dir.clone(),
         manifest: manifest.clone(),
     };

@@ -283,7 +283,7 @@ impl McpEnv {
         } {
             None => Ok(CallEnv {
                 home: home.clone(),
-                base_dir: home.root.clone(),
+                base_dir: home.dir.clone(),
                 paths: self.paths.clone(),
                 declared: self.declared.clone(),
                 jobs: self.jobs,
@@ -316,7 +316,7 @@ impl McpEnv {
                 })?;
                 Ok(CallEnv {
                     home: home.clone(),
-                    base_dir: home.root.clone(),
+                    base_dir: home.dir.clone(),
                     paths: run.paths,
                     declared: run.suites,
                     jobs: run.jobs,

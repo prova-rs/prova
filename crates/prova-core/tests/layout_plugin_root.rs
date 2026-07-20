@@ -20,7 +20,7 @@ fn local_plugins_resolve_against_the_project_root() {
     let suites = discover_suites(&root.join("proofs")).expect("discover");
     let mut reporter = NullReporter;
     let config = RunConfig::new(1)
-        .with_project(&root, &root)
+        .with_project(&root)
         .with_plugin_root(root.join(".prova/plugins"));
     let summary = run_suites(&suites, &mut reporter, &config).expect("run");
     assert_eq!(summary.failed, 0, "failed");

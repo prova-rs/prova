@@ -1141,7 +1141,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                 // lives at the root while `.prova/` (or `prova/`) is prova's config/plugins nook.
                 // (For a flat `prova.toml`, root == home, so nothing changes.) The `config`
                 // companion stays home-relative; only test discovery is root-anchored.
-                home.root.clone(),
+                home.dir.clone(),
                 r.paths,
                 r.jobs,
                 r.format,
@@ -1482,7 +1482,7 @@ fn engine_config(
     // Surface where the project is (`prova.root` / `prova.home`) so repo-local plugins can find
     // repo artifacts. Absent when there is no manifest.
     if let Some(h) = home {
-        config = config.with_project(h.root.clone(), h.dir.clone());
+        config = config.with_project(h.dir.clone());
     }
     for (name, path) in &plugins_resolved.named {
         config = config.with_named_plugin(name.clone(), path.clone());
@@ -1593,7 +1593,7 @@ fn resolve_from_manifest(
     // The declared plugin dir, absolutised against the project ROOT (like `paths`, and unlike the
     // home-relative `config`). Nothing is added here: a project scans exactly the one directory its
     // manifest names, so the file answers "where can a plugin come from?" on its own.
-    plugins_resolved.search_root = resolved.plugin_root.as_ref().map(|r| home.root.join(r));
+    plugins_resolved.search_root = resolved.plugin_root.as_ref().map(|r| home.dir.join(r));
 
     // The optional `prova.lua` companion — loaded with the manifest, and BEFORE the `must_run`
     // precondition below. That order is the whole reason this is a project-level companion rather
@@ -1781,7 +1781,7 @@ fn skill_subcommand(args: Vec<String>) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     let root = match home::find(&std::env::current_dir().unwrap_or_default()) {
-        Ok(Some(h)) => h.root,
+        Ok(Some(h)) => h.dir,
         _ => std::env::current_dir().unwrap_or_default(),
     };
     let dir = root.join(".claude/skills/prova");

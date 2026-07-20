@@ -1,40 +1,43 @@
 //! Locating the "prova home" — the directory that owns a project's `prova.toml`, and against which
-//! every relative path in the manifest (`[run] paths`, discovered `annotations/`) is resolved.
+//! every relative path in the manifest (`[run] paths`, `config`, `plugin_root`) and generated
+//! artifact (`.luarc.json`, `running/`) resolves.
 //!
-//! A project may keep its manifest in one of four places, so teams can choose how much prova lives
-//! at the repo root:
+//! **The manifest's directory is the base for everything — there is no separate "root".** A project
+//! may keep its manifest in one of four places:
 //!
 //! | Location | Home dir | Feel |
 //! |---|---|---|
-//! | `prova.toml` | the project root | flat — prova at the root, zero nesting |
-//! | `.prova.toml` | the project root | flat, hidden — one manifest, out of sight, tests in a named dir |
-//! | `prova/prova.toml` | `prova/` | visible — tests + config in one navigable dir |
-//! | `.prova/prova.toml` | `.prova/` | hidden — config + generated files tucked away |
+//! | `prova.toml` | the dir holding it | flat — prova at the root, zero nesting |
+//! | `.prova.toml` | the dir holding it | flat, hidden — one manifest, out of sight |
+//! | `prova/prova.toml` | `prova/` | visible nested — a self-contained `prova/` dir |
+//! | `.prova/prova.toml` | `.prova/` | hidden nested — a self-contained `.prova/` dir |
 //!
-//! Discovery walks **up** from the current directory (like git finding `.git`), so `prova` works
-//! from anywhere inside a project. Finding **more than one** of the candidates in the same
-//! directory is a hard error: the layout is ambiguous and prova refuses to guess which is canonical.
+//! Because home *is* the manifest's directory, a project is a **relocatable unit**: move the manifest
+//! and the files it references from `prova/` up to the root, and the manifest does not change a byte
+//! — every path in it was always relative to wherever the manifest sits.
+//!
+//! Discovery walks **up** from the current directory (like git finding `.git`), so `prova` works from
+//! anywhere inside a project, and the **nearest** manifest wins — a deeper `prova.toml` is its own
+//! independent project, not a child of an ancestor's. Finding **more than one** of the four variants
+//! in a *single* directory is a hard error: that layout is ambiguous and prova refuses to guess.
 
 use std::path::{Path, PathBuf};
 
-/// A located prova home.
+/// A located prova home: the directory the manifest lives in, and the manifest file itself. Every
+/// manifest-relative path and generated artifact resolves against `dir` — it is both the "root" and
+/// the "home" the old two-field model split, now unified.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Home {
-    /// The project root — the ancestor directory the manifest was found under. The editor pointer
-    /// (`.luarc.json`) lives here, because LuaLS binds to the workspace root the user opens, not to a
-    /// nested `prova/` or `.prova/`.
-    pub root: PathBuf,
-    /// The home directory — where `prova.toml` lives (the root itself, or its `prova/` / `.prova/`
-    /// child). All manifest-relative paths resolve against this.
+    /// The home directory — where the manifest lives (a flat root, or a `prova/` / `.prova/` child).
+    /// The single base for `paths`, `config`, `plugin_root`, `.luarc.json`, and `running/`.
     pub dir: PathBuf,
-    /// The manifest file (`<dir>/prova.toml`).
+    /// The manifest file inside `dir`.
     pub manifest: PathBuf,
 }
 
 /// Walk up from `start`, returning the first ancestor that holds a manifest. `Ok(None)` means no
 /// manifest anywhere up to the filesystem root (an ad-hoc invocation with no project). `Err` means a
-/// single directory holds more than one of the candidate manifests (ambiguous — the user must keep
-/// exactly one).
+/// single directory holds more than one of the four variants (ambiguous — keep exactly one).
 pub fn find(start: &Path) -> Result<Option<Home>, String> {
     let start = start.canonicalize().unwrap_or_else(|_| start.to_path_buf());
     for dir in start.ancestors() {
@@ -46,96 +49,59 @@ pub fn find(start: &Path) -> Result<Option<Home>, String> {
     Ok(None)
 }
 
-/// Build a `Home` from an explicit manifest path (`--manifest`). The home dir is the manifest's
-/// parent; the project root is that same dir (an explicitly-pointed manifest defines its own root —
-/// we don't second-guess where `.luarc.json` should go relative to it).
+/// Build a `Home` from an explicit manifest path (`--manifest`): home is the manifest's own directory.
 pub fn from_manifest_path(manifest: &Path) -> Home {
-    let dir = manifest.parent().unwrap_or(Path::new(".")).to_path_buf();
     Home {
-        root: dir.clone(),
-        dir,
+        dir: manifest.parent().unwrap_or(Path::new(".")).to_path_buf(),
         manifest: manifest.to_path_buf(),
     }
 }
 
-/// A discovered manifest at some directory level: its display label, the manifest file, and the
-/// (root, home) pair it implies.
+/// A manifest variant discovered at some directory level: its display label and the (home dir,
+/// manifest file) it implies.
 struct Candidate {
     label: &'static str,
+    dir: PathBuf,
     manifest: PathBuf,
-    root: PathBuf,
-    home: PathBuf,
 }
 
-/// Check directory `dir` for the candidate manifests. `Ok(None)` if none present; `Ok(Some)` for
+/// Check directory `dir` for the four manifest variants. `Ok(None)` if none present; `Ok(Some)` for
 /// exactly one; `Err` if more than one (ambiguous layout).
 ///
-/// The subtlety: `dir/prova.toml` is a *flat* manifest (home is `dir`) **unless** `dir` is itself
-/// named `prova`/`.prova` — in which case it's a nested home whose real root is `dir`'s parent. That
-/// name-based rule makes discovery return the same (root, home) whether invoked from the project
-/// root or from inside the home dir (`cd prova && prova`).
+/// Home is always the directory the manifest sits in: `dir` for the two flat variants, `dir/prova` or
+/// `dir/.prova` for the two nested ones. No special-casing of directory names is needed — running
+/// from inside `prova/` finds the flat `prova/prova.toml` (home `prova/`), and running from the parent
+/// finds the nested `prova/prova.toml` (home also `prova/`), so both agree without a rule.
 fn at(dir: &Path) -> Result<Option<Home>, String> {
-    let mut found: Vec<Candidate> = Vec::new();
+    let variants = [
+        ("prova.toml", dir.join("prova.toml"), dir.to_path_buf()),
+        (".prova.toml", dir.join(".prova.toml"), dir.to_path_buf()),
+        (
+            "prova/prova.toml",
+            dir.join("prova").join("prova.toml"),
+            dir.join("prova"),
+        ),
+        (
+            ".prova/prova.toml",
+            dir.join(".prova").join("prova.toml"),
+            dir.join(".prova"),
+        ),
+    ];
 
-    // `dir/prova.toml` — flat, or (if `dir` is a home-dir name) a nested home rooted at the parent.
-    let flat = dir.join("prova.toml");
-    if flat.is_file() {
-        let (label, root) = match dir.file_name().and_then(|s| s.to_str()) {
-            Some("prova") => (
-                "prova/prova.toml",
-                dir.parent().unwrap_or(dir).to_path_buf(),
-            ),
-            Some(".prova") => (
-                ".prova/prova.toml",
-                dir.parent().unwrap_or(dir).to_path_buf(),
-            ),
-            _ => ("prova.toml", dir.to_path_buf()),
-        };
-        found.push(Candidate {
+    let found: Vec<Candidate> = variants
+        .into_iter()
+        .filter(|(_, manifest, _)| manifest.is_file())
+        .map(|(label, manifest, home_dir)| Candidate {
             label,
-            manifest: flat,
-            root,
-            home: dir.to_path_buf(),
-        });
-    }
-    // `dir/prova/prova.toml` — a visible nested home rooted at `dir`.
-    let vis = dir.join("prova").join("prova.toml");
-    if vis.is_file() {
-        found.push(Candidate {
-            label: "prova/prova.toml",
-            manifest: vis,
-            root: dir.to_path_buf(),
-            home: dir.join("prova"),
-        });
-    }
-    // `dir/.prova/prova.toml` — a hidden nested home rooted at `dir`.
-    let hid = dir.join(".prova").join("prova.toml");
-    if hid.is_file() {
-        found.push(Candidate {
-            label: ".prova/prova.toml",
-            manifest: hid,
-            root: dir.to_path_buf(),
-            home: dir.join(".prova"),
-        });
-    }
-    // `dir/.prova.toml` — a hidden *flat* manifest: home and root are both `dir`, like `prova.toml`
-    // but out of sight. A single hidden file is tidier than a whole `.prova/` directory for a project
-    // that only needs the one manifest and keeps its tests in a named dir (`proofs/`).
-    let hidden_flat = dir.join(".prova.toml");
-    if hidden_flat.is_file() {
-        found.push(Candidate {
-            label: ".prova.toml",
-            manifest: hidden_flat,
-            root: dir.to_path_buf(),
-            home: dir.to_path_buf(),
-        });
-    }
+            dir: home_dir,
+            manifest,
+        })
+        .collect();
 
     match found.as_slice() {
         [] => Ok(None),
         [c] => Ok(Some(Home {
-            root: c.root.clone(),
-            dir: c.home.clone(),
+            dir: c.dir.clone(),
             manifest: c.manifest.clone(),
         })),
         many => {
@@ -173,70 +139,58 @@ mod tests {
         }
     }
 
+    // The two flat variants: home is the directory holding the manifest.
     #[test]
-    fn flat_manifest_home_is_the_root() {
+    fn flat_manifest_home_is_its_own_dir() {
         let t = Tmp::new("flat");
         t.write("prova.toml", "[run]\npaths=[\".\"]\n");
+        let root = t.0.canonicalize().unwrap();
         let home = find(&t.0).unwrap().unwrap();
-        assert_eq!(home.root, home.dir);
-        assert_eq!(
-            home.manifest,
-            t.0.canonicalize().unwrap().join("prova.toml")
-        );
+        assert_eq!(home.dir, root);
+        assert_eq!(home.manifest, root.join("prova.toml"));
     }
 
     #[test]
-    fn hidden_file_manifest_home_is_the_root() {
-        // `.prova.toml` (a hidden FILE at the root) — home and root are both the root, like a flat
-        // `prova.toml` but tucked out of sight. This is the layout the repo itself uses.
+    fn hidden_flat_manifest_home_is_its_own_dir() {
         let t = Tmp::new("hidden-file");
         t.write(".prova.toml", "[run]\npaths=[\"proofs\"]\n");
         let root = t.0.canonicalize().unwrap();
         let home = find(&t.0).unwrap().unwrap();
-        assert_eq!(home.root, root);
         assert_eq!(home.dir, root);
         assert_eq!(home.manifest, root.join(".prova.toml"));
     }
 
+    // The two nested variants: home is the `prova/` or `.prova/` dir itself, NOT its parent.
     #[test]
-    fn hidden_manifest_home_is_dot_prova() {
-        let t = Tmp::new("hidden");
-        t.write(".prova/prova.toml", "[run]\npaths=[\"suites\"]\n");
-        let root = t.0.canonicalize().unwrap();
-        let home = find(&t.0).unwrap().unwrap();
-        assert_eq!(home.root, root);
-        assert_eq!(home.dir, root.join(".prova"));
-    }
-
-    #[test]
-    fn visible_manifest_home_is_prova_dir() {
+    fn nested_visible_home_is_the_prova_dir() {
         let t = Tmp::new("visible");
         t.write("prova/prova.toml", "[run]\npaths=[\"suites\"]\n");
         let root = t.0.canonicalize().unwrap();
         let home = find(&t.0).unwrap().unwrap();
         assert_eq!(home.dir, root.join("prova"));
+        assert_eq!(home.manifest, root.join("prova/prova.toml"));
     }
 
     #[test]
-    fn discovery_from_inside_visible_home_still_roots_at_parent() {
-        // `cd prova && prova` must resolve the SAME (root, home) as running from the project root —
-        // otherwise `.luarc.json` lands inside prova/ instead of at the real root.
+    fn nested_hidden_home_is_the_dot_prova_dir() {
+        let t = Tmp::new("hidden");
+        t.write(".prova/prova.toml", "[run]\npaths=[\"suites\"]\n");
+        let root = t.0.canonicalize().unwrap();
+        let home = find(&t.0).unwrap().unwrap();
+        assert_eq!(home.dir, root.join(".prova"));
+    }
+
+    // Discovery is stable: running from inside `prova/` resolves the SAME home as from the parent,
+    // and needs no directory-name special-casing to do it.
+    #[test]
+    fn discovery_from_inside_nested_home_is_stable() {
         let t = Tmp::new("inside-visible");
         t.write("prova/prova.toml", "[run]\npaths=[\".\"]\n");
         let root = t.0.canonicalize().unwrap();
-        let home = find(&root.join("prova")).unwrap().unwrap();
-        assert_eq!(home.root, root);
-        assert_eq!(home.dir, root.join("prova"));
-    }
-
-    #[test]
-    fn discovery_from_inside_hidden_home_still_roots_at_parent() {
-        let t = Tmp::new("inside-hidden");
-        t.write(".prova/prova.toml", "[run]\npaths=[\".\"]\n");
-        let root = t.0.canonicalize().unwrap();
-        let home = find(&root.join(".prova")).unwrap().unwrap();
-        assert_eq!(home.root, root);
-        assert_eq!(home.dir, root.join(".prova"));
+        let from_parent = find(&t.0).unwrap().unwrap();
+        let from_inside = find(&root.join("prova")).unwrap().unwrap();
+        assert_eq!(from_parent, from_inside);
+        assert_eq!(from_inside.dir, root.join("prova"));
     }
 
     #[test]
@@ -248,8 +202,23 @@ mod tests {
         assert_eq!(home.dir, t.0.canonicalize().unwrap());
     }
 
+    // A deeper manifest is its own project — the nearest wins, and this is NOT the same-directory
+    // ambiguity that is an error.
     #[test]
-    fn two_manifests_in_one_dir_is_ambiguous() {
+    fn nearest_manifest_wins_deeper_is_independent() {
+        let t = Tmp::new("nested-projects");
+        t.write("prova.toml", "[run]\npaths=[\".\"]\n");
+        t.write("sub/prova.toml", "[run]\npaths=[\".\"]\n");
+        let root = t.0.canonicalize().unwrap();
+        assert_eq!(find(&t.0).unwrap().unwrap().dir, root);
+        assert_eq!(
+            find(&root.join("sub")).unwrap().unwrap().dir,
+            root.join("sub")
+        );
+    }
+
+    #[test]
+    fn two_variants_in_one_dir_is_ambiguous() {
         let t = Tmp::new("ambiguous");
         t.write("prova.toml", "[run]\npaths=[\".\"]\n");
         t.write(".prova/prova.toml", "[run]\npaths=[\".\"]\n");
@@ -265,8 +234,6 @@ mod tests {
     fn no_manifest_anywhere_is_none() {
         let t = Tmp::new("none");
         t.write("just/files.txt", "x");
-        // Walk up from the isolated temp dir; there is no prova.toml in it. (A stray manifest in a
-        // real ancestor of the system temp dir is implausible.)
         assert!(find(&t.0.join("just")).unwrap().is_none());
     }
 }

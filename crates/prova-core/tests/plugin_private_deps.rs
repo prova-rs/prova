@@ -28,7 +28,7 @@ fn private_deps_resolve_per_plugin_and_stay_private() {
     let suites = discover_suites(&root.join("proofs")).expect("discover");
     let mut reporter = NullReporter;
     let config = RunConfig::new(1)
-        .with_project(&root, &root)
+        .with_project(&root)
         .with_plugin_root(root.join(".prova/plugins"));
     let summary = run_suites(&suites, &mut reporter, &config).expect("run");
     assert_eq!(summary.failed, 0, "failed");

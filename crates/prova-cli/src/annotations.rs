@@ -81,7 +81,7 @@ pub fn setup(
         ..Default::default()
     };
 
-    let luarc = home.root.join(".luarc.json");
+    let luarc = home.dir.join(".luarc.json");
     let exists = luarc.is_file();
     match (manage, exists) {
         // Never touch the pointer; the core stubs are still installed above.
@@ -288,16 +288,15 @@ mod tests {
         }
     }
 
-    fn home_at(root: &Path, sub: Option<&str>) -> Home {
+    fn home_at(base: &Path, sub: Option<&str>) -> Home {
         let dir = match sub {
-            Some(s) => root.join(s),
-            None => root.to_path_buf(),
+            Some(s) => base.join(s),
+            None => base.to_path_buf(),
         };
         std::fs::create_dir_all(&dir).unwrap();
         Home {
-            root: root.to_path_buf(),
-            dir: dir.clone(),
             manifest: dir.join("prova.toml"),
+            dir,
         }
     }
 
@@ -478,7 +477,7 @@ mod tests {
     #[test]
     fn always_merges_into_existing_luarc_nondestructively() {
         let t = Tmp::new("always");
-        let home = home_at(&t.0, Some(".prova"));
+        let home = home_at(&t.0, None);
         std::fs::write(
             t.0.join(".luarc.json"),
             "{ \"runtime.version\": \"Lua 5.3\", \"diagnostics.globals\": [\"vim\"], \"workspace.library\": [\"types\"] }",

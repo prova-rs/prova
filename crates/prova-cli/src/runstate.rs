@@ -175,7 +175,6 @@ mod tests {
             std::env::temp_dir().join(format!("prova-runstate-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let home = Home {
-            root: root.clone(),
             dir: root.clone(),
             manifest: root.join("prova.toml"),
         };

@@ -196,10 +196,10 @@ pub struct RunConfig {
     /// Plugin namespaces: a plugin's canonical name → its module root dir, so a multi-file plugin can
     /// `require("<canonical>.<sub>")` its own siblings.
     plugin_namespaces: std::collections::BTreeMap<String, std::path::PathBuf>,
-    /// The project root and the manifest's home dir, surfaced to authors as `prova.root` /
-    /// `prova.home`. See `with_project`.
-    project_root: Option<std::path::PathBuf>,
-    project_home: Option<std::path::PathBuf>,
+    /// The project directory — where the manifest lives, and the base every manifest-relative path
+    /// resolves against. Surfaced to authors as `prova.root` / `prova.home` (synonyms: root and home
+    /// are the same thing). See `with_project`.
+    project_dir: Option<std::path::PathBuf>,
     /// Capabilities the project's `prova.lua` companion registered — per run, so two projects
     /// resolved in one process don't share a vocabulary. Empty when there is no companion; built-in
     /// capabilities (`docker`, `unix`, tools on PATH) work regardless.
@@ -218,8 +218,7 @@ impl Default for RunConfig {
             plugin_roots: Vec::new(),
             named_plugins: std::collections::BTreeMap::new(),
             plugin_namespaces: std::collections::BTreeMap::new(),
-            project_root: None,
-            project_home: None,
+            project_dir: None,
             capabilities: Capabilities::default(),
         }
     }
@@ -306,21 +305,16 @@ impl RunConfig {
 
     /// Register a plugin namespace: `require("<canonical>.<sub>")` resolves `<sub>` under `dir`, so a
     /// multi-file plugin can require its own sibling modules.
-    /// Where the project is: `root` is the ancestor the manifest was found under (the repo), `home`
-    /// is the directory `prova.toml` lives in (the root, or its `prova/` / `.prova/` child).
+    /// Where the project is: the directory the manifest lives in, which is the base every
+    /// manifest-relative path resolves against. Root and home are the same thing — for a nested
+    /// `prova/prova.toml` this is `prova/`, not its parent.
     ///
-    /// Surfaced to authors as **`prova.root`** and **`prova.home`**. A repo-local plugin needs this
-    /// to locate repo artifacts — a built binary, testdata — and without it the only options were an
-    /// absolute path (unshippable) or the process cwd (an undocumented coincidence that CI breaks).
-    /// `root` anchors repo paths (`prova.root .. "/target/debug/app"`); `home` anchors
-    /// manifest-relative ones. See `docs/design/agent-ergonomics.md` §2.
-    pub fn with_project(
-        mut self,
-        root: impl Into<std::path::PathBuf>,
-        home: impl Into<std::path::PathBuf>,
-    ) -> Self {
-        self.project_root = Some(root.into());
-        self.project_home = Some(home.into());
+    /// Surfaced to authors as **`prova.root`** and **`prova.home`** (synonyms). A repo-local plugin
+    /// needs it to locate repo artifacts — a built binary, testdata — relative to the project
+    /// (`prova.root .. "/target/debug/app"`) instead of an absolute path (unshippable) or the process
+    /// cwd (an undocumented coincidence CI breaks). See `docs/design/agent-ergonomics.md` §2.
+    pub fn with_project(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
+        self.project_dir = Some(dir.into());
         self
     }
 
@@ -2020,12 +2014,12 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
 
     // Where the project is (`RunConfig::with_project`) — so a repo-local plugin can say
     // `prova.root .. "/target/debug/miniond"` instead of hardcoding an absolute path or trusting the
-    // process cwd. Absent (nil) when there is no manifest, e.g. a bare `prova <file>` run.
-    if let Some(root) = &config.project_root {
-        prova.set("root", root.to_string_lossy().as_ref())?;
-    }
-    if let Some(home) = &config.project_home {
-        prova.set("home", home.to_string_lossy().as_ref())?;
+    // process cwd. `prova.root` and `prova.home` are synonyms for the manifest's directory (root and
+    // home are one thing). Absent (nil) when there is no manifest, e.g. a bare `prova <file>` run.
+    if let Some(dir) = &config.project_dir {
+        let dir = dir.to_string_lossy();
+        prova.set("root", dir.as_ref())?;
+        prova.set("home", dir.as_ref())?;
     }
 
     // `prova.help([filter])` — the API surface, discoverable from inside the environment being
