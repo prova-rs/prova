@@ -14,6 +14,10 @@ tokio = { version = "1", features = ["rt", "time", "macros", "process", "io-util
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 # Structured, streaming output for machine consumers (CI, and a future GUI/IDE frontend).
 serde_json = "1"
+# Reading a plugin's own `prova-plugin.toml` at resolve time, for its private `[plugins]` dependency
+# map. The searcher needs this because local plugins (`.prova/plugins/*`) are discovered here, never
+# passing through the CLI's manifest resolution — so their declared deps have nowhere else to come from.
+toml = "0.8"
 # Filesystem globbing for the `fs` module (fs.glob(root, "**/*.rs")).
 glob = "0.3"
 # Home-directory discovery for the XDG SystemLayout (config/cache/data dirs). Light, no transitive

@@ -2691,6 +2691,7 @@ dependencies = [
  "serde_yaml_ng",
  "sqlx",
  "tokio",
+ "toml 0.8.23",
  "tonic",
  "tonic-reflection",
 ]

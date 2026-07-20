@@ -1,0 +1,4 @@
+[plugin]
+name = "beta"
+[plugins]
+store = { path = "deps/store" }

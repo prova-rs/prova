@@ -14,6 +14,32 @@
 //! returns a string listing where we looked, so `require`'s aggregate error is actionable. The
 //! searcher never downloads anything — resolution is always bundled code or an explicit local file
 //! (git fetch happens earlier, in the CLI, into the cache; see docs/design/plugin-system.md § Safety).
+//!
+//! # Private dependencies (bundled + isolated)
+//!
+//! The four steps above are the *consumer's* namespace. A plugin may also declare its own private
+//! dependencies in its `prova-plugin.toml`:
+//!
+//! ```toml
+//! [plugins]
+//! inner = { path = "deps/inner" }
+//! ```
+//!
+//! Such a plugin's chunk runs with a `require` scoped to that map, so `require("inner")` resolves
+//! *for the library* while a consumer that required only the library cannot reach `inner` at all.
+//! Two properties make the isolation real rather than cosmetic:
+//!
+//! - Scoping happens at **load**, by binding the chunk's environment — not inside the searcher, which
+//!   only ever receives a module *name* and could never tell who was asking. This is also why a
+//!   dependency required lazily (inside a function, at test time) still resolves privately.
+//! - A private dependency is cached by **path**, in a registry-side table. Putting it in the global
+//!   `package.loaded` — which is keyed by *name* — would hand every consumer a way to reach it, which
+//!   is precisely the leak this closes.
+//!
+//! Consequences worth knowing: two plugins may depend on different things under one short name
+//! without colliding, and a private dependency must live inside its dependant (or in the cache), not
+//! at the top of `.prova/plugins/` — a top-level directory there is a *project* plugin and is
+//! globally requirable by design.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -136,13 +162,130 @@ fn bundled_loader(lua: &Lua, name: &str, src: &'static str) -> mlua::Result<mlua
 /// Loader for a disk module: read the file at require-time and evaluate it.
 fn disk_loader(lua: &Lua, path: &Path) -> mlua::Result<mlua::Function> {
     let path = path.to_path_buf();
+    lua.create_function(move |lua, _args: Variadic<Value>| load_module(lua, &path))
+}
+
+/// Evaluate a plugin file.
+///
+/// When the plugin declares private dependencies (`prova-plugin.toml [plugins]`), its chunk runs in
+/// an environment whose `require` consults *its own* dependency map first. That is what makes a
+/// library able to use a dependency the consumer cannot see: the name resolves for the library and
+/// nowhere else.
+fn load_module(lua: &Lua, path: &Path) -> mlua::Result<Value> {
+    let src = std::fs::read_to_string(path).map_err(|e| {
+        mlua::Error::RuntimeError(format!("cannot read plugin {}: {e}", path.display()))
+    })?;
     let chunk_name = format!("@{}", path.display());
-    lua.create_function(move |lua, _args: Variadic<Value>| {
-        let src = std::fs::read_to_string(&path).map_err(|e| {
-            mlua::Error::RuntimeError(format!("cannot read plugin {}: {e}", path.display()))
-        })?;
-        lua.load(&src).set_name(&chunk_name).eval::<Value>()
+    let chunk = lua.load(&src).set_name(&chunk_name);
+    let own = private_deps(path);
+    if own.is_empty() {
+        chunk.eval::<Value>()
+    } else {
+        chunk
+            .set_environment(private_env(lua, own)?)
+            .eval::<Value>()
+    }
+}
+
+/// The environment a plugin with private dependencies runs in: everything the ordinary globals
+/// offer, except `require`, which is shadowed by a scoped one. Reads *and writes* fall through to
+/// the real globals, so a plugin sees and can set exactly what it always could — only name
+/// resolution changes.
+fn private_env(lua: &Lua, own: BTreeMap<String, PathBuf>) -> mlua::Result<mlua::Table> {
+    let env = lua.create_table()?;
+    // RAW set, and deliberately so: `__newindex` below forwards writes to the real globals, so a
+    // plain `set` here would install this plugin's private `require` as *everyone's* `require` —
+    // handing every consumer the plugin's private map. (Ask how I know.)
+    env.raw_set("require", scoped_require(lua, own)?)?;
+    let meta = lua.create_table()?;
+    meta.set("__index", lua.globals())?;
+    meta.set("__newindex", lua.globals())?;
+    env.set_metatable(Some(meta))?;
+    Ok(env)
+}
+
+/// `require` bound to one plugin's private dependency map.
+///
+/// A private dependency is cached by resolved *path* in a registry-side table — never in the global
+/// `package.loaded`, which is keyed by name and is exactly the thing that would leak it to consumers.
+/// A name the plugin did not declare falls through to the ordinary global `require`, so bundled
+/// modules, the stdlib, and the project's own declared plugins keep working.
+fn scoped_require(lua: &Lua, own: BTreeMap<String, PathBuf>) -> mlua::Result<mlua::Function> {
+    lua.create_function(move |lua, name: String| {
+        let Some(entry) = own.get(&name) else {
+            // Not one of this plugin's declared dependencies — ordinary resolution.
+            let global: mlua::Function = lua.globals().get("require")?;
+            return global.call::<Value>(name);
+        };
+        let key = entry.display().to_string();
+        let cache = private_cache(lua)?;
+        // A sentinel goes in before evaluation, mirroring how Lua's own `require` breaks import
+        // cycles: a dependency that (transitively) requires its dependant gets the sentinel rather
+        // than recursing forever.
+        match cache.get::<Value>(key.as_str())? {
+            Value::Nil => {}
+            hit => return Ok(hit),
+        }
+        cache.set(key.as_str(), true)?;
+        let value = load_module(lua, entry)?;
+        cache.set(key.as_str(), value.clone())?;
+        Ok(value)
     })
+}
+
+/// Registry key for the private module cache — deliberately *not* `package.loaded`.
+const PRIVATE_LOADED: &str = "prova.private_loaded";
+
+/// The private module table, created on first use.
+fn private_cache(lua: &Lua) -> mlua::Result<mlua::Table> {
+    if let Ok(Value::Table(t)) = lua.named_registry_value::<Value>(PRIVATE_LOADED) {
+        return Ok(t);
+    }
+    let table = lua.create_table()?;
+    lua.set_named_registry_value(PRIVATE_LOADED, &table)?;
+    Ok(table)
+}
+
+/// A plugin's declared private dependencies, read from the `prova-plugin.toml` beside its entry.
+///
+/// Only `path` sources resolve here: the searcher never downloads (see the module docs), so a git
+/// dependency has to be fetched earlier. Anything unparseable is treated as "no private deps" rather
+/// than a hard error — a malformed manifest should not make an otherwise-working plugin unloadable,
+/// and the require that then fails names what it could not find.
+fn private_deps(entry: &Path) -> BTreeMap<String, PathBuf> {
+    let mut out = BTreeMap::new();
+    let Some(dir) = entry.parent() else {
+        return out;
+    };
+    let Ok(src) = std::fs::read_to_string(dir.join("prova-plugin.toml")) else {
+        return out;
+    };
+    let Ok(table) = src.parse::<toml::Table>() else {
+        return out;
+    };
+    let Some(plugins) = table.get("plugins").and_then(toml::Value::as_table) else {
+        return out;
+    };
+    for (name, source) in plugins {
+        // `name = "some/path"` or `name = { path = "some/path" }`.
+        let rel = match source {
+            toml::Value::String(s) => Some(s.as_str()),
+            toml::Value::Table(t) => t.get("path").and_then(toml::Value::as_str),
+            _ => None,
+        };
+        let Some(rel) = rel else { continue };
+        let root = dir.join(rel);
+        // A dependency may be a file, or a directory holding `<name>.lua` / `init.lua`.
+        let candidates = [
+            root.clone(),
+            root.join(format!("{name}.lua")),
+            root.join("init.lua"),
+        ];
+        if let Some(found) = candidates.iter().find(|p| p.is_file()) {
+            out.insert(name.clone(), found.clone());
+        }
+    }
+    out
 }
 
 /// Disk search roots, in order: every dir on `PROVA_PLUGIN_PATH`, then the caller-supplied `extra`

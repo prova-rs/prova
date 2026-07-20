@@ -2,10 +2,10 @@
 -- (`derived`) — proving a library CAN use a dependency internally — while never re-exporting `inner`.
 -- A consumer that requires `lib` must get `lib`, and NOT `inner`.
 --
--- Today `require("inner")` resolves via the global `.prova/plugins` disk root (the leak the isolation
--- proof pins). Under the bundled+isolated model, this require binds to lib's own dependency map
--- (`prova-plugin.toml [plugins]`) via a plugin-scoped `require`, so `inner` resolves privately for lib
--- and stops resolving for any consumer.
+-- This `require` binds to lib's own dependency map (`prova-plugin.toml [plugins]`) through a
+-- plugin-scoped `require`, so `inner` resolves here and nowhere else. Nothing about this line looks
+-- special — that is the point: a plugin author writes an ordinary require and gets privacy by
+-- declaring the dependency, not by using a different API.
 local inner = require("inner")
 
 local M = {}
