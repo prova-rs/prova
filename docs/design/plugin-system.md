@@ -105,25 +105,54 @@ A plugin author who follows this gets the same shape, IDE completion, and skip b
    so it wins over the disk roots below.
 3. **Intra-plugin** — `<canonical>.<sub>` resolves under the plugin's own root, so a multi-file
    plugin can require its siblings without colliding with anything else.
-4. **Disk roots**, each tried as `<root>/<name-with-dots-as-slashes>.lua` then `.../init.lua`:
-   - every dir on `PROVA_PLUGIN_PATH` (colon-separated), then
-   - the project's `<project_root>/.prova/plugins/`, then `./.prova/plugins/`.
+4. **Declared disk roots**, each tried as `<root>/<name-with-dots-as-slashes>.lua` then
+   `.../init.lua`. These come from the manifest's `[run] plugin_roots`, resolved against the project
+   root. There is no default and no environment input — see below.
 
 Appended (not prepended) so it never shadows Lua's own searchers. A miss returns a message listing
 where it looked, so `require`'s aggregate error is actionable. **No network fetch happens in the
 searcher** — resolution is always from bundled code or a local file, which is the safety boundary
 (below).
 
-### No machine-global plugin directory
+### Everything is declared
 
-There is deliberately **no per-user plugin dir** (a `data_dir/plugins` the searcher consults). A
-project may require only what is under version control: its own `.prova/plugins/`, or a git source
-pinned in `prova.toml`. That way a clean clone resolves exactly what the author's machine resolves.
+Discovery is the only implicit step: prova walks up for `.prova.toml`, `prova.toml`,
+`prova/prova.toml`, or `.prova/prova.toml`. **From there the manifest names everything.**
 
-A global dir would let a proof pass on one laptop and fail in CI with nothing in the repo to explain
-the difference — "works on my machine", reintroduced into the tool whose job is to rule it out. The
-git-checkout cache (`cache_dir/plugins`) is not an exception: its contents are pinned by the
-manifest and reproducible from it.
+```toml
+[run]
+paths        = ["proofs"]            # root-relative
+config       = "config.lua"          # home-relative
+plugin_roots = [".prova/plugins"]    # root-relative; no default
+```
+
+Removed, deliberately, in service of that: the per-user `data_dir/plugins` root, the
+`PROVA_PLUGIN_PATH` env var, the cwd-relative `./.prova/plugins` fallback, and the engine's own
+hardcoded `<project_root>/.prova/plugins` join. Each was an answer to "where could this `require`
+have come from?" that you could not obtain by reading the project.
+
+Two reasons this is worth the one line of ceremony:
+
+- **Reproducibility.** A resolution path outside version control lets a proof pass on a laptop and
+  fail in CI with nothing in the repo to explain the difference — "works on my machine", inside the
+  tool whose job is to rule it out.
+- **Auditability.** One file answers the question completely. That matters most when the reader is an
+  agent, which cannot simply *know* a convention baked into the binary.
+
+A project declaring no roots resolves no ambient plugins, and the miss message says exactly that
+(`no plugin roots declared — add plugin_roots to [run]…`) rather than reading like a typo. The
+git-checkout cache (`cache_dir/plugins`) is not an exception to any of this: its contents are pinned
+by the manifest and reproducible from it.
+
+**Testing.** Isolation comes from pointing at a manifest, not from environment injection: `--manifest`
+selects the project, `--config` / `PROVA_CONFIG` selects the companion, and in-process embedders call
+`RunConfig::with_plugin_root` directly. For the user-level layer, `XdgSystemLayout` honors `XDG_*` and
+`RootedSystemLayout` roots every directory under one path.
+
+**The user-level config** (`~/.config/prova/config.toml`, not yet implemented) must stay on the right
+side of this line: it may change **how prova presents things** (format, jobs, colour, IDE prefs); it
+may never change **what prova resolves** (plugin roots, paths, plugin sources). A user config that
+could contribute a plugin root would be the machine-global plugin dir again under another name.
 
 ### Private dependencies (bundled + isolated)
 
@@ -155,8 +184,8 @@ Wired now (the "easy to install" story):
 - **XDG layout** (`layout.rs`, `SystemLayout`) — `config_dir` `~/.config/prova`, `cache_dir`
   `~/.cache/prova`, `data_dir` `~/.local/share/prova` (XDG on macOS too, like archetect;
   `XDG_*` honored). `XdgSystemLayout` for production, `RootedSystemLayout` for tests.
-- **Global install dir** — the searcher also consults `data_dir/plugins`, so a plugin dropped there
-  is available to every project without `PROVA_PLUGIN_PATH`.
+- **Declared plugin roots** — `[run] plugin_roots` in the manifest, resolved against the project
+  root. The only disk roots consulted; there is no global install dir (see "Everything is declared").
 - **Manifest-declared plugins** — `prova.toml` `[plugins]` maps a name to a local path or a **git
   source** (`{ git = "…", tag/branch/rev = "…", module = "…" }`). Git sources are fetched (shelling
   to `git`, like archetect fetches archetype sources) into `cache_dir/plugins`, pinned by ref and
@@ -249,8 +278,8 @@ and tested through the public seam with no behavior change.
 ## Status
 
 - **Done:** custom searcher (bundled → manifest-named → intra-plugin → disk roots); one bundled
-  loadable namespace (`prova.workspace`); disk plugins via `PROVA_PLUGIN_PATH` / the project's
-  `.prova/plugins`; the XDG `SystemLayout`; `[plugins]` manifest sources with **git fetch + cache**,
+  loadable namespace (`prova.workspace`); ambient plugins via declared `[run] plugin_roots`;
+  the XDG `SystemLayout`; `[plugins]` manifest sources with **git fetch + cache**,
   verified end-to-end through the real binary (`tests/plugin_git.rs`); **private plugin dependencies**
   (`prova-plugin.toml [plugins]`), scoped at load via the chunk environment and cached by path
   (`tests/plugin_private_deps.rs`, `proofs/plugins/`). Existing globals unchanged and first-class.

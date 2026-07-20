@@ -3,7 +3,8 @@
 -- Bundled: `prova.workspace` is embedded in the binary, resolved with no disk lookup.
 local workspace = require("prova.workspace")
 
--- Disk: `greet` is resolved from PROVA_PLUGIN_PATH (set by the test to testdata/plugins).
+-- Disk: `greet` resolves from a declared plugin root (the test passes testdata/plugins via
+-- `RunConfig::with_plugin_root` — roots are always declared, never taken from the environment).
 local greet = require("greet")
 
 prova.test("disk plugin resolves and runs", function(t)

@@ -6,14 +6,24 @@
 //!   1. `BUNDLED` — first-party modules embedded in the binary, reserved for the `prova.*` namespace.
 //!   2. `named` — a plugin declared in `prova.toml` (`[plugins]`), resolved to an exact file (git
 //!      checkouts are fetched into the cache and land here as a path). The manifest is authoritative.
-//!   3. each dir on `PROVA_PLUGIN_PATH` (colon-separated), then any extra `roots` (the project's
-//!      `<root>/.prova/plugins`), then `./.prova/plugins/` — each as `<root>/<a/b>.lua` then
-//!      `<root>/<a/b>/init.lua`.
+//!   3. the **declared** disk roots, in order — each as `<root>/<a/b>.lua` then
+//!      `<root>/<a/b>/init.lua`. The CLI derives these from the manifest's `[run] plugin_roots`,
+//!      resolved against the project root; an embedder passes them via `RunConfig::with_plugin_root`.
 //!
-//! There is deliberately **no machine-global plugin directory**. Everything a project can require
-//! comes from its own `.prova/plugins/` or from a pinned git source in `prova.toml` — both under
-//! version control — so a clean clone resolves what the author's machine resolves. A per-user plugin
-//! dir would reintroduce "works on my machine" into the one tool that exists to rule it out.
+//! # Everything is declared
+//!
+//! Discovery finds the manifest (`.prova.toml` / `prova.toml` / `prova/prova.toml` /
+//! `.prova/prova.toml`); from there, **the manifest names every place a plugin may come from**. There
+//! is no default root, no `PROVA_PLUGIN_PATH`, no cwd-relative fallback, and no per-user plugin
+//! directory. Each of those used to be an answer to "where could this `require` have come from?" that
+//! you could not get by reading the project — and a resolution path outside version control lets a
+//! proof pass on one machine and fail in CI with nothing in the repo to explain it.
+//!
+//! The payoff is auditability: one file answers the question completely, which matters most when the
+//! reader is an agent that cannot simply *know* the conventions. A project that declares no roots
+//! resolves no ambient plugins, and the miss message says exactly that rather than looking like a
+//! typo. Git sources in `[plugins]` are the other half — pinned, fetched into the cache, equally
+//! reproducible from the manifest alone.
 //!
 //! A module name's dots map to path separators (`acme.rabbitmq` → `acme/rabbitmq.lua`). A miss
 //! returns a string listing where we looked, so `require`'s aggregate error is actionable. The
@@ -70,10 +80,10 @@ const BUNDLED: &[(&str, &str)] = &[
 /// the CLI already fetched into the cache). `namespaces` maps a plugin's *canonical* name to its
 /// module root directory, so a multi-file plugin can `require("<canonical>.<sub>")` its own sibling
 /// files (namespaced by canonical name, so it is stable regardless of the consumer's alias and never
-/// collides with another plugin). `roots` are extra disk search roots — in practice the project's
-/// own `<project_root>/.prova/plugins`, and nothing machine-global (see the module docs); the
-/// built-in `PROVA_PLUGIN_PATH` and `./.prova/plugins` roots are always searched too. All are cloned
-/// into the searcher closure (the Lua state is single-threaded).
+/// collides with another plugin). `roots` are the declared disk search roots — the manifest's
+/// `[run] plugin_roots`, already absolutised — and they are the *only* disk roots consulted: nothing
+/// machine-global, nothing from the environment, nothing cwd-relative (see the module docs). All are
+/// cloned into the searcher closure (the Lua state is single-threaded).
 pub(crate) fn install(
     lua: &Lua,
     roots: &[PathBuf],
@@ -134,8 +144,7 @@ fn resolve(
         }
     }
 
-    // 4. Disk roots: PROVA_PLUGIN_PATH, then the passed roots, then ./.prova/plugins. `acme.rabbitmq`
-    //    → `acme/rabbitmq`.
+    // 4. The declared disk roots, in order. `acme.rabbitmq` → `acme/rabbitmq`.
     let rel = name.replace('.', "/");
     for root in disk_roots(roots) {
         for candidate in [
@@ -153,6 +162,15 @@ fn resolve(
     let mut msg = format!("\n\tno prova plugin {name:?} (bundled, manifest, or on disk)");
     for path in tried {
         msg.push_str(&format!("\n\t\tno file '{path}'"));
+    }
+    // Having nowhere to look is a different mistake from looking and missing, and it has a different
+    // fix. Since plugin roots are declared rather than defaulted, an undeclared root would otherwise
+    // present as an ordinary "not found" and send the reader hunting for a misspelled plugin.
+    if disk_roots(roots).is_empty() {
+        msg.push_str(
+            "\n\t\t(no plugin roots declared — add `plugin_roots` to [run] in prova.toml, \
+             e.g. plugin_roots = [\".prova/plugins\"])",
+        );
     }
     Ok(Value::String(lua.create_string(&msg)?))
 }
@@ -294,16 +312,13 @@ fn private_deps(entry: &Path) -> BTreeMap<String, PathBuf> {
     out
 }
 
-/// Disk search roots, in order: every dir on `PROVA_PLUGIN_PATH`, then the caller-supplied `extra`
-/// roots (e.g. the global `data_dir/plugins`), then `./.prova/plugins`.
-fn disk_roots(extra: &[PathBuf]) -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    if let Ok(path) = std::env::var("PROVA_PLUGIN_PATH") {
-        for dir in path.split(':').filter(|s| !s.is_empty()) {
-            roots.push(PathBuf::from(dir));
-        }
-    }
-    roots.extend(extra.iter().cloned());
-    roots.push(PathBuf::from(".prova/plugins"));
-    roots
+/// Disk search roots: exactly the ones the caller declared, in order — nothing else.
+///
+/// This function used to add an env var (`PROVA_PLUGIN_PATH`) and a cwd-relative `./.prova/plugins`.
+/// Both are gone on purpose. A root that comes from the environment or the working directory cannot
+/// be read off the project, so "where could this `require` have come from?" had four answers, three
+/// of them invisible from the repo. Now the manifest's `[run] plugin_roots` is the whole story, which
+/// is what lets a reader — or an agent — audit resolution by reading one file.
+fn disk_roots(declared: &[PathBuf]) -> Vec<PathBuf> {
+    declared.to_vec()
 }

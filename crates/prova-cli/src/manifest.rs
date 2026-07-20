@@ -165,6 +165,14 @@ pub struct SuiteDecl {
 pub struct Profile {
     #[serde(default)]
     pub paths: Vec<String>,
+    /// Directories the plugin searcher consults, relative to the project **root** (like `paths`).
+    ///
+    /// There is no default: a root prova can resolve from is one this file names. Discovery finds
+    /// the manifest; from there everything is declared, so reading `prova.toml` tells you — or an
+    /// agent — the whole resolution graph, with nothing contributed by the environment, the working
+    /// directory, or the machine.
+    #[serde(default)]
+    pub plugin_roots: Vec<String>,
     /// The companion file loaded once, pre-suite, for `runtime.*` config (capabilities). Relative to
     /// the home. Defaults to `prova.lua` beside the manifest; point it elsewhere (e.g.
     /// `proofs/shared/config.lua`) to keep the home clean.
@@ -201,6 +209,9 @@ pub struct Profile {
 #[derive(Debug, PartialEq)]
 pub struct Resolved {
     pub paths: Vec<String>,
+    /// Plugin search roots (`[run] plugin_roots`), relative to the project root. Empty means the
+    /// project declared none — the searcher then has nowhere to look on disk, and says so.
+    pub plugin_roots: Vec<String>,
     /// The companion config file (relative to home); `None` → the `prova.lua` default. See `Profile`.
     pub config: Option<String>,
     pub jobs: Option<usize>,
@@ -244,6 +255,12 @@ impl Manifest {
             Some(p) if !p.paths.is_empty() => p.paths.clone(),
             _ => base.paths.clone(),
         };
+        // Overridden wholesale by a profile, like `paths` — a profile that names roots means "look
+        // here instead", not "look here as well", so a profile can never widen resolution silently.
+        let plugin_roots = match overlay {
+            Some(p) if !p.plugin_roots.is_empty() => p.plugin_roots.clone(),
+            _ => base.plugin_roots.clone(),
+        };
         let config = overlay
             .and_then(|p| p.config.clone())
             .or_else(|| base.config.clone());
@@ -282,6 +299,7 @@ impl Manifest {
 
         Ok(Resolved {
             paths,
+            plugin_roots,
             config,
             jobs,
             format,
@@ -332,6 +350,7 @@ paths = ["tests/smoke"]
             r,
             Resolved {
                 paths: vec!["tests".into()],
+                plugin_roots: Vec::new(),
                 config: None,
                 jobs: Some(4),
                 format: Some("console".into()),
@@ -460,6 +479,45 @@ redis = "acme:prova-redis@v1"
         let r = m.resolve(Some("smoke")).unwrap();
         assert_eq!(r.paths, vec!["tests/smoke".to_string()]);
         assert_eq!(r.jobs, Some(4)); // inherited
+    }
+
+    /// `plugin_roots` is the whole of on-disk plugin resolution, so both halves matter: absent means
+    /// *no* roots (never a silent default — that is the point of declaring them), and a profile that
+    /// names roots replaces rather than extends, so selecting a profile can never widen resolution.
+    #[test]
+    fn plugin_roots_are_declared_and_profile_overridable() {
+        let m = Manifest::parse(
+            r#"
+[run]
+paths = ["proofs"]
+plugin_roots = [".prova/plugins"]
+
+[profiles.vendored]
+plugin_roots = ["vendor/plugins"]
+
+[profiles.smoke]
+paths = ["proofs/smoke"]
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            m.resolve(None).unwrap().plugin_roots,
+            vec![".prova/plugins".to_string()]
+        );
+        // Replaced wholesale, not appended to.
+        assert_eq!(
+            m.resolve(Some("vendored")).unwrap().plugin_roots,
+            vec!["vendor/plugins".to_string()]
+        );
+        // A profile that says nothing about roots inherits the project's.
+        assert_eq!(
+            m.resolve(Some("smoke")).unwrap().plugin_roots,
+            vec![".prova/plugins".to_string()]
+        );
+        // No `plugin_roots` anywhere means nothing is searched — no built-in fallback.
+        let bare = Manifest::parse("[run]\npaths = [\"proofs\"]\n").unwrap();
+        assert!(bare.resolve(None).unwrap().plugin_roots.is_empty());
     }
 
     #[test]

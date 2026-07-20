@@ -1,22 +1,23 @@
 use std::path::PathBuf;
 
-use prova_core::{run_path, NullReporter};
+use prova_core::{run_path_with, NullReporter, RunConfig};
 
 /// The plugin searcher resolves both a **bundled** first-party module (`prova.workspace`) and a
-/// **disk** plugin (`greet`, from `PROVA_PLUGIN_PATH`), and reports a clean error on a miss.
+/// **disk** plugin (`greet`), and reports a clean error on a miss.
+///
+/// The disk root is passed explicitly rather than injected through `PROVA_PLUGIN_PATH`. That env var
+/// is gone: a root reachable from the environment is a root you cannot read off the project, which
+/// is the same "works on my machine" hole as a per-user plugin directory. An embedder — a test very
+/// much included — names its roots, exactly as the CLI now passes the manifest's `[run] plugin_roots`.
 #[test]
 fn require_resolves_bundled_and_disk_plugins() {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    // Point the searcher at the on-disk example plugin.
-    std::env::set_var(
-        "PROVA_PLUGIN_PATH",
-        manifest.join("testdata").join("plugins"),
-    );
-
     let path = manifest.join("testdata").join("plugin_require.lua");
-    let mut reporter = NullReporter;
-    let summary = run_path(&path, &mut reporter).expect("run plugin_require.lua");
+    let config = RunConfig::new(1).with_plugin_root(manifest.join("testdata").join("plugins"));
 
-    assert_eq!(summary.passed, 3, "passed");
+    let mut reporter = NullReporter;
+    let summary = run_path_with(&path, &mut reporter, &config).expect("run plugin_require.lua");
+
     assert_eq!(summary.failed, 0, "failed");
+    assert_eq!(summary.passed, 3, "passed");
 }

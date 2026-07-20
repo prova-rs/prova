@@ -1471,12 +1471,14 @@ fn engine_config(
     plugins_resolved: &plugins::ResolvedPlugins,
     home: Option<&Home>,
 ) -> RunConfig {
-    // Deliberately NO machine-global plugin root. A plugin reaches a project from its own
-    // `.prova/plugins/` or from a pinned git source in `prova.toml` — both of which are in version
-    // control, so a clean clone resolves exactly what this machine resolves. A per-user plugin
-    // directory would let a proof pass here and fail in CI with nothing in the repo to explain it,
-    // which is a poor trade for a tool whose job is proving things.
+    // Every search root is declared in the manifest (`[run] plugin_roots`) — nothing global, nothing
+    // from the environment, nothing from the cwd. Discovery locates `prova.toml`; from there the file
+    // names everything, so a reader (or an agent) can audit what a `require` could possibly resolve
+    // without knowing a single convention baked into this binary.
     let mut config = RunConfig::new(jobs).with_module(prova_archetect::install);
+    for root in &plugins_resolved.search_roots {
+        config = config.with_plugin_root(root.clone());
+    }
     // Surface where the project is (`prova.root` / `prova.home`) so repo-local plugins can find
     // repo artifacts. Absent when there is no manifest.
     if let Some(h) = home {
@@ -1576,7 +1578,7 @@ fn resolve_from_manifest(
     }
 
     // Resolve declared plugins relative to the home directory (git sources fetched into cache).
-    let plugins_resolved = plugins::resolve_plugins(
+    let mut plugins_resolved = plugins::resolve_plugins(
         &resolved.plugins,
         &home.dir,
         layout,
@@ -1587,6 +1589,15 @@ fn resolve_from_manifest(
         eprintln!("prova: {e}");
         ExitCode::from(2)
     })?;
+
+    // Declared search roots, absolutised against the project ROOT (like `paths`, and unlike the
+    // home-relative `config`). Nothing is added here: a project searches exactly the roots its
+    // manifest names, so the file answers "where can a plugin come from?" on its own.
+    plugins_resolved.search_roots = resolved
+        .plugin_roots
+        .iter()
+        .map(|r| home.root.join(r))
+        .collect();
 
     // The optional `prova.lua` companion — loaded with the manifest, and BEFORE the `must_run`
     // precondition below. That order is the whole reason this is a project-level companion rather

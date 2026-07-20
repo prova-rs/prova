@@ -2112,18 +2112,14 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
     // Wire `require` to resolve Lua plugins (bundled + manifest + disk). Installed last so a plugin
     // loaded via `require` sees every primitive global it composes.
     //
-    // A project's own local plugins live at `<root>/.prova/plugins/` — the "shared is a plugin"
-    // mechanism. Root that against the **project root**, never the cwd: `require("shared")` must
-    // resolve the same whether `prova` ran from the repo root or a subdirectory (the disk searcher's
-    // own `.prova/plugins` fallback is cwd-relative, which only works when cwd happens to be the root).
-    let mut plugin_roots: Vec<std::path::PathBuf> = Vec::new();
-    if let Some(root) = &config.project_root {
-        plugin_roots.push(root.join(".prova/plugins"));
-    }
-    plugin_roots.extend(config.plugin_roots.iter().cloned());
+    // Search roots are exactly what the embedder declared (`with_plugin_root`) — the engine adds
+    // none of its own. It used to join `<project_root>/.prova/plugins` here, which meant the answer
+    // to "where do plugins come from?" was split between this file and the manifest. The CLI now
+    // passes the manifest's `[run] plugin_roots` (already absolutised against the project root), so
+    // the manifest is the single, readable source of truth and the engine has no layout opinion.
     crate::plugins::install(
         &lua,
-        &plugin_roots,
+        &config.plugin_roots,
         &config.named_plugins,
         &config.plugin_namespaces,
     )?;

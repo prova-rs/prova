@@ -237,10 +237,11 @@ left open by good architecture; we are not walking through it.
 - **Plugin system** — `require("name")` resolves Lua plugins through a custom `package.searchers`
   entry (`plugins.rs`), in order: **bundled** first-party modules embedded in the binary (`prova.*`),
   **manifest-declared** plugins (`prova.toml` `[plugins]`, authoritative + pinned), then disk — every
-  dir on `PROVA_PLUGIN_PATH`, then the project's **`<project_root>/.prova/plugins/`**
-  (`<a/b>.lua` or `<a/b>/init.lua`). There is deliberately **no machine-global plugin dir**: a project
-  resolves only what is under version control, so a clean clone resolves what the author's machine
-  does. A plugin may also declare **private dependencies** in its own `prova-plugin.toml`
+  **declared** disk root from the manifest's `[run] plugin_roots` (root-relative; `<a/b>.lua` or
+  `<a/b>/init.lua`). **Everything is declared**: no default root, no `PROVA_PLUGIN_PATH`, no
+  cwd-relative fallback, no machine-global dir — discovery finds `prova.toml`, and from there the file
+  names every place a plugin may come from, so a clean clone resolves what the author's machine does
+  and one file answers "where could this require have come from?". A plugin may also declare **private dependencies** in its own `prova-plugin.toml`
   (`[plugins]`), which resolve for that plugin's code alone — the "bundled + isolated" model that
   lets a library depend on something without exposing it to consumers. A plugin is authored exactly
   like a first-party recipe: one namespace table following the grammar, composing primitives,
