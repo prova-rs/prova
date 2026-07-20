@@ -92,8 +92,8 @@ impl Catalog {
         }
         let text = std::fs::read_to_string(&path)
             .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-        let user: UserConfig = toml::from_str(&text)
-            .map_err(|e| format!("invalid {}: {e}", path.display()))?;
+        let user: UserConfig =
+            toml::from_str(&text).map_err(|e| format!("invalid {}: {e}", path.display()))?;
         // A user key replaces the built-in of the same name; a new key adds one.
         catalog.entries.extend(user.init);
         Ok(catalog)
@@ -102,12 +102,9 @@ impl Catalog {
     /// Look up a key, or an error naming the keys that do exist — a typo should never render the
     /// wrong archetype or fail silently.
     pub fn get(&self, key: &str) -> Result<&InitEntry, String> {
-        self.entries.get(key).ok_or_else(|| {
-            format!(
-                "unknown init key {key:?} — available: {}",
-                self.keys_line()
-            )
-        })
+        self.entries
+            .get(key)
+            .ok_or_else(|| format!("unknown init key {key:?} — available: {}", self.keys_line()))
     }
 
     /// The available keys, comma-separated, for error messages.

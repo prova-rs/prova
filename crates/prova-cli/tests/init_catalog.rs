@@ -121,7 +121,10 @@ fn unknown_key_errors_and_lists_the_available_keys() {
         "expected non-zero exit for an unknown catalog key"
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("bogus"), "error omits the bad key: {stderr}");
+    assert!(
+        stderr.contains("bogus"),
+        "error omits the bad key: {stderr}"
+    );
     assert!(
         stderr.contains("default"),
         "error should list the available keys: {stderr}"

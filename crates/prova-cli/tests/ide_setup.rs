@@ -15,11 +15,7 @@ fn scratch(tag: &str) -> (PathBuf, PathBuf) {
     let _ = std::fs::remove_dir_all(&base);
     let project = base.join("project");
     std::fs::create_dir_all(project.join("proofs")).unwrap();
-    std::fs::write(
-        project.join(".prova.toml"),
-        "[run]\npaths = [\"proofs\"]\n",
-    )
-    .unwrap();
+    std::fs::write(project.join(".prova.toml"), "[run]\npaths = [\"proofs\"]\n").unwrap();
     let xdg = base.join("xdg");
     std::fs::create_dir_all(&xdg).unwrap();
     (project, xdg)
@@ -90,7 +86,10 @@ fn idempotent_second_run() {
         .iter()
         .filter(|v| v.as_str().is_some_and(|s| s.contains("annotations")))
         .count();
-    assert_eq!(core_entries, 1, "duplicate core entry after re-run: {lib:?}");
+    assert_eq!(
+        core_entries, 1,
+        "duplicate core entry after re-run: {lib:?}"
+    );
     cleanup(&project);
 }
 
