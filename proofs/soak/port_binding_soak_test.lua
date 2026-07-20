@@ -95,12 +95,22 @@ local WORKERS    = tonumber(os.getenv("PROVA_SOAK_WORKERS") or "") or 1
 local CLIENT     = os.getenv("PROVA_SOAK_CLIENT") or "both"
 local PER_WORKER = math.max(1, math.floor(STARTS / WORKERS))
 
-local IMAGE      = "alpine:3.20"
-local PORT       = 80
--- How long the container lives. This is a VARIABLE, not a detail: a container that has exited has
--- its port bindings cleared by the daemon, so a lifetime near the scan budget lets "finished
--- normally" masquerade as "never bound". Raise it to tell the two apart.
+-- The workload is parameterised so this can be aimed at the case under suspicion, not just at a
+-- convenient one. The original production failures were `moul/grpcbin` on 9000 — an amd64-only
+-- image running emulated on arm64, and a long-lived server rather than a `sleep` — which is a very
+-- different animal from a native alpine that exits on cue.
+local IMAGE      = os.getenv("PROVA_SOAK_IMAGE") or "alpine:3.20"
+local PORT       = tonumber(os.getenv("PROVA_SOAK_PORT") or "") or 80
+-- How long the container lives. A VARIABLE, not a detail: a container that has exited has its port
+-- bindings cleared by the daemon, so a lifetime near the scan budget lets "finished normally"
+-- masquerade as "never bound" — which is exactly how we once blamed a runtime for our own bug.
+-- Set to "none" to run the image's own entrypoint untouched (a server that never exits).
 local LIFETIME   = os.getenv("PROVA_SOAK_LIFETIME") or "2"
+local RUN_FOREVER = LIFETIME == "none"
+-- Whether the prova arm also waits for readiness, as a real resource does. The original failure
+-- surfaced AFTER readiness had passed — the server was listening inside the container while no host
+-- mapping existed — so reproducing it faithfully means asking for the wait.
+local WITH_WAIT  = os.getenv("PROVA_SOAK_WAIT") == "1"
 -- Mirrors prova's own resolution budget (`published_ports`), so neither arm is given more patience
 -- than the other.
 local BUDGET_MS  = 2000
@@ -117,9 +127,12 @@ end
 -- One container start via the `docker` CLI, following prova's protocol step for step.
 -- Returns "published" | "bound_nothing" | "never_appeared" | "error:<detail>".
 local function cli_start_once()
-  local created = shell.run({
-    "docker", "create", "-p", "127.0.0.1::" .. PORT, IMAGE, "sleep", LIFETIME,
-  })
+  local argv = { "docker", "create", "-p", "127.0.0.1::" .. PORT, IMAGE }
+  if not RUN_FOREVER then
+    argv[#argv + 1] = "sleep"
+    argv[#argv + 1] = LIFETIME
+  end
+  local created = shell.run(argv)
   if created.code ~= 0 then
     return "error:create: " .. tostring(created.stderr)
   end
@@ -161,11 +174,14 @@ end
 -- any defect it healed along the way.
 local function prova_start_once()
   local ok, err = pcall(function()
-    local c = docker.run{
-      image = IMAGE,
-      command = { "sleep", LIFETIME },
-      ports = { PORT },
-    }
+    local spec = { image = IMAGE, ports = { PORT } }
+    if not RUN_FOREVER then
+      spec.command = { "sleep", LIFETIME }
+    end
+    if WITH_WAIT then
+      spec.wait = { port = PORT, timeout = "60s" }
+    end
+    local c = docker.run(spec)
     -- Resolving the host port is the operation the defect actually breaks; asking every time is what
     -- turns a bad binding into an observable event rather than a latent one.
     local hp = c:host_port(PORT)

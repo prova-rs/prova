@@ -3226,10 +3226,16 @@ pub(crate) mod docker {
         if wanted.is_empty() {
             return scan;
         }
+        let mut exited = false;
         loop {
             match client.inspect_container(id, None).await {
                 Ok(info) => {
                     scan.last_error = None;
+                    // Liveness comes from the SAME response as the port map. It used to be a second
+                    // `inspect` per iteration, which doubled this loop's load on the daemon for a
+                    // fact the first call already carried — and this loop is not gentle: every 50ms,
+                    // per container, across every worker.
+                    exited = matches!(info.state.as_ref().and_then(|s| s.running), Some(false));
                     if let Some(ports) = info.network_settings.and_then(|ns| ns.ports) {
                         // Keep what the daemon actually said. When this whole scan comes up empty
                         // the raw map is the evidence that separates "the key is absent" (the
@@ -3270,10 +3276,7 @@ pub(crate) mod docker {
             }
             // Stop early on success, on a dead container (it will never publish anything more), or
             // when the budget is spent. The caller decides whether a partial answer is a problem.
-            if scan.found.len() == wanted.len()
-                || Instant::now() >= deadline
-                || exited_status(client, id).await.is_some()
-            {
+            if scan.found.len() == wanted.len() || Instant::now() >= deadline || exited {
                 return scan;
             }
             tokio::time::sleep(EVERY).await;
