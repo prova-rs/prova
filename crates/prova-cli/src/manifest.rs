@@ -240,6 +240,10 @@ pub struct TopologyDecl {
     /// A direct dotted path to the factory inside the plugin's namespace. Mutually exclusive with
     /// `topology`.
     pub factory: Option<String>,
+    /// Environment this topology needs (capability expressions, e.g. `["docker"]`), added to whatever
+    /// the plugin's advertisement declares. An unmet requirement blocks `prova up` before provisioning.
+    #[serde(default)]
+    pub requires: Vec<String>,
 }
 
 /// An explicitly-declared suite: its `paths` are discovered into one suite (sharing an optional

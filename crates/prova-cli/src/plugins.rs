@@ -90,12 +90,14 @@ struct PluginMeta {
     topologies: Vec<AdvertisedTopology>,
 }
 
-/// One advertised topology (`[[plugin.topologies]]`): a public `name` and the dotted `factory` path
-/// inside the plugin's namespace it resolves to.
+/// One advertised topology (`[[plugin.topologies]]`): a public `name`, the dotted `factory` path
+/// inside the plugin's namespace it resolves to, and the environment it needs (`requires`).
 #[derive(Debug, Deserialize, Clone)]
 pub struct AdvertisedTopology {
     pub name: String,
     pub factory: String,
+    #[serde(default)]
+    pub requires: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -143,34 +145,48 @@ pub fn resolve_plugins(
     Ok(resolved)
 }
 
-/// Resolve a `[topologies]` entry to the dotted factory path to register (`prova.topology(alias,
-/// require(plugin).<factory>)`). The direct `factory` form is used verbatim; the `topology` form looks
-/// the name up in the plugin's advertised set (`[[plugin.topologies]]`) — its public contract.
-/// Exactly one of `factory`/`topology` must be present.
-pub fn resolve_topology_factory(
+/// A `[topologies]` entry resolved to what the engine and `up` need: the dotted factory path to
+/// register, and the effective environment requirements (advertisement + registration, merged).
+pub struct ResolvedTopology {
+    pub factory: String,
+    pub requires: Vec<String>,
+}
+
+/// Resolve a `[topologies]` entry. The direct `factory` form is used verbatim; the `topology` form
+/// looks the name up in the plugin's advertised set (`[[plugin.topologies]]`) — its public contract —
+/// and inherits that advertisement's `requires`. Exactly one of `factory`/`topology` must be present.
+/// The registration's own `requires` are always added on top.
+pub fn resolve_topology(
     alias: &str,
     decl: &TopologyDecl,
     plugins: &ResolvedPlugins,
-) -> Result<String, String> {
-    match (&decl.factory, &decl.topology) {
-        (Some(f), None) => Ok(f.clone()),
-        (None, Some(t)) => advertised_factory(&decl.plugin, t, plugins),
+) -> Result<ResolvedTopology, String> {
+    let (factory, mut requires) = match (&decl.factory, &decl.topology) {
+        (Some(f), None) => (f.clone(), Vec::new()),
+        (None, Some(t)) => advertised(&decl.plugin, t, plugins)?,
         (Some(_), Some(_)) => {
-            Err(format!("topology {alias:?}: give either `factory` or `topology`, not both"))
+            return Err(format!(
+                "topology {alias:?}: give either `factory` or `topology`, not both"
+            ))
         }
-        (None, None) => Err(format!(
-            "topology {alias:?}: needs a `factory` (a dotted path) or a `topology` (an advertised name)"
-        )),
-    }
+        (None, None) => {
+            return Err(format!(
+                "topology {alias:?}: needs a `factory` (a dotted path) or a `topology` (an advertised name)"
+            ))
+        }
+    };
+    requires.extend(decl.requires.iter().cloned());
+    Ok(ResolvedTopology { factory, requires })
 }
 
-/// Find the factory a `plugin` advertises under `topology`. For a declared plugin the advertisements
-/// were captured at resolve time; for an ambient one (under the `plugin_root`), read its manifest now.
-fn advertised_factory(
+/// The factory and advertised `requires` a `plugin` publishes under `topology`. For a declared plugin
+/// the advertisements were captured at resolve time; for an ambient one (under the `plugin_root`),
+/// read its manifest now.
+fn advertised(
     plugin: &str,
     topology: &str,
     plugins: &ResolvedPlugins,
-) -> Result<String, String> {
+) -> Result<(String, Vec<String>), String> {
     let advertised: Vec<AdvertisedTopology> = if let Some(adv) = plugins.advertised.get(plugin) {
         adv.clone()
     } else if let Some(root) = &plugins.search_root {
@@ -184,7 +200,7 @@ fn advertised_factory(
     advertised
         .iter()
         .find(|a| a.name == topology)
-        .map(|a| a.factory.clone())
+        .map(|a| (a.factory.clone(), a.requires.clone()))
         .ok_or_else(|| {
             let names: Vec<&str> = advertised.iter().map(|a| a.name.as_str()).collect();
             if names.is_empty() {

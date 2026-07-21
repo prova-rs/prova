@@ -445,6 +445,12 @@ fn up_subcommand(args: Vec<String>) -> ExitCode {
         Ok(p) => p,
         Err(code) => return code,
     };
+    // Gate on the topology's declared environment BEFORE provisioning: a missing capability should
+    // stop us early with a clear reason, not fail deep in a factory (or, for a factory that needs
+    // nothing, hold a topology the environment can't really support).
+    if let Err(code) = check_topology_requires(&prep, &name) {
+        return code;
+    }
     let TopologyRun {
         home,
         files,
@@ -538,6 +544,10 @@ struct TopologyRun {
     home: Home,
     files: Vec<PathBuf>,
     config: RunConfig,
+    /// Each manifest topology's effective `requires` (advertisement + registration), keyed by name —
+    /// checked against `capabilities` before `up` provisions it.
+    topology_requires: BTreeMap<String, Vec<String>>,
+    capabilities: prova_core::Capabilities,
 }
 
 /// Resolve the manifest, discover the topology files, and build the engine config for an inhabited
@@ -605,23 +615,53 @@ fn build_topology_run(
     });
     // Manifest topologies (`[topologies]`) desugar to `prova.topology` registrations the engine execs
     // after the files — so `prova up <name>` and the listing form see them as first-class. The factory
-    // is either given directly or resolved from the plugin's advertised set (`[[plugin.topologies]]`).
+    // is either given directly or resolved from the plugin's advertised set (`[[plugin.topologies]]`),
+    // whose `requires` (plus the registration's) become the topology's environment gate.
+    let mut topology_requires: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (alias, decl) in &run.topologies {
-        let factory = match plugins::resolve_topology_factory(alias, decl, &run.plugins) {
-            Ok(f) => f,
+        let resolved = match plugins::resolve_topology(alias, decl, &run.plugins) {
+            Ok(r) => r,
             Err(e) => {
                 eprintln!("prova {verb}: {e}");
                 return Err(ExitCode::from(2));
             }
         };
-        config = config.with_topology_registration(alias, &decl.plugin, factory);
+        config = config.with_topology_registration(alias, &decl.plugin, resolved.factory);
+        if !resolved.requires.is_empty() {
+            topology_requires.insert(alias.clone(), resolved.requires);
+        }
     }
 
     Ok(TopologyRun {
         home,
         files,
         config,
+        topology_requires,
+        capabilities: run.capabilities,
     })
+}
+
+/// Reject standing up `name` when its `requires` are not met here — before anything is provisioned.
+/// `Ok(())` = clear to proceed (met, or the topology declares nothing); `Err` = the reason, already
+/// printed. Only manifest topologies carry `requires` today; a Lua-declared one has none.
+fn check_topology_requires(prep: &TopologyRun, name: &str) -> Result<(), ExitCode> {
+    let Some(requires) = prep.topology_requires.get(name) else {
+        return Ok(());
+    };
+    for req in requires {
+        match prep.capabilities.expr_status(req) {
+            Ok(None) => {}
+            Ok(Some(reason)) => {
+                eprintln!("prova up: cannot stand up topology {name:?}: it requires {reason}");
+                return Err(ExitCode::from(2));
+            }
+            Err(e) => {
+                eprintln!("prova up: topology {name:?}: invalid requires {req:?}: {e}");
+                return Err(ExitCode::from(2));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// `prova watch <topology>` — the inhabited dev loop: stand the topology up, print its endpoints, and

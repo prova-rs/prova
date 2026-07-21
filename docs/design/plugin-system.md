@@ -214,6 +214,22 @@ lists them; `prova up <name>` stands one up. The synthesized source is validated
 identifier paths) before splicing, so a manifest can never inject Lua; a reference to a factory or an
 advertised name that doesn't exist fails loudly, naming what *is* available.
 
+**A topology declares the environment it needs** — `requires` on the advertisement (the topology's
+own contract) and/or the registration (a local addition), merged:
+
+```toml
+[[plugin.topologies]]
+name     = "linux-vm"
+factory  = "topologies.linux_vm"
+requires = ["parallels"]          # this topology needs the Parallels VM host
+```
+
+`prova up <name>` checks these against the same capability set `requires` uses, *before* provisioning:
+an unmet requirement stops it early with a clear reason (`cannot stand up "vm": it requires
+"parallels" is unavailable`) instead of failing deep in a factory. The requirement travels with the
+topology, so it holds for every project that registers it — the environment gate propagates even
+though the factory's implementation stays the plugin's own business.
+
 Because a plugin is a test suite (§ one manifest), a plugin that advertises a topology can prove it in
 its own `proofs/` — so every advertised topology ships with the suite that verifies it.
 
