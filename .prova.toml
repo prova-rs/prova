@@ -5,3 +5,17 @@ config       = ".prova/config.lua"    # the runtime companion (home == root now)
 plugin_root  = ".prova/plugins"      # this project's own plugins (root-relative). No default,
                                      # and exactly one: anything from elsewhere gets a name and a
                                      # pinned source in [plugins] instead.
+
+# The `parallels` plugin now lives in its own repo, consumed here as a pinned git source — exactly as
+# any package would, which is the whole point of the extraction. It was incubated in-tree under
+# .prova/plugins/parallels; that copy is retired. Pinned to the released `v1` tag.
+[plugins]
+parallels = { git = "https://github.com/prova-rs/prova-parallels", tag = "v1" }
+
+# Topologies this project exposes by name (`prova up <name>`). `vm` comes from the `parallels` plugin's
+# advertisement; its `requires = ["prlctl"]` gates the stand-up, so on a machine without Parallels
+# Desktop `prova up vm` skips cleanly instead of failing. `options` is handed to the factory
+# (`vm(ctx, { image = … })`) — the base template it linked-clones. Set `image` to a template that
+# exists in your Parallels library.
+[topologies]
+vm = { plugin = "parallels", topology = "vm", options = { image = "ubuntu-24.04" } }

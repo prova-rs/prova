@@ -1,11 +1,11 @@
-//! The `prova init` catalog — the set of archetypes prova can scaffold a project from.
+//! The `prova init` catalog — the set of archetypes prova can scaffold a package from.
 //!
 //! Prova ships a **built-in** catalog so `prova init` works with zero configuration, and
 //! `~/.config/prova/config.toml` layers `[init.*]` entries on top of it:
 //!
 //! ```toml
 //! [init.default]                  # a matching key REPLACES the built-in entry outright
-//! description = "Standard prova proof suite"
+//! description = "A standard prova package (a proof suite)"
 //! source      = "https://github.com/prova-rs/prova-init-default-archetype.git#main"
 //! switches    = ["ci"]            # always passed to the render for this entry
 //! defaults    = true              # take the archetype's default for any unanswered prompt
@@ -14,7 +14,7 @@
 //! proof_dir = "proofs"
 //!
 //! [init.service]                  # a new key ADDS an entry
-//! description = "A service proof suite pre-wired for postgres + http"
+//! description = "A service package pre-wired for postgres + http"
 //! source      = "/Users/me/archetypes/prova-service"
 //! ```
 //!
@@ -69,9 +69,24 @@ impl Catalog {
         entries.insert(
             "default".to_string(),
             InitEntry {
-                description: "Standard prova proof suite (prova.toml + a first proof)".to_string(),
+                description: "A standard prova package — a proof suite (prova.toml + a first proof)"
+                    .to_string(),
                 // Tracks the archetype's `main` while it stabilizes; pin to `#v1` once that tag is cut.
                 source: "https://github.com/prova-rs/prova-init-default-archetype.git#main"
+                    .to_string(),
+                switches: Vec::new(),
+                defaults: false,
+                answers: BTreeMap::new(),
+            },
+        );
+        entries.insert(
+            "plugin".to_string(),
+            InitEntry {
+                description: "A prova package that also exports a namespace — a plugin (init.lua + \
+                              [plugin] + self-test)"
+                    .to_string(),
+                // The default archetype's sibling; tracks `main` likewise until a `#v1` tag is cut.
+                source: "https://github.com/prova-rs/prova-init-plugin-archetype.git#main"
                     .to_string(),
                 switches: Vec::new(),
                 defaults: false,
@@ -177,7 +192,8 @@ mod tests {
              source = \"/local/svc\"\n",
         );
         let c = Catalog::load(&at).unwrap();
-        assert_eq!(c.entries.len(), 2);
+        // Two builtins (default, plugin) with `default` replaced and `service` added → 3.
+        assert_eq!(c.entries.len(), 3);
         let d = &c.entries["default"];
         assert_eq!(d.description, "mine");
         assert_eq!(d.source, "/local/arch"); // whole-entry replacement, not a field merge
@@ -185,6 +201,7 @@ mod tests {
         assert!(d.defaults);
         assert_eq!(d.answers["proof_dir"], "tests");
         assert_eq!(c.entries["service"].description, "svc");
+        assert!(c.entries.contains_key("plugin")); // the untouched builtin survives the merge
         std::fs::remove_dir_all(&at.0).ok();
     }
 
