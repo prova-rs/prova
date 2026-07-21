@@ -196,6 +196,8 @@ pub struct RunConfig {
     /// Plugin namespaces: a plugin's canonical name → its module root dir, so a multi-file plugin can
     /// `require("<canonical>.<sub>")` its own siblings.
     plugin_namespaces: std::collections::BTreeMap<String, std::path::PathBuf>,
+    /// Resolved plugin roots whose `library/*.lua` stubs feed `prova.help()` (see `with_help_root`).
+    help_roots: Vec<std::path::PathBuf>,
     /// The project directory — where the manifest lives, and the base every manifest-relative path
     /// resolves against. Surfaced to authors as `prova.root` / `prova.home` (synonyms: root and home
     /// are the same thing). See `with_project`.
@@ -222,6 +224,7 @@ impl Default for RunConfig {
             plugin_roots: Vec::new(),
             named_plugins: std::collections::BTreeMap::new(),
             plugin_namespaces: std::collections::BTreeMap::new(),
+            help_roots: Vec::new(),
             project_dir: None,
             topology_registrations: Vec::new(),
             capabilities: Capabilities::default(),
@@ -349,6 +352,13 @@ impl RunConfig {
         dir: impl Into<std::path::PathBuf>,
     ) -> Self {
         self.plugin_namespaces.insert(canonical.into(), dir.into());
+        self
+    }
+
+    /// A resolved plugin's root dir, whose `library/*.lua` stubs feed `prova.help()` — the same
+    /// files the IDE links, so a plugin documents itself once and both sinks answer.
+    pub fn with_help_root(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
+        self.help_roots.push(dir.into());
         self
     }
 }
@@ -2051,10 +2061,12 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
     // driven. Returns DATA (a list of `{name, signature, summary}`), not printed prose, so an agent
     // can filter it and a proof can assert on it. Parsed from the same LuaCATS stubs that ship to
     // the IDE — one source, two sinks. See `help.rs` / docs/design/agent-ergonomics.md §0.
+    let help_roots = config.help_roots.clone();
     prova.set(
         "help",
-        lua.create_function(|lua, filter: Option<String>| {
-            let all = crate::help::core_entries();
+        lua.create_function(move |lua, filter: Option<String>| {
+            let all =
+                crate::help::entries_with_plugins(help_roots.iter().map(|p| p.as_path()));
             let entries = match filter.as_deref().map(str::trim) {
                 Some(n) if !n.is_empty() => crate::help::filter(&all, n),
                 _ => all,

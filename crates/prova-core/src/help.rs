@@ -192,6 +192,39 @@ pub fn core_entries() -> Vec<HelpEntry> {
     out
 }
 
+/// Parse every `*.lua` stub in a plugin's `library/` dir. A missing or empty dir is simply no
+/// entries — the plugin shipped no stub (`prova plugin lint` advises one). Read at call time,
+/// so help answers for whatever is resolved NOW.
+pub fn stub_entries_in(library_dir: &std::path::Path) -> Vec<HelpEntry> {
+    let Ok(read) = std::fs::read_dir(library_dir) else {
+        return Vec::new();
+    };
+    let mut files: Vec<std::path::PathBuf> = read
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "lua"))
+        .collect();
+    files.sort();
+    files
+        .iter()
+        .filter_map(|p| std::fs::read_to_string(p).ok())
+        .flat_map(|src| parse_stub(&src))
+        .collect()
+}
+
+/// The full surface: core entries plus each plugin root's `library/` stubs, sorted and deduped
+/// (first writer wins, so the core cannot be shadowed by a plugin).
+pub fn entries_with_plugins<'a>(
+    plugin_roots: impl IntoIterator<Item = &'a std::path::Path>,
+) -> Vec<HelpEntry> {
+    let mut out = core_entries();
+    for root in plugin_roots {
+        out.extend(stub_entries_in(&root.join("library")));
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out.dedup_by(|a, b| a.name == b.name);
+    out
+}
+
 /// Case-insensitive substring match across name and summary — `help("shell")`, `help("retry")`.
 pub fn filter(entries: &[HelpEntry], needle: &str) -> Vec<HelpEntry> {
     let n = needle.to_lowercase();

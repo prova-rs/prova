@@ -53,7 +53,13 @@ prova.test("every dotted function help() advertises exists and is callable", fun
       if companion_only[root_name] then
         -- documented, and its guard-rail registration is asserted separately below
       else
+        -- Core roots are globals; a PLUGIN's entries (its library/ stub rides the same rail)
+        -- resolve through the same require() a proof would use.
         local root = roots[root_name]
+        if root == nil then
+          local ok, required = pcall(require, root_name)
+          root = ok and required or nil
+        end
         t:expect(root ~= nil, "help() names root `" .. root_name .. "` — it must resolve"):is_true()
         if root ~= nil then
           local value = root

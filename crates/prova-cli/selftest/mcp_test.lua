@@ -152,6 +152,17 @@ prova.group("prova mcp", function(g)
     t:expect(aliased):contains("http.mock")
   end)
 
+  g:test("introspect answers for a declared plugin's API, not just the core (autodidact M4)", function(t)
+    local by_id = mcp({
+      { jsonrpc = "2.0", id = 20, method = "tools/call",
+        params = { name = "introspect", arguments = { filter = "greet.hello" } } },
+    })
+    local result = tool_json(by_id[20], "introspect")
+    t:expect(#result.entries, "the plugin stub's entry is served"):equals(1)
+    t:expect(result.entries[1].name):equals("greet.hello")
+    t:expect(result.entries[1].summary):contains("greeting")
+  end)
+
   g:test("topics are also protocol-native resources", function(t)
     local by_id = mcp({
       { jsonrpc = "2.0", id = 14, method = "resources/list" },

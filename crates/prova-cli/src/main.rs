@@ -1888,6 +1888,11 @@ fn engine_config(
     for (canonical, dir) in &plugins_resolved.namespaces {
         config = config.with_plugin_namespace(canonical.clone(), dir.clone());
     }
+    // Each plugin's `library/*.lua` stubs feed `prova.help()` — the plugin documents itself once
+    // and the IDE, help(), and MCP introspect all answer from the same files.
+    for root in plugins_resolved.roots.values() {
+        config = config.with_help_root(root.clone());
+    }
     config
 }
 

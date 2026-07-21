@@ -704,12 +704,14 @@ impl ProvaMcpServer {
 
     #[tool(
         name = "introspect",
-        description = "Discover prova's API surface WITHOUT reading its source: every function, method, and value shape as { name, signature, summary }. `filter` narrows by substring across name+summary (e.g. \"shell\", \"tempdir\", \"ShellResult\"). Start here — it answers what to call, how to call it, and what comes back, so you don't have to probe with eval. Parsed from the same LuaCATS stubs that drive editor completion, so it cannot drift from what an author sees."
+        description = "Discover prova's API surface WITHOUT reading its source: every function, method, and value shape as { name, signature, summary } — the core AND every plugin this package declares (a plugin's library/ stub rides the same rail). `filter` narrows by substring across name+summary (e.g. \"shell\", \"tempdir\", \"postgres\"). Start here — it answers what to call, how to call it, and what comes back, so you don't have to probe with eval. Parsed from the same LuaCATS stubs that drive editor completion, so it cannot drift from what an author sees."
     )]
     async fn introspect(&self, Parameters(req): Parameters<IntrospectRequest>) -> CallToolResult {
-        // No Lua environment needed — the surface is static, so introspection never provisions,
+        // No Lua environment needed — the stubs are files, so introspection never provisions,
         // never blocks on a run, and works before a manifest exists.
-        let all = prova_core::help::core_entries();
+        let all = prova_core::help::entries_with_plugins(
+            self.env.plugins.roots.values().map(|p| p.as_path()),
+        );
         let entries = match req.filter.as_deref().map(str::trim) {
             Some(n) if !n.is_empty() => prova_core::help::filter(&all, n),
             _ => all,
