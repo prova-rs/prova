@@ -61,6 +61,31 @@ prova.group("prova learn", function(g)
     t:expect(r.stdout):contains("http.mock")
   end)
 
+  g:test("the full taxonomy is served, one screen each", function(t)
+    local listing = learn("")
+    for _, topic in ipairs({ "pdd", "project", "init", "authoring", "fixtures", "doubles",
+                             "proxies", "drivers", "topologies", "plugins", "plugin-authoring",
+                             "running", "mcp" }) do
+      t:expect(listing.stdout, "listed: " .. topic):contains(topic)
+      local r = learn(topic)
+      t:expect(r.code, topic .. " renders"):equals(0)
+      t:expect(#prova.parse.lines(r.stdout), topic .. " stays one-screen-ish"):lte(90)
+    end
+  end)
+
+  g:test("unshipped surface is taught as unshipped", function(t)
+    -- The proxies topic exists to PREVENT reaching for vapor — its first lines must say so.
+    local r = learn("proxies")
+    t:expect(r.code):equals(0)
+    t:expect(r.stdout):contains("not a shipped surface")
+  end)
+
+  g:test("the three-postures cross-references hold", function(t)
+    t:expect(learn("drivers").stdout):contains("doubles")
+    t:expect(learn("topologies").stdout):contains("ctx.network")
+    t:expect(learn("mcp").stdout):contains("up")
+  end)
+
   g:test("init renders the archetype catalog dynamically", function(t)
     local r = learn("init")
     t:expect(r.code):equals(0)

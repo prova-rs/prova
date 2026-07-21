@@ -2150,12 +2150,20 @@ mod tests {
         std::fs::remove_dir_all(&base).ok();
     }
 
-    /// Collect every `prova <word>` a document utters (the word after "prova ", inside prose or
-    /// code), skipping non-verb shapes: flags (`prova --list`), placeholders (`prova <verb>`),
-    /// file arguments, and `prova.toml`/`prova.help`-style dotted names.
+    /// Collect every verb a document tells the agent to RUN — the word after "prova " in
+    /// backticked/fenced command position — skipping non-verb shapes: flags (`prova --list`),
+    /// placeholders (`prova <verb>`), file arguments, and `prova.toml`-style dotted names.
+    /// Plain-prose "prova" (the product name) is not a command and is not linted.
     fn verbs_uttered(doc: &str) -> Vec<String> {
+        let mut chunks: Vec<&str> = doc.split("`prova ").skip(1).collect();
+        // Fenced examples put commands at line start with no inline backticks.
+        chunks.extend(
+            doc.lines()
+                .map(str::trim_start)
+                .filter_map(|l| l.strip_prefix("prova ")),
+        );
         let mut out = Vec::new();
-        for chunk in doc.split("prova ").skip(1) {
+        for chunk in chunks {
             let word: String = chunk
                 .chars()
                 .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')

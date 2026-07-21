@@ -26,11 +26,34 @@ pub enum Topic {
     Pdd,
     Project,
     Init,
+    Authoring,
+    Fixtures,
     Doubles,
+    Proxies,
+    Drivers,
+    Topologies,
+    Plugins,
+    PluginAuthoring,
+    Running,
+    Mcp,
 }
 
 impl Topic {
-    pub const ALL: &'static [Topic] = &[Topic::Pdd, Topic::Project, Topic::Init, Topic::Doubles];
+    pub const ALL: &'static [Topic] = &[
+        Topic::Pdd,
+        Topic::Project,
+        Topic::Init,
+        Topic::Authoring,
+        Topic::Fixtures,
+        Topic::Doubles,
+        Topic::Proxies,
+        Topic::Drivers,
+        Topic::Topologies,
+        Topic::Plugins,
+        Topic::PluginAuthoring,
+        Topic::Running,
+        Topic::Mcp,
+    ];
 
     /// Intuitive names resolve instead of bouncing off our taxonomy (`prova learn mocks` works).
     /// Collisions with keys or each other are forbidden by test.
@@ -46,6 +69,24 @@ impl Topic {
         ("archetypes", Topic::Init),
         ("tdd", Topic::Pdd),
         ("proof-driven-development", Topic::Pdd),
+        ("tests", Topic::Authoring),
+        ("dsl", Topic::Authoring),
+        ("matchers", Topic::Authoring),
+        ("snapshots", Topic::Authoring),
+        ("fixture", Topic::Fixtures),
+        ("scopes", Topic::Fixtures),
+        ("proxy", Topic::Proxies),
+        ("driver", Topic::Drivers),
+        ("protocols", Topic::Drivers),
+        ("topology", Topic::Topologies),
+        ("plugin", Topic::Plugins),
+        ("authoring-plugins", Topic::PluginAuthoring),
+        ("create-plugin", Topic::PluginAuthoring),
+        ("selection", Topic::Running),
+        ("ci", Topic::Running),
+        ("cli", Topic::Running),
+        ("warm", Topic::Mcp),
+        ("server", Topic::Mcp),
     ];
 
     pub fn key(self) -> &'static str {
@@ -53,7 +94,16 @@ impl Topic {
             Topic::Pdd => "pdd",
             Topic::Project => "project",
             Topic::Init => "init",
+            Topic::Authoring => "authoring",
+            Topic::Fixtures => "fixtures",
             Topic::Doubles => "doubles",
+            Topic::Proxies => "proxies",
+            Topic::Drivers => "drivers",
+            Topic::Topologies => "topologies",
+            Topic::Plugins => "plugins",
+            Topic::PluginAuthoring => "plugin-authoring",
+            Topic::Running => "running",
+            Topic::Mcp => "mcp",
         }
     }
 
@@ -64,7 +114,16 @@ impl Topic {
             Topic::Pdd => include_str!("topics/pdd.md"),
             Topic::Project => include_str!("topics/project.md"),
             Topic::Init => include_str!("topics/init.md"),
+            Topic::Authoring => include_str!("topics/authoring.md"),
+            Topic::Fixtures => include_str!("topics/fixtures.md"),
             Topic::Doubles => include_str!("topics/doubles.md"),
+            Topic::Proxies => include_str!("topics/proxies.md"),
+            Topic::Drivers => include_str!("topics/drivers.md"),
+            Topic::Topologies => include_str!("topics/topologies.md"),
+            Topic::Plugins => include_str!("topics/plugins.md"),
+            Topic::PluginAuthoring => include_str!("topics/plugin-authoring.md"),
+            Topic::Running => include_str!("topics/running.md"),
+            Topic::Mcp => include_str!("topics/mcp.md"),
         }
     }
 
