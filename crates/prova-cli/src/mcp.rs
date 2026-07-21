@@ -33,9 +33,14 @@ use std::sync::{Arc, Mutex};
 
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo};
+use rmcp::model::{
+    AnnotateAble, CallToolResult, Content, Implementation, ListResourcesResult,
+    PaginatedRequestParams, RawResource, ReadResourceRequestParams, ReadResourceResult, Resource,
+    ResourceContents, ServerCapabilities, ServerInfo,
+};
+use rmcp::service::{RequestContext, RoleServer};
 use rmcp::transport::stdio;
-use rmcp::{tool, tool_handler, tool_router, ServerHandler, ServiceExt};
+use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler, ServiceExt};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
@@ -413,6 +418,16 @@ struct IntrospectRequest {
     filter: Option<String>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct LearnRequest {
+    /// A topic key or alias (`"pdd"`, `"doubles"`, `"mocks"`…). Omit to list the catalog.
+    topic: Option<String>,
+    /// A directory or manifest path: render that package's facts instead of the server's
+    /// startup package.
+    package: Option<String>,
+}
+
 fn to_selection(args: &SelectionArgs) -> Selection {
     Selection {
         keywords: args.keywords.clone().unwrap_or_default(),
@@ -563,10 +578,76 @@ pub struct ProvaMcpServer {
 #[tool_handler]
 impl ServerHandler for ProvaMcpServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new("prova", env!("CARGO_PKG_VERSION")))
-            // The embedded agent skill — one document, every transport (see `prova skill`).
-            .with_instructions(crate::SKILL)
+        ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build(),
+        )
+        .with_server_info(Implementation::new("prova", env!("CARGO_PKG_VERSION")))
+        // The embedded agent skill — one document, every transport (see `prova skill`).
+        .with_instructions(crate::SKILL)
+    }
+
+    // The topic catalog, additionally exposed as protocol-native resources for clients that
+    // surface them (@-mentions, resource pickers). The `learn` TOOL is the primary door — it is
+    // model-driven and works in every client; these are the same renderer behind stable URIs.
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, McpError> {
+        let mut resources: Vec<Resource> = crate::learn::Topic::ALL
+            .iter()
+            .map(|topic| {
+                let mut raw = RawResource::new(
+                    format!("prova://learn/{}", topic.key()),
+                    format!("learn: {}", topic.key()),
+                );
+                raw.description = Some(topic.hook().to_string());
+                raw.mime_type = Some("text/markdown".into());
+                raw.no_annotation()
+            })
+            .collect();
+        let mut skill = RawResource::new("prova://skill", "the prova agent skill");
+        skill.description =
+            Some("How to drive Prova — the entry point; topics go deeper".into());
+        skill.mime_type = Some("text/markdown".into());
+        resources.push(skill.no_annotation());
+        Ok(ListResourcesResult {
+            meta: None,
+            next_cursor: None,
+            resources,
+        })
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResult, McpError> {
+        let uri = request.uri.as_str();
+        let text = if uri == "prova://skill" {
+            crate::SKILL.to_string()
+        } else if let Some(name) = uri.strip_prefix("prova://learn/") {
+            match crate::learn::Topic::resolve(name) {
+                Some(topic) => self.render_topic(topic),
+                None => {
+                    return Err(McpError::invalid_params(
+                        format!("unknown topic {name:?} — list resources for the catalog"),
+                        None,
+                    ))
+                }
+            }
+        } else {
+            return Err(McpError::invalid_params(
+                format!("unknown resource {uri:?} — list resources for the catalog"),
+                None,
+            ));
+        };
+        Ok(ReadResourceResult::new(vec![
+            ResourceContents::text(text, uri).with_mime_type("text/markdown"),
+        ]))
     }
 }
 
@@ -579,6 +660,15 @@ impl ProvaMcpServer {
             run_lock: Arc::new(tokio::sync::Mutex::new(())),
             tool_router: Self::tool_router(),
         }
+    }
+
+    /// Render a topic against the server's startup package (the default the other tools share).
+    fn render_topic(&self, topic: crate::learn::Topic) -> String {
+        let env = match &self.env.home {
+            Some(home) => crate::learn::RenderEnv::at(&home.dir),
+            None => crate::learn::RenderEnv::at(Path::new(".")),
+        };
+        crate::learn::render(topic, &env, crate::learn::Transport::Mcp)
     }
 
     #[tool(
@@ -622,6 +712,43 @@ impl ProvaMcpServer {
             .map(|e| json!({ "name": e.name, "signature": e.signature, "summary": e.summary }))
             .collect();
         CallToolResult::success(vec![Content::text(json!({ "entries": rows }).to_string())])
+    }
+
+    #[tool(
+        name = "learn",
+        description = "The progressive-disclosure topic catalog: how Prova works, one screen per topic, rendered for THIS package (dynamic facts — proof locations, declared plugins, topologies, the init catalog — are computed at call time, so they are always current). No `topic` lists the catalog; `topic` returns that topic as markdown (aliases resolve: `mocks` → `doubles`). Start with `learn {}` when you need anything beyond the instructions; `introspect` answers API-shape questions. Pass `package` (a directory or manifest path) to render another package's facts."
+    )]
+    async fn learn(&self, Parameters(req): Parameters<LearnRequest>) -> CallToolResult {
+        match req.topic.as_deref().map(str::trim) {
+            None | Some("") => CallToolResult::success(vec![Content::text(
+                crate::learn::listing(crate::learn::Transport::Mcp),
+            )]),
+            Some(name) => match crate::learn::Topic::resolve(name) {
+                Some(topic) => {
+                    let text = match req.package.as_deref() {
+                        Some(package) => {
+                            let start = Path::new(package);
+                            let dir = if start.is_file() {
+                                start.parent().unwrap_or(start)
+                            } else {
+                                start
+                            };
+                            crate::learn::render(
+                                topic,
+                                &crate::learn::RenderEnv::at(dir),
+                                crate::learn::Transport::Mcp,
+                            )
+                        }
+                        None => self.render_topic(topic),
+                    };
+                    CallToolResult::success(vec![Content::text(text)])
+                }
+                None => CallToolResult::error(vec![Content::text(format!(
+                    "unknown topic {name:?}\n\n{}",
+                    crate::learn::listing(crate::learn::Transport::Mcp)
+                ))]),
+            },
+        }
     }
 
     #[tool(

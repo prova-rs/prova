@@ -18,6 +18,7 @@ mod catalog;
 mod home;
 mod ide;
 mod init;
+mod learn;
 mod manifest;
 mod mcp;
 mod plugins;
@@ -48,6 +49,8 @@ usage:
                             the returned value (`-` reads the snippet from stdin)
   prova skill               print the agent skill (how to drive Prova); --install writes it
                             to .claude/skills/prova/SKILL.md at the package root
+  prova learn [<topic>]     the topic catalog: progressive disclosure of how Prova works
+                            (no topic lists them; slots render THIS package's facts)
   prova mcp                 serve an MCP stdio server whose tools mirror the CLI (run, list, eval)
   prova up [<topology>] [<url>]  list/stand up a topology — local, or from a git repo that advertises it
   prova watch <topology>    stand up a topology and re-apply on definition change (dev loop)
@@ -113,6 +116,10 @@ fn main() -> ExitCode {
         Some("skill") => {
             raw.next();
             return skill_subcommand(raw.collect());
+        }
+        Some("learn") => {
+            raw.next();
+            return learn::run(raw.collect());
         }
         Some("init") => {
             raw.next();

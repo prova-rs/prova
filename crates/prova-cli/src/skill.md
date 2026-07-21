@@ -18,12 +18,24 @@ The loop:
 
 1. `prova init` — scaffold `prova.toml` + IDE stubs (skip if the repo has one; find it by walking up).
 2. Probe unknowns with `prova eval '<lua>'` — one-shot code in the full environment, no test-file ceremony.
-3. Write the proof in a `*_test.lua` file **where the manifest's `[run] paths` points** (the
-   `init` scaffold says exactly where — by default next to the scaffolded `prova.toml`). Red is
-   correct at this stage.
+3. Write the proof in a `*_test.lua` file **in a directory matching the manifest's `[run] proofs`
+   patterns** (directory names, `["proofs"]` by default — `prova learn project` names this
+   package's). Red is correct at this stage.
 4. Implement. Re-run with `prova --last-failed` until green. Never weaken a proof to pass it —
    fix the system, or renegotiate the bar with the human.
 5. Commit suite + implementation together: a proof-carrying change.
+
+## Learning on the fly: never guess, ask the binary
+
+Everything below is the crash course; depth is one call away, computed for THIS package:
+
+| You need | Move |
+|---|---|
+| The topic catalog (patterns, doubles, topologies, plugin authoring…) | `prova learn` · MCP `learn {}` |
+| One topic (aliases work: `mocks` → `doubles`) | `prova learn <topic>` · `learn { topic }` |
+| An API's shape: what to call, what comes back | `prova.help("<filter>")` in any test/eval · MCP `introspect { filter }` |
+| Which archetypes `init` can scaffold | `prova init --list` (or `prova learn init`) |
+| A live value's shape | probe it with `eval` |
 
 ## Test files, in one screen
 
@@ -186,7 +198,12 @@ call tools. Tools mirror the CLI one-to-one and **everything else is identical**
 | `run { keywords?, keyword_excludes?, tags?, tag_excludes?, nodes?, last_failed?, profile?, jobs?, topology? }` | `prova -k … --tags … --node … --last-failed --profile … --jobs …` |
 | `list { same selection fields }` | `prova --list` (same flags) |
 | `eval { code, topology? }` | `prova eval '<code>'` |
+| `learn { topic? }` / `introspect { filter? }` | `prova learn [<topic>]` / `prova.help(...)` in eval |
 | `up { name }` / `down { name }` / `status {}` | `prova up <name>` — but held *inside* the server |
+
+Scaffolding stays CLI-only: `prova init`, `prova ide setup`, `prova plugin lint` — shell out for
+those even when driving the MCP. Prefer the MCP tools for iteration (warm topologies, structured
+JSON); the CLI is the bootstrap surface and what CI runs.
 
 The server resolves the manifest and plugins from its working directory exactly like the CLI,
 serves this document as its `instructions`, and returns compact JSON results.
