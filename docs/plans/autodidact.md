@@ -92,8 +92,18 @@ and proofs (§2.8). Every hand-written restatement of a fact the binary knows is
   behind one call.
 - **`prova learn`** with no args lists the catalog: `topic  one-line hook`, exactly like
   `init --list`. `prova learn <topic>` prints that topic. Unknown topic → the list + exit 2.
-- **MCP `learn` tool**, `{ topic?: string }`, same code path, same bytes. This is the
-  eighth tool and the MCP twin of the whole docs site.
+  **Topics carry aliases** (`mocks`/`containers` → `doubles`, `topology` → `topologies`,
+  `manifest` → `project`, …): the intuitive name resolves instead of erroring — an agent (or a
+  human typing `! prova learn mocks`) should never bounce off our taxonomy. Aliases live on the
+  `Topic` enum with a build test forbidding collisions (§2.8.1).
+- **MCP `learn` tool**, `{ topic?: string }`, same code path, transport-spelled (§2.3.1).
+  This is the eighth tool and the MCP twin of the whole docs site.
+- **MCP resources, additionally** (decided 2026-07-21): the same catalog is published as
+  protocol-native resources — `prova://learn/<topic>` with the hook line as description, plus
+  `prova://skill` — off the same renderer. Dual exposure is the correct pattern, not either/or:
+  the *tool* is primary because it is model-driven and works in every client; resources serve
+  clients that surface them natively (@-mentions, resource pickers) at near-zero marginal cost
+  (`enable_resources()` + list/read handlers over the `Topic` enum).
 - One renderer, all sinks. Never hand the CLI and MCP different truths.
 
 ### 2.2 Topics: static doctrine + dynamic trailer
@@ -112,7 +122,7 @@ closed Rust enum (§2.8) — an unknown `{{slot}}` in a topic fails the build, n
 | `{{topologies}}` | declared topologies + requires | manifest `[topologies]` |
 | `{{profiles}}` | profile names + what they override | manifest `[profiles]` |
 | `{{context_files}}` | project-provided context docs (§2.5) | manifest `context` |
-| `{{mcp_or_cli}}` | transport-appropriate command spelling | render target |
+| `{{mcp_or_cli}}` | transport-appropriate command spelling (§2.3.1) | render target |
 
 No project found → each slot degrades to one imperative line ("no `prova.toml` here — run
 `prova init` or pass `project`"). This is how a topic is **always true for this project**: the
@@ -143,6 +153,28 @@ both. Distillation sources in parens.
 Plus **project context topics** (§2.5), which appear in the same `learn` listing under a
 `ctx:` prefix. Reserved for the registry future: a `packages` topic ships only when the
 registry does — the taxonomy leaves the slot, the catalog never advertises vapor.
+
+### 2.3.1 Environment-conditioned rendering
+
+The agent should know how to drive prova **as configured in its environment** — MCP, CLI, or
+both. The renderer knows its transport, and every sink applies it:
+
+- **Served over MCP** (instructions, `learn` tool, resources): moves are spelled as tools
+  (`run{topology}`, `eval`, `introspect`, `learn`), with an explicit "CLI-only verbs" note for
+  what has no tool (`init`, `ide setup`, `plugin lint`, `skill --install`) — the agent learns
+  it must shell out for those, and that both surfaces share one engine and one project state.
+- **Printed by the CLI** (`prova skill`, `prova learn`): moves are spelled as commands, with
+  the MCP tool named wherever a warm equivalent exists ("iterating? if the prova MCP is
+  configured, `up` + `run{topology}` beats cold `prova` re-runs").
+- **The installed file** (`skill --install`) is static and cannot know at read time whether an
+  MCP server is live — so it teaches the *decision rule itself*: "if `mcp__prova__*` tools are
+  available, prefer them for eval/run/warm iteration; use the CLI for scaffolding verbs and
+  when no server is configured." Environmental conditions change per session; the rule is
+  what's durable.
+
+Neither surface is deprecated in favor of the other: MCP is the better *iteration* surface
+(warm topologies, no process spawn, structured JSON); the CLI is the only *bootstrap* surface
+and the one CI uses. The `mcp` topic teaches the mapping in both directions.
 
 ### 2.4 Authoring contract (the register)
 
@@ -271,11 +303,13 @@ staleness.
 
 - **M0 — Truth repair.** §2.6.1–3: phantom hooks deleted, workspace stubbed, parity proof
   green. *Proof: help↔runtime parity walk.*
-- **M1 — Topic engine.** `Topic` + `Slot` enums (§2.8.1–2), `prova learn` (list + print),
-  `learn` MCP tool, slot renderer with no-project degradation. Seed with 4 topics: `pdd`,
+- **M1 — Topic engine.** `Topic` + `Slot` enums (§2.8.1–2) with aliases, `prova learn` (list +
+  print), `learn` MCP tool + MCP resources off the same renderer, slot renderer with
+  no-project degradation, transport-conditioned spelling (§2.3.1). Seed with 4 topics: `pdd`,
   `project`, `init`, `doubles`. *Proofs: catalog lists = embedded set; every topic renders;
-  unknown topic exits 2; MCP learn returns same bytes as CLI (drive `prova mcp` over stdio
-  via shell.spawn). Build tests: slot closure, renderer exhaustiveness.*
+  `learn mocks` resolves to `doubles`; unknown topic exits 2; MCP learn/resource returns the
+  MCP-spelled rendering of the same topic (drive `prova mcp` over stdio via shell.spawn).
+  Build tests: slot closure, renderer exhaustiveness, alias collision.*
 - **M2 — Skill as router + verb table.** skill.md keeps crash-course core, gains the
   discovery map, sheds reference tails into topics; §2.8.3 verb table drives dispatch/HELP/
   discovery map. *Proof: §2.6.7 reference lint (now against the verb table, not prose).*
@@ -301,12 +335,12 @@ mcp-mode.md gains the `learn` tool). Registry topic ships with the registry, not
 
 ## 4. Open questions
 
-1. Verb name: `learn` (chosen here for the autodidact framing) vs `docs`/`explain`. Cheap to
-   change before M1 ships.
-2. Should `learn` with no project still show project-shaped topics (`project`, `topologies`)
+Resolved 2026-07-21: verb is **`learn`** (also pleasant interactively: `! prova learn mocks`);
+MCP **resources ship alongside the tool** (dual exposure, §2.1) rather than being deferred.
+
+1. Should `learn` with no project still show project-shaped topics (`project`, `topologies`)
    in the list, or annotate them "(needs a project)"? Leaning: show + annotate — the agent
    should learn they exist before bootstrapping.
-3. Does `skill --install` also install topic files as skill references, or stay one file and
-   rely on the binary at runtime? Leaning: one file + binary — installed copies drift.
-4. Whether MCP `learn` should also be exposed as MCP *resources* (protocol-native docs).
-   Deferred: tools are universally supported; resources are not.
+2. Does `skill --install` also install topic files as skill references, or stay one file and
+   rely on the binary at runtime? Leaning: one file + binary — installed copies drift, and the
+   installed skill teaches the decision rule (§2.3.1) rather than snapshotting facts.
