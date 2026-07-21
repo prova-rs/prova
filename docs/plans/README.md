@@ -26,6 +26,14 @@ outcome into the design docs and trim it here.
 
 ## Plans — topology + ecosystem resolved; parallels (A) done; mocks in flight
 
+- [autodidact.md](autodidact.md) — **open, drafted 2026-07-21.** The progressive-disclosure
+  learning system: `prova skill` as entry/router, `prova learn <topic>` + MCP `learn` tool over
+  one embedded topic catalog (static doctrine + dynamic slots rendered per-project), a `context`
+  manifest key for project-provided docs, and introspection truth repair (phantom
+  `before_each`/`after_*` stubs, plugin APIs invisible to `introspect`, unstubbed
+  `prova.workspace`). Enforcement ladder: undocumented features made unrepresentable (topic/slot
+  enums, verb table, schema self-docs, registration-carries-docs end-state); same sources later
+  export the site's reference pages.
 - [parallels.md](parallels.md) — VM-style testing, and the Linux proving ground C2 needed. **(A) the
   Linux harness (`scripts/vm-linux-proof.sh`) — done**, proving C2 on a native-Linux VM; **(B) a
   `parallels.vm(ctx)` resource plugin — deferred** until VM-style testing has a real consumer. Records
