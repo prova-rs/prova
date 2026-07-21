@@ -2751,6 +2751,7 @@ version = "0.2.10"
 dependencies = [
  "archetect-api",
  "archetect-core",
+ "archetect-terminal-io",
  "camino",
  "mlua",
  "prova-core",

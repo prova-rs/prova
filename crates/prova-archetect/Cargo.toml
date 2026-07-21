@@ -15,4 +15,7 @@ mlua = { workspace = true }
 # same repo, so one git source with a shared tag resolves both.
 archetect-core = { git = "https://github.com/archetect/archetect.git", tag = "v3.1.1" }
 archetect-api = { git = "https://github.com/archetect/archetect.git", tag = "v3.1.1" }
+# The interactive terminal driver — `prova init` prompts (via inquire) for anything the supplied
+# answers/switches/defaults don't cover, exactly as the archetect CLI does.
+archetect-terminal-io = { git = "https://github.com/archetect/archetect.git", tag = "v3.1.1" }
 camino = { version = "1.1", features = ["serde1"] }

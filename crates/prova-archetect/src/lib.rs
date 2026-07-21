@@ -24,7 +24,9 @@ pub use archetect_api::ContextMap;
 use archetect_core::archetype::render_context::RenderContext;
 use archetect_core::configuration::Configuration;
 use archetect_core::errors::ArchetectError;
+use archetect_core::system::XdgSystemLayout;
 use archetect_core::Archetect;
+use archetect_terminal_io::TerminalScriptIoHandle;
 use camino::Utf8PathBuf;
 use mlua::{Lua, Table, Value};
 
@@ -293,6 +295,97 @@ pub fn render_headless(
         .map(|m| m.into_inner().unwrap_or_default())
         .unwrap_or_else(|arc| arc.lock().unwrap().clone());
     Ok(writes)
+}
+
+/// Build an archetect answer map from plain string key/values — what `prova init` collects from
+/// `config.toml` baked answers and `--answer key=value`. String is the only answer shape init needs;
+/// richer types stay behind Lua's `archetect.render`. Keeps archetect-api types out of the CLI.
+pub fn string_answers(pairs: impl IntoIterator<Item = (String, String)>) -> ContextMap {
+    let mut map = ContextMap::new();
+    for (key, value) in pairs {
+        map.insert(key, ContextValue::String(value));
+    }
+    map
+}
+
+/// Render an archetype for `prova init` — the CLI scaffolding path (as opposed to the in-test
+/// [`render_headless`]). Uses archetect's real **XDG** system layout, so the source and its catalog
+/// libraries fetch and cache where a normal archetect install keeps them (not a throwaway temp dir).
+///
+/// Two modes over one core:
+///   - `headless == false`: interactive. The terminal driver ([`TerminalScriptIoHandle`]) prompts
+///     (via inquire) for any answer the supplied `answers` / `switches` / `defaults` don't cover.
+///   - `headless == true`: no prompts. Every prompt resolves from an answer or its default; a prompt
+///     with neither is a hard error (never a hang) — the mode CI and `prova init --headless` use.
+///
+/// `defaults` maps to archetect's *use-defaults-all*: take a prompt's default without asking (still
+/// interactive for prompts that have no default, unless `headless`). Returns the paths written in the
+/// headless case; interactive rendering returns an empty list (the terminal driver owns its own
+/// progress output).
+pub fn render_interactive(
+    source: &str,
+    destination: &Path,
+    answers: ContextMap,
+    switches: Vec<String>,
+    defaults: bool,
+    headless: bool,
+) -> Result<Vec<String>, ArchetectError> {
+    let dest = Utf8PathBuf::from_path_buf(destination.to_path_buf())
+        .map_err(|_| ArchetectError::GeneralError("non-UTF-8 destination".into()))?;
+
+    // Serialize per process against archetect-core's process-global source tracking (same reason
+    // `render_headless` does). `init` renders once, so this is virtually always uncontended.
+    let _serialized = render_mutex()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let configuration = Configuration::default().with_headless(headless);
+    let layout = XdgSystemLayout::new()
+        .map_err(|e| ArchetectError::GeneralError(format!("archetect system layout: {e}")))?;
+
+    // The two drivers are different types, so the build+render is inlined per branch rather than
+    // routed through one generic helper.
+    if headless {
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let handle = CapturingIoHandle {
+            writes: writes.clone(),
+            pending: Mutex::new(None),
+        };
+        let archetect = Archetect::builder()
+            .with_driver(handle)
+            .with_configuration(configuration)
+            .with_layout(layout)
+            .build()?;
+        let archetype = archetect.new_archetype(source)?;
+        let mut ctx = RenderContext::new(dest, answers);
+        for switch in switches {
+            ctx = ctx.with_switch(switch);
+        }
+        if defaults {
+            ctx = ctx.with_use_defaults_all(true);
+        }
+        archetype.render(ctx)?;
+        let writes = Arc::try_unwrap(writes)
+            .map(|m| m.into_inner().unwrap_or_default())
+            .unwrap_or_else(|arc| arc.lock().unwrap().clone());
+        Ok(writes)
+    } else {
+        let archetect = Archetect::builder()
+            .with_driver(TerminalScriptIoHandle::default())
+            .with_configuration(configuration)
+            .with_layout(layout)
+            .build()?;
+        let archetype = archetect.new_archetype(source)?;
+        let mut ctx = RenderContext::new(dest, answers);
+        for switch in switches {
+            ctx = ctx.with_switch(switch);
+        }
+        if defaults {
+            ctx = ctx.with_use_defaults_all(true);
+        }
+        archetype.render(ctx)?;
+        Ok(Vec::new())
+    }
 }
 
 /// A headless client handle: writes files/dirs to disk, records file paths, Acks each write, and
