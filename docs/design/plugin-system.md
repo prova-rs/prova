@@ -233,6 +233,13 @@ though the factory's implementation stays the plugin's own business.
 Because a plugin is a test suite (§ one manifest), a plugin that advertises a topology can prove it in
 its own `proofs/` — so every advertised topology ships with the suite that verifies it.
 
+**From a git repo, no local project needed.** The same advertisement drives the remote forms of `up`:
+`prova up <url>` fetches a repo (pinned + freshness-gated, like a git `[plugins]` source) and lists
+the topologies it advertises; `prova up <topology> <url>` stands one up directly. The repo is resolved
+as a plugin under an internal require-name, its advertised factory is registered as that topology, and
+the advertised `requires` gate the stand-up — so `prova up linux-vm github.com/acme/prova-parallels`
+grabs a proven topology from anywhere.
+
 Wired now (the "easy to install" story):
 
 - **XDG layout** (`layout.rs`, `SystemLayout`) — `config_dir` `~/.config/prova`, `cache_dir`

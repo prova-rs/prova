@@ -49,7 +49,7 @@ usage:
   prova skill               print the agent skill (how to drive Prova); --install writes it
                             to .claude/skills/prova/SKILL.md at the project root
   prova mcp                 serve an MCP stdio server whose tools mirror the CLI (run, list, eval)
-  prova up [<topology>]     list defined topologies, or stand one up and hold it until Ctrl-C (--fixed)
+  prova up [<topology>] [<url>]  list/stand up a topology — local, or from a git repo that advertises it
   prova watch <topology>    stand up a topology and re-apply on definition change (dev loop)
   prova start <topology>    stand up a topology detached (returns; use `down` to stop)
   prova down <topology>     tear down a detached topology
@@ -390,7 +390,7 @@ fn print_eval_value(value: &serde_json::Value, force_json: bool) {
 /// running until Ctrl-C, printing each resource's endpoint. Discovers the topology in the manifest's
 /// test files, resolves declared plugins, and hands off to the engine's held-execution mode.
 fn up_subcommand(args: Vec<String>) -> ExitCode {
-    let mut name: Option<String> = None;
+    let mut positionals: Vec<String> = Vec::new();
     let mut profile: Option<String> = None;
     let mut manifest_path: Option<String> = None;
     let mut fixed = false;
@@ -412,11 +412,15 @@ fn up_subcommand(args: Vec<String>) -> ExitCode {
             }
             "-h" | "--help" => {
                 println!(
-                    "usage: prova up [<topology>] [--fixed] [--profile NAME] [--manifest PATH]\n\
+                    "usage: prova up [<topology>] [<git-url>] [--fixed] [--profile NAME] [--manifest PATH]\n\
                      \n\
                      with no topology, list the topologies this project defines.\n\
                      with one, stand it up (declared with prova.topology) and hold it running until\n\
                      Ctrl-C, printing each resource's endpoint.\n\
+                     \n\
+                     with a git URL, act on a REMOTE repo that advertises topologies instead of the\n\
+                     local project: `prova up <url>` lists what it advertises; `prova up <topology>\n\
+                     <url>` stands that one up. The repo is fetched and pinned like a git plugin.\n\
                      \n\
                      --fixed  pin each resource to its canonical container port on the host (a\n\
                      \x20        predictable, external-tool-friendly address) instead of a random one.\n\
@@ -428,12 +432,33 @@ fn up_subcommand(args: Vec<String>) -> ExitCode {
                 eprintln!("prova up: unknown flag {other}");
                 return ExitCode::from(2);
             }
-            other if name.is_none() => name = Some(other.to_string()),
+            other if positionals.len() < 2 => positionals.push(other.to_string()),
             other => {
-                eprintln!("prova up: unexpected argument {other:?} (expected one topology name)");
+                eprintln!("prova up: unexpected argument {other:?}");
                 return ExitCode::from(2);
             }
         }
+    }
+
+    // Dispatch on the positionals. A git URL routes to the remote forms; otherwise it's a local name.
+    //   prova up                    → list local topologies
+    //   prova up <topology>         → stand up a local topology
+    //   prova up <url>              → list a repo's advertised topologies
+    //   prova up <topology> <url>   → stand up a repo's advertised topology
+    let (name, url): (Option<String>, Option<String>) = match positionals.as_slice() {
+        [] => (None, None),
+        [a] if plugins::is_git_source(a) => (None, Some(a.clone())),
+        [a] => (Some(a.clone()), None),
+        [a, b] if plugins::is_git_source(b) => (Some(a.clone()), Some(b.clone())),
+        [a, b] => {
+            eprintln!("prova up: expected `<topology> <url>`, but {b:?} is not a git source (and {a:?} was already given)");
+            return ExitCode::from(2);
+        }
+        _ => unreachable!("capped at 2 positionals"),
+    };
+
+    if let Some(url) = url {
+        return up_from_git(name.as_deref(), &url, fixed);
     }
 
     // No name → the discovery form: list what's defined (like `prova init` listing templates).
@@ -536,6 +561,100 @@ fn up_list(profile: Option<String>, manifest_path: Option<String>) -> ExitCode {
     }
     println!("\nstand one up with `prova up <topology>`.");
     ExitCode::SUCCESS
+}
+
+/// The git forms: `prova up <url>` lists a repo's advertised topologies; `prova up <topology> <url>`
+/// stands one up. The repo is fetched (pinned, freshness-gated) like a git `[plugins]` source, its
+/// `[[plugin.topologies]]` advertisement is read, and a standalone engine registers the chosen
+/// topology — no local prova project required.
+fn up_from_git(name: Option<&str>, url: &str, fixed: bool) -> ExitCode {
+    let layout = match XdgSystemLayout::new() {
+        Ok(l) => l,
+        Err(err) => {
+            eprintln!("prova up: cannot determine home directories: {err}");
+            return ExitCode::from(2);
+        }
+    };
+    eprintln!("prova: fetching {url}…");
+    let src = match plugins::fetch_topology_source(
+        url,
+        &layout,
+        PROVA_VERSION,
+        &plugins::GitFetchOptions::default(),
+    ) {
+        Ok(s) => s,
+        Err(err) => {
+            eprintln!("prova up: {err}");
+            return ExitCode::from(2);
+        }
+    };
+
+    // No topology → list what the repo advertises.
+    let Some(name) = name else {
+        if src.advertised.is_empty() {
+            eprintln!(
+                "prova up: {url} advertises no topologies (no [[plugin.topologies]] in its prova.toml)"
+            );
+            return ExitCode::from(2);
+        }
+        println!("topologies advertised by {url} ({}):", src.advertised.len());
+        for t in &src.advertised {
+            println!("  {}", t.name);
+        }
+        println!("\nstand one up with `prova up <topology> {url}`.");
+        return ExitCode::SUCCESS;
+    };
+
+    // Named → find the advertised topology, gate on its requires, stand it up.
+    let Some(adv) = src.advertised.iter().find(|a| a.name == name) else {
+        let names: Vec<&str> = src.advertised.iter().map(|a| a.name.as_str()).collect();
+        eprintln!(
+            "prova up: {url} advertises no topology {name:?} (has: {})",
+            names.join(", ")
+        );
+        return ExitCode::from(2);
+    };
+
+    // Environment gate — built-in capabilities only (a remote `up` has no local companion to register
+    // project-specific ones).
+    let caps = prova_core::Capabilities::default();
+    for req in &adv.requires {
+        match caps.expr_status(req) {
+            Ok(None) => {}
+            Ok(Some(reason)) => {
+                eprintln!("prova up: cannot stand up topology {name:?}: it requires {reason}");
+                return ExitCode::from(2);
+            }
+            Err(err) => {
+                eprintln!("prova up: topology {name:?}: invalid requires {req:?}: {err}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    let config = engine_config(1, &src.plugins, None)
+        .with_ports(if fixed {
+            PortMode::Fixed
+        } else {
+            PortMode::Auto
+        })
+        .with_topology_registration(name, &src.require_name, &adv.factory);
+
+    eprintln!("prova: standing up topology {name:?} from {url}…");
+    let result = prova_core::up(&[], name, &config, |endpoints| {
+        print_endpoints(name, endpoints);
+        println!("\n  holding — Ctrl-C to tear down");
+    });
+    match result {
+        Ok(()) => {
+            println!("\n  torn down.");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("prova up: {err}");
+            ExitCode::from(2)
+        }
+    }
 }
 
 /// Everything the `up`/`watch` verbs need to stand a topology up: the located project, the files that
@@ -1519,7 +1638,9 @@ fn report_annotations(outcome: &annotations::Outcome) {
         eprintln!("prova: wrote .luarc.json (editor IDE support enabled)");
     }
     if outcome.luarc_hint {
-        eprintln!("prova: IDE annotations ready — run `prova ide setup` to point .luarc.json at them");
+        eprintln!(
+            "prova: IDE annotations ready — run `prova ide setup` to point .luarc.json at them"
+        );
     }
 }
 

@@ -214,6 +214,90 @@ fn advertised(
         })
 }
 
+/// Does this `prova up` argument name a git source (a URL or `org/repo@ref` shorthand) rather than a
+/// local topology name? Used to route `prova up <url>` / `prova up <topology> <url>` to the git path.
+pub fn is_git_source(s: &str) -> bool {
+    if is_git_url(s) {
+        return true;
+    }
+    // `host:org/repo` where host is a known git host, or a bare `org/repo@ref`.
+    if let Some((prefix, _)) = s.split_once(':') {
+        if known_host(prefix).is_some() {
+            return true;
+        }
+    }
+    let (core, reference) = split_ref(s);
+    is_org_repo(core) && reference.is_some()
+}
+
+/// A git repo fetched as a topology source: the internal require-name it was resolved under, the
+/// resolved plugins (so `require(<name>)` works), and the topologies it advertises.
+pub struct GitTopologySource {
+    pub require_name: String,
+    pub plugins: ResolvedPlugins,
+    pub advertised: Vec<AdvertisedTopology>,
+}
+
+/// Fetch `url` (a git source) as a plugin and read the topologies it advertises. The plugin is
+/// resolved under a require-name derived from the repo, so a topology registration can reference it as
+/// `require(<name>).<factory>`. Reuses the same pinned, freshness-gated fetch a `[plugins]` git source
+/// uses.
+pub fn fetch_topology_source(
+    url: &str,
+    layout: &dyn SystemLayout,
+    prova_version: &str,
+    git_opts: &GitFetchOptions,
+) -> Result<GitTopologySource, String> {
+    let require_name = url_require_name(url);
+    let mut one = BTreeMap::new();
+    one.insert(require_name.clone(), PluginSource::Path(url.to_string()));
+    // base_dir is irrelevant for a git source (only local `path` sources use it).
+    let plugins = resolve_plugins(
+        &one,
+        Path::new("."),
+        layout,
+        &BTreeMap::new(),
+        prova_version,
+        git_opts,
+    )?;
+    let advertised = plugins
+        .advertised
+        .get(&require_name)
+        .cloned()
+        .unwrap_or_default();
+    Ok(GitTopologySource {
+        require_name,
+        plugins,
+        advertised,
+    })
+}
+
+/// A valid Lua identifier derived from a git URL's repo name (`…/prova-parallels.git@main` →
+/// `prova_parallels`), for use as the internal `require` name. Non-identifier characters become `_`;
+/// a leading digit (or an empty result) is prefixed with `_`.
+fn url_require_name(url: &str) -> String {
+    let core = split_ref(url).0;
+    let core = core.strip_suffix(".git").unwrap_or(core);
+    let seg = core.rsplit(['/', ':']).next().unwrap_or(core);
+    let mut out: String = seg
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if out.is_empty() {
+        return "source".to_string();
+    }
+    if out.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        out.insert(0, '_');
+    }
+    out
+}
+
 /// One resolved plugin: its entry file, canonical namespace name, root directory (where the
 /// `prova.toml` and `library/` annotation stub live), and the topologies it advertises.
 struct ResolvedOne {
