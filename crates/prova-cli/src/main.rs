@@ -1902,6 +1902,14 @@ fn resolve_from_manifest(
         ExitCode::from(2)
     })?;
 
+    // Quietly reap plugin source trees unused past the retention window (throttled to ~daily). The
+    // run's own trees are leased, so they're never reaped mid-run.
+    let retention = resolved
+        .updates
+        .retention_duration()
+        .unwrap_or(manifest::UpdatesSection::DEFAULT_RETENTION);
+    plugins::prune_plugin_cache(layout, retention);
+
     // The declared plugin dir, absolutised against the package ROOT (like `paths`, and unlike the
     // home-relative `config`). Nothing is added here: a package scans exactly the one directory its
     // manifest names, so the file answers "where can a plugin come from?" on its own.

@@ -19,4 +19,4 @@ mlua = { version = "0.11", features = ["lua54", "vendored", "serialize"] }
 # The shared git-source cache (TTL + remote-hash freshness gate), from the archetect workspace.
 # Pinned to the same tag prova-archetect pins archetect-core/api to, so all archetect crates resolve
 # from one checkout.
-archetect-git-cache = { git = "https://github.com/archetect/archetect.git", tag = "v3.2.1" }
+archetect-git-cache = { git = "https://github.com/archetect/archetect.git", tag = "v3.2.2" }

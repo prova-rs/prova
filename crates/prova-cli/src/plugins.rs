@@ -11,8 +11,10 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
+use archetect_git_cache::Lease;
 use camino::Utf8PathBuf;
 use prova_core::SystemLayout;
 use serde::Deserialize;
@@ -60,6 +62,10 @@ pub struct ResolvedPlugins {
     /// alias — so a `[topologies]` entry `{ plugin, topology }` can resolve the factory the plugin
     /// published under that name.
     pub advertised: BTreeMap<String, Vec<AdvertisedTopology>>,
+    /// Session leases on the content-addressed source trees of git plugins, held for the whole run so
+    /// the cache reaper can't reclaim a tree while its plugin is being `require`d. `Arc` so cloning
+    /// `ResolvedPlugins` shares (not drops) the leases; nothing reads this field directly.
+    pub leases: Arc<Vec<Lease>>,
 }
 
 /// The plugin-relevant view of a `prova.toml`: the `[plugin]` contract and the `[requires]` compat
@@ -119,6 +125,7 @@ pub fn resolve_plugins(
     git_opts: &GitFetchOptions,
 ) -> Result<ResolvedPlugins, String> {
     let mut resolved = ResolvedPlugins::default();
+    let mut leases: Vec<Lease> = Vec::new();
     for (name, source) in plugins {
         let detail = match source {
             // A bare string is classified: a git URL or org/repo shorthand becomes a git source; a
@@ -141,7 +148,11 @@ pub fn resolve_plugins(
         if !one.advertised.is_empty() {
             resolved.advertised.insert(name.clone(), one.advertised);
         }
+        if let Some(lease) = one.lease {
+            leases.push(lease);
+        }
     }
+    resolved.leases = Arc::new(leases);
     Ok(resolved)
 }
 
@@ -305,6 +316,8 @@ struct ResolvedOne {
     canonical: String,
     root: PathBuf,
     advertised: Vec<AdvertisedTopology>,
+    /// The git source's session lease (`None` for local sources) — kept alive for the run.
+    lease: Option<Lease>,
 }
 
 /// Classify a bare string plugin source into a `PluginDetail`:
@@ -427,10 +440,13 @@ fn resolve_one(
     prova_version: &str,
     git_opts: &GitFetchOptions,
 ) -> Result<ResolvedOne, String> {
-    let root = match (&detail.path, &detail.git) {
+    let (root, lease) = match (&detail.path, &detail.git) {
         (Some(_), Some(_)) => return Err("set either `path` or `git`, not both".into()),
-        (Some(path), None) => resolve_relative(base_dir, path),
-        (None, Some(git)) => fetch_git(git, detail, layout, git_opts)?,
+        (Some(path), None) => (resolve_relative(base_dir, path), None),
+        (None, Some(git)) => {
+            let (root, lease) = fetch_git(git, detail, layout, git_opts)?;
+            (root, Some(lease))
+        }
         (None, None) => return Err("needs a `path` or a `git` source".into()),
     };
 
@@ -476,6 +492,7 @@ fn resolve_one(
         canonical,
         root: plugin_root,
         advertised,
+        lease,
     })
 }
 
@@ -584,33 +601,30 @@ fn module_file(
     ))
 }
 
-/// Fetch a git plugin into the layout's plugin cache (one dir per `(url, ref)`, so two plugins can
-/// pin the same repo at different refs), pinned by ref, and return the checkout dir. Freshness is the
-/// shared crate's two-gate check: a `tag`/`rev` pin is immutable and never re-probed; a `branch` (or
-/// the default branch) is TTL-gated and, once stale, confirmed against the remote hash before any
-/// pull. Prefer `tag`/`rev` for reproducibility.
+/// Resolve a git plugin through the content-addressed cache, returning the immutable tree dir to
+/// require from and the session lease (held for the run). Freshness is the shared crate's gate: a
+/// `tag`/`rev` pin is immutable and never re-probed; a `branch` (or the default branch) is TTL-gated
+/// and, once stale, confirmed against the remote hash before any pull. Prefer `tag`/`rev` for
+/// reproducibility.
 fn fetch_git(
     url: &str,
     detail: &PluginDetail,
     layout: &dyn SystemLayout,
     git_opts: &GitFetchOptions,
-) -> Result<PathBuf, String> {
+) -> Result<(PathBuf, Lease), String> {
     use archetect_git_cache::{FetchOptions, Freshness, RefPin};
 
-    // Map the pin to (immutability, ref, cache-label). A tag/rev never moves; a branch does.
-    let (pin, gitref, label): (RefPin, Option<&str>, String) =
-        match (&detail.tag, &detail.branch, &detail.rev) {
-            (Some(t), _, _) => (RefPin::Immutable, Some(t.as_str()), format!("tag-{t}")),
-            (_, Some(b), _) => (RefPin::Mutable, Some(b.as_str()), format!("branch-{b}")),
-            (_, _, Some(r)) => (RefPin::Immutable, Some(r.as_str()), format!("rev-{r}")),
-            _ => (RefPin::Mutable, None, "default".to_string()),
-        };
-    let dest = layout
-        .plugin_cache_dir()
-        .join(sanitize(url))
-        .join(sanitize(&label));
-    let cache_path = Utf8PathBuf::from_path_buf(dest.clone())
-        .map_err(|_| format!("plugin cache path is not UTF-8: {}", dest.display()))?;
+    // Map the pin to (immutability, ref). A tag/rev never moves; a branch does.
+    let (pin, gitref): (RefPin, Option<&str>) = match (&detail.tag, &detail.branch, &detail.rev) {
+        (Some(t), _, _) => (RefPin::Immutable, Some(t.as_str())),
+        (_, Some(b), _) => (RefPin::Mutable, Some(b.as_str())),
+        (_, _, Some(r)) => (RefPin::Immutable, Some(r.as_str())),
+        _ => (RefPin::Mutable, None),
+    };
+    // The crate owns the `sources/`+`trees/` layout under this root and returns the immutable tree.
+    let cache_root = layout.plugin_cache_dir();
+    let cache_root = Utf8PathBuf::from_path_buf(cache_root.clone())
+        .map_err(|_| format!("plugin cache path is not UTF-8: {}", cache_root.display()))?;
 
     let opts = FetchOptions {
         force: git_opts.force,
@@ -618,44 +632,43 @@ fn fetch_git(
         interval: git_opts.interval,
         pin,
     };
-    let outcome = archetect_git_cache::fetch(url, gitref, &cache_path, &opts)
+    let resolved = archetect_git_cache::resolve(url, gitref, &cache_root, &opts)
         .map_err(|e| format!("fetching {url}: {e}"))?;
 
     // Only speak up when the cache actually changed — a silent freshness confirmation stays silent.
-    match outcome.freshness {
+    match resolved.freshness {
         Freshness::Cloned => eprintln!("prova: fetching plugin {url}"),
         Freshness::Updated => eprintln!("prova: updating plugin {url}"),
         Freshness::UpToDate { .. } => {}
     }
-    Ok(dest)
+    Ok((resolved.tree_dir.into_std_path_buf(), resolved.lease))
 }
 
-/// Make a filesystem-safe directory component from a URL or ref (keep it recognizable).
-pub(crate) fn sanitize(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '.' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
+/// Quietly reap plugin source trees unused past `retention`, at most ~once/day (a `.last-prune` stamp
+/// in the plugin cache throttles it). Safe to call every run: the run's own trees are leased and so
+/// skipped. Best-effort — failures are ignored (pruning is housekeeping, not correctness).
+pub fn prune_plugin_cache(layout: &dyn SystemLayout, retention: Duration) {
+    let cache_root = layout.plugin_cache_dir();
+    if !cache_root.exists() {
+        return;
+    }
+    let stamp = cache_root.join(".last-prune");
+    // Throttle to daily: skip if the stamp was touched within the last day.
+    if let Ok(modified) = std::fs::metadata(&stamp).and_then(|m| m.modified()) {
+        if modified.elapsed().map(|e| e < Duration::from_secs(86_400)).unwrap_or(false) {
+            return;
+        }
+    }
+    if let Ok(cache_root) = Utf8PathBuf::from_path_buf(cache_root.clone()) {
+        let _ = archetect_git_cache::prune(&cache_root, retention);
+    }
+    let _ = std::fs::write(&stamp, b"");
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use prova_core::RootedSystemLayout;
-
-    #[test]
-    fn sanitize_makes_safe_components() {
-        assert_eq!(
-            sanitize("https://github.com/acme/prova-nats.git"),
-            "https___github.com_acme_prova-nats.git"
-        );
-        assert_eq!(sanitize("v1.0.0"), "v1.0.0");
-    }
 
     #[test]
     fn resolves_a_local_file_path() {

@@ -13,9 +13,9 @@ prova-core = { path = "../prova-core" }
 mlua = { workspace = true }
 # archetect pinned to a published tag until its crates land on crates.io. Both crates live in the
 # same repo, so one git source with a shared tag resolves both.
-archetect-core = { git = "https://github.com/archetect/archetect.git", tag = "v3.2.1" }
-archetect-api = { git = "https://github.com/archetect/archetect.git", tag = "v3.2.1" }
+archetect-core = { git = "https://github.com/archetect/archetect.git", tag = "v3.2.2" }
+archetect-api = { git = "https://github.com/archetect/archetect.git", tag = "v3.2.2" }
 # The interactive terminal driver — `prova init` prompts (via inquire) for anything the supplied
 # answers/switches/defaults don't cover, exactly as the archetect CLI does.
-archetect-terminal-io = { git = "https://github.com/archetect/archetect.git", tag = "v3.2.1" }
+archetect-terminal-io = { git = "https://github.com/archetect/archetect.git", tag = "v3.2.2" }
 camino = { version = "1.1", features = ["serde1"] }

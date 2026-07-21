@@ -84,22 +84,35 @@ pub struct Manifest {
 /// decides whether to actually pull. `force` (also `-U`/`--update`) skips the gate entirely.
 #[derive(Debug, Deserialize, Clone, Default, PartialEq)]
 pub struct UpdatesSection {
-    /// A human duration — `"7d"`, `"12h"`, `"30m"`, `"3600s"`, or a bare integer (seconds). Defaults
-    /// to 7 days when absent.
+    /// A human duration — `"1d"`, `"12h"`, `"30m"`, `"3600s"`, or a bare integer (seconds). Defaults
+    /// to 1 day when absent (a re-check is cheap and silent when the remote hasn't moved).
     pub interval: Option<String>,
     /// Force updates, ignoring the freshness gates. The CLI `-U`/`--update` flag also sets this.
     pub force: Option<bool>,
+    /// How long an unused materialized source tree survives before the quiet prune reaps it — same
+    /// duration syntax. Defaults to 90 days.
+    pub retention: Option<String>,
 }
 
 impl UpdatesSection {
-    /// The default freshness interval when `[updates] interval` is absent: 7 days (matches archetect).
-    pub const DEFAULT_INTERVAL: Duration = Duration::from_secs(604_800);
+    /// The default freshness interval when `[updates] interval` is absent: 1 day (matches archetect).
+    pub const DEFAULT_INTERVAL: Duration = Duration::from_secs(86_400);
+    /// The default retention when `[updates] retention` is absent: 90 days (matches archetect).
+    pub const DEFAULT_RETENTION: Duration = Duration::from_secs(7_776_000);
 
     /// Resolve `interval` to a `Duration`, defaulting to [`Self::DEFAULT_INTERVAL`]. An unparseable
     /// value is an error the caller surfaces.
     pub fn interval_duration(&self) -> Result<Duration, String> {
         match &self.interval {
             None => Ok(Self::DEFAULT_INTERVAL),
+            Some(s) => parse_duration(s),
+        }
+    }
+
+    /// Resolve `retention` to a `Duration`, defaulting to [`Self::DEFAULT_RETENTION`].
+    pub fn retention_duration(&self) -> Result<Duration, String> {
+        match &self.retention {
+            None => Ok(Self::DEFAULT_RETENTION),
             Some(s) => parse_duration(s),
         }
     }
