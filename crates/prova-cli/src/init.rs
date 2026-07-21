@@ -2,7 +2,7 @@
 //! directory, then wiring LuaLS IDE support as a finishing step.
 //!
 //! ```text
-//! prova init                 # render the `default` entry (interactive select among entries is M6)
+//! prova init                 # interactive select among catalog entries (default pre-highlighted)
 //! prova init --list          # the catalog: which archetypes prova can scaffold from
 //! prova init <key>           # render the named catalog entry
 //! prova init <key> --answer name=value --switch ci   # feed the render (repeatable)

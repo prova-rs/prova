@@ -282,18 +282,11 @@ function GroupBuilder:group(name, opts, body) end
 ---@param label string
 ---@param body fun(g: prova.GroupBuilder)
 function GroupBuilder:describe(label, body) end
---- Run `fn` before every test in this GROUP.
----@param fn fun(t: prova.TestContext)
-function GroupBuilder:before_each(fn) end
---- Run `fn` after every test in this GROUP.
----@param fn fun(t: prova.TestContext)
-function GroupBuilder:after_each(fn) end
---- Run `fn` once before this GROUP's first test.
----@param fn fun()
-function GroupBuilder:before_all(fn) end
---- Run `fn` once after this GROUP's last test.
----@param fn fun()
-function GroupBuilder:after_all(fn) end
+
+-- There are deliberately NO before_each/after_each/before_all/after_all hooks, on groups or
+-- files. Setup that produces a value is a `prova.fixture` (lazy, cached, scope-torn-down);
+-- teardown that belongs to a value is `ctx:manage`/`ctx:defer` (guaranteed, LIFO). Fixtures
+-- hold setup and teardown together — that is the model.
 
 --- The `prova` table is **injected as a global by the runtime** — no `require` needed, just
 --- like the `fs`/`shell`/`http`/`archetect` modules. `require("prova")` is still supported
@@ -540,18 +533,5 @@ runtime = {}
 ---@param name string                          # the capability name used in `requires` / `must_run`
 ---@param predicate fun(): boolean|string|nil  # true = available · a version string = comparable (`gpu >= 2`) · false/nil = unavailable
 function runtime.capability(name, predicate) end
-
---- Run `fn` before EVERY test in this file (and nested groups). For per-test setup that needs no value — prefer a `prova.fixture` when the setup PRODUCES something, since a fixture is lazy, cached, and tears down with its scope.
----@param fn fn: fun(t: prova.TestContext)
-function prova.before_each(fn) end
---- Run `fn` after EVERY test in this file. Prefer `ctx:defer`/`ctx:manage` for teardown that belongs to a value — those are guaranteed and LIFO; this is for file-wide cleanup.
----@param fn fn: fun(t: prova.TestContext)
-function prova.after_each(fn) end
---- Run `fn` ONCE before the first test in this file. Suite-wide setup with no value; a `Scope.File` fixture is usually the better tool.
----@param fn fn: fun()
-function prova.before_all(fn) end
---- Run `fn` ONCE after the last test in this file.
----@param fn fn: fun()
-function prova.after_all(fn) end
 
 return prova

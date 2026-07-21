@@ -124,6 +124,51 @@ prova.group("prova mcp", function(g)
     t:expect(slow.nodes[1].path):contains("tagged slow")
   end)
 
+  g:test("learn serves the topic catalog over MCP (docs/plans/autodidact.md M1)", function(t)
+    local by_id = mcp({
+      { jsonrpc = "2.0", id = 10, method = "tools/list" },
+      { jsonrpc = "2.0", id = 11, method = "tools/call",
+        params = { name = "learn", arguments = {} } },
+      { jsonrpc = "2.0", id = 12, method = "tools/call",
+        params = { name = "learn", arguments = { topic = "pdd" } } },
+      { jsonrpc = "2.0", id = 13, method = "tools/call",
+        params = { name = "learn", arguments = { topic = "mocks" } } },
+    })
+    -- The tool is listed alongside the others.
+    local tools = assert(by_id[10] and by_id[10].result and by_id[10].result.tools, "no tools result")
+    local names = {}
+    for _, tool in ipairs(tools) do names[tool.name] = true end
+    t:expect(names.learn, "learn tool"):is_true()
+    t:expect(names.introspect, "introspect tool"):is_true()
+
+    -- No topic → the catalog listing; a topic → its content; an alias resolves. Learn returns
+    -- MARKDOWN text (documentation), not JSON — the one deliberate exception to the JSON contract.
+    local listing = by_id[11].result.content[1].text
+    t:expect(listing):contains("pdd")
+    t:expect(listing):contains("doubles")
+    local topic = by_id[12].result.content[1].text
+    t:expect(topic):contains("proof")
+    local aliased = by_id[13].result.content[1].text
+    t:expect(aliased):contains("http.mock")
+  end)
+
+  g:test("topics are also protocol-native resources", function(t)
+    local by_id = mcp({
+      { jsonrpc = "2.0", id = 14, method = "resources/list" },
+      { jsonrpc = "2.0", id = 15, method = "resources/read",
+        params = { uri = "prova://learn/pdd" } },
+    })
+    local resources = assert(by_id[14] and by_id[14].result and by_id[14].result.resources,
+      "no resources result")
+    local uris = {}
+    for _, res in ipairs(resources) do uris[res.uri] = true end
+    t:expect(uris["prova://learn/pdd"], "pdd topic resource"):is_true()
+    t:expect(uris["prova://skill"], "skill resource"):is_true()
+
+    local contents = assert(by_id[15].result and by_id[15].result.contents, "no read contents")
+    t:expect(contents[1].text):contains("proof")
+  end)
+
   g:test("run returns counts and per-failure detail; selection deselects", function(t)
     local by_id = mcp({
       { jsonrpc = "2.0", id = 6, method = "tools/call",
