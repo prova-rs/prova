@@ -301,6 +301,26 @@ staleness.
 
 ## 3. Milestones (PDD: each lands proofs-first)
 
+**Status 2026-07-21 (same-day implementation run): M0–M5 shipped**, proofs-first throughout.
+Deviations and remainders:
+
+- **M1**: MCP resources shipped in M1 (not deferred to M6) — `prova://learn/<topic>`,
+  `prova://skill`, plus the startup package's `ctx:*` docs; one `learn::answer()` path serves
+  CLI, tool, and resources.
+- **M2**: the skill kept its full crash course and gained the discovery map; the deeper
+  tail-shedding into topics remains available but was not forced — the MCP instructions must
+  stay self-sufficient. The reference lint covers skill + topics, inline and fenced.
+- **M4 shipped the stub rail only**: a resolved plugin's `library/*.lua` merges into `help()`
+  and MCP `introspect` (read at call time off `RunConfig::help_roots`). Deferred: the
+  facet-inspection fallback for stub-less plugins, a `package` param on `introspect`, and
+  §2.6.5 feature-gated stubs.
+- **M5 deviation**: a declared-but-missing context doc is LOUD in `learn` (marked in the
+  listing; exit 2 naming the path on read) but does not hard-error manifest load — breaking
+  test runs over a docs file inverted the priority. `[run] context` (wrong placement, TOML
+  makes it representable) is silently ignored; a lint would close it.
+- **M6/M7 open**: Fix 0.3 tostring/`__pairs`, MCP `list` enrichment, §2.8.4 schema self-docs,
+  §2.9 docs-export, §2.8.6 registration-carries-docs inversion.
+
 - **M0 — Truth repair.** §2.6.1–3: phantom hooks deleted, workspace stubbed, parity proof
   green. *Proof: help↔runtime parity walk.*
 - **M1 — Topic engine.** `Topic` + `Slot` enums (§2.8.1–2) with aliases, `prova learn` (list +
