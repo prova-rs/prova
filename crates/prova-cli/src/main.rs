@@ -37,28 +37,99 @@ use prova_core::{
     TapReporter, XdgSystemLayout,
 };
 
-const HELP: &str = "\
-usage:
-  prova <file-or-dir>...    run the given files/dirs
-  prova                     run the suite declared in prova.toml (found by walking up)
-  prova init [<key>]        render a catalog archetype into this package (interactive if no key),
-                            then wire LuaLS IDE support
-  prova init --list         list the init catalog: the archetypes prova can scaffold from
-  prova ide setup           (re)wire this package's LuaLS support: core stubs + .luarc.json
-  prova eval '<code>'       run a one-shot Lua snippet in the full prova environment and print
-                            the returned value (`-` reads the snippet from stdin)
-  prova skill               print the agent skill (how to drive Prova); --install writes it
-                            to .claude/skills/prova/SKILL.md at the package root
-  prova learn [<topic>]     the topic catalog: progressive disclosure of how Prova works
-                            (no topic lists them; slots render THIS package's facts)
-  prova mcp                 serve an MCP stdio server whose tools mirror the CLI (run, list, eval)
-  prova up [<topology>] [<url>]  list/stand up a topology — local, or from a git repo that advertises it
-  prova watch <topology>    stand up a topology and re-apply on definition change (dev loop)
-  prova start <topology>    stand up a topology detached (returns; use `down` to stop)
-  prova down <topology>     tear down a detached topology
-  prova ps                  list running topologies
-  prova plugin lint <f>...  check plugin files against the namespacing grammar
+/// One subcommand: its dispatch name, its `--help` lines, and its entry point — ONE row per
+/// verb, so a verb cannot exist undocumented (the field is required) and the help text cannot
+/// name a verb that doesn't dispatch (the same row does both). See docs/plans/autodidact.md §2.8.
+struct Verb {
+    name: &'static str,
+    /// This verb's lines in `prova --help`, exactly as printed (including indentation).
+    help: &'static str,
+    run: fn(Vec<String>) -> ExitCode,
+}
 
+/// Every subcommand, in `--help` order. The run path (`prova [<file-or-dir>...]`) is the
+/// fallback when no verb matches.
+const VERBS: &[Verb] = &[
+    Verb {
+        name: "init",
+        help: "  prova init [<key>]        render a catalog archetype into this package (interactive if no key),\n\
+               \x20                           then wire LuaLS IDE support\n\
+               \x20 prova init --list         list the init catalog: the archetypes prova can scaffold from",
+        run: init::run,
+    },
+    Verb {
+        name: "ide",
+        help: "  prova ide setup           (re)wire this package's LuaLS support: core stubs + .luarc.json",
+        run: ide::run,
+    },
+    Verb {
+        name: "eval",
+        help: "  prova eval '<code>'       run a one-shot Lua snippet in the full prova environment and print\n\
+               \x20                           the returned value (`-` reads the snippet from stdin)",
+        run: eval_subcommand,
+    },
+    Verb {
+        name: "skill",
+        help: "  prova skill               print the agent skill (how to drive Prova); --install writes it\n\
+               \x20                           to .claude/skills/prova/SKILL.md at the package root",
+        run: skill_subcommand,
+    },
+    Verb {
+        name: "learn",
+        help: "  prova learn [<topic>]     the topic catalog: progressive disclosure of how Prova works\n\
+               \x20                           (no topic lists them; slots render THIS package's facts)",
+        run: learn::run,
+    },
+    Verb {
+        name: "mcp",
+        help: "  prova mcp                 serve an MCP stdio server whose tools mirror the CLI (run, list, eval)",
+        run: mcp::run,
+    },
+    Verb {
+        name: "up",
+        help: "  prova up [<topology>] [<url>]  list/stand up a topology — local, or from a git repo that advertises it",
+        run: up_subcommand,
+    },
+    Verb {
+        name: "watch",
+        help: "  prova watch <topology>    stand up a topology and re-apply on definition change (dev loop)",
+        run: watch_subcommand,
+    },
+    Verb {
+        name: "start",
+        help: "  prova start <topology>    stand up a topology detached (returns; use `down` to stop)",
+        run: start_subcommand,
+    },
+    Verb {
+        name: "down",
+        help: "  prova down <topology>     tear down a detached topology",
+        run: down_subcommand,
+    },
+    Verb {
+        name: "ps",
+        help: "  prova ps                  list running topologies",
+        run: ps_subcommand,
+    },
+    Verb {
+        name: "plugin",
+        help: "  prova plugin lint <f>...  check plugin files against the namespacing grammar",
+        run: plugin_subcommand,
+    },
+];
+
+/// `prova --help`, assembled from the verb table so the two cannot disagree.
+fn help_text() -> String {
+    let verbs: Vec<&str> = VERBS.iter().map(|v| v.help).collect();
+    format!(
+        "usage:\n\
+         \x20 prova <file-or-dir>...    run the given files/dirs\n\
+         \x20 prova                     run the suite declared in prova.toml (found by walking up)\n\
+         {}\n\n{OPTIONS}",
+        verbs.join("\n")
+    )
+}
+
+const OPTIONS: &str = "\
 options:
   -p, --profile NAME        run a profile from the manifest
       --manifest PATH       use a specific manifest (default ./prova.toml)
@@ -106,60 +177,14 @@ fn value_flag(
 }
 
 fn main() -> ExitCode {
-    // Subcommands: `prova plugin <...>` / `prova init`. Everything else is the run path.
+    // Subcommands dispatch through the verb table; everything else is the run path.
     let mut raw = std::env::args().skip(1).peekable();
-    match raw.peek().map(String::as_str) {
-        Some("plugin") => {
+    if let Some(first) = raw.peek() {
+        if let Some(verb) = VERBS.iter().find(|v| v.name == *first) {
             raw.next();
-            return plugin_subcommand(raw.collect());
+            return (verb.run)(raw.collect());
         }
-        Some("skill") => {
-            raw.next();
-            return skill_subcommand(raw.collect());
-        }
-        Some("learn") => {
-            raw.next();
-            return learn::run(raw.collect());
-        }
-        Some("init") => {
-            raw.next();
-            return init::run(raw.collect());
-        }
-        Some("ide") => {
-            raw.next();
-            return ide::run(raw.collect());
-        }
-        Some("eval") => {
-            raw.next();
-            return eval_subcommand(raw.collect());
-        }
-        Some("mcp") => {
-            raw.next();
-            return mcp::run(raw.collect());
-        }
-        Some("up") => {
-            raw.next();
-            return up_subcommand(raw.collect());
-        }
-        Some("watch") => {
-            raw.next();
-            return watch_subcommand(raw.collect());
-        }
-        Some("start") => {
-            raw.next();
-            return start_subcommand(raw.collect());
-        }
-        Some("down") => {
-            raw.next();
-            return down_subcommand(raw.collect());
-        }
-        Some("ps") => {
-            raw.next();
-            return ps_subcommand(raw.collect());
-        }
-        _ => {}
     }
-
     run(std::env::args().skip(1).collect())
 }
 
@@ -1346,7 +1371,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                 return ExitCode::SUCCESS;
             }
             "--help" | "-h" => {
-                println!("{HELP}");
+                println!("{}", help_text());
                 return ExitCode::SUCCESS;
             }
             other if other.starts_with('-') => {
@@ -2123,6 +2148,70 @@ mod tests {
         assert!(missing_stub_warning(&None).is_none());
 
         std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// Collect every `prova <word>` a document utters (the word after "prova ", inside prose or
+    /// code), skipping non-verb shapes: flags (`prova --list`), placeholders (`prova <verb>`),
+    /// file arguments, and `prova.toml`/`prova.help`-style dotted names.
+    fn verbs_uttered(doc: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for chunk in doc.split("prova ").skip(1) {
+            let word: String = chunk
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                .collect();
+            if !word.is_empty()
+                && word.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+                && !chunk.starts_with(&format!("{word}."))
+            {
+                out.push(word);
+            }
+        }
+        out
+    }
+
+    /// The reference lint (docs/plans/autodidact.md §2.6.7): every verb the skill and the topics
+    /// tell an agent to run must exist in the verb table — the docs cannot advertise a command
+    /// the binary would reject.
+    #[test]
+    fn skill_and_topics_only_name_real_verbs() {
+        let known: std::collections::BTreeSet<&str> =
+            VERBS.iter().map(|v| v.name).collect();
+        // Words that follow `prova ` without being subcommand verbs: run-path/general usage.
+        let non_verbs = ["run", "package", "environment", "release"];
+        let docs: Vec<(&str, &str)> = std::iter::once(("skill.md", SKILL))
+            .chain(
+                learn::Topic::ALL
+                    .iter()
+                    .map(|t| (t.key(), t.rendered_source_for_lint())),
+            )
+            .collect();
+        for (name, doc) in docs {
+            for verb in verbs_uttered(doc) {
+                assert!(
+                    known.contains(verb.as_str()) || non_verbs.contains(&verb.as_str()),
+                    "{name} tells the agent to run `prova {verb}`, which is not a verb the \
+                     binary dispatches — fix the doc or add the verb to VERBS"
+                );
+            }
+        }
+    }
+
+    /// Every verb's help text names the verb it dispatches — the row documents itself.
+    #[test]
+    fn every_verb_documents_itself() {
+        for verb in VERBS {
+            assert!(
+                verb.help.contains(&format!("prova {}", verb.name)),
+                "verb `{}` has help text that never mentions it",
+                verb.name
+            );
+        }
+        // And the assembled help is the verbs, in order.
+        let help = help_text();
+        for verb in VERBS {
+            assert!(help.contains(verb.help), "help_text() dropped `{}`", verb.name);
+        }
     }
 }
 

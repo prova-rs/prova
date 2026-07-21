@@ -78,6 +78,13 @@ impl Topic {
         }
     }
 
+    /// The raw embedded source, for the crate's reference lint (`prova <verb>` mentions must be
+    /// real verbs). Test-only by convention; the renderer is the real read path.
+    #[cfg(test)]
+    pub fn rendered_source_for_lint(self) -> &'static str {
+        self.source()
+    }
+
     pub fn resolve(input: &str) -> Option<Topic> {
         let needle = input.trim().to_lowercase();
         Topic::ALL
