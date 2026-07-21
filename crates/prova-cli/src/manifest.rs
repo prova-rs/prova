@@ -244,6 +244,13 @@ pub struct TopologyDecl {
     /// the plugin's advertisement declares. An unmet requirement blocks `prova up` before provisioning.
     #[serde(default)]
     pub requires: Vec<String>,
+    /// Options handed to the factory as its second argument: the entry desugars to
+    /// `require("<plugin>").<factory>(ctx, <options>)`. This is how a manifest-registered topology
+    /// passes what the factory needs but the caller can't otherwise supply — e.g. the base VM template
+    /// `options = { image = "ubuntu-24.04" }` for the `parallels` `vm` topology. Absent → the factory is
+    /// registered bare (`(ctx)`), unchanged.
+    #[serde(default)]
+    pub options: toml::Table,
 }
 
 /// An explicitly-declared suite: its `paths` are discovered into one suite (sharing an optional

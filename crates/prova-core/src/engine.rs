@@ -324,17 +324,21 @@ impl RunConfig {
     }
 
     /// Register a manifest topology: `alias` becomes a `prova.topology` addressable by name, resolving
-    /// to `require(plugin).<factory>`. Consulted only by the `up`/`watch`/list verbs.
+    /// to `require(plugin).<factory>`. Consulted only by the `up`/`watch`/list verbs. `options`, when
+    /// present, is a pre-serialized Lua table literal handed to the factory as its second argument
+    /// (`factory(ctx, <options>)`); `None` registers it bare (`factory` itself, called with `(ctx)`).
     pub fn with_topology_registration(
         mut self,
         alias: impl Into<String>,
         plugin: impl Into<String>,
         factory: impl Into<String>,
+        options: Option<String>,
     ) -> Self {
         self.topology_registrations.push(TopologyRegistration {
             alias: alias.into(),
             plugin: plugin.into(),
             factory: factory.into(),
+            options,
         });
         self
     }
@@ -3972,6 +3976,11 @@ pub struct TopologyRegistration {
     pub alias: String,
     pub plugin: String,
     pub factory: String,
+    /// A pre-serialized Lua table literal passed to the factory as a second argument, or `None` to
+    /// register the factory bare. The CLI (which owns the manifest's `toml`) produces the literal, so
+    /// only well-formed literals reach here; a malformed one surfaces as a Lua parse error, never a
+    /// silent hole.
+    pub options: Option<String>,
 }
 
 /// Register the manifest topologies into an already-built `lua`: exec one
@@ -4004,10 +4013,19 @@ fn exec_topology_registrations(lua: &Lua, config: &RunConfig) -> mlua::Result<()
                 r.alias, r.plugin, r.factory
             )));
         }
-        let code = format!(
-            "prova.topology(\"{}\", (require(\"{}\")).{})",
-            r.alias, r.plugin, r.factory
-        );
+        // Bare: register the factory itself (called with `(ctx)`). With options: wrap so the factory
+        // receives them as a second argument, `factory(ctx, <options>)`. The options literal is
+        // produced by the CLI's serializer, whose output is a self-contained Lua value expression.
+        let code = match &r.options {
+            None => format!(
+                "prova.topology(\"{}\", (require(\"{}\")).{})",
+                r.alias, r.plugin, r.factory
+            ),
+            Some(opts) => format!(
+                "prova.topology(\"{}\", function(ctx) return (require(\"{}\")).{}(ctx, {}) end)",
+                r.alias, r.plugin, r.factory, opts
+            ),
+        };
         lua.load(&code)
             .set_name(format!("@[topologies].{}", r.alias))
             .exec()

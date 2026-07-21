@@ -638,7 +638,7 @@ fn up_from_git(name: Option<&str>, url: &str, fixed: bool) -> ExitCode {
         } else {
             PortMode::Auto
         })
-        .with_topology_registration(name, &src.require_name, &adv.factory);
+        .with_topology_registration(name, &src.require_name, &adv.factory, None);
 
     eprintln!("prova: standing up topology {name:?} from {url}…");
     let result = prova_core::up(&[], name, &config, |endpoints| {
@@ -667,6 +667,58 @@ struct TopologyRun {
     /// checked against `capabilities` before `up` provisions it.
     topology_requires: BTreeMap<String, Vec<String>>,
     capabilities: prova_core::Capabilities,
+}
+
+/// Serialize a `[topologies].<name>.options` table into a Lua table-literal expression, so the
+/// registration can hand it to the factory as `factory(ctx, <literal>)`. Only literal values are
+/// emitted — strings are quoted-and-escaped, keys use `["k"]` form so any key is legal — so the
+/// result is a self-contained value that can never inject code. `None` for an empty table (register
+/// the factory bare).
+fn topology_options_to_lua(options: &toml::Table) -> Option<String> {
+    if options.is_empty() {
+        return None;
+    }
+    Some(toml_value_to_lua(&toml::Value::Table(options.clone())))
+}
+
+fn toml_value_to_lua(v: &toml::Value) -> String {
+    match v {
+        toml::Value::String(s) => lua_quote(s),
+        toml::Value::Integer(i) => i.to_string(),
+        toml::Value::Float(f) => f.to_string(),
+        toml::Value::Boolean(b) => b.to_string(),
+        toml::Value::Datetime(d) => lua_quote(&d.to_string()),
+        toml::Value::Array(items) => {
+            let parts: Vec<String> = items.iter().map(toml_value_to_lua).collect();
+            format!("{{ {} }}", parts.join(", "))
+        }
+        toml::Value::Table(t) => {
+            let parts: Vec<String> = t
+                .iter()
+                .map(|(k, val)| format!("[{}] = {}", lua_quote(k), toml_value_to_lua(val)))
+                .collect();
+            format!("{{ {} }}", parts.join(", "))
+        }
+    }
+}
+
+/// A Lua double-quoted string literal with the metacharacters escaped.
+fn lua_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\0' => out.push_str("\\0"),
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// Resolve the manifest, discover the topology files, and build the engine config for an inhabited
@@ -745,7 +797,8 @@ fn build_topology_run(
                 return Err(ExitCode::from(2));
             }
         };
-        config = config.with_topology_registration(alias, &decl.plugin, resolved.factory);
+        let options = topology_options_to_lua(&decl.options);
+        config = config.with_topology_registration(alias, &decl.plugin, resolved.factory, options);
         if !resolved.requires.is_empty() {
             topology_requires.insert(alias.clone(), resolved.requires);
         }
