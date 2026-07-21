@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/prova-core", "crates/prova-cli", "crates/prova-archetect"]
+members = ["crates/prova-core", "crates/prova-cli", "crates/prova-archetect", "xtask"]
 
 [workspace.package]
 authors = ["Jimmie Fulton <jimmie.fulton@gmail.com>"]
