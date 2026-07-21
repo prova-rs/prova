@@ -1,20 +1,20 @@
 # Project Layout & IDE Integration
 
-How a prova project is laid out on disk, and how editor completion + type-checking "just work" for
+How a prova package is laid out on disk, and how editor completion + type-checking "just work" for
 test authors and plugin authors alike — with zero manual wiring.
 
 ## The insight this is built on
 
-Lua is a *dependency* of a prova project, rarely its primary language. A test author drops a few
+Lua is a *dependency* of a prova package, rarely its primary language. A test author drops a few
 `*_test.lua` files into an otherwise-Rust/Go/TypeScript service repo and wants their editor to
 understand `prova.test`, `t:expect`, and `require("postgres")` — without learning LuaLS, editing a
 `.luarc.json`, or checking out the prova source. So prova owns that setup, and scales how invasive it
-is to how much the project has opted in.
+is to how much the package has opted in.
 
 Two facts drive the whole design:
 
 1. **LuaLS binds to the workspace root you open**, and reads a `.luarc.json` there. prova writes that
-   pointer into the **home directory** — which is the project as prova sees it.
+   pointer into the **home directory** — which is the package as prova sees it.
 2. **`---@meta <name>` makes `require("<name>")` resolve by module name** — decoupled from the file's
    path. That's what lets a plugin cached under a ref-hashed directory still be found as
    `require("postgres")`.
@@ -23,7 +23,7 @@ Two facts drive the whole design:
 
 **Home = the directory that contains the manifest, and it is the base for everything** — every
 manifest-relative path (`paths`, `config`, `plugin_root`) and every generated artifact (`.luarc.json`,
-`running/`) resolves against it. There is no separate "project root": home *is* the root. A project
+`running/`) resolves against it. There is no separate "project root": home *is* the root. A package
 picks one of four manifest locations:
 
 | Manifest location | Home dir | Feel |
@@ -33,18 +33,18 @@ picks one of four manifest locations:
 | `prova/prova.toml` | `prova/` | visible nested — a self-contained `prova/` |
 | `.prova/prova.toml` | `.prova/` | hidden nested — a self-contained `.prova/` |
 
-Because home is the manifest's own directory, a project is a **relocatable unit**: move the manifest
+Because home is the manifest's own directory, a package is a **relocatable unit**: move the manifest
 and its files from `prova/` up to the root and *nothing in the manifest changes* — every path was
 always relative to wherever the manifest sits. That is the whole reason to unify root and home: one
 base, one mental model, and a layout an agent can read off a single file.
 
 Discovery walks **up** from the current directory (like git finding `.git`), so `prova` runs from
-anywhere inside a project. Two rules:
+anywhere inside a package. Two rules:
 
 - **Exactly one of the four variants per directory.** Two in one directory is an ambiguous layout;
   prova refuses to guess. (Across *different* levels is fine — see nested projects below.)
-- **The nearest manifest wins, and a deeper one is its own project.** A `prova.toml` further down the
-  tree is an independent project, not a child of an ancestor's — running from inside it resolves it,
+- **The nearest manifest wins, and a deeper one is its own package.** A `prova.toml` further down the
+  tree is an independent package, not a child of an ancestor's — running from inside it resolves it,
   not the ancestor.
 
 No name-based special-casing is needed: `cd prova && prova` finds the flat `prova/prova.toml` (home
@@ -75,7 +75,7 @@ is the sole use of the editor root; path resolution never touches it.)
 The signal for "nested" is the manifest **filename**, not the directory name alone: only a *bare*
 `prova.toml` inside a directory named `prova`/`.prova` is nested (which reserves those two directory
 names for that role). A hidden `.prova.toml` is a flat file whatever its directory is called, so it
-never hoists — the escape hatch is exact: to root a *flat* project in a directory literally named
+never hoists — the escape hatch is exact: to root a *flat* package in a directory literally named
 `prova`/`.prova`, use `.prova.toml`. The one on-disk ambiguity — a bare `prova.toml` in such a
 directory — is decided by the reservation, deterministically, wherever you run prova from.
 
@@ -91,7 +91,7 @@ myproject/
     └── plugins/         #   plugin_root = ".prova/plugins"
 ```
 
-Nothing else is generated inside the project. `.luarc.json` names its annotation sources directly:
+Nothing else is generated inside the package. `.luarc.json` names its annotation sources directly:
 
 ```json
 "workspace.library": [
@@ -168,7 +168,7 @@ manifest-backed run refreshes the stubs and re-checks the pointer.
 ## The `.luarc.json` pointer — a graceful-degradation ladder
 
 Only the pointer is gated (the core stubs are always installed). The gate keys on how much the
-project has opted into prova:
+package has opted into prova:
 
 | Situation | Behavior |
 |---|---|
@@ -226,6 +226,6 @@ postgres = "prova-rs/prova-postgres@v0.2.0"
 prova                                        # fetches the plugin, syncs its stub, runs tests
 ```
 
-Open the project in any LuaLS-backed editor, and `require("postgres")` completes — `pg.client:
+Open the package in any LuaLS-backed editor, and `require("postgres")` completes — `pg.client:
 query_value(...)` is typed, wrong argument counts are flagged. The test author did nothing but
 declare the plugin.

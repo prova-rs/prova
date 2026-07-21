@@ -1,4 +1,4 @@
-# Plan: layout — the canonical prova project, and the manifest as a lifecycle spec
+# Plan: layout — the canonical prova package, and the manifest as a lifecycle spec
 
 Design refs: `docs/design/suites.md` (the suite = one Lua state model), `docs/design/ide-and-layout.md`
 (the "home"), `docs/design/test-topology.md` (`runtime.capability`, the companion), `docs/design/api.md`

@@ -1,4 +1,4 @@
-//! `prova init` — scaffold a prova project by **rendering a catalog archetype** into the current
+//! `prova init` — scaffold a prova package by **rendering a catalog archetype** into the current
 //! directory, then wiring LuaLS IDE support as a finishing step.
 //!
 //! ```text
@@ -14,7 +14,7 @@
 //! The scaffold is selected from a [catalog](crate::catalog) — prova's built-in entries plus any
 //! `[init.*]` in `~/.config/prova/config.toml`. The catalog and the target key are resolved *before*
 //! anything touches the filesystem, so a typo'd key or a broken config never leaves a half-scaffolded
-//! project behind. `init` refuses to run if the project already has a manifest — it never clobbers an
+//! package behind. `init` refuses to run if the package already has a manifest — it never clobbers an
 //! existing layout.
 //!
 //! Answer precedence (highest first): CLI `--answer` → the entry's baked `answers` → an interactive
@@ -91,7 +91,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
     }
 
     // Resolve the catalog and target entry before any filesystem work — a bad key or a malformed
-    // config.toml fails before a half-scaffolded project can exist.
+    // config.toml fails before a half-scaffolded package can exist.
     let sys_layout = match prova_core::XdgSystemLayout::new() {
         Ok(l) => l,
         Err(err) => {
@@ -173,7 +173,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
     }
 
     // IDE wiring, as a finishing step, over whatever manifest the archetype rendered. A render that
-    // produced no prova.toml isn't a prova project layout — say so rather than fail.
+    // produced no prova.toml isn't a prova package layout — say so rather than fail.
     if luals {
         match crate::home::find(root) {
             Ok(Some(home)) => {

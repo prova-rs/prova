@@ -1,4 +1,4 @@
-//! The suite manifest (`prova.toml`) — declare *what* to run and *how*, so `prova` with no
+//! The package manifest (`prova.toml`) — declare *what* to run and *how*, so `prova` with no
 //! arguments runs the configured suite and CI is just `prova`. A general-purpose harness needs a
 //! stable way to name suites and environments across local and CI; this is it.
 //!
@@ -26,9 +26,9 @@
 //!
 //! ```
 //!
-//! An optional `prova.lua` beside this file is the project's Lua companion (the pairing archetect
+//! An optional `prova.lua` beside this file is the package's Lua companion (the pairing archetect
 //! uses for archetype.yaml + archetype.lua). It is where `runtime.capability(name, fn)` registers a
-//! project-wide predicate — a GPU, a kind cluster — for a capability no name-and-version can
+//! package-wide predicate — a GPU, a kind cluster — for a capability no name-and-version can
 //! express. It loads WITH the manifest, which is what lets `must_run` guarantee one: the
 //! precondition is checked before any suite exists, so a suite-registered capability would not yet.
 //!
@@ -55,7 +55,7 @@ pub struct Manifest {
     #[serde(default)]
     pub suites: BTreeMap<String, SuiteDecl>,
     /// Declared plugins: `require(name)` resolves to this source (a local file/dir or a git repo).
-    /// Not profile-specific — the plugin set is a property of the project, applied to every run.
+    /// Not profile-specific — the plugin set is a property of the package, applied to every run.
     #[serde(default)]
     pub plugins: BTreeMap<String, PluginSource>,
     /// Registered source aliases for plugin shorthands: `alias → base`, where `base` is a host
@@ -63,17 +63,17 @@ pub struct Manifest {
     /// `"acme:redis"` then expands via `acme` to `https://github.com/acme/redis`.
     #[serde(default)]
     pub sources: BTreeMap<String, String>,
-    /// Named topologies (`[topologies]`) — each exposes a factory a plugin provides under a project
+    /// Named topologies (`[topologies]`) — each exposes a factory a plugin provides under a package
     /// name, so `prova up <name>` (and any proof) can address it. Sugar for
-    /// `prova.topology(<name>, require(<plugin>).<factory>)`. A property of the project, not a profile.
+    /// `prova.topology(<name>, require(<plugin>).<factory>)`. A property of the package, not a profile.
     #[serde(default)]
     pub topologies: BTreeMap<String, TopologyDecl>,
-    /// How prova manages the project's LuaLS IDE integration (`.luarc.json` + synced annotations).
-    /// Not profile-specific — a property of the project.
+    /// How prova manages the package's LuaLS IDE integration (`.luarc.json` + synced annotations).
+    /// Not profile-specific — a property of the package.
     #[serde(default)]
     pub luals: Luals,
     /// How often git plugin sources are checked for updates, and whether to force them. Not
-    /// profile-specific — a property of the project. Mirrors archetect's `updates` config so the two
+    /// profile-specific — a property of the package. Mirrors archetect's `updates` config so the two
     /// tools read the same knobs.
     #[serde(default)]
     pub updates: UpdatesSection,
@@ -138,7 +138,7 @@ fn parse_duration(s: &str) -> Result<Duration, String> {
 
 /// LuaLS / `.luarc.json` management policy. The annotation set under `<home>/annotations/` is always
 /// refreshed (it's prova-owned and gitignored); this only governs whether prova writes the *pointer*
-/// (`.luarc.json` at the project root).
+/// (`.luarc.json` at the package root).
 #[derive(Debug, Deserialize, Clone, Default, PartialEq)]
 pub struct Luals {
     /// `"auto"` (default) | `"always"` | `"never"`. See [`Manage`].
@@ -267,10 +267,10 @@ pub struct SuiteDecl {
 pub struct Profile {
     #[serde(default)]
     pub paths: Vec<String>,
-    /// The directory holding this project's own plugins, relative to the project **root** (like
+    /// The directory holding this package's own plugins, relative to the package **root** (like
     /// `paths`). No default: the one place prova scans is the one this file names.
     ///
-    /// Deliberately singular. An ambient root exists for a single job — "my project's plugins, don't
+    /// Deliberately singular. An ambient root exists for a single job — "my package's plugins, don't
     /// make me name each one" — and that is inherently one place. A plugin from anywhere else gets a
     /// name and a pinned source in `[plugins]` (a path or a git ref), which is both more explicit and
     /// more reproducible than a second directory scanned by convention. A list would only add a
@@ -284,7 +284,7 @@ pub struct Profile {
     pub format: Option<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
-    /// Profile-scoped plugins (`[profiles.<name>.plugins]`), overlaid on the project-wide
+    /// Profile-scoped plugins (`[profiles.<name>.plugins]`), overlaid on the package-wide
     /// `[plugins]` set. The principled home for CI-only capabilities: declared in `prova.toml` so a
     /// `--profile ci` run and local dev resolve the same pinned source, instead of injecting plugins
     /// through an out-of-band CI input. On a name conflict the profile's entry wins.
@@ -312,8 +312,8 @@ pub struct Profile {
 #[derive(Debug, PartialEq)]
 pub struct Resolved {
     pub paths: Vec<String>,
-    /// The project's plugin directory (`[run] plugin_root`), relative to the project root. `None`
-    /// means the project declared none — the searcher then has nowhere to scan, and says so.
+    /// The package's plugin directory (`[run] plugin_root`), relative to the package root. `None`
+    /// means the package declared none — the searcher then has nowhere to scan, and says so.
     pub plugin_root: Option<String>,
     /// The companion config file (relative to home); `None` → the `prova.lua` default. See `Profile`.
     pub config: Option<String>,
@@ -333,7 +333,7 @@ pub struct Resolved {
     /// Git-source update policy (`[updates]`), applied to every run.
     pub updates: UpdatesSection,
     /// Capabilities this run guarantees — the union of `[run] must_run` and the selected profile's.
-    /// A guarantee is **additive**: a profile promises *more* than the project baseline, never less,
+    /// A guarantee is **additive**: a profile promises *more* than the package baseline, never less,
     /// because a context that could retract a guarantee would let the strictest bar be silenced by
     /// selecting a laxer profile.
     pub must_run: Vec<String>,
@@ -393,7 +393,7 @@ impl Manifest {
         }
 
         // Guarantees are the UNION of the baseline and the profile's — additive, never overriding,
-        // unlike `paths`/`jobs`/`format`. A profile promises more than the project, never less.
+        // unlike `paths`/`jobs`/`format`. A profile promises more than the package, never less.
         let mut must_run = base.must_run.clone();
         if let Some(p) = overlay {
             for cap in &p.must_run {
@@ -591,8 +591,8 @@ redis = "acme:prova-redis@v1"
         assert_eq!(r.jobs, Some(4)); // inherited
     }
 
-    /// `[topologies]` maps a project name to a plugin factory — the desugaring surface for
-    /// `prova up <name>`. A property of the project (not profile-specific), and the entry form is
+    /// `[topologies]` maps a package name to a plugin factory — the desugaring surface for
+    /// `prova up <name>`. A property of the package (not profile-specific), and the entry form is
     /// strict (`deny_unknown_fields`) so a typo'd key is a parse error, not a silently-ignored one.
     #[test]
     fn topologies_parse_as_plugin_factory_references() {
@@ -640,7 +640,7 @@ paths = ["proofs/smoke"]
             m.resolve(Some("vendored")).unwrap().plugin_root.as_deref(),
             Some("vendor/plugins")
         );
-        // A profile silent about the root inherits the project's.
+        // A profile silent about the root inherits the package's.
         assert_eq!(
             m.resolve(Some("smoke")).unwrap().plugin_root.as_deref(),
             Some(".prova/plugins")
@@ -668,7 +668,7 @@ redis = "./plugins/redis-ci.lua"
         )
         .unwrap();
 
-        // Base run: only the project-wide plugin.
+        // Base run: only the package-wide plugin.
         let base = m.resolve(None).unwrap();
         assert_eq!(base.plugins.len(), 1);
         assert_eq!(
@@ -676,7 +676,7 @@ redis = "./plugins/redis-ci.lua"
             PluginSource::Path("./plugins/redis.lua".into())
         );
 
-        // CI profile: adds kafka, and its redis entry wins over the project-wide one.
+        // CI profile: adds kafka, and its redis entry wins over the package-wide one.
         let ci = m.resolve(Some("ci")).unwrap();
         assert_eq!(ci.plugins.len(), 2);
         assert_eq!(

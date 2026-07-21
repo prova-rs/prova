@@ -40,14 +40,14 @@ const HELP: &str = "\
 usage:
   prova <file-or-dir>...    run the given files/dirs
   prova                     run the suite declared in prova.toml (found by walking up)
-  prova init [<key>]        render a catalog archetype into this project (interactive if no key),
+  prova init [<key>]        render a catalog archetype into this package (interactive if no key),
                             then wire LuaLS IDE support
   prova init --list         list the init catalog: the archetypes prova can scaffold from
-  prova ide setup           (re)wire this project's LuaLS support: core stubs + .luarc.json
+  prova ide setup           (re)wire this package's LuaLS support: core stubs + .luarc.json
   prova eval '<code>'       run a one-shot Lua snippet in the full prova environment and print
                             the returned value (`-` reads the snippet from stdin)
   prova skill               print the agent skill (how to drive Prova); --install writes it
-                            to .claude/skills/prova/SKILL.md at the project root
+                            to .claude/skills/prova/SKILL.md at the package root
   prova mcp                 serve an MCP stdio server whose tools mirror the CLI (run, list, eval)
   prova up [<topology>] [<url>]  list/stand up a topology — local, or from a git repo that advertises it
   prova watch <topology>    stand up a topology and re-apply on definition change (dev loop)
@@ -229,7 +229,7 @@ fn plugin_subcommand(args: Vec<String>) -> ExitCode {
 /// `prova eval '<code>'` — run a one-shot Lua snippet in the FULL prova environment (built-in
 /// modules, manifest-declared plugins via `require`, a real transient `ctx`) and print the returned
 /// value. Goes through the same manifest/home/plugins resolution as the run path, so
-/// `require("postgres")` works from a project directory; without a manifest it still runs with the
+/// `require("postgres")` works from a package directory; without a manifest it still runs with the
 /// built-ins. Exit 0 on success, 1 if the snippet raises, 2 on usage errors.
 fn eval_subcommand(args: Vec<String>) -> ExitCode {
     let mut code: Option<String> = None;
@@ -414,12 +414,12 @@ fn up_subcommand(args: Vec<String>) -> ExitCode {
                 println!(
                     "usage: prova up [<topology>] [<git-url>] [--fixed] [--profile NAME] [--manifest PATH]\n\
                      \n\
-                     with no topology, list the topologies this project defines.\n\
+                     with no topology, list the topologies this package defines.\n\
                      with one, stand it up (declared with prova.topology) and hold it running until\n\
                      Ctrl-C, printing each resource's endpoint.\n\
                      \n\
                      with a git URL, act on a REMOTE repo that advertises topologies instead of the\n\
-                     local project: `prova up <url>` lists what it advertises; `prova up <topology>\n\
+                     local package: `prova up <url>` lists what it advertises; `prova up <topology>\n\
                      <url>` stands that one up. The repo is fetched and pinned like a git plugin.\n\
                      \n\
                      --fixed  pin each resource to its canonical container port on the host (a\n\
@@ -534,7 +534,7 @@ fn up_subcommand(args: Vec<String>) -> ExitCode {
     }
 }
 
-/// `prova up` with no name — list the topologies this project defines, so you can see what's there
+/// `prova up` with no name — list the topologies this package defines, so you can see what's there
 /// before standing one up (the mirror of `prova init` listing templates). Only registers topologies
 /// (execs the definition files); no factory runs, so this needs no docker.
 fn up_list(profile: Option<String>, manifest_path: Option<String>) -> ExitCode {
@@ -566,7 +566,7 @@ fn up_list(profile: Option<String>, manifest_path: Option<String>) -> ExitCode {
 /// The git forms: `prova up <url>` lists a repo's advertised topologies; `prova up <topology> <url>`
 /// stands one up. The repo is fetched (pinned, freshness-gated) like a git `[plugins]` source, its
 /// `[[plugin.topologies]]` advertisement is read, and a standalone engine registers the chosen
-/// topology — no local prova project required.
+/// topology — no local prova package required.
 fn up_from_git(name: Option<&str>, url: &str, fixed: bool) -> ExitCode {
     let layout = match XdgSystemLayout::new() {
         Ok(l) => l,
@@ -616,7 +616,7 @@ fn up_from_git(name: Option<&str>, url: &str, fixed: bool) -> ExitCode {
     };
 
     // Environment gate — built-in capabilities only (a remote `up` has no local companion to register
-    // project-specific ones).
+    // package-specific ones).
     let caps = prova_core::Capabilities::default();
     for req in &adv.requires {
         match caps.expr_status(req) {
@@ -657,7 +657,7 @@ fn up_from_git(name: Option<&str>, url: &str, fixed: bool) -> ExitCode {
     }
 }
 
-/// Everything the `up`/`watch` verbs need to stand a topology up: the located project, the files that
+/// Everything the `up`/`watch` verbs need to stand a topology up: the located package, the files that
 /// may declare topologies, and the engine config (plugins resolved, port mode set).
 struct TopologyRun {
     home: Home,
@@ -735,7 +735,7 @@ fn build_topology_run(
         ExitCode::from(2)
     })?;
 
-    // Locate the project (the manifest tells us where topologies + plugins live).
+    // Locate the package (the manifest tells us where topologies + plugins live).
     let home = resolve_home(manifest_path.as_deref())?;
 
     let run = resolve_from_manifest(&home, profile, None, None, None, &layout, false, false)?;
@@ -926,7 +926,7 @@ fn watch_subcommand(args: Vec<String>) -> ExitCode {
     }
 }
 
-/// Locate the prova project home from `--manifest` or by walking up from the current directory.
+/// Locate the prova package home from `--manifest` or by walking up from the current directory.
 fn resolve_home(manifest_path: Option<&str>) -> Result<Home, ExitCode> {
     match manifest_path {
         Some(p) => Ok(home::from_manifest_path(Path::new(p))),
@@ -1110,7 +1110,7 @@ fn down_subcommand(args: Vec<String>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// `prova ps` — list this project's running topologies and their endpoints. Stale records (holder
+/// `prova ps` — list this package's running topologies and their endpoints. Stale records (holder
 /// gone) are reported once and cleaned up.
 fn ps_subcommand(args: Vec<String>) -> ExitCode {
     // `ps` takes only an optional --manifest.
@@ -1419,7 +1419,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             offline,
         ) {
             Ok(r) => (
-                // Test `paths` resolve against the project ROOT, not the home dir — so `proofs/`
+                // Test `paths` resolve against the package ROOT, not the home dir — so `proofs/`
                 // lives at the root while `.prova/` (or `prova/`) is prova's config/plugins nook.
                 // (For a flat `prova.toml`, root == home, so nothing changes.) The `config`
                 // companion stays home-relative; only test discovery is root-anchored.
@@ -1657,9 +1657,9 @@ struct ManifestRun {
     /// Manifest topologies (`[topologies]`) — name → the plugin factory it exposes. Consumed only by
     /// the `up`/`watch`/list verbs, which desugar each to a `prova.topology` registration.
     topologies: BTreeMap<String, crate::manifest::TopologyDecl>,
-    /// Capabilities the project's `prova.lua` registered — carried into the run's `RunConfig` so
+    /// Capabilities the package's `prova.lua` registered — carried into the run's `RunConfig` so
     /// `requires` resolution sees the same vocabulary the `must_run` precondition just checked. Per
-    /// resolve, so the warm MCP's projects don't share.
+    /// resolve, so the warm MCP's packages don't share.
     capabilities: prova_core::Capabilities,
 }
 
@@ -1766,7 +1766,7 @@ fn engine_config(
     if let Some(root) = &plugins_resolved.search_root {
         config = config.with_plugin_root(root.clone());
     }
-    // Surface where the project is (`prova.root` / `prova.home`) so repo-local plugins can find
+    // Surface where the package is (`prova.root` / `prova.home`) so repo-local plugins can find
     // repo artifacts. Absent when there is no manifest.
     if let Some(h) = home {
         config = config.with_project(h.dir.clone());
@@ -1902,13 +1902,13 @@ fn resolve_from_manifest(
         ExitCode::from(2)
     })?;
 
-    // The declared plugin dir, absolutised against the project ROOT (like `paths`, and unlike the
-    // home-relative `config`). Nothing is added here: a project scans exactly the one directory its
+    // The declared plugin dir, absolutised against the package ROOT (like `paths`, and unlike the
+    // home-relative `config`). Nothing is added here: a package scans exactly the one directory its
     // manifest names, so the file answers "where can a plugin come from?" on its own.
     plugins_resolved.search_root = resolved.plugin_root.as_ref().map(|r| home.dir.join(r));
 
     // The optional `prova.lua` companion — loaded with the manifest, and BEFORE the `must_run`
-    // precondition below. That order is the whole reason this is a project-level companion rather
+    // precondition below. That order is the whole reason this is a package-level companion rather
     // than something in `suite.lua`: a capability registered at suite-load time would not exist yet
     // at the moment a profile's guarantee is checked, so `must_run = ["gpu"]` could never work.
     // The companion config file, by precedence: `--config` flag, then `PROVA_CONFIG` env, then the
@@ -2081,8 +2081,8 @@ fn store_last_failed(home: &Option<home::Home>, failed: &[String]) {
 /// The embedded agent skill — versioned with the binary so it can never drift from the features.
 const SKILL: &str = include_str!("skill.md");
 
-/// `prova skill` prints the skill; `prova skill --install` writes it into the project's
-/// `.claude/skills/prova/SKILL.md` (next to the manifest's project root) so the repo carries it.
+/// `prova skill` prints the skill; `prova skill --install` writes it into the package's
+/// `.claude/skills/prova/SKILL.md` (next to the manifest's package root) so the repo carries it.
 fn skill_subcommand(args: Vec<String>) -> ExitCode {
     let install = args.iter().any(|a| a == "--install");
     if let Some(bad) = args.iter().find(|a| *a != "--install") {

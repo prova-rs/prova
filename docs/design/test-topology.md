@@ -22,7 +22,7 @@ reports green by counting tests that never ran. Both are a signal that cannot sa
 
 Every claim below was run against `target/debug/prova`, because the one friction in
 [agent-ergonomics.md](agent-ergonomics.md) that turned out to be false was the one filed from
-reading prose (§4, retracted the same day). A scratch project with a `crates/cli` and a
+reading prose (§4, retracted the same day). A scratch package with a `crates/cli` and a
 `services/orders` suite:
 
 | Question | Answer today |
@@ -143,10 +143,10 @@ cargo/pytest idiom and needs no new concept — just a default:
 $ prova                      # from the root: every suite under [run] paths
 $ cd crates/prova-cli
 $ prova                      # THIS subtree's suites; config still from the one home
-$ prova --all                # override: the whole project from anywhere
+$ prova --all                # override: the whole package from anywhere
 ```
 
-**Exactly one home per project.** Not a nested-manifest workspace: one `[plugins]` table, one
+**Exactly one home per package.** Not a nested-manifest workspace: one `[plugins]` table, one
 set of annotations, one `.luarc.json` question, one place to look. Module autonomy is expressed by
 **suites**, which are already directory-aligned — not by a second manifest.
 
@@ -157,7 +157,7 @@ Nothing here is new machinery; it is the existing pieces, named:
 ```
 <repo>/
 ├── .luarc.json                  ← the only root clutter (LuaLS binds here)
-├── prova/                       ← THE home: the project's anchor
+├── prova/                       ← THE home: the package's anchor
 │   ├── prova.toml               #   [plugins], [profiles.*] + must_run, [run] paths
 │   ├── plugins/ourthing.lua     #   locally-authored plugins
 │   └── suites/                  #   project-level suites (cross-cutting)
@@ -177,7 +177,7 @@ The rule that resolves "one directory or per-module?" — **it was two questions
 - **Suites are plural and local** because a suite is a Lua state and a state belongs next to what it
   is testing.
 
-So `<repo>/prova/` is not where tests must live; it is where the *project* is declared. Tests live
+So `<repo>/prova/` is not where tests must live; it is where the *package* is declared. Tests live
 where their code lives, and `cd` there to run them. Both of the user's instincts were right; they
 just answer different questions.
 
@@ -288,7 +288,7 @@ removes the primitive.
 
 **The split stays the one this codebase already keeps: TOML declares, Lua computes.** TOML keeps the
 properties the registry/plugin-browser arc needs — an agent can add a plugin with `toml_edit`
-(comments preserved), and CI can read what a project runs without executing it. Lua gets only what
+(comments preserved), and CI can read what a package runs without executing it. Lua gets only what
 TOML structurally cannot hold. It is the same pairing as `archetype.yaml` + `archetype.lua`, so it is
 one fewer idiom to learn.
 
@@ -296,7 +296,7 @@ one fewer idiom to learn.
 loads AND be visible to every suite?* Capabilities pass. Fixtures do not (they are suite state).
 `prova.lua` is optional — no file means today's behavior, exactly.
 
-The one caveat worth stating out loud: **`suite.config{}` already is Lua config**, so the project
+The one caveat worth stating out loud: **`suite.config{}` already is Lua config**, so the package
 runs two config languages today. That split is defensible (the suite is the *program*; the manifest is
 the *declaration*), but if it ever reads as arbitrary rather than principled, this decision reopens —
 and `runtime.capability()` deepens the Lua side rather than shrinking it.

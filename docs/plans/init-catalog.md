@@ -21,14 +21,14 @@ The original plan follows, for the design rationale.
 
 `prova init` currently does two unrelated jobs in one verb (`crates/prova-cli/src/init.rs`):
 
-1. **Scaffold** a project — create the home dir, write a *hardcoded* `manifest_template()`, print
+1. **Scaffold** a package — create the home dir, write a *hardcoded* `manifest_template()`, print
    "next" guidance.
 2. **Wire the IDE** — install the shared LuaLS core stubs and create/merge `.luarc.json`
    (`annotations::init`).
 
 Two problems fall out of the conflation:
 
-- The scaffold is a single frozen string in the binary. There is exactly one shape of project prova
+- The scaffold is a single frozen string in the binary. There is exactly one shape of package prova
   can create, and changing it means editing Rust. Prova already renders archetypes in-process
   (`prova-archetect`) — the scaffold should *be* one.
 - IDE wiring is a distinct, re-runnable concern (regenerate machine-local `.luarc.json` after a
@@ -60,7 +60,7 @@ finishes by running the IDE wiring (unless `--no-ide`), preserving today's one-c
 - **Built-in `default` entry.** prova ships a catalog with a `default` mapping so `prova init` /
   `prova init default` works out of the box with zero user config. User config *extends and
   overrides* it by key.
-- **Keep the clobber guard, add `--force`.** `init` still refuses when the project is already
+- **Keep the clobber guard, add `--force`.** `init` still refuses when the package is already
   initialized (a `prova.toml` exists at any of the four known locations); `--force` opts into
   re-rendering over it.
 - **Interactive catalog via inquire.** No-argument `init` presents the catalog with
@@ -79,7 +79,7 @@ is prova's answer to an archetect catalog, owned by prova so prova renders the s
 # ~/.config/prova/config.toml
 
 [init.default]                       # overrides the built-in `default`
-description = "Standard prova proof suite (proofs/ + .prova/)"
+description = "A standard prova package — a proof suite (proofs/ + .prova/)"
 source      = "https://github.com/prova-rs/prova-init-default-archetype.git#v1"
 # Everything below is optional.
 switches    = ["ci"]                 # archetype switches always passed for this entry
@@ -93,7 +93,7 @@ description = "Scaffolding to author + test a prova archetype"
 source      = "https://github.com/prova-rs/prova-init-archetype-archetype.git#v1"
 
 [init.service]
-description = "A service proof suite pre-wired for postgres + http"
+description = "A service package pre-wired for postgres + http"
 source      = "/Users/me/archetypes/prova-service"   # local path source works too
 ```
 
@@ -218,7 +218,7 @@ Point entry `source`s at these local paths so proofs are offline and fast.
 ### Proof inventory (the definition of done)
 
 **`prova ide setup`**
-1. In a project with a `prova.toml`, writes `.luarc.json` pointing at the core stubs; exit 0.
+1. In a package with a `prova.toml`, writes `.luarc.json` pointing at the core stubs; exit 0.
 2. Idempotent — a second run leaves exactly one core entry.
 3. `--manage never` installs stubs but writes no `.luarc.json`.
 4. Core stubs land under the cache annotations dir, keyed by version.
@@ -232,7 +232,7 @@ Point entry `source`s at these local paths so proofs are offline and fast.
 9. User config adds `service` → `--list` shows it and `init service --headless` renders it.
 10. User config redefining `default` (different `source`/`description`) wins over the built-in.
 11. `--switch feature` reaches the render (arch-switched emits the gated file only with it).
-12. Clobber guard: `init default` in an already-initialized project exits non-zero; `--force` renders.
+12. Clobber guard: `init default` in an already-initialized package exits non-zero; `--force` renders.
 13. Unknown key: `init bogus` errors and lists the available keys; non-zero.
 14. `--headless` with an undefaulted, unanswered prompt (arch-undefaulted) → clear error, no hang.
 15. Non-TTY `init` with no key and >1 entry → clear error naming `--list` / `init <key>`; no hang.

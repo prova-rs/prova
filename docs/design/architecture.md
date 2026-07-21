@@ -325,7 +325,7 @@ left open by good architecture; we are not walking through it.
   `--jobs > 1` (a Lua value can't cross `!Send` states; a serialized once-guard is future work).
 - `Event`/`Reporter`/`MultiReporter`/`JsonReporter`; `discover_path`; CLI takes files **or
   directories**, `--list` / `--format json` / `--jobs N`.
-- **Suite manifest** (`prova.toml`) + **CI**: `prova` with no args runs the suite declared in
+- **Package manifest** (`prova.toml`) + **CI**: `prova` with no args runs the suite declared in
   `prova.toml` (`[run]` = default profile; `[profiles.<name>]` overlays via `--profile`); a profile
   sets `paths`/`jobs`/`format`/`env`. CLI flags override the manifest; explicit path args bypass it.
   The `env` table is applied before the run, so the *same* suite targets ephemeral containers

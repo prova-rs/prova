@@ -21,7 +21,7 @@ tail.
 - **`prova plugin lint`** — classifies plugin shape (Resource / Library) and validates facets.
 - **Plugin LuaCATS/IDE support** — plugins ship a `library/<name>.lua` `---@meta` stub; prova points
   `.luarc.json` at each resolved plugin's `library/` in place, so `require("<name>")` completes with
-  zero wiring and nothing is copied into the project. Baked into the archetype.
+  zero wiring and nothing is copied into the package. Baked into the archetype.
 
 ## Remaining
 
@@ -46,7 +46,7 @@ deferred/cut with rationale below._
 ## Done (this arc, 2026-07-15)
 
 - **`prova-mongodb` published** — GitHub repo `prova-rs/prova-mongodb`, released `v1`.
-- **Profile-scoped plugins** — `[profiles.<name>.plugins]` overlays the project-wide `[plugins]`
+- **Profile-scoped plugins** — `[profiles.<name>.plugins]` overlays the package-wide `[plugins]`
   (profile wins on name conflict), merged in `Manifest::resolve` and flowing through
   `resolve_from_manifest` → `resolve_plugins` unchanged. CI-only capabilities now live in `prova.toml`
   so `--profile ci` and local resolve identically. (`crates/prova-cli/src/manifest.rs`.)

@@ -17,7 +17,7 @@ outcome into the design docs and trim it here.
   external docker-exec plugins. Core native surface is now only: `docker` (bollard substrate),
   `http`/`grpc`/`graphql` (network-drive primitives), `yaml` (parse util), `sqlite` (embedded, no
   docker).
-- **Plugin ecosystem** — published plugin repos under `prova-rs/`: prova-redis, prova-kafka,
+- **Plugin ecosystem** — published packages under `prova-rs/`: prova-redis, prova-kafka,
   prova-s3, prova-postgres, prova-mysql, prova-pulsar, prova-rabbitmq (+ prova-plugin-archetype,
   run-action). **prova-mongodb** was authored this session (green self-test) but is **not yet
   published**.

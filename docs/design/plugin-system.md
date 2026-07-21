@@ -24,7 +24,7 @@ already use**, plus a resolver so `require` can find their code.
 ## Two tiers, deliberately unequal
 
 **Tier 1 — Lua plugins (the 95% case).** New recipes composing existing primitives: a
-`rabbitmq.container`, a project's `acme.login(ctx)`, an opinionated `service(ctx, {archetype=...})`.
+`rabbitmq.container`, a package's `acme.login(ctx)`, an opinionated `service(ctx, {archetype=...})`.
 Pure Lua, no compile, distributable as a file or a git repo. This is the tier we invest in.
 
 **Tier 2 — Native plugins (rare, genuinely hard).** A *new primitive* — e.g. a native NATS client —
@@ -106,7 +106,7 @@ A plugin author who follows this gets the same shape, IDE completion, and skip b
 3. **Intra-plugin** — `<canonical>.<sub>` resolves under the plugin's own root, so a multi-file
    plugin can require its siblings without colliding with anything else.
 4. **The declared plugin root**, tried as `<root>/<name-with-dots-as-slashes>.lua` then
-   `.../init.lua`. It comes from the manifest's `[run] plugin_root`, resolved against the project
+   `.../init.lua`. It comes from the manifest's `[run] plugin_root`, resolved against the package
    root. There is no default, no environment input, and exactly one — see below.
 
 Appended (not prepended) so it never shadows Lua's own searchers. A miss returns a message listing
@@ -129,7 +129,7 @@ plugin_root  = ".prova/plugins"      # root-relative; no default; exactly one
 Removed, deliberately, in service of that: the per-user `data_dir/plugins` root, the
 `PROVA_PLUGIN_PATH` env var, the cwd-relative `./.prova/plugins` fallback, and the engine's own
 hardcoded `<project_root>/.prova/plugins` join. Each was an answer to "where could this `require`
-have come from?" that you could not obtain by reading the project.
+have come from?" that you could not obtain by reading the package.
 
 Two reasons this is worth the one line of ceremony:
 
@@ -139,19 +139,19 @@ Two reasons this is worth the one line of ceremony:
 - **Auditability.** One file answers the question completely. That matters most when the reader is an
   agent, which cannot simply *know* a convention baked into the binary.
 
-**One root, not a list.** The ambient root does one job — "this project's own plugins, without
+**One root, not a list.** The ambient root does one job — "this package's own plugins, without
 naming each one" — which is inherently one place. Everything else (a vendored plugin, one from a
 sibling package, a team's shared plugin) belongs in `[plugins]` with a name and a pinned path or git
 source: more explicit, more reproducible, and it keeps a second directory from raising a precedence
 question ("both hold `foo` — which wins?") that buys no capability.
 
-A project declaring no root resolves no ambient plugins, and the miss message says exactly that
+A package declaring no root resolves no ambient plugins, and the miss message says exactly that
 (`no plugin root declared — add plugin_root to [run]…`) rather than reading like a typo. The
 git-checkout cache (`cache_dir/plugins`) is not an exception to any of this: its contents are pinned
 by the manifest and reproducible from it.
 
 **Testing.** Isolation comes from pointing at a manifest, not from environment injection: `--manifest`
-selects the project, `--config` / `PROVA_CONFIG` selects the companion, and in-process embedders call
+selects the package, `--config` / `PROVA_CONFIG` selects the companion, and in-process embedders call
 `RunConfig::with_plugin_root` directly. For the user-level layer, `XdgSystemLayout` honors `XDG_*` and
 `RootedSystemLayout` roots every directory under one path.
 
@@ -180,15 +180,15 @@ registry-side table rather than in `package.loaded`, which is keyed by name and 
 every consumer a reference.
 
 Consequence worth knowing: a private dependency must live *inside* its dependant, not at the top of
-`.prova/plugins/` — a top-level directory there is a project plugin and is globally requirable by
-design. And since project plugins are ambient to each other, a plugin that requires one without
+`.prova/plugins/` — a top-level directory there is a package plugin and is globally requirable by
+design. And since package plugins are ambient to each other, a plugin that requires one without
 declaring it will break when lifted out to its own repo. That is an accepted trade: one rule instead
 of two, and the breakage is caught by tests at extraction time.
 
 # Topologies (advertise, register, `up`)
 
 A topology is a whole environment addressable by name — the same definition tests use, stood up by
-`prova up <name>`. Underneath it's a `prova.topology(name, fn)` registration; a plugin and a project
+`prova up <name>`. Underneath it's a `prova.topology(name, fn)` registration; a plugin and a package
 each get a manifest surface over that:
 
 - A plugin **advertises** topologies in its `[plugin]` section — its public contract:
@@ -199,7 +199,7 @@ each get a manifest surface over that:
   factory = "topologies.linux_vm"   # a dotted path into the plugin's returned namespace
   ```
 
-- A project **registers** which to expose, in `[topologies]` — by advertised name (the encapsulated
+- A package **registers** which to expose, in `[topologies]` — by advertised name (the encapsulated
   form) or by a direct factory path (for your own plugins, where there's no contract to mediate):
 
   ```toml
@@ -227,13 +227,13 @@ requires = ["parallels"]          # this topology needs the Parallels VM host
 `prova up <name>` checks these against the same capability set `requires` uses, *before* provisioning:
 an unmet requirement stops it early with a clear reason (`cannot stand up "vm": it requires
 "parallels" is unavailable`) instead of failing deep in a factory. The requirement travels with the
-topology, so it holds for every project that registers it — the environment gate propagates even
+topology, so it holds for every package that registers it — the environment gate propagates even
 though the factory's implementation stays the plugin's own business.
 
-Because a plugin is a test suite (§ one manifest), a plugin that advertises a topology can prove it in
-its own `proofs/` — so every advertised topology ships with the suite that verifies it.
+Because a plugin is a package with its own suite (§ one manifest), a plugin that advertises a topology
+can prove it in its own `proofs/` — so every advertised topology ships with the suite that verifies it.
 
-**From a git repo, no local project needed.** The same advertisement drives the remote forms of `up`:
+**From a git repo, no local package needed.** The same advertisement drives the remote forms of `up`:
 `prova up <url>` fetches a repo (pinned + freshness-gated, like a git `[plugins]` source) and lists
 the topologies it advertises; `prova up <topology> <url>` stands one up directly. The repo is resolved
 as a plugin under an internal require-name, its advertised factory is registered as that topology, and
@@ -245,7 +245,7 @@ Wired now (the "easy to install" story):
 - **XDG layout** (`layout.rs`, `SystemLayout`) — `config_dir` `~/.config/prova`, `cache_dir`
   `~/.cache/prova`, `data_dir` `~/.local/share/prova` (XDG on macOS too, like archetect;
   `XDG_*` honored). `XdgSystemLayout` for production, `RootedSystemLayout` for tests.
-- **The declared plugin root** — `[run] plugin_root` in the manifest, resolved against the project
+- **The declared plugin root** — `[run] plugin_root` in the manifest, resolved against the package
   root. The only directory scanned; there is no global install dir (see "Everything is declared").
 - **Manifest-declared plugins** — `prova.toml` `[plugins]` maps a name to a local path or a **git
   source** (`{ git = "…", tag/branch/rev = "…", module = "…" }`). Git sources are fetched (shelling
@@ -271,9 +271,9 @@ Wired now (the "easy to install" story):
   commit `rev`. `@ref` maps to `git clone --branch`, which accepts a tag *or* a branch.
 
 - **Plugin section** (`prova.toml [plugin]`) — a published plugin carries its contract in the SAME
-  `prova.toml` a project uses (there is no separate file); the `[plugin]` table is the analogue of
-  archetect's `archetype.yaml`, and a repo with `[plugin]` + `[run]` is both a plugin and its own
-  test suite:
+  `prova.toml` a package uses (there is no separate file); the `[plugin]` table is the analogue of
+  archetect's `archetype.yaml`, and a repo with `[plugin]` + `[run]` is a package that is both a
+  plugin and its own suite:
 
   ```toml
   [plugin]
