@@ -1,7 +1,21 @@
 # Plan — de-conflate `prova init`: a catalog-driven scaffolder + `prova ide setup`
 
-Status: proposed (2026-07-20). Proof-Driven Development from the first line: proofs go red before
-any implementation lands. See §PDD.
+Status: **shipped** (M0–M6, 2026-07-20). Proof-Driven Development from the first line: proofs went
+red before implementation. What actually landed, and where it refined this plan:
+
+- **`prova ide setup`** split out (M1); **catalog** model + `--list` + built-in `default` (M2);
+  **`prova init <key>` renders** the selected archetype via `prova_archetect::render_interactive`
+  with `--answer` / `--switch` / `--defaults` / `--headless` (M3, precedence includes M4's baked
+  answers); **keyless `prova init` picks interactively** via inquire, non-TTY → clear error (M6).
+- **Built-in `default` source** is the git repo `…/prova-init-default-archetype.git#main` (not
+  embedded; `#main` until a `v1` tag is cut).
+- **No `--force`** (dropped M5): overwrite is the archetype author's + init-entry's concern, not a
+  prova flag. The never-clobber guard stays.
+- **Flag:** `--no-ide` is the name; `--no-luals` kept as an alias. `--hidden`/`--flat` are gone —
+  layout is the archetype's job.
+- The default archetype no longer prompts for author (unnecessary for a proof-suite scaffold).
+
+The original plan follows, for the design rationale.
 
 ## The problem
 

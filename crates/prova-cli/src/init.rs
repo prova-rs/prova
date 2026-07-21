@@ -8,7 +8,7 @@
 //! prova init <key> --answer name=value --switch ci   # feed the render (repeatable)
 //! prova init <key> --defaults        # take each prompt's default instead of asking
 //! prova init <key> --headless        # never prompt; an unanswerable prompt is an error, not a hang
-//! prova init <key> --no-luals        # skip the IDE-wiring finishing step
+//! prova init <key> --no-ide          # skip the IDE-wiring finishing step (alias: --no-luals)
 //! ```
 //!
 //! The scaffold is selected from a [catalog](crate::catalog) — prova's built-in entries plus any
@@ -66,12 +66,13 @@ pub fn run(args: Vec<String>) -> ExitCode {
             "-h" | "--help" => {
                 println!(
                     "usage: prova init [<key>] [--list] [--answer k=v]... [--switch name]... \
-                     [--defaults] [--headless] [--no-luals]\n\
+                     [--defaults] [--headless] [--no-ide]\n\
                      \n\
                      render a catalog archetype into the current directory, then wire LuaLS IDE\n\
-                     support. <key> names a catalog entry (see `prova init --list`); omit it for the\n\
-                     default. --headless never prompts (an unanswered, undefaulted prompt is an\n\
-                     error); --defaults takes each prompt's default; --no-luals skips IDE wiring."
+                     support. <key> names a catalog entry (see `prova init --list`); omit it to\n\
+                     choose interactively. --headless never prompts (an unanswered, undefaulted\n\
+                     prompt is an error); --defaults takes each prompt's default; --no-ide skips\n\
+                     IDE wiring."
                 );
                 return ExitCode::SUCCESS;
             }

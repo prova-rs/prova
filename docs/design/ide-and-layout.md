@@ -191,10 +191,13 @@ project has opted into prova:
 
 ## `prova init`
 
-Scaffolds `prova.toml` + the home dir + a root `.luarc.json`. `--hidden`
-uses `.prova/`, `--flat` puts the manifest at the root, `--no-luals` skips IDE wiring (and sets
-`[luals] manage = "never"`). It refuses to run if any manifest location already exists — it never
-clobbers an existing layout.
+Renders a catalog archetype into the current directory, then wires IDE support as a finishing step.
+The archetype (not a flag) owns the layout — where `prova.toml` lands, what the proof dir is named —
+so `prova init <key>` scaffolds whatever that entry produces; `--no-ide` (alias `--no-luals`) skips
+the wiring. The catalog is prova's built-in `default` plus `[init.*]` from `~/.config/prova/config.toml`;
+`prova init` with no key picks from it interactively, `prova init --list` prints it. It refuses to run
+if any manifest location already exists — it never clobbers an existing layout. IDE wiring itself is
+also available on its own as `prova ide setup` (see above).
 
 ## The plugin side
 

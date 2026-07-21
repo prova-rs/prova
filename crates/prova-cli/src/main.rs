@@ -40,7 +40,8 @@ const HELP: &str = "\
 usage:
   prova <file-or-dir>...    run the given files/dirs
   prova                     run the suite declared in prova.toml (found by walking up)
-  prova init                scaffold prova.toml + LuaLS IDE support in this project
+  prova init [<key>]        render a catalog archetype into this project (interactive if no key),
+                            then wire LuaLS IDE support
   prova init --list         list the init catalog: the archetypes prova can scaffold from
   prova ide setup           (re)wire this project's LuaLS support: core stubs + .luarc.json
   prova eval '<code>'       run a one-shot Lua snippet in the full prova environment and print
@@ -1406,7 +1407,7 @@ fn report_annotations(outcome: &annotations::Outcome) {
         eprintln!("prova: wrote .luarc.json (editor IDE support enabled)");
     }
     if outcome.luarc_hint {
-        eprintln!("prova: IDE annotations ready — run `prova init` to point .luarc.json at them");
+        eprintln!("prova: IDE annotations ready — run `prova ide setup` to point .luarc.json at them");
     }
 }
 
