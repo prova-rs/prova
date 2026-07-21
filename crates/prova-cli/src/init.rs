@@ -110,8 +110,16 @@ pub fn run(args: Vec<String>) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    // No key means the default entry. (Interactive selection among several entries is M6.)
-    let key = key.unwrap_or_else(|| DEFAULT_KEY.to_string());
+    // No key means "choose interactively" — prova always presents the catalog (which always contains
+    // at least `default`), rather than silently picking for you. Without a terminal to prompt on,
+    // that's an error, not a hang.
+    let key = match key {
+        Some(k) => k,
+        None => match select_key(&catalog) {
+            Ok(k) => k,
+            Err(code) => return code,
+        },
+    };
     let entry = match catalog.get(&key) {
         Ok(e) => e,
         Err(err) => {
@@ -189,4 +197,62 @@ pub fn run(args: Vec<String>) -> ExitCode {
 
     println!("\nprova: initialized. Run `prova` to execute the suite.");
     ExitCode::SUCCESS
+}
+
+/// Present the catalog interactively and return the chosen key. A keyless `prova init` always offers
+/// the catalog (which always contains at least `default`) rather than choosing silently — but that
+/// needs a terminal to prompt on. In a non-interactive context (CI, a pipe) it's a usage error that
+/// names the alternatives, never a prompt that hangs.
+fn select_key(catalog: &crate::catalog::Catalog) -> Result<String, ExitCode> {
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() {
+        eprintln!(
+            "prova init: no archetype given, and stdin is not a terminal to choose from — pass a \
+             key (see `prova init --list`), or run in an interactive terminal"
+        );
+        return Err(ExitCode::from(2));
+    }
+
+    let choices: Vec<Choice> = catalog
+        .entries
+        .iter()
+        .map(|(key, entry)| Choice {
+            key: key.clone(),
+            description: entry.description.clone(),
+        })
+        .collect();
+    // Start the cursor on `default` when it's present, so Enter takes the common path.
+    let start = choices
+        .iter()
+        .position(|c| c.key == DEFAULT_KEY)
+        .unwrap_or(0);
+
+    match inquire::Select::new("Select a prova init archetype:", choices)
+        .with_starting_cursor(start)
+        .prompt()
+    {
+        Ok(choice) => Ok(choice.key),
+        Err(
+            inquire::InquireError::OperationCanceled | inquire::InquireError::OperationInterrupted,
+        ) => {
+            eprintln!("prova init: cancelled");
+            Err(ExitCode::from(130))
+        }
+        Err(err) => {
+            eprintln!("prova init: selection failed: {err}");
+            Err(ExitCode::from(2))
+        }
+    }
+}
+
+/// One row in the interactive picker: `key  —  description`.
+struct Choice {
+    key: String,
+    description: String,
+}
+
+impl std::fmt::Display for Choice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}  —  {}", self.key, self.description)
+    }
 }

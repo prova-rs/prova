@@ -2763,6 +2763,7 @@ version = "0.2.10"
 dependencies = [
  "fs2",
  "glob",
+ "inquire",
  "prova-archetect",
  "prova-core",
  "rmcp",

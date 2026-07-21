@@ -132,3 +132,24 @@ fn headless_errors_on_an_unanswerable_prompt() {
     assert!(!out.status.success(), "expected a non-zero exit on an unanswerable headless render");
     cleanup(&project);
 }
+
+/// Proof 15 (M6): a keyless `prova init` prompts an interactive select — but with no TTY (as here,
+/// where the child's stdin isn't a terminal) it must fail clearly, naming `--list` / a key, rather
+/// than hang waiting on a prompt it can never receive.
+#[test]
+fn keyless_without_a_tty_errors_clearly() {
+    let (project, xdg) = scratch("notty");
+    let out = init(&project, &xdg, &[]); // no key; the test child's stdin is not a terminal
+    assert!(
+        !out.status.success(),
+        "keyless init without a terminal should not succeed"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--list") || stderr.contains("terminal"),
+        "error should guide the user to --list or a key: {stderr}"
+    );
+    // And nothing was scaffolded.
+    assert!(!project.join("prova.toml").is_file(), "a project was scaffolded despite no selection");
+    cleanup(&project);
+}

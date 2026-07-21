@@ -21,6 +21,9 @@ glob = "0.3"
 prova-core = { path = "../prova-core" }
 # The flagship plugin: makes `archetect.render{...}` available in the standalone `prova` binary.
 prova-archetect = { path = "../prova-archetect" }
+# Interactive catalog picker for `prova init` with no key. Same version archetect-terminal-io uses,
+# so the two share one build of inquire.
+inquire = "0.9"
 # The suite manifest (`prova.toml`): declare what to run and how, for local + CI.
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
