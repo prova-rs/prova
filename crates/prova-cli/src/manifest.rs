@@ -77,6 +77,12 @@ pub struct Manifest {
     /// tools read the same knobs.
     #[serde(default)]
     pub updates: UpdatesSection,
+    /// Project-provided agent context docs: markdown/text files surfaced by `prova learn` as
+    /// `ctx:<stem>` topics, so a team's own doctrine rides the same discovery rail as prova's.
+    /// Paths are home-relative (`~/` expands). A property of the package, not a profile — and a
+    /// declared-but-missing file is reported loudly by `learn`, never silently absent.
+    #[serde(default)]
+    pub context: Vec<String>,
 }
 
 /// Git-source update policy (`[updates]`). Governs the shared cache's freshness gate for `[plugins]`
@@ -356,6 +362,8 @@ pub struct Resolved {
     /// because a context that could retract a guarantee would let the strictest bar be silenced by
     /// selecting a laxer profile.
     pub must_run: Vec<String>,
+    /// Project-provided agent context docs (top-level `context`), home-relative paths.
+    pub context: Vec<String>,
 }
 
 impl Resolved {
@@ -445,6 +453,7 @@ impl Manifest {
             luals: self.luals.clone(),
             updates: self.updates.clone(),
             must_run,
+            context: self.context.clone(),
         })
     }
 }
@@ -498,8 +507,25 @@ proofs = ["tests/smoke"]
                 luals: Luals::default(),
                 updates: UpdatesSection::default(),
                 must_run: Vec::new(),
+                context: Vec::new(),
             }
         );
+    }
+
+    /// Top-level `context` — the project-provided agent docs `prova learn` serves as
+    /// `ctx:<stem>` topics.
+    #[test]
+    fn parses_context_docs() {
+        let m = Manifest::parse(
+            "[run]\nproofs = [\"proofs\"]\ncontext = [\"docs/agent.md\", \"~/team/conventions.md\"]\n",
+        );
+        // `context` belongs at the TOP level, not inside [run].
+        assert!(m.is_ok());
+        assert!(m.unwrap().resolve(None).unwrap().context.is_empty());
+
+        let m = Manifest::parse("context = [\"docs/agent.md\"]\n[run]\nproofs = [\"proofs\"]\n")
+            .unwrap();
+        assert_eq!(m.resolve(None).unwrap().context, vec!["docs/agent.md".to_string()]);
     }
 
     #[test]

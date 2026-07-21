@@ -421,7 +421,8 @@ struct IntrospectRequest {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct LearnRequest {
-    /// A topic key or alias (`"pdd"`, `"doubles"`, `"mocks"`…). Omit to list the catalog.
+    /// A topic key or alias (`"pdd"`, `"doubles"`, `"mocks"`…), or a project context doc
+    /// (`"ctx:<stem>"`). Omit to list the catalog.
     topic: Option<String>,
     /// A directory or manifest path: render that package's facts instead of the server's
     /// startup package.
@@ -609,6 +610,16 @@ impl ServerHandler for ProvaMcpServer {
                 raw.no_annotation()
             })
             .collect();
+        // The startup package's own context docs ride the same rail (`prova learn ctx:<stem>`).
+        for doc in self.learn_env().context_docs() {
+            let mut raw = RawResource::new(
+                format!("prova://learn/{}", doc.key),
+                format!("learn: {}", doc.key),
+            );
+            raw.description = Some(doc.hook());
+            raw.mime_type = Some("text/markdown".into());
+            resources.push(raw.no_annotation());
+        }
         let mut skill = RawResource::new("prova://skill", "the prova agent skill");
         skill.description =
             Some("How to drive Prova — the entry point; topics go deeper".into());
@@ -630,15 +641,12 @@ impl ServerHandler for ProvaMcpServer {
         let text = if uri == "prova://skill" {
             crate::SKILL.to_string()
         } else if let Some(name) = uri.strip_prefix("prova://learn/") {
-            match crate::learn::Topic::resolve(name) {
-                Some(topic) => self.render_topic(topic),
-                None => {
-                    return Err(McpError::invalid_params(
-                        format!("unknown topic {name:?} — list resources for the catalog"),
-                        None,
-                    ))
-                }
-            }
+            crate::learn::answer(
+                Some(name),
+                &self.learn_env(),
+                crate::learn::Transport::Mcp,
+            )
+            .map_err(|e| McpError::invalid_params(e, None))?
         } else {
             return Err(McpError::invalid_params(
                 format!("unknown resource {uri:?} — list resources for the catalog"),
@@ -662,13 +670,12 @@ impl ProvaMcpServer {
         }
     }
 
-    /// Render a topic against the server's startup package (the default the other tools share).
-    fn render_topic(&self, topic: crate::learn::Topic) -> String {
-        let env = match &self.env.home {
+    /// The learn environment for the server's startup package (the default the other tools share).
+    fn learn_env(&self) -> crate::learn::RenderEnv {
+        match &self.env.home {
             Some(home) => crate::learn::RenderEnv::at(&home.dir),
             None => crate::learn::RenderEnv::at(Path::new(".")),
-        };
-        crate::learn::render(topic, &env, crate::learn::Transport::Mcp)
+        }
     }
 
     #[tool(
@@ -719,35 +726,21 @@ impl ProvaMcpServer {
         description = "The progressive-disclosure topic catalog: how Prova works, one screen per topic, rendered for THIS package (dynamic facts — proof locations, declared plugins, topologies, the init catalog — are computed at call time, so they are always current). No `topic` lists the catalog; `topic` returns that topic as markdown (aliases resolve: `mocks` → `doubles`). Start with `learn {}` when you need anything beyond the instructions; `introspect` answers API-shape questions. Pass `package` (a directory or manifest path) to render another package's facts."
     )]
     async fn learn(&self, Parameters(req): Parameters<LearnRequest>) -> CallToolResult {
-        match req.topic.as_deref().map(str::trim) {
-            None | Some("") => CallToolResult::success(vec![Content::text(
-                crate::learn::listing(crate::learn::Transport::Mcp),
-            )]),
-            Some(name) => match crate::learn::Topic::resolve(name) {
-                Some(topic) => {
-                    let text = match req.package.as_deref() {
-                        Some(package) => {
-                            let start = Path::new(package);
-                            let dir = if start.is_file() {
-                                start.parent().unwrap_or(start)
-                            } else {
-                                start
-                            };
-                            crate::learn::render(
-                                topic,
-                                &crate::learn::RenderEnv::at(dir),
-                                crate::learn::Transport::Mcp,
-                            )
-                        }
-                        None => self.render_topic(topic),
-                    };
-                    CallToolResult::success(vec![Content::text(text)])
-                }
-                None => CallToolResult::error(vec![Content::text(format!(
-                    "unknown topic {name:?}\n\n{}",
-                    crate::learn::listing(crate::learn::Transport::Mcp)
-                ))]),
-            },
+        let env = match req.package.as_deref() {
+            Some(package) => {
+                let start = Path::new(package);
+                let dir = if start.is_file() {
+                    start.parent().unwrap_or(start)
+                } else {
+                    start
+                };
+                crate::learn::RenderEnv::at(dir)
+            }
+            None => self.learn_env(),
+        };
+        match crate::learn::answer(req.topic.as_deref(), &env, crate::learn::Transport::Mcp) {
+            Ok(text) => CallToolResult::success(vec![Content::text(text)]),
+            Err(message) => CallToolResult::error(vec![Content::text(message)]),
         }
     }
 

@@ -1,0 +1,6 @@
+# A package that provides its own agent context docs (autodidact M5).
+# NOTE: `context` is a TOP-LEVEL key — it must sit above the first [table] header.
+context = ["docs/conventions.md", "docs/gone.md"]
+
+[run]
+proofs = ["tests"]

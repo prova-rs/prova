@@ -2788,6 +2788,7 @@ version = "0.4.0"
 dependencies = [
  "archetect-git-cache",
  "camino",
+ "dirs 5.0.1",
  "fs2",
  "glob",
  "inquire",

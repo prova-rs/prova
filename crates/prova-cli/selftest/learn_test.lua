@@ -109,6 +109,37 @@ prova.group("prova learn", function(g)
   end)
 end)
 
+prova.group("project-provided context (manifest `context`)", function(g)
+  local project = fixtures .. "/context-project"
+
+  g:test("declared docs ride the same catalog, hooked by their title line", function(t)
+    local r = learn("", { cwd = project })
+    t:expect(r.code):equals(0)
+    t:expect(r.stdout):contains("ctx:conventions")
+    t:expect(r.stdout):contains("how proofs are written in THIS repo")
+    -- A declared-but-missing doc is LOUD in the listing, never silently absent.
+    t:expect(r.stdout):contains("ctx:gone")
+    t:expect(r.stdout):contains("missing")
+  end)
+
+  g:test("a context topic prints the file verbatim", function(t)
+    local r = learn("ctx:conventions", { cwd = project })
+    t:expect(r.code):equals(0)
+    t:expect(r.stdout):contains("cross-check the ledger table")
+  end)
+
+  g:test("reading a declared-but-missing doc is an error naming the path", function(t)
+    local r = learn("ctx:gone", { cwd = project })
+    t:expect(r.code):equals(2)
+    t:expect(r.stderr):contains("docs/gone.md")
+  end)
+
+  g:test("outside a package, ctx topics don't exist", function(t)
+    local r = learn("ctx:conventions", { cwd = fs.tempdir() })
+    t:expect(r.code):equals(2)
+  end)
+end)
+
 prova.group("prova skill routes to learn", function(g)
   g:test("the skill teaches the discovery moves", function(t)
     local r = shell.run(prova_bin .. " skill")

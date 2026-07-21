@@ -17,6 +17,8 @@ so run `prova` from anywhere inside the repo. `prova.root` (project root) and `p
 
 {{plugins}}
 
+{{context_files}}
+
 ## The manifest, one line per table
 
 | Key | Meaning |
@@ -32,6 +34,7 @@ so run `prova` from anywhere inside the repo. `prova.root` (project root) and `p
 | `[sources]` | alias → base (`github:acme`) so plugins can say `"acme:prova-redis@v1"` |
 | `[topologies]` | name → a plugin's factory, so `prova up <name>` and proofs address the same environment |
 | `[luals] / [updates]` | IDE stub management · git-source freshness policy |
+| `context = ["docs/agent.md"]` (top-level) | team docs served as `ctx:<stem>` topics by `prova learn` — the project's own doctrine on this rail |
 
 ## Where new things go
 

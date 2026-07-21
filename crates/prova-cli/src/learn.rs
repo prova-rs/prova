@@ -177,6 +177,7 @@ enum Slot {
     Plugins,
     Topologies,
     Profiles,
+    ContextFiles,
 }
 
 impl Slot {
@@ -188,6 +189,7 @@ impl Slot {
             "plugins" => Some(Slot::Plugins),
             "topologies" => Some(Slot::Topologies),
             "profiles" => Some(Slot::Profiles),
+            "context_files" => Some(Slot::ContextFiles),
             _ => None,
         }
     }
@@ -197,8 +199,35 @@ impl Slot {
 /// answer is true at the moment of asking.
 struct PackageFacts {
     manifest_name: String,
+    home_dir: std::path::PathBuf,
     resolved: Resolved,
     profiles: BTreeMap<String, Profile>,
+}
+
+/// One project-provided context doc (manifest `context`), surfaced as a `ctx:<stem>` topic.
+pub struct ContextDoc {
+    /// The listing key: `ctx:<file stem>`.
+    pub key: String,
+    /// The declared (home-relative or `~/`) path, for error messages.
+    pub declared: String,
+    /// The resolved absolute path.
+    pub path: std::path::PathBuf,
+}
+
+impl ContextDoc {
+    /// The listing hook: the file's first heading/line, or a LOUD missing marker — a declared
+    /// doc is never silently absent.
+    pub fn hook(&self) -> String {
+        match std::fs::read_to_string(&self.path) {
+            Ok(text) => text
+                .lines()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("")
+                .trim_start_matches(['#', ' '])
+                .to_string(),
+            Err(_) => format!("(missing: {})", self.declared),
+        }
+    }
 }
 
 /// What the renderer knows about where it is running.
@@ -230,6 +259,7 @@ impl RenderEnv {
                         .unwrap_or(&home.manifest)
                         .display()
                         .to_string(),
+                    home_dir: home.dir.clone(),
                     resolved,
                     profiles: m.profiles,
                 })
@@ -238,6 +268,26 @@ impl RenderEnv {
             Ok(p) => RenderEnv { package: Some(p), problem: None },
             Err(e) => RenderEnv { package: None, problem: Some(e) },
         }
+    }
+
+    /// The package's declared context docs, `~/` expanded and home-relative paths anchored.
+    pub fn context_docs(&self) -> Vec<ContextDoc> {
+        let Some(p) = &self.package else { return Vec::new() };
+        p.resolved
+            .context
+            .iter()
+            .map(|declared| {
+                let path = match declared.strip_prefix("~/") {
+                    Some(rest) => dirs::home_dir().unwrap_or_default().join(rest),
+                    None => p.home_dir.join(declared),
+                };
+                let stem = path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| declared.clone());
+                ContextDoc { key: format!("ctx:{stem}"), declared: declared.clone(), path }
+            })
+            .collect()
     }
 
     fn no_package_line(&self, transport: Transport) -> String {
@@ -380,6 +430,26 @@ fn render_slot(slot: Slot, env: &RenderEnv, transport: Transport) -> String {
                 .into(),
             None => String::new(),
         },
+        Slot::ContextFiles => match &env.package {
+            Some(_) => {
+                let docs = env.context_docs();
+                if docs.is_empty() {
+                    "**Project context**: none — a top-level `context = [\"docs/agent.md\"]` in \
+                     prova.toml surfaces team docs here as `ctx:<stem>` topics."
+                        .into()
+                } else {
+                    let rows: Vec<String> = docs
+                        .iter()
+                        .map(|d| format!("  {}  {}", d.key, d.hook()))
+                        .collect();
+                    format!(
+                        "**Project context** (read with `prova learn ctx:<stem>`):\n{}",
+                        rows.join("\n")
+                    )
+                }
+            }
+            None => String::new(),
+        },
         Slot::Profiles => match &env.package {
             Some(p) if !p.profiles.is_empty() => {
                 let rows: Vec<String> = p
@@ -461,12 +531,26 @@ pub fn render(topic: Topic, env: &RenderEnv, transport: Transport) -> String {
     out
 }
 
-/// The catalog listing: `key  hook` rows plus the transport-appropriate next move.
-pub fn listing(transport: Transport) -> String {
-    let width = Topic::ALL.iter().map(|t| t.key().len()).max().unwrap_or(0);
+/// The catalog listing: `key  hook` rows (plus this package's `ctx:*` docs) and the
+/// transport-appropriate next move.
+pub fn listing(env: &RenderEnv, transport: Transport) -> String {
+    let context = env.context_docs();
+    let width = Topic::ALL
+        .iter()
+        .map(|t| t.key().len())
+        .chain(context.iter().map(|d| d.key.len()))
+        .max()
+        .unwrap_or(0);
     let mut out = vec!["Topics — progressive disclosure, one screen each:".to_string(), String::new()];
     for topic in Topic::ALL {
         out.push(format!("  {:<width$}  {}", topic.key(), topic.hook()));
+    }
+    if !context.is_empty() {
+        out.push(String::new());
+        out.push("Project context (this package's own docs, from prova.toml `context`):".into());
+        for doc in &context {
+            out.push(format!("  {:<width$}  {}", doc.key, doc.hook()));
+        }
     }
     out.push(String::new());
     out.push(match transport {
@@ -476,13 +560,38 @@ pub fn listing(transport: Transport) -> String {
     out.join("\n")
 }
 
+/// Answer a `learn` ask — the ONE path every surface (CLI, MCP tool, MCP resources) goes
+/// through, so they cannot disagree. `Err` is the usage-error text (unknown topic, unreadable
+/// context doc); the caller decides exit code vs error result.
+pub fn answer(topic: Option<&str>, env: &RenderEnv, transport: Transport) -> Result<String, String> {
+    let name = match topic.map(str::trim) {
+        None | Some("") => return Ok(listing(env, transport)),
+        Some(name) => name,
+    };
+    if let Some(topic) = Topic::resolve(name) {
+        return Ok(render(topic, env, transport));
+    }
+    let needle = name.to_lowercase();
+    if let Some(doc) = env.context_docs().into_iter().find(|d| d.key == needle) {
+        return std::fs::read_to_string(&doc.path).map_err(|e| {
+            format!(
+                "context doc {} (declared in prova.toml `context` as {:?}) cannot be read: {e}",
+                doc.path.display(),
+                doc.declared
+            )
+        });
+    }
+    Err(format!("unknown topic {name:?}\n\n{}", listing(env, transport)))
+}
+
 /// `prova learn [<topic>]`.
 pub fn run(args: Vec<String>) -> ExitCode {
     let mut topic_arg: Option<String> = None;
     for arg in args {
         match arg.as_str() {
             "-h" | "--help" => {
-                println!("usage: prova learn [<topic>]\n\n{}", listing(Transport::Cli));
+                let env = RenderEnv::at(Path::new("."));
+                println!("usage: prova learn [<topic>]\n\n{}", listing(&env, Transport::Cli));
                 return ExitCode::SUCCESS;
             }
             other if !other.starts_with('-') && topic_arg.is_none() => {
@@ -495,22 +604,16 @@ pub fn run(args: Vec<String>) -> ExitCode {
         }
     }
 
-    match topic_arg {
-        None => {
-            println!("{}", listing(Transport::Cli));
+    let env = RenderEnv::at(Path::new("."));
+    match answer(topic_arg.as_deref(), &env, Transport::Cli) {
+        Ok(text) => {
+            println!("{}", text.trim_end());
             ExitCode::SUCCESS
         }
-        Some(name) => match Topic::resolve(&name) {
-            Some(topic) => {
-                let env = RenderEnv::at(Path::new("."));
-                print!("{}", render(topic, &env, Transport::Cli));
-                ExitCode::SUCCESS
-            }
-            None => {
-                eprintln!("prova learn: unknown topic {name:?}\n\n{}", listing(Transport::Cli));
-                ExitCode::from(2)
-            }
-        },
+        Err(message) => {
+            eprintln!("prova learn: {message}");
+            ExitCode::from(2)
+        }
     }
 }
 
@@ -607,13 +710,27 @@ mod tests {
     /// The listing carries every key and the transport-appropriate next move.
     #[test]
     fn listing_names_every_topic_and_the_next_move() {
+        let env = RenderEnv { package: None, problem: None };
         for transport in [Transport::Cli, Transport::Mcp] {
-            let text = listing(transport);
+            let text = listing(&env, transport);
             for topic in Topic::ALL {
                 assert!(text.contains(topic.key()));
             }
         }
-        assert!(listing(Transport::Cli).contains("prova learn <topic>"));
-        assert!(listing(Transport::Mcp).contains("learn { topic"));
+        assert!(listing(&env, Transport::Cli).contains("prova learn <topic>"));
+        assert!(listing(&env, Transport::Mcp).contains("learn { topic"));
+    }
+
+    /// `answer` is the one path every surface shares: listing, topic, alias, unknown.
+    #[test]
+    fn answer_routes_listing_topic_and_unknown() {
+        let env = RenderEnv { package: None, problem: None };
+        assert!(answer(None, &env, Transport::Cli).unwrap().contains("doubles"));
+        assert!(answer(Some("mocks"), &env, Transport::Cli).unwrap().contains("http.mock"));
+        let err = answer(Some("nope"), &env, Transport::Cli).unwrap_err();
+        assert!(err.contains("unknown topic"));
+        assert!(err.contains("pdd"), "the listing rides the error");
+        // Outside a package there are no ctx topics.
+        assert!(answer(Some("ctx:anything"), &env, Transport::Cli).is_err());
     }
 }
