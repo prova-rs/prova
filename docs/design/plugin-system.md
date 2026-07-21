@@ -185,6 +185,38 @@ design. And since project plugins are ambient to each other, a plugin that requi
 declaring it will break when lifted out to its own repo. That is an accepted trade: one rule instead
 of two, and the breakage is caught by tests at extraction time.
 
+# Topologies (advertise, register, `up`)
+
+A topology is a whole environment addressable by name — the same definition tests use, stood up by
+`prova up <name>`. Underneath it's a `prova.topology(name, fn)` registration; a plugin and a project
+each get a manifest surface over that:
+
+- A plugin **advertises** topologies in its `[plugin]` section — its public contract:
+
+  ```toml
+  [[plugin.topologies]]
+  name    = "linux-vm"
+  factory = "topologies.linux_vm"   # a dotted path into the plugin's returned namespace
+  ```
+
+- A project **registers** which to expose, in `[topologies]` — by advertised name (the encapsulated
+  form) or by a direct factory path (for your own plugins, where there's no contract to mediate):
+
+  ```toml
+  [topologies]
+  vm  = { plugin = "parallels", topology = "linux-vm" }   # via the advertisement
+  dev = { plugin = "lib",       factory  = "topologies.dev" }
+  ```
+
+Each entry desugars to `prova.topology("<name>", require("<plugin>").<factory>)`, execed after the
+definition files, so a manifest topology is indistinguishable from a Lua-declared one. `prova up`
+lists them; `prova up <name>` stands one up. The synthesized source is validated (name and dotted
+identifier paths) before splicing, so a manifest can never inject Lua; a reference to a factory or an
+advertised name that doesn't exist fails loudly, naming what *is* available.
+
+Because a plugin is a test suite (§ one manifest), a plugin that advertises a topology can prove it in
+its own `proofs/` — so every advertised topology ships with the suite that verifies it.
+
 Wired now (the "easy to install" story):
 
 - **XDG layout** (`layout.rs`, `SystemLayout`) — `config_dir` `~/.config/prova`, `cache_dir`

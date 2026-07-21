@@ -17,7 +17,7 @@ use camino::Utf8PathBuf;
 use prova_core::SystemLayout;
 use serde::Deserialize;
 
-use crate::manifest::{PluginDetail, PluginSource};
+use crate::manifest::{PluginDetail, PluginSource, TopologyDecl};
 
 /// How git plugin sources should be refreshed on this run — the caller (the run flow) derives these
 /// from `[updates]` in the manifest and the `-U`/`--offline` flags, and threads them to `fetch_git`.
@@ -56,6 +56,10 @@ pub struct ResolvedPlugins {
     /// absolutised against the project root. `None` unless declared: there is no built-in root, so
     /// resolution is always readable off `prova.toml`.
     pub search_root: Option<PathBuf>,
+    /// Each declared plugin's advertised topologies (`[[plugin.topologies]]`), keyed by the consumer's
+    /// alias — so a `[topologies]` entry `{ plugin, topology }` can resolve the factory the plugin
+    /// published under that name.
+    pub advertised: BTreeMap<String, Vec<AdvertisedTopology>>,
 }
 
 /// The plugin-relevant view of a `prova.toml`: the `[plugin]` contract and the `[requires]` compat
@@ -80,6 +84,18 @@ struct PluginMeta {
     description: Option<String>,
     #[allow(dead_code)]
     license: Option<String>,
+    /// Topologies this plugin advertises (`[[plugin.topologies]]`) — its public topology contract. A
+    /// consumer references one by `name` in `[topologies]`; the `factory` is the plugin's own detail.
+    #[serde(default)]
+    topologies: Vec<AdvertisedTopology>,
+}
+
+/// One advertised topology (`[[plugin.topologies]]`): a public `name` and the dotted `factory` path
+/// inside the plugin's namespace it resolves to.
+#[derive(Debug, Deserialize, Clone)]
+pub struct AdvertisedTopology {
+    pub name: String,
+    pub factory: String,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -120,16 +136,75 @@ pub fn resolve_plugins(
         }
         resolved.roots.insert(one.canonical.clone(), one.root);
         resolved.named.insert(name.clone(), one.entry);
+        if !one.advertised.is_empty() {
+            resolved.advertised.insert(name.clone(), one.advertised);
+        }
     }
     Ok(resolved)
 }
 
-/// One resolved plugin: its entry file, canonical namespace name, and root directory (where the
-/// `prova.toml` and `library/` annotation stub live).
+/// Resolve a `[topologies]` entry to the dotted factory path to register (`prova.topology(alias,
+/// require(plugin).<factory>)`). The direct `factory` form is used verbatim; the `topology` form looks
+/// the name up in the plugin's advertised set (`[[plugin.topologies]]`) — its public contract.
+/// Exactly one of `factory`/`topology` must be present.
+pub fn resolve_topology_factory(
+    alias: &str,
+    decl: &TopologyDecl,
+    plugins: &ResolvedPlugins,
+) -> Result<String, String> {
+    match (&decl.factory, &decl.topology) {
+        (Some(f), None) => Ok(f.clone()),
+        (None, Some(t)) => advertised_factory(&decl.plugin, t, plugins),
+        (Some(_), Some(_)) => {
+            Err(format!("topology {alias:?}: give either `factory` or `topology`, not both"))
+        }
+        (None, None) => Err(format!(
+            "topology {alias:?}: needs a `factory` (a dotted path) or a `topology` (an advertised name)"
+        )),
+    }
+}
+
+/// Find the factory a `plugin` advertises under `topology`. For a declared plugin the advertisements
+/// were captured at resolve time; for an ambient one (under the `plugin_root`), read its manifest now.
+fn advertised_factory(
+    plugin: &str,
+    topology: &str,
+    plugins: &ResolvedPlugins,
+) -> Result<String, String> {
+    let advertised: Vec<AdvertisedTopology> = if let Some(adv) = plugins.advertised.get(plugin) {
+        adv.clone()
+    } else if let Some(root) = &plugins.search_root {
+        read_plugin_manifest(&root.join(plugin))
+            .map_err(|e| format!("plugin {plugin:?}: {e}"))?
+            .map(|m| m.plugin.topologies)
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    advertised
+        .iter()
+        .find(|a| a.name == topology)
+        .map(|a| a.factory.clone())
+        .ok_or_else(|| {
+            let names: Vec<&str> = advertised.iter().map(|a| a.name.as_str()).collect();
+            if names.is_empty() {
+                format!("plugin {plugin:?} advertises no topologies (wanted {topology:?})")
+            } else {
+                format!(
+                    "plugin {plugin:?} advertises no topology {topology:?} (has: {})",
+                    names.join(", ")
+                )
+            }
+        })
+}
+
+/// One resolved plugin: its entry file, canonical namespace name, root directory (where the
+/// `prova.toml` and `library/` annotation stub live), and the topologies it advertises.
 struct ResolvedOne {
     entry: PathBuf,
     canonical: String,
     root: PathBuf,
+    advertised: Vec<AdvertisedTopology>,
 }
 
 /// Classify a bare string plugin source into a `PluginDetail`:
@@ -293,10 +368,14 @@ fn resolve_one(
     // file's parent for a single-file source).
     let plugin_root = manifest_dir.unwrap_or_else(|| root.clone());
 
+    // The topologies the plugin advertises (`[[plugin.topologies]]`) — its public topology contract.
+    let advertised = manifest.map(|m| m.plugin.topologies).unwrap_or_default();
+
     Ok(ResolvedOne {
         entry,
         canonical,
         root: plugin_root,
+        advertised,
     })
 }
 

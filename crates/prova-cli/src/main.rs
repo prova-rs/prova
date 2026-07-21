@@ -604,9 +604,17 @@ fn build_topology_run(
         PortMode::Auto
     });
     // Manifest topologies (`[topologies]`) desugar to `prova.topology` registrations the engine execs
-    // after the files — so `prova up <name>` and the listing form see them as first-class.
+    // after the files — so `prova up <name>` and the listing form see them as first-class. The factory
+    // is either given directly or resolved from the plugin's advertised set (`[[plugin.topologies]]`).
     for (alias, decl) in &run.topologies {
-        config = config.with_topology_registration(alias, &decl.plugin, &decl.factory);
+        let factory = match plugins::resolve_topology_factory(alias, decl, &run.plugins) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("prova {verb}: {e}");
+                return Err(ExitCode::from(2));
+            }
+        };
+        config = config.with_topology_registration(alias, &decl.plugin, factory);
     }
 
     Ok(TopologyRun {

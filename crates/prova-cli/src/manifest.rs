@@ -219,17 +219,27 @@ pub struct PluginDetail {
     pub module: Option<String>,
 }
 
-/// A named topology (`[topologies] <name> = { plugin = "...", factory = "..." }`). `factory` is a
-/// dotted path into the plugin's returned namespace (e.g. `topologies.linux_vm`), so the whole entry
-/// desugars to `prova.topology("<name>", require("<plugin>").<factory>)`.
+/// A named topology (`[topologies] <name> = { plugin = "...", … }`). It names one of a plugin's
+/// topologies in one of two ways — exactly one must be given:
+///
+/// - `topology = "linux-vm"` — by the plugin's advertised NAME (`[[plugin.topologies]]`). The public,
+///   encapsulated form: the plugin author owns the factory path; you pick from what's advertised.
+/// - `factory = "topologies.linux_vm"` — by a direct dotted path into the plugin's namespace. Handy
+///   for your own plugins, where there's no contract to mediate.
+///
+/// Either way the entry desugars to `prova.topology("<name>", require("<plugin>").<factory>)`.
 #[derive(Debug, Deserialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct TopologyDecl {
-    /// The plugin that provides the factory — a name declared in `[plugins]` or an ambient plugin
-    /// under the `plugin_root`.
+    /// The plugin that provides it — a name declared in `[plugins]` or an ambient plugin under the
+    /// `plugin_root`.
     pub plugin: String,
-    /// A dotted path to the factory function inside the plugin's namespace table.
-    pub factory: String,
+    /// The plugin's advertised topology name (`[[plugin.topologies]]`). Mutually exclusive with
+    /// `factory`.
+    pub topology: Option<String>,
+    /// A direct dotted path to the factory inside the plugin's namespace. Mutually exclusive with
+    /// `topology`.
+    pub factory: Option<String>,
 }
 
 /// An explicitly-declared suite: its `paths` are discovered into one suite (sharing an optional
@@ -584,7 +594,8 @@ redis = "acme:prova-redis@v1"
         let t = &m.resolve(None).unwrap().topologies;
         assert_eq!(t.len(), 1);
         assert_eq!(t["vm"].plugin, "parallels");
-        assert_eq!(t["vm"].factory, "topologies.linux_vm");
+        assert_eq!(t["vm"].factory.as_deref(), Some("topologies.linux_vm"));
+        assert_eq!(t["vm"].topology, None);
     }
 
     /// `plugin_root` is the whole of ambient on-disk plugin resolution, so each half matters: absent

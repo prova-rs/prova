@@ -82,6 +82,104 @@ fn a_registered_plugin_topology_is_listed() {
     );
 }
 
+/// A plugin ADVERTISES its topologies (`[[plugin.topologies]]`), and a project references one by its
+/// public NAME (`topology = "..."`) rather than reaching into the namespace with a `factory` path.
+/// The advertisement is the plugin author's contract: the factory path is an internal detail resolved
+/// from it. RED today: `[topologies]` only understands the direct `factory` form.
+#[test]
+fn an_advertised_topology_is_referenced_by_name() {
+    let dir = tmp("advert");
+    // A DECLARED plugin (path source) that advertises `single`, whose factory is a dotted path.
+    write(
+        &dir,
+        "pg/prova.toml",
+        "[plugin]\nname = \"pg\"\n\n\
+         [[plugin.topologies]]\nname = \"single\"\nfactory = \"topologies.single\"\n",
+    );
+    write(
+        &dir,
+        "pg/init.lua",
+        "return { topologies = { single = function(ctx) return { url = \"pg\" } end } } \n",
+    );
+    write(
+        &dir,
+        "proofs/p_test.lua",
+        "prova.test(\"p\", function(t) t:expect(1):equals(1) end)\n",
+    );
+    write(
+        &dir,
+        ".prova.toml",
+        "[run]\npaths = [\"proofs\"]\n\n\
+         [plugins]\npg = { path = \"pg\" }\n\n\
+         [topologies]\ndb = { plugin = \"pg\", topology = \"single\" }\n",
+    );
+
+    let (ok, out) = up_no_arg(&dir);
+    assert!(ok, "listing should succeed: {out}");
+    assert!(
+        out.contains("db"),
+        "the topology referenced via the plugin's advertisement is listed: {out}"
+    );
+}
+
+/// Referencing an advertised name the plugin doesn't publish fails loudly, listing what it does — the
+/// advertisement is a contract, and a typo against it is caught before anything stands up.
+#[test]
+fn an_unadvertised_topology_name_fails_clearly() {
+    let dir = tmp("unadv");
+    write(
+        &dir,
+        "pg/prova.toml",
+        "[plugin]\nname = \"pg\"\n\n\
+         [[plugin.topologies]]\nname = \"single\"\nfactory = \"topologies.single\"\n",
+    );
+    write(
+        &dir,
+        "pg/init.lua",
+        "return { topologies = { single = function(ctx) return {} end } }\n",
+    );
+    write(
+        &dir,
+        "proofs/p_test.lua",
+        "prova.test(\"p\", function(t) t:expect(1):equals(1) end)\n",
+    );
+    write(
+        &dir,
+        ".prova.toml",
+        "[run]\npaths = [\"proofs\"]\n\n[plugins]\npg = { path = \"pg\" }\n\n\
+         [topologies]\ncluster = { plugin = \"pg\", topology = \"replicated\" }\n",
+    );
+    let (ok, out) = up_no_arg(&dir);
+    assert!(!ok, "an unadvertised name must fail: {out}");
+    assert!(out.contains("replicated"), "names what was wanted: {out}");
+    assert!(out.contains("single"), "lists what's available: {out}");
+}
+
+/// Giving both `factory` and `topology` is a contract error — exactly one names the topology.
+#[test]
+fn both_factory_and_topology_is_an_error() {
+    let dir = tmp("both");
+    write(
+        &dir,
+        ".prova/plugins/site/init.lua",
+        "return { web = function(ctx) return {} end }\n",
+    );
+    write(
+        &dir,
+        "proofs/p_test.lua",
+        "prova.test(\"p\", function(t) t:expect(1):equals(1) end)\n",
+    );
+    write(
+        &dir,
+        ".prova.toml",
+        "[run]\npaths = [\"proofs\"]\nplugin_root = \".prova/plugins\"\n\n\
+         [topologies]\nx = { plugin = \"site\", factory = \"web\", topology = \"web\" }\n",
+    );
+    let (ok, out) = up_no_arg(&dir);
+    assert!(!ok, "both forms must fail: {out}");
+    assert!(out.contains("either") || out.contains("not both"), "{out}");
+}
+
 /// A `[topologies]` entry pointing at a factory the plugin doesn't have fails loudly, naming the
 /// entry and what it tried — not a silent nil topology.
 #[test]
