@@ -8,8 +8,9 @@
 //!
 //! `.luarc.json`'s `workspace.library` lists the annotation sources **directly**:
 //!
-//! - `<cache>/annotations/<prova-version>/` — the core stubs, written out of the binary once per
-//!   version and shared by every project on the machine;
+//! - `<data>/lua/annotations/` — the core stubs, written out of the binary to a stable, unversioned
+//!   path shared by every project on the machine (a `.version` stamp keeps them fresh across
+//!   upgrades). The stable path is what lets the `.luarc.json` entry be written once and never churn;
 //! - each resolved plugin's own `library/` dir — the checkout under `<cache>/plugins/`, referenced
 //!   in place.
 //!
@@ -110,14 +111,16 @@ pub fn setup(
     Ok(outcome)
 }
 
-/// Write the embedded core stubs to `<cache>/annotations/<version>/` and return that dir. Shared by
-/// every project on the machine and keyed by version, so an upgrade can't serve stale stubs and two
-/// installed versions coexist. Bounded by installed versions, not by project count.
+/// Write the embedded core stubs to the **stable** `<data>/lua/annotations/` dir and return it.
+/// Shared by every project on the machine; the path carries no version segment, so a project's
+/// `.luarc.json` entry is written once and never churns across upgrades.
 ///
-/// Files are written only when missing or changed, so the common case is two `read`s and no write —
-/// this runs on every invocation.
+/// Each stub is written only when its bytes differ, so the steady state is a few `read`s and no
+/// write (this runs on every invocation). Freshness across upgrades rides a `.version` stamp: on a
+/// version change (or first install) we reclaim any stub we no longer ship — the stable dir outlives
+/// any single version, so an orphan would otherwise linger — and advance the stamp.
 fn install_core_stubs(layout: &dyn SystemLayout, version: &str) -> Result<PathBuf, String> {
-    let dir = layout.annotations_dir().join(version);
+    let dir = layout.annotations_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     for (name, body) in CORE_STUBS {
         let path = dir.join(name);
@@ -126,6 +129,21 @@ fn install_core_stubs(layout: &dyn SystemLayout, version: &str) -> Result<PathBu
             std::fs::write(&path, body)
                 .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
         }
+    }
+    let stamp = dir.join(".version");
+    if std::fs::read_to_string(&stamp).ok().as_deref() != Some(version) {
+        let shipped: std::collections::HashSet<&str> = CORE_STUBS.iter().map(|(n, _)| *n).collect();
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name.ends_with(".lua") && !shipped.contains(name.as_ref()) {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+        std::fs::write(&stamp, version)
+            .map_err(|e| format!("cannot write {}: {e}", stamp.display()))?;
     }
     Ok(dir)
 }
@@ -348,18 +366,20 @@ mod tests {
         assert!(!home.dir.join("annotations").exists());
     }
 
-    /// Core stubs are shared per version, not per project — that is what removes the need for any
-    /// per-project cache state, and therefore for a back-pointer or a GC.
+    /// Core stubs are shared across projects and across versions in *one* stable dir — that is what
+    /// removes the need for any per-project cache state (no back-pointer, no GC) and keeps the
+    /// `.luarc.json` entry write-once. An upgrade refreshes the same dir in place (see the stamp
+    /// test), rather than minting a new version-keyed path the pointer would then have to chase.
     #[test]
-    fn core_stubs_are_shared_across_projects_and_keyed_by_version() {
+    fn core_stubs_share_one_stable_dir_across_versions() {
         let t = Tmp::new("shared");
         let layout = layout_at(&t.0);
         let one = install_core_stubs(&layout, V).unwrap();
         let two = install_core_stubs(&layout, V).unwrap();
         assert_eq!(one, two, "same version must resolve to one shared dir");
         let next = install_core_stubs(&layout, "9.9.9").unwrap();
-        assert_ne!(one, next, "a different version must not reuse the dir");
-        assert!(one.join("prova.lua").is_file() && next.join("prova.lua").is_file());
+        assert_eq!(one, next, "an upgrade refreshes the same stable dir, not a new one");
+        assert!(one.join("prova.lua").is_file());
     }
 
     /// A plugin shipping no `library/` contributes no entry (and isn't reported as linked).
@@ -540,6 +560,41 @@ mod tests {
         assert!(!out.luarc_created && !out.luarc_hint);
         assert!(!t.0.join(".luarc.json").exists());
         assert!(out.core_dir.join("prova.lua").is_file()); // stubs still installed
+    }
+
+    /// The core stubs install to a **stable, unversioned** path (so `.luarc.json` never churns on an
+    /// upgrade) and carry a `.version` stamp. A version bump re-extracts and reclaims any stub we no
+    /// longer ship, so the shared dir can't accumulate orphans across upgrades.
+    #[test]
+    fn core_stubs_install_stable_with_a_version_stamp() {
+        let t = Tmp::new("stamp");
+        let layout = layout_at(&t.0);
+
+        let dir = install_core_stubs(&layout, "1.0.0").unwrap();
+        // Stable path: the layout's annotations dir verbatim, no version segment.
+        assert_eq!(dir, layout.annotations_dir());
+        assert!(dir.join("prova.lua").is_file());
+        assert_eq!(
+            std::fs::read_to_string(dir.join(".version")).unwrap(),
+            "1.0.0"
+        );
+
+        // A stub from a prior version that we no longer ship lingers in the shared dir.
+        let orphan = dir.join("removed_module.lua");
+        std::fs::write(&orphan, "-- from an older prova").unwrap();
+
+        // A version bump re-extracts: stamp advances, orphan reclaimed, current stubs intact.
+        let dir2 = install_core_stubs(&layout, "2.0.0").unwrap();
+        assert_eq!(dir2, dir);
+        assert_eq!(
+            std::fs::read_to_string(dir.join(".version")).unwrap(),
+            "2.0.0"
+        );
+        assert!(
+            !orphan.exists(),
+            "a stub we no longer ship must be reclaimed on upgrade"
+        );
+        assert!(dir.join("prova.lua").is_file());
     }
 
     /// `setup` under `Always` is the force-create-or-merge path `prova init` / `prova ide setup`

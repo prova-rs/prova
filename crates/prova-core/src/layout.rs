@@ -38,12 +38,17 @@ pub trait SystemLayout: Send + Sync {
         self.cache_dir().join("plugins")
     }
 
-    /// Root for the LuaLS core annotation stubs (`cache_dir/annotations`), which are written to a
-    /// `<version>` sub-dir and shared by every project on the machine — a project's `.luarc.json`
-    /// points straight at one. Nothing here is per-project, so nothing can be orphaned by deleting a
-    /// project. Written out of the binary, hence cache, not data.
+    /// Root for the LuaLS core annotation stubs (`data_dir/lua/annotations`), a **stable, unversioned**
+    /// path shared by every project on the machine — a project's `.luarc.json` points straight at it,
+    /// so the pointer is write-once and never churns on a prova upgrade. Freshness is kept by a
+    /// `.version` stamp inside the dir (re-extract on mismatch), not by a version-keyed sub-path.
+    ///
+    /// `data`, not `cache`: an editor config points at this persistently, so a cache-wipe shouldn't
+    /// silently kill completion. `lua/annotations` mirrors archetect's layout so the two tools' IDE
+    /// setup is one convention (`~/.local/share/<tool>/lua/annotations/`), coexisting in one
+    /// `.luarc.json` without either clobbering the other.
     fn annotations_dir(&self) -> PathBuf {
-        self.cache_dir().join("annotations")
+        self.data_dir().join("lua").join("annotations")
     }
 }
 

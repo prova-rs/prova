@@ -41,16 +41,15 @@ fn cleanup(project: &Path) {
     }
 }
 
-/// The core annotation dir for a version is `<cache>/prova/annotations/<version>/`. Prova stamps its
-/// own version; find whatever single version dir was written.
+/// The core annotation stubs install to the stable `<data>/prova/lua/annotations/` dir (unversioned;
+/// freshness rides a `.version` stamp inside it).
 fn core_stub_exists(xdg: &Path) -> bool {
-    let anno = xdg.join("cache").join("prova").join("annotations");
-    let Ok(entries) = std::fs::read_dir(&anno) else {
-        return false;
-    };
-    entries
-        .filter_map(Result::ok)
-        .any(|e| e.path().join("prova.lua").is_file())
+    xdg.join("data")
+        .join("prova")
+        .join("lua")
+        .join("annotations")
+        .join("prova.lua")
+        .is_file()
 }
 
 /// A scratch project with a NESTED manifest (`.prova/prova.toml`), plus an isolated XDG home. The
