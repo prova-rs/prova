@@ -18,6 +18,7 @@ pub use engine::{
     inspect_plugin, is_builtin_capability, list_topologies, load_project_config, run_path,
     run_path_with, unreferenced_snapshots, up, watch, Capabilities, Endpoint, HeldTopology, Module,
     PluginReport, PluginShape, PortMode, RunConfig, Selection, SnapshotRegistry,
+    TopologyRegistration,
 };
 pub use layout::{RootedSystemLayout, SystemLayout, XdgSystemLayout};
 pub use model::{

@@ -200,6 +200,10 @@ pub struct RunConfig {
     /// resolves against. Surfaced to authors as `prova.root` / `prova.home` (synonyms: root and home
     /// are the same thing). See `with_project`.
     project_dir: Option<std::path::PathBuf>,
+    /// Manifest-declared topologies (`[topologies]`): each desugars to a `prova.topology(alias,
+    /// require(plugin).factory)` call the up/list path execs after loading files. Empty for a plain
+    /// run — these only matter to the `up`/`watch`/list verbs.
+    topology_registrations: Vec<TopologyRegistration>,
     /// Capabilities the project's `prova.lua` companion registered — per run, so two projects
     /// resolved in one process don't share a vocabulary. Empty when there is no companion; built-in
     /// capabilities (`docker`, `unix`, tools on PATH) work regardless.
@@ -219,6 +223,7 @@ impl Default for RunConfig {
             named_plugins: std::collections::BTreeMap::new(),
             plugin_namespaces: std::collections::BTreeMap::new(),
             project_dir: None,
+            topology_registrations: Vec::new(),
             capabilities: Capabilities::default(),
         }
     }
@@ -315,6 +320,22 @@ impl RunConfig {
     /// cwd (an undocumented coincidence CI breaks). See `docs/design/agent-ergonomics.md` §2.
     pub fn with_project(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
         self.project_dir = Some(dir.into());
+        self
+    }
+
+    /// Register a manifest topology: `alias` becomes a `prova.topology` addressable by name, resolving
+    /// to `require(plugin).<factory>`. Consulted only by the `up`/`watch`/list verbs.
+    pub fn with_topology_registration(
+        mut self,
+        alias: impl Into<String>,
+        plugin: impl Into<String>,
+        factory: impl Into<String>,
+    ) -> Self {
+        self.topology_registrations.push(TopologyRegistration {
+            alias: alias.into(),
+            plugin: plugin.into(),
+            factory: factory.into(),
+        });
         self
     }
 
@@ -3945,9 +3966,64 @@ pub fn watch(
 /// Load `files` into a fresh Lua state and resolve the named topology's fixture id, returning the
 /// state pieces `provision` needs. Shared by `up`, `watch`, and `hold_topology` (which keeps the
 /// collector so warm runs can reset and re-collect in the same state).
-/// Enumerate the topology names `files` define — every `prova.topology(name, fn)` — sorted. Only
-/// *registers* them (execs the files); it never invokes a factory, so it needs no docker. This is the
-/// discovery half of the `up` verb (`prova up` with no name lists these).
+/// A manifest topology (`[topologies]`), desugared to `prova.topology(alias, require(plugin).factory)`.
+#[derive(Debug, Clone)]
+pub struct TopologyRegistration {
+    pub alias: String,
+    pub plugin: String,
+    pub factory: String,
+}
+
+/// Register the manifest topologies into an already-built `lua`: exec one
+/// `prova.topology("<alias>", (require("<plugin>")).<factory>)` per registration. Must run AFTER the
+/// definition files (so a manifest topology can override or add to what a suite declared) and after
+/// the plugin searcher is installed (so `require` resolves).
+///
+/// The three fields are validated against a conservative shape before being spliced into Lua source,
+/// so a manifest can never inject code — an out-of-shape value is a clear error, not a silent hole.
+fn exec_topology_registrations(lua: &Lua, config: &RunConfig) -> mlua::Result<()> {
+    let is_ident_path = |s: &str| {
+        !s.is_empty()
+            && s.split('.').all(|seg| {
+                let mut c = seg.chars();
+                c.next()
+                    .is_some_and(|f| f.is_ascii_alphabetic() || f == '_')
+                    && c.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+            })
+    };
+    let is_alias = |s: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    };
+    for r in &config.topology_registrations {
+        if !is_alias(&r.alias) || !is_ident_path(&r.plugin) || !is_ident_path(&r.factory) {
+            return Err(mlua::Error::RuntimeError(format!(
+                "invalid [topologies] entry {:?}: name must be [A-Za-z0-9_-]+, and plugin/factory \
+                 dotted identifier paths (got plugin={:?}, factory={:?})",
+                r.alias, r.plugin, r.factory
+            )));
+        }
+        let code = format!(
+            "prova.topology(\"{}\", (require(\"{}\")).{})",
+            r.alias, r.plugin, r.factory
+        );
+        lua.load(&code)
+            .set_name(format!("@[topologies].{}", r.alias))
+            .exec()
+            .map_err(|e| {
+                mlua::Error::RuntimeError(format!(
+                    "topology {:?} (require(\"{}\").{}): {e}",
+                    r.alias, r.plugin, r.factory
+                ))
+            })?;
+    }
+    Ok(())
+}
+
+/// Enumerate the topology names available — every `prova.topology(name, fn)` the `files` declare,
+/// plus every `[topologies]` registration — sorted. Only *registers* them (execs the files); it never
+/// invokes a factory, so it needs no docker. The discovery half of `up` (`prova up` with no name).
 pub fn list_topologies(files: &[PathBuf], config: &RunConfig) -> mlua::Result<Vec<String>> {
     let (lua, col) = build_lua("up".to_string(), config)?;
     for file in files {
@@ -3956,6 +4032,7 @@ pub fn list_topologies(files: &[PathBuf], config: &RunConfig) -> mlua::Result<Ve
         })?;
         lua.load(&code).set_name(file.to_string_lossy()).exec()?;
     }
+    exec_topology_registrations(&lua, config)?;
     let names: Vec<String> = col.borrow().topologies.keys().cloned().collect();
     Ok(names)
 }
@@ -3972,6 +4049,7 @@ fn load_topology(
         })?;
         lua.load(&code).set_name(file.to_string_lossy()).exec()?;
     }
+    exec_topology_registrations(&lua, config)?;
 
     let id = {
         let c = col.borrow();

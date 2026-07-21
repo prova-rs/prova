@@ -583,7 +583,9 @@ fn build_topology_run(
     }
     files.sort();
     files.dedup();
-    if files.is_empty() {
+    // A topology can come from a file (`prova.topology`) OR the manifest (`[topologies]`), so only
+    // error on "nothing to load" when BOTH are empty.
+    if files.is_empty() && run.topologies.is_empty() {
         match name {
             Some(n) => {
                 eprintln!("prova {verb}: no files found to search for topologies (topology {n:?})")
@@ -596,11 +598,16 @@ fn build_topology_run(
     // Build the engine config with the declared plugins (so the topology's `require(...)` resolves).
     // `--fixed` pins ports for external reachability; the default is random (like tests), so several
     // topologies can be inhabited at once without colliding.
-    let config = engine_config(1, &run.plugins, Some(&home)).with_ports(if fixed {
+    let mut config = engine_config(1, &run.plugins, Some(&home)).with_ports(if fixed {
         PortMode::Fixed
     } else {
         PortMode::Auto
     });
+    // Manifest topologies (`[topologies]`) desugar to `prova.topology` registrations the engine execs
+    // after the files — so `prova up <name>` and the listing form see them as first-class.
+    for (alias, decl) in &run.topologies {
+        config = config.with_topology_registration(alias, &decl.plugin, &decl.factory);
+    }
 
     Ok(TopologyRun {
         home,
@@ -1427,6 +1434,9 @@ struct ManifestRun {
     plugins: plugins::ResolvedPlugins,
     sources: BTreeMap<String, String>,
     manage: Manage,
+    /// Manifest topologies (`[topologies]`) — name → the plugin factory it exposes. Consumed only by
+    /// the `up`/`watch`/list verbs, which desugar each to a `prova.topology` registration.
+    topologies: BTreeMap<String, crate::manifest::TopologyDecl>,
     /// Capabilities the project's `prova.lua` registered — carried into the run's `RunConfig` so
     /// `requires` resolution sees the same vocabulary the `must_run` precondition just checked. Per
     /// resolve, so the warm MCP's projects don't share.
@@ -1764,6 +1774,7 @@ fn resolve_from_manifest(
         plugins: plugins_resolved,
         sources: resolved.sources,
         manage,
+        topologies: resolved.topologies,
         capabilities,
     })
 }

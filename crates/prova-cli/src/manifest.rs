@@ -63,6 +63,11 @@ pub struct Manifest {
     /// `"acme:redis"` then expands via `acme` to `https://github.com/acme/redis`.
     #[serde(default)]
     pub sources: BTreeMap<String, String>,
+    /// Named topologies (`[topologies]`) — each exposes a factory a plugin provides under a project
+    /// name, so `prova up <name>` (and any proof) can address it. Sugar for
+    /// `prova.topology(<name>, require(<plugin>).<factory>)`. A property of the project, not a profile.
+    #[serde(default)]
+    pub topologies: BTreeMap<String, TopologyDecl>,
     /// How prova manages the project's LuaLS IDE integration (`.luarc.json` + synced annotations).
     /// Not profile-specific — a property of the project.
     #[serde(default)]
@@ -214,6 +219,19 @@ pub struct PluginDetail {
     pub module: Option<String>,
 }
 
+/// A named topology (`[topologies] <name> = { plugin = "...", factory = "..." }`). `factory` is a
+/// dotted path into the plugin's returned namespace (e.g. `topologies.linux_vm`), so the whole entry
+/// desugars to `prova.topology("<name>", require("<plugin>").<factory>)`.
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct TopologyDecl {
+    /// The plugin that provides the factory — a name declared in `[plugins]` or an ambient plugin
+    /// under the `plugin_root`.
+    pub plugin: String,
+    /// A dotted path to the factory function inside the plugin's namespace table.
+    pub factory: String,
+}
+
 /// An explicitly-declared suite: its `paths` are discovered into one suite (sharing an optional
 /// `setup` `suite.lua`). Requires/env belong in the setup file (`suite.config`) / `[run.env]`.
 #[derive(Debug, Deserialize, Default, Clone, PartialEq)]
@@ -287,6 +305,8 @@ pub struct Resolved {
     pub plugins: BTreeMap<String, PluginSource>,
     /// Registered source aliases (`[sources]`) for plugin shorthands.
     pub sources: BTreeMap<String, String>,
+    /// Named topologies (`[topologies]`) — name → the plugin factory it exposes.
+    pub topologies: BTreeMap<String, TopologyDecl>,
     /// LuaLS IDE-integration policy (`[luals]`).
     pub luals: Luals,
     /// Git-source update policy (`[updates]`), applied to every run.
@@ -372,6 +392,7 @@ impl Manifest {
             suites: self.suites.clone(),
             plugins,
             sources: self.sources.clone(),
+            topologies: self.topologies.clone(),
             luals: self.luals.clone(),
             updates: self.updates.clone(),
             must_run,
@@ -424,6 +445,7 @@ paths = ["tests/smoke"]
                 suites: BTreeMap::new(),
                 plugins: BTreeMap::new(),
                 sources: BTreeMap::new(),
+                topologies: BTreeMap::new(),
                 luals: Luals::default(),
                 updates: UpdatesSection::default(),
                 must_run: Vec::new(),
@@ -546,6 +568,23 @@ redis = "acme:prova-redis@v1"
         let r = m.resolve(Some("smoke")).unwrap();
         assert_eq!(r.paths, vec!["tests/smoke".to_string()]);
         assert_eq!(r.jobs, Some(4)); // inherited
+    }
+
+    /// `[topologies]` maps a project name to a plugin factory — the desugaring surface for
+    /// `prova up <name>`. A property of the project (not profile-specific), and the entry form is
+    /// strict (`deny_unknown_fields`) so a typo'd key is a parse error, not a silently-ignored one.
+    #[test]
+    fn topologies_parse_as_plugin_factory_references() {
+        let m = Manifest::parse(
+            "[run]\npaths = [\"proofs\"]\n\n\
+             [topologies]\n\
+             vm = { plugin = \"parallels\", factory = \"topologies.linux_vm\" }\n",
+        )
+        .unwrap();
+        let t = &m.resolve(None).unwrap().topologies;
+        assert_eq!(t.len(), 1);
+        assert_eq!(t["vm"].plugin, "parallels");
+        assert_eq!(t["vm"].factory, "topologies.linux_vm");
     }
 
     /// `plugin_root` is the whole of ambient on-disk plugin resolution, so each half matters: absent
