@@ -112,6 +112,40 @@ fn writes_luarc_and_installs_stubs() {
     cleanup(&project);
 }
 
+/// Coexistence: `prova ide setup` merges into a `.luarc.json` another tool already wrote (here an
+/// archetect-shaped file) without dropping its entry or the user's keys. This is prova's half of the
+/// "run archetect and prova in either order, both survive" guarantee — archetect's half is proven
+/// symmetrically in its own suite (`merge_preserves_a_foreign_entry`).
+#[test]
+fn merges_alongside_another_tools_entry() {
+    let (project, xdg) = scratch("coexist");
+    let luarc = project.join(".luarc.json");
+    // A file archetect would have written: its annotations entry + a user key, no prova entry.
+    std::fs::write(
+        &luarc,
+        "{\n  \"runtime.version\": \"Lua 5.3\",\n  \"diagnostics.globals\": [\"vim\"],\n  \"workspace.library\": [\"/opt/archetect/lua/annotations\"]\n}\n",
+    )
+    .unwrap();
+
+    let out = ide_setup(&project, &xdg, &[]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&luarc).unwrap()).unwrap();
+    let lib = doc["workspace.library"].as_array().unwrap();
+    let has = |needle: &str| lib.iter().any(|v| v.as_str().is_some_and(|s| s.contains(needle)));
+    assert!(has("archetect"), "the other tool's entry was dropped: {lib:?}");
+    assert!(has("prova"), "prova's own entry was not added: {lib:?}");
+    // Foreign keys are preserved; the user's runtime.version is not overridden.
+    assert_eq!(doc["runtime.version"], "Lua 5.3", "user's runtime.version was overwritten");
+    assert_eq!(doc["diagnostics.globals"][0], "vim", "a foreign key was lost");
+    cleanup(&project);
+}
+
 /// Proof 2: `ide setup` is idempotent — a second run leaves exactly one core-stub entry, not two.
 #[test]
 fn idempotent_second_run() {
