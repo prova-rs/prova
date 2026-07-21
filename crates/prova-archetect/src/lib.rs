@@ -219,23 +219,6 @@ fn render_on_thread(
     .map_err(|_| "archetect render thread panicked".to_string())?
 }
 
-/// One archetect system layout (cache/config/data) per process. archetect-core tracks fetched
-/// sources in a process-global set (`source::cached_paths`), so the layout must be process-global
-/// too: with a per-render temp layout, the second render in a process believes its (empty) cache
-/// is already warm and aborts resolving its first catalog library. Sharing the layout also means
-/// catalog libraries are cloned once per run instead of once per render.
-fn shared_layout_root() -> Result<&'static Path, String> {
-    static ROOT: OnceLock<Result<PathBuf, String>> = OnceLock::new();
-    ROOT.get_or_init(|| {
-        let mut path = std::env::temp_dir();
-        path.push(format!("prova-archetect-{}", std::process::id()));
-        std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
-        Ok(path)
-    })
-    .as_deref()
-    .map_err(|e| e.clone())
-}
-
 /// archetect-core's fetched-source tracking is not safe for two concurrent fetches into one
 /// cache, so renders serialize per process. Subsequent renders are mostly cache hits.
 fn render_mutex() -> &'static Mutex<()> {
@@ -267,11 +250,13 @@ pub fn render_headless(
 
     let configuration = Configuration::default().with_headless(true);
 
-    let layout_root = shared_layout_root().map_err(ArchetectError::GeneralError)?;
-    let layout = archetect_core::system::RootedSystemLayout::new(
-        Utf8PathBuf::from_path_buf(layout_root.to_path_buf())
-            .map_err(|_| ArchetectError::GeneralError("non-UTF-8 temp dir".into()))?,
-    )?;
+    // Archetect's real XDG layout, so archetype sources + catalog libraries fetch and cache where a
+    // normal archetect install keeps them — and the shared TTL + remote-hash freshness gate persists
+    // across runs instead of re-cloning every invocation. Matches `render_interactive`; a fixed XDG
+    // path is inherently process-stable, so renders stay warm within a run. (Honors `XDG_CACHE_HOME`,
+    // so a test that isolates the cache gets an isolated archetype cache.)
+    let layout = XdgSystemLayout::new()
+        .map_err(|e| ArchetectError::GeneralError(format!("archetect system layout: {e}")))?;
 
     let archetect = Archetect::builder()
         .with_driver(handle)

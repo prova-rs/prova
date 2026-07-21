@@ -1,20 +1,45 @@
 //! Resolving `[plugins]` from `prova.toml` into concrete files the engine's searcher can load.
 //!
-//! Local sources resolve straight to a path. Git sources are fetched — shelling to `git`, like
-//! archetect fetches archetype sources — into the layout's plugin cache, pinned by ref, so a repeat
-//! run reuses the checkout instead of re-cloning. A directory plugin may carry a `prova-plugin.toml`
+//! Local sources resolve straight to a path. Git sources are fetched via the shared
+//! `archetect-git-cache` crate — the same TTL + remote-hash freshness gate archetect uses — into the
+//! layout's plugin cache, pinned by ref, so a repeat run reuses the checkout (and, once the interval
+//! lapses, cheaply confirms the remote hasn't moved before pulling). A directory plugin may carry a
+//! `prova-plugin.toml`
 //! (the analogue of `archetype.yaml`): it declares the `entry` file — so resolution no longer depends
 //! on the consumer's alias matching a filename — plus a compatibility range (`requires.prova`) and
 //! metadata. The result is handed to `RunConfig`, making the manifest the authoritative plugin source.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::time::Duration;
 
+use camino::Utf8PathBuf;
 use prova_core::SystemLayout;
 use serde::Deserialize;
 
 use crate::manifest::{PluginDetail, PluginSource};
+
+/// How git plugin sources should be refreshed on this run — the caller (the run flow) derives these
+/// from `[updates]` in the manifest and the `-U`/`--offline` flags, and threads them to `fetch_git`.
+#[derive(Debug, Clone)]
+pub struct GitFetchOptions {
+    /// Skip the freshness gates and always fetch (`-U`/`--update`, or `[updates] force`).
+    pub force: bool,
+    /// Never touch the network; error if a required ref isn't already cached (`--offline`).
+    pub offline: bool,
+    /// TTL window — within it a cached checkout is reused with no network at all.
+    pub interval: Duration,
+}
+
+impl Default for GitFetchOptions {
+    fn default() -> Self {
+        GitFetchOptions {
+            force: false,
+            offline: false,
+            interval: crate::manifest::UpdatesSection::DEFAULT_INTERVAL,
+        }
+    }
+}
 
 /// The fully-resolved plugin set to hand to the engine: `named` maps each consumer require-name to
 /// its entry file; `namespaces` maps each plugin's canonical name to its root dir (for intra-plugin
@@ -72,6 +97,7 @@ pub fn resolve_plugins(
     layout: &dyn SystemLayout,
     sources: &BTreeMap<String, String>,
     prova_version: &str,
+    git_opts: &GitFetchOptions,
 ) -> Result<ResolvedPlugins, String> {
     let mut resolved = ResolvedPlugins::default();
     for (name, source) in plugins {
@@ -83,7 +109,7 @@ pub fn resolve_plugins(
             }
             PluginSource::Detailed(d) => d.clone(),
         };
-        let one = resolve_one(name, &detail, base_dir, layout, prova_version)
+        let one = resolve_one(name, &detail, base_dir, layout, prova_version, git_opts)
             .map_err(|e| format!("plugin {name:?}: {e}"))?;
         // The entry's directory is the module root — where sibling `require`s resolve.
         if let Some(dir) = one.entry.parent() {
@@ -223,11 +249,12 @@ fn resolve_one(
     base_dir: &Path,
     layout: &dyn SystemLayout,
     prova_version: &str,
+    git_opts: &GitFetchOptions,
 ) -> Result<ResolvedOne, String> {
     let root = match (&detail.path, &detail.git) {
         (Some(_), Some(_)) => return Err("set either `path` or `git`, not both".into()),
         (Some(path), None) => resolve_relative(base_dir, path),
-        (None, Some(git)) => fetch_git(git, detail, layout)?,
+        (None, Some(git)) => fetch_git(git, detail, layout, git_opts)?,
         (None, None) => return Err("needs a `path` or a `git` source".into()),
     };
 
@@ -374,71 +401,50 @@ fn module_file(
     ))
 }
 
-/// Fetch a git plugin into the layout's plugin cache, pinned by ref, and return the checkout dir. A
-/// checkout that already exists is reused (tag/rev pins are immutable; a branch is cached on first
-/// fetch — prefer `tag`/`rev` for reproducibility).
+/// Fetch a git plugin into the layout's plugin cache (one dir per `(url, ref)`, so two plugins can
+/// pin the same repo at different refs), pinned by ref, and return the checkout dir. Freshness is the
+/// shared crate's two-gate check: a `tag`/`rev` pin is immutable and never re-probed; a `branch` (or
+/// the default branch) is TTL-gated and, once stale, confirmed against the remote hash before any
+/// pull. Prefer `tag`/`rev` for reproducibility.
 fn fetch_git(
     url: &str,
     detail: &PluginDetail,
     layout: &dyn SystemLayout,
+    git_opts: &GitFetchOptions,
 ) -> Result<PathBuf, String> {
-    let (pin, label): (Option<&str>, String) = match (&detail.tag, &detail.branch, &detail.rev) {
-        (Some(t), _, _) => (Some(t), format!("tag-{t}")),
-        (_, Some(b), _) => (Some(b), format!("branch-{b}")),
-        (_, _, Some(r)) => (Some(r), format!("rev-{r}")),
-        _ => (None, "default".to_string()),
-    };
+    use archetect_git_cache::{FetchOptions, Freshness, RefPin};
+
+    // Map the pin to (immutability, ref, cache-label). A tag/rev never moves; a branch does.
+    let (pin, gitref, label): (RefPin, Option<&str>, String) =
+        match (&detail.tag, &detail.branch, &detail.rev) {
+            (Some(t), _, _) => (RefPin::Immutable, Some(t.as_str()), format!("tag-{t}")),
+            (_, Some(b), _) => (RefPin::Mutable, Some(b.as_str()), format!("branch-{b}")),
+            (_, _, Some(r)) => (RefPin::Immutable, Some(r.as_str()), format!("rev-{r}")),
+            _ => (RefPin::Mutable, None, "default".to_string()),
+        };
     let dest = layout
         .plugin_cache_dir()
         .join(sanitize(url))
         .join(sanitize(&label));
+    let cache_path = Utf8PathBuf::from_path_buf(dest.clone())
+        .map_err(|_| format!("plugin cache path is not UTF-8: {}", dest.display()))?;
 
-    // Reuse an existing non-empty checkout.
-    if dest.join(".git").is_dir() {
-        return Ok(dest);
-    }
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("cannot create cache dir {}: {e}", parent.display()))?;
-    }
+    let opts = FetchOptions {
+        force: git_opts.force,
+        offline: git_opts.offline,
+        interval: git_opts.interval,
+        pin,
+    };
+    let outcome = archetect_git_cache::fetch(url, gitref, &cache_path, &opts)
+        .map_err(|e| format!("fetching {url}: {e}"))?;
 
-    // tag/branch clone shallowly with `--branch`; a rev needs history, so clone then checkout.
-    let dest_str = dest.to_string_lossy().to_string();
-    match (&detail.rev, pin) {
-        (Some(rev), _) => {
-            run_git(&["clone", url, &dest_str], None)?;
-            run_git(&["checkout", rev], Some(&dest))?;
-        }
-        (None, Some(reference)) => {
-            run_git(
-                &[
-                    "clone", "--depth", "1", "--branch", reference, url, &dest_str,
-                ],
-                None,
-            )?;
-        }
-        (None, None) => {
-            run_git(&["clone", "--depth", "1", url, &dest_str], None)?;
-        }
+    // Only speak up when the cache actually changed — a silent freshness confirmation stays silent.
+    match outcome.freshness {
+        Freshness::Cloned => eprintln!("prova: fetching plugin {url}"),
+        Freshness::Updated => eprintln!("prova: updating plugin {url}"),
+        Freshness::UpToDate { .. } => {}
     }
     Ok(dest)
-}
-
-/// Run `git` with args (optionally in `cwd`), returning a readable error on failure.
-fn run_git(args: &[&str], cwd: Option<&Path>) -> Result<(), String> {
-    let mut cmd = Command::new("git");
-    cmd.args(args);
-    if let Some(dir) = cwd {
-        cmd.current_dir(dir);
-    }
-    let output = cmd
-        .output()
-        .map_err(|e| format!("failed to run git (is it installed?): {e}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("git {} failed: {}", args.join(" "), stderr.trim()));
-    }
-    Ok(())
 }
 
 /// Make a filesystem-safe directory component from a URL or ref (keep it recognizable).
@@ -479,8 +485,15 @@ mod tests {
         plugins.insert("greet".to_string(), PluginSource::Path("greet.lua".into()));
         let layout = RootedSystemLayout::new(dir.join("home"));
 
-        let resolved =
-            resolve_plugins(&plugins, &dir, &layout, &BTreeMap::new(), "0.1.1").expect("resolve");
+        let resolved = resolve_plugins(
+            &plugins,
+            &dir,
+            &layout,
+            &BTreeMap::new(),
+            "0.1.1",
+            &GitFetchOptions::default(),
+        )
+        .expect("resolve");
         assert_eq!(resolved.named["greet"], file);
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -491,7 +504,15 @@ mod tests {
         let mut plugins = BTreeMap::new();
         plugins.insert("nope".to_string(), PluginSource::Path("nope.lua".into()));
         let layout = RootedSystemLayout::new(&dir);
-        let err = resolve_plugins(&plugins, &dir, &layout, &BTreeMap::new(), "0.1.1").unwrap_err();
+        let err = resolve_plugins(
+            &plugins,
+            &dir,
+            &layout,
+            &BTreeMap::new(),
+            "0.1.1",
+            &GitFetchOptions::default(),
+        )
+        .unwrap_err();
         assert!(err.contains("nope"), "{err}");
     }
 
@@ -518,8 +539,15 @@ mod tests {
         plugins.insert("mq".to_string(), PluginSource::Path("repo".into()));
         let layout = RootedSystemLayout::new(dir.join("home"));
 
-        let resolved =
-            resolve_plugins(&plugins, &dir, &layout, &BTreeMap::new(), "0.1.1").expect("resolve");
+        let resolved = resolve_plugins(
+            &plugins,
+            &dir,
+            &layout,
+            &BTreeMap::new(),
+            "0.1.1",
+            &GitFetchOptions::default(),
+        )
+        .expect("resolve");
         assert_eq!(resolved.named["mq"], repo.join("rabbitmq.lua"));
         // Namespaced by canonical name `rabbitmq` (from the manifest), not the alias `mq`.
         assert_eq!(resolved.namespaces["rabbitmq"], repo);

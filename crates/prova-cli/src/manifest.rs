@@ -39,6 +39,7 @@
 //! ```
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use serde::Deserialize;
 
@@ -66,6 +67,68 @@ pub struct Manifest {
     /// Not profile-specific — a property of the project.
     #[serde(default)]
     pub luals: Luals,
+    /// How often git plugin sources are checked for updates, and whether to force them. Not
+    /// profile-specific — a property of the project. Mirrors archetect's `updates` config so the two
+    /// tools read the same knobs.
+    #[serde(default)]
+    pub updates: UpdatesSection,
+}
+
+/// Git-source update policy (`[updates]`). Governs the shared cache's freshness gate for `[plugins]`
+/// git sources: within `interval` the cache is used with no network; past it, a cheap `ls-remote`
+/// decides whether to actually pull. `force` (also `-U`/`--update`) skips the gate entirely.
+#[derive(Debug, Deserialize, Clone, Default, PartialEq)]
+pub struct UpdatesSection {
+    /// A human duration — `"7d"`, `"12h"`, `"30m"`, `"3600s"`, or a bare integer (seconds). Defaults
+    /// to 7 days when absent.
+    pub interval: Option<String>,
+    /// Force updates, ignoring the freshness gates. The CLI `-U`/`--update` flag also sets this.
+    pub force: Option<bool>,
+}
+
+impl UpdatesSection {
+    /// The default freshness interval when `[updates] interval` is absent: 7 days (matches archetect).
+    pub const DEFAULT_INTERVAL: Duration = Duration::from_secs(604_800);
+
+    /// Resolve `interval` to a `Duration`, defaulting to [`Self::DEFAULT_INTERVAL`]. An unparseable
+    /// value is an error the caller surfaces.
+    pub fn interval_duration(&self) -> Result<Duration, String> {
+        match &self.interval {
+            None => Ok(Self::DEFAULT_INTERVAL),
+            Some(s) => parse_duration(s),
+        }
+    }
+
+    /// Whether `[updates] force` is set (default false).
+    pub fn force(&self) -> bool {
+        self.force.unwrap_or(false)
+    }
+}
+
+/// Parse a human duration: a bare integer is seconds; a trailing `d`/`h`/`m`/`s` scales it. Keeps
+/// the manifest friendly (`"7d"`) without pulling in a date-parsing dependency.
+fn parse_duration(s: &str) -> Result<Duration, String> {
+    let s = s.trim();
+    let (num, scale) = match s.strip_suffix(|c: char| c.is_ascii_alphabetic()) {
+        Some(prefix) => (prefix, s.as_bytes()[s.len() - 1].to_ascii_lowercase()),
+        None => (s, b's'),
+    };
+    let value: u64 = num.trim().parse().map_err(|_| {
+        format!("invalid updates.interval {s:?} (expected e.g. \"7d\", \"12h\", \"3600s\")")
+    })?;
+    let secs = match scale {
+        b's' => value,
+        b'm' => value * 60,
+        b'h' => value * 3600,
+        b'd' => value * 86_400,
+        other => {
+            return Err(format!(
+                "invalid updates.interval unit {:?} in {s:?} (use d/h/m/s)",
+                other as char
+            ))
+        }
+    };
+    Ok(Duration::from_secs(secs))
 }
 
 /// LuaLS / `.luarc.json` management policy. The annotation set under `<home>/annotations/` is always
@@ -226,6 +289,8 @@ pub struct Resolved {
     pub sources: BTreeMap<String, String>,
     /// LuaLS IDE-integration policy (`[luals]`).
     pub luals: Luals,
+    /// Git-source update policy (`[updates]`), applied to every run.
+    pub updates: UpdatesSection,
     /// Capabilities this run guarantees — the union of `[run] must_run` and the selected profile's.
     /// A guarantee is **additive**: a profile promises *more* than the project baseline, never less,
     /// because a context that could retract a guarantee would let the strictest bar be silenced by
@@ -308,6 +373,7 @@ impl Manifest {
             plugins,
             sources: self.sources.clone(),
             luals: self.luals.clone(),
+            updates: self.updates.clone(),
             must_run,
         })
     }
@@ -359,6 +425,7 @@ paths = ["tests/smoke"]
                 plugins: BTreeMap::new(),
                 sources: BTreeMap::new(),
                 luals: Luals::default(),
+                updates: UpdatesSection::default(),
                 must_run: Vec::new(),
             }
         );

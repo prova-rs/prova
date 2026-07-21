@@ -70,6 +70,8 @@ options:
       --allow-empty         a selection matching no tests is OK (default: that is an error)
   -u, --update-snapshots    (re)write snapshots instead of comparing (matches_snapshot)
       --unreferenced M      snapshots no test used: ignore (default) | warn | delete (full runs only)
+  -U, --update              force-refresh git plugin sources (skip the freshness cache)
+      --offline             never fetch git plugin sources; use only what is already cached
       --list                discover tests without running them (respects selection)
   -V, --version             print version
   -h, --help                print this help";
@@ -336,10 +338,12 @@ fn eval_subcommand(args: Vec<String>) -> ExitCode {
         }
     };
     let (mut plugins_resolved, sources) = match &home {
-        Some(home) => match resolve_from_manifest(home, profile, None, None, None, &layout) {
-            Ok(r) => (r.plugins, r.sources),
-            Err(code) => return code,
-        },
+        Some(home) => {
+            match resolve_from_manifest(home, profile, None, None, None, &layout, false, false) {
+                Ok(r) => (r.plugins, r.sources),
+                Err(code) => return code,
+            }
+        }
         None => (plugins::ResolvedPlugins::default(), BTreeMap::new()),
     };
     if let Err(code) = layer_cli_plugins(&cli_plugins, &layout, &sources, &mut plugins_resolved) {
@@ -523,7 +527,7 @@ fn build_topology_run(
     // Locate the project (the manifest tells us where topologies + plugins live).
     let home = resolve_home(manifest_path.as_deref())?;
 
-    let run = resolve_from_manifest(&home, profile, None, None, None, &layout)?;
+    let run = resolve_from_manifest(&home, profile, None, None, None, &layout, false, false)?;
 
     // Gather every file that could declare a topology: the run paths plus any explicit suites.
     let mut files: Vec<PathBuf> = Vec::new();
@@ -967,6 +971,10 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     // selects nothing. Off by default, because a selection matching nothing is nearly always a typo
     // and a typo must not be green.
     let mut allow_empty = false;
+    // Git-source freshness overrides for this run. `-U`/`--update` forces plugin updates (skips the
+    // TTL + remote-hash gates); `--offline` forbids any network, using only what's already cached.
+    let mut update_force = false;
+    let mut offline = false;
 
     let mut args = cli_args.into_iter();
     while let Some(arg) = args.next() {
@@ -1060,6 +1068,8 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             "--last-failed" => last_failed = true,
             "--allow-empty" => allow_empty = true,
             "--update-snapshots" | "-u" => update_snapshots = true,
+            "--update" | "-U" => update_force = true,
+            "--offline" => offline = true,
             "--json" => cli_format = Some(Format::Json),
             "--version" | "-V" => {
                 println!("prova {}", env!("CARGO_PKG_VERSION"));
@@ -1136,7 +1146,16 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             );
             return ExitCode::from(2);
         };
-        match resolve_from_manifest(home, profile, cli_jobs, cli_format, cli_config, &layout) {
+        match resolve_from_manifest(
+            home,
+            profile,
+            cli_jobs,
+            cli_format,
+            cli_config,
+            &layout,
+            update_force,
+            offline,
+        ) {
             Ok(r) => (
                 // Test `paths` resolve against the project ROOT, not the home dir — so `proofs/`
                 // lives at the root while `.prova/` (or `prova/`) is prova's config/plugins nook.
@@ -1520,7 +1539,16 @@ fn layer_cli_plugins(
             }
         }
     }
-    match plugins::resolve_plugins(&adhoc, Path::new("."), layout, sources, PROVA_VERSION) {
+    // Ad-hoc `--plugin` entries are always local paths (never git), so the git freshness policy is
+    // irrelevant here — a default is fine.
+    match plugins::resolve_plugins(
+        &adhoc,
+        Path::new("."),
+        layout,
+        sources,
+        PROVA_VERSION,
+        &plugins::GitFetchOptions::default(),
+    ) {
         Ok(resolved) => {
             plugins_resolved.named.extend(resolved.named);
             plugins_resolved.namespaces.extend(resolved.namespaces);
@@ -1544,6 +1572,10 @@ fn resolve_from_manifest(
     cli_format: Option<Format>,
     config_override: Option<String>,
     layout: &dyn SystemLayout,
+    // Run-scoped git-source overrides: `-U`/`--update` forces updates, `--offline` forbids network.
+    // Combined here with the manifest's `[updates]` (interval + force) into the effective policy.
+    force_update: bool,
+    offline: bool,
 ) -> Result<ManifestRun, ExitCode> {
     let path = &home.manifest;
 
@@ -1578,6 +1610,17 @@ fn resolve_from_manifest(
         std::env::set_var(key, value);
     }
 
+    // Effective git-source freshness policy: the manifest's `[updates]` interval, and `force` from
+    // either the manifest or the CLI `-U`; `--offline` from the CLI.
+    let git_opts = plugins::GitFetchOptions {
+        force: force_update || resolved.updates.force(),
+        offline,
+        interval: resolved.updates.interval_duration().map_err(|e| {
+            eprintln!("prova: {e}");
+            ExitCode::from(2)
+        })?,
+    };
+
     // Resolve declared plugins relative to the home directory (git sources fetched into cache).
     let mut plugins_resolved = plugins::resolve_plugins(
         &resolved.plugins,
@@ -1585,6 +1628,7 @@ fn resolve_from_manifest(
         layout,
         &resolved.sources,
         PROVA_VERSION,
+        &git_opts,
     )
     .map_err(|e| {
         eprintln!("prova: {e}");

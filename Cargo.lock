@@ -110,8 +110,8 @@ dependencies = [
 
 [[package]]
 name = "archetect-aml"
-version = "3.1.1"
-source = "git+https://github.com/archetect/archetect.git?tag=v3.1.1#637f0d3b285b4d2dc3d87d49f780f4b3721fadab"
+version = "3.2.0"
+source = "git+https://github.com/archetect/archetect.git?tag=v3.2.0#21792db4bb7cfd9b31b3b41078d7cb8d46f20cfd"
 dependencies = [
  "archetect-inflections",
  "serde",
@@ -121,8 +121,8 @@ dependencies = [
 
 [[package]]
 name = "archetect-api"
-version = "3.1.1"
-source = "git+https://github.com/archetect/archetect.git?tag=v3.1.1#637f0d3b285b4d2dc3d87d49f780f4b3721fadab"
+version = "3.2.0"
+source = "git+https://github.com/archetect/archetect.git?tag=v3.2.0#21792db4bb7cfd9b31b3b41078d7cb8d46f20cfd"
 dependencies = [
  "serde",
  "serde_json",
@@ -131,12 +131,13 @@ dependencies = [
 
 [[package]]
 name = "archetect-core"
-version = "3.1.1"
-source = "git+https://github.com/archetect/archetect.git?tag=v3.1.1#637f0d3b285b4d2dc3d87d49f780f4b3721fadab"
+version = "3.2.0"
+source = "git+https://github.com/archetect/archetect.git?tag=v3.2.0#21792db4bb7cfd9b31b3b41078d7cb8d46f20cfd"
 dependencies = [
  "anyhow",
  "archetect-aml",
  "archetect-api",
+ "archetect-git-cache",
  "archetect-inflections",
  "archetect-terminal-io",
  "archetect-validations",
@@ -186,17 +187,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "archetect-git-cache"
+version = "3.2.0"
+source = "git+https://github.com/archetect/archetect.git?tag=v3.2.0#21792db4bb7cfd9b31b3b41078d7cb8d46f20cfd"
+dependencies = [
+ "camino",
+ "chrono",
+ "farmhash",
+ "git2",
+ "log",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "archetect-inflections"
-version = "3.1.1"
-source = "git+https://github.com/archetect/archetect.git?tag=v3.1.1#637f0d3b285b4d2dc3d87d49f780f4b3721fadab"
+version = "3.2.0"
+source = "git+https://github.com/archetect/archetect.git?tag=v3.2.0#21792db4bb7cfd9b31b3b41078d7cb8d46f20cfd"
 dependencies = [
  "regex",
 ]
 
 [[package]]
 name = "archetect-terminal-io"
-version = "3.1.1"
-source = "git+https://github.com/archetect/archetect.git?tag=v3.1.1#637f0d3b285b4d2dc3d87d49f780f4b3721fadab"
+version = "3.2.0"
+source = "git+https://github.com/archetect/archetect.git?tag=v3.2.0#21792db4bb7cfd9b31b3b41078d7cb8d46f20cfd"
 dependencies = [
  "archetect-api",
  "archetect-validations",
@@ -210,8 +224,8 @@ dependencies = [
 
 [[package]]
 name = "archetect-validations"
-version = "3.1.1"
-source = "git+https://github.com/archetect/archetect.git?tag=v3.1.1#637f0d3b285b4d2dc3d87d49f780f4b3721fadab"
+version = "3.2.0"
+source = "git+https://github.com/archetect/archetect.git?tag=v3.2.0#21792db4bb7cfd9b31b3b41078d7cb8d46f20cfd"
 
 [[package]]
 name = "async-trait"
@@ -2761,6 +2775,8 @@ dependencies = [
 name = "prova-cli"
 version = "0.2.10"
 dependencies = [
+ "archetect-git-cache",
+ "camino",
  "fs2",
  "glob",
  "inquire",

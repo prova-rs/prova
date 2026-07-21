@@ -19,6 +19,11 @@ path = "src/main.rs"
 [dependencies]
 glob = "0.3"
 prova-core = { path = "../prova-core" }
+# Shared git-source cache: TTL + remote-hash freshness gate for `[plugins]` git sources (the same
+# crate archetect uses, so both tools cache identically). Brings git2/libgit2 into this build.
+archetect-git-cache = { workspace = true }
+# UTF-8 path conversion at the git-cache boundary (the crate speaks `camino::Utf8Path`).
+camino = "1.1"
 # The flagship plugin: makes `archetect.render{...}` available in the standalone `prova` binary.
 prova-archetect = { path = "../prova-archetect" }
 # Interactive catalog picker for `prova init` with no key. Same version archetect-terminal-io uses,
