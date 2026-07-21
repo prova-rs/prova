@@ -3945,6 +3945,21 @@ pub fn watch(
 /// Load `files` into a fresh Lua state and resolve the named topology's fixture id, returning the
 /// state pieces `provision` needs. Shared by `up`, `watch`, and `hold_topology` (which keeps the
 /// collector so warm runs can reset and re-collect in the same state).
+/// Enumerate the topology names `files` define — every `prova.topology(name, fn)` — sorted. Only
+/// *registers* them (execs the files); it never invokes a factory, so it needs no docker. This is the
+/// discovery half of the `up` verb (`prova up` with no name lists these).
+pub fn list_topologies(files: &[PathBuf], config: &RunConfig) -> mlua::Result<Vec<String>> {
+    let (lua, col) = build_lua("up".to_string(), config)?;
+    for file in files {
+        let code = std::fs::read_to_string(file).map_err(|e| {
+            mlua::Error::RuntimeError(format!("cannot read {}: {e}", file.display()))
+        })?;
+        lua.load(&code).set_name(file.to_string_lossy()).exec()?;
+    }
+    let names: Vec<String> = col.borrow().topologies.keys().cloned().collect();
+    Ok(names)
+}
+
 fn load_topology(
     files: &[PathBuf],
     name: &str,

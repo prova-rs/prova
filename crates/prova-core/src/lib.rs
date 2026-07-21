@@ -15,9 +15,9 @@ mod suite;
 
 pub use engine::{
     discover_path, discover_path_with, docker_runs_linux_containers, eval_snippet, hold_topology,
-    inspect_plugin, is_builtin_capability, load_project_config, run_path, run_path_with,
-    unreferenced_snapshots, up, watch, Capabilities, Endpoint, HeldTopology, Module, PluginReport,
-    PluginShape, PortMode, RunConfig, Selection, SnapshotRegistry,
+    inspect_plugin, is_builtin_capability, list_topologies, load_project_config, run_path,
+    run_path_with, unreferenced_snapshots, up, watch, Capabilities, Endpoint, HeldTopology, Module,
+    PluginReport, PluginShape, PortMode, RunConfig, Selection, SnapshotRegistry,
 };
 pub use layout::{RootedSystemLayout, SystemLayout, XdgSystemLayout};
 pub use model::{

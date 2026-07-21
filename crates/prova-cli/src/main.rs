@@ -49,7 +49,7 @@ usage:
   prova skill               print the agent skill (how to drive Prova); --install writes it
                             to .claude/skills/prova/SKILL.md at the project root
   prova mcp                 serve an MCP stdio server whose tools mirror the CLI (run, list, eval)
-  prova up <topology>       stand up a topology and hold it until Ctrl-C (--fixed for canonical ports)
+  prova up [<topology>]     list defined topologies, or stand one up and hold it until Ctrl-C (--fixed)
   prova watch <topology>    stand up a topology and re-apply on definition change (dev loop)
   prova start <topology>    stand up a topology detached (returns; use `down` to stop)
   prova down <topology>     tear down a detached topology
@@ -412,9 +412,10 @@ fn up_subcommand(args: Vec<String>) -> ExitCode {
             }
             "-h" | "--help" => {
                 println!(
-                    "usage: prova up <topology> [--fixed] [--profile NAME] [--manifest PATH]\n\
+                    "usage: prova up [<topology>] [--fixed] [--profile NAME] [--manifest PATH]\n\
                      \n\
-                     stand up a topology (declared with prova.topology) and hold it running until\n\
+                     with no topology, list the topologies this project defines.\n\
+                     with one, stand it up (declared with prova.topology) and hold it running until\n\
                      Ctrl-C, printing each resource's endpoint.\n\
                      \n\
                      --fixed  pin each resource to its canonical container port on the host (a\n\
@@ -435,12 +436,12 @@ fn up_subcommand(args: Vec<String>) -> ExitCode {
         }
     }
 
+    // No name → the discovery form: list what's defined (like `prova init` listing templates).
     let Some(name) = name else {
-        eprintln!("usage: prova up <topology>");
-        return ExitCode::from(2);
+        return up_list(profile, manifest_path);
     };
 
-    let prep = match build_topology_run("up", &name, profile, manifest_path, fixed) {
+    let prep = match build_topology_run("up", Some(&name), profile, manifest_path, fixed) {
         Ok(p) => p,
         Err(code) => return code,
     };
@@ -502,6 +503,35 @@ fn up_subcommand(args: Vec<String>) -> ExitCode {
     }
 }
 
+/// `prova up` with no name — list the topologies this project defines, so you can see what's there
+/// before standing one up (the mirror of `prova init` listing templates). Only registers topologies
+/// (execs the definition files); no factory runs, so this needs no docker.
+fn up_list(profile: Option<String>, manifest_path: Option<String>) -> ExitCode {
+    let prep = match build_topology_run("up", None, profile, manifest_path, false) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    let names = match prova_core::list_topologies(&prep.files, &prep.config) {
+        Ok(names) => names,
+        Err(err) => {
+            eprintln!("prova up: {err}");
+            return ExitCode::from(2);
+        }
+    };
+    if names.is_empty() {
+        eprintln!(
+            "prova up: no topologies defined — declare one with prova.topology(name, fn) in a suite"
+        );
+        return ExitCode::from(2);
+    }
+    println!("topologies ({}):", names.len());
+    for name in &names {
+        println!("  {name}");
+    }
+    println!("\nstand one up with `prova up <topology>`.");
+    ExitCode::SUCCESS
+}
+
 /// Everything the `up`/`watch` verbs need to stand a topology up: the located project, the files that
 /// may declare topologies, and the engine config (plugins resolved, port mode set).
 struct TopologyRun {
@@ -514,7 +544,7 @@ struct TopologyRun {
 /// verb (`up`/`watch`). Shared so both consume one definition the same way; `verb` only labels errors.
 fn build_topology_run(
     verb: &str,
-    name: &str,
+    name: Option<&str>,
     profile: Option<String>,
     manifest_path: Option<String>,
     fixed: bool,
@@ -554,7 +584,12 @@ fn build_topology_run(
     files.sort();
     files.dedup();
     if files.is_empty() {
-        eprintln!("prova {verb}: no files found to search for topologies (topology {name:?})");
+        match name {
+            Some(n) => {
+                eprintln!("prova {verb}: no files found to search for topologies (topology {n:?})")
+            }
+            None => eprintln!("prova {verb}: no topologies defined (nothing under the run paths)"),
+        }
         return Err(ExitCode::from(2));
     }
 
@@ -629,7 +664,7 @@ fn watch_subcommand(args: Vec<String>) -> ExitCode {
     };
 
     let TopologyRun { files, config, .. } =
-        match build_topology_run("watch", &name, profile, manifest_path, fixed) {
+        match build_topology_run("watch", Some(&name), profile, manifest_path, fixed) {
             Ok(p) => p,
             Err(code) => return code,
         };
