@@ -133,14 +133,15 @@ The second conflation. Today the home answers two questions it should not:
 > **Home = where config comes from** (walk **up**, like git finding `.git`).
 > **CWD = what runs by default** (walk **down**).
 
-`ide-and-layout.md` already defines home precisely — the directory containing `prova.toml`, with
-`root` (the project root the editor binds to) and `dir` (`root`, or its `prova/`/`.prova/` child).
-`prova.root` / `prova.home` now surface both to authors. What is missing is only that **home also
+`ide-and-layout.md` already defines home precisely — the project **root**: the directory holding a
+flat `prova.toml`, or the **parent** of a `prova/`/`.prova/` nook. Everything (`proofs`, `config`,
+`plugin_root`, `.luarc.json`) resolves from that one root; `prova.root` / `prova.home` surface it to
+authors. What is missing is only that **home also
 decides what runs**, so `cd crates/prova-cli && prova` runs the entire repo. Splitting them is the
 cargo/pytest idiom and needs no new concept — just a default:
 
 ```
-$ prova                      # from the root: every suite under [run] paths
+$ prova                      # from the root: every suite under [run] proofs
 $ cd crates/prova-cli
 $ prova                      # THIS subtree's suites; config still from the one home
 $ prova --all                # override: the whole package from anywhere
@@ -155,10 +156,10 @@ set of annotations, one `.luarc.json` question, one place to look. Module autono
 Nothing here is new machinery; it is the existing pieces, named:
 
 ```
-<repo>/
-├── .luarc.json                  ← the only root clutter (LuaLS binds here)
-├── prova/                       ← THE home: the package's anchor
-│   ├── prova.toml               #   [plugins], [profiles.*] + must_run, [run] paths
+<repo>/                          ← THE home: the project root (LuaLS binds here)
+├── .luarc.json                  ← written at home, beside everything it resolves
+├── prova/                       ← the nook: prova's OWN files (manifest, config, plugins)
+│   ├── prova.toml               #   [plugins], [profiles.*] + must_run, [run] proofs
 │   ├── plugins/ourthing.lua     #   locally-authored plugins
 │   └── suites/                  #   project-level suites (cross-cutting)
 ├── crates/prova-cli/

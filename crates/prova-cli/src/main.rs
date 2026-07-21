@@ -740,26 +740,27 @@ fn build_topology_run(
 
     let run = resolve_from_manifest(&home, profile, None, None, None, &layout, false, false)?;
 
-    // Gather every file that could declare a topology: the run paths plus any explicit suites.
+    // Gather every file that could declare a topology: the discovered `proofs` dirs plus any explicit
+    // suites. `proofs` are directory-NAME patterns found anywhere below the root; suites are literal.
     let mut files: Vec<PathBuf> = Vec::new();
-    let mut discover = |rel: &str| -> Result<(), ExitCode> {
-        match discover_files(&home.dir.join(rel)) {
+    let mut discover = |dir: PathBuf| -> Result<(), ExitCode> {
+        match discover_files(&dir) {
             Ok(found) => {
                 files.extend(found);
                 Ok(())
             }
             Err(err) => {
-                eprintln!("prova {verb}: {rel}: {err}");
+                eprintln!("prova {verb}: {}: {err}", dir.display());
                 Err(ExitCode::from(2))
             }
         }
     };
-    for p in &run.paths {
-        discover(p)?;
+    for dir in find_proof_dirs(&home.dir, &run.proofs) {
+        discover(dir)?;
     }
     for decl in run.suites.values() {
         for p in &decl.paths {
-            discover(p)?;
+            discover(home.dir.join(p))?;
         }
     }
     files.sort();
@@ -1375,8 +1376,9 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         }
     };
 
-    // Resolve the run. Explicit path args bypass the manifest (paths relative to cwd, no IDE
-    // management); otherwise read the home's `prova.toml` (paths relative to the home dir).
+    // Resolve the run. Explicit path args bypass the manifest (literal paths relative to cwd, no IDE
+    // management); otherwise read the home's `prova.toml` (a `proofs` name-pattern rooted at home).
+    let from_manifest = explicit_paths.is_empty();
     let (
         base_dir,
         paths,
@@ -1419,12 +1421,11 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             offline,
         ) {
             Ok(r) => (
-                // Test `paths` resolve against the package ROOT, not the home dir — so `proofs/`
-                // lives at the root while `.prova/` (or `prova/`) is prova's config/plugins nook.
-                // (For a flat `prova.toml`, root == home, so nothing changes.) The `config`
-                // companion stays home-relative; only test discovery is root-anchored.
+                // `home.dir` IS the package root (the parent of a nested `.prova/`/`prova/` nook), so
+                // proof patterns, `config`, and `plugin_root` all resolve against it. `proofs/` lives
+                // at the root while prova's own files tuck into the nook.
                 home.dir.clone(),
-                r.paths,
+                r.proofs,
                 r.jobs,
                 r.format,
                 r.suites,
@@ -1444,7 +1445,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     }
 
     // Build the suites to run (declared `[suites.*]` first, then the plain paths).
-    let suites = match collect_suites(&base_dir, &declared, &paths) {
+    let suites = match collect_suites(&base_dir, &declared, &paths, from_manifest) {
         Ok(suites) => suites,
         Err(msg) => {
             eprintln!("prova: {msg}");
@@ -1647,7 +1648,7 @@ fn reconcile_unreferenced(registry: Option<&prova_core::SnapshotRegistry>, polic
 
 /// A resolved manifest run: what to discover, how, and the resolved plugin + IDE settings.
 struct ManifestRun {
-    paths: Vec<String>,
+    proofs: Vec<String>,
     jobs: usize,
     format: Format,
     suites: BTreeMap<String, SuiteDecl>,
@@ -1704,6 +1705,73 @@ fn report_annotations(outcome: &annotations::Outcome) {
 /// Resolve a manifest path pattern (relative to `base_dir`) to concrete paths. A `*` makes it a
 /// glob — `"**/proofs"` matches every `proofs/` directory at any depth, the multi-crate discovery
 /// pattern; anything else is joined literally. Sorted for determinism.
+/// Directory names prova never descends into when matching `[run] proofs` patterns: its own nook
+/// (`prova`/`.prova`), any hidden dir (VCS metadata, tool caches), and common build/dependency trees.
+/// A plugin's own `proofs/` lives under the `.prova/` nook, so this is what keeps a dependency's
+/// proofs out of the consuming package's run.
+fn is_skipped_dir(name: &str) -> bool {
+    name.starts_with('.')
+        || matches!(
+            name,
+            "prova" | "target" | "node_modules" | "vendor" | "dist" | "build" | "testdata"
+        )
+}
+
+/// Whether a directory basename matches one of the `[run] proofs` patterns — a glob when the pattern
+/// carries a metacharacter, an exact-name match otherwise.
+fn name_matches(name: &str, patterns: &[String]) -> bool {
+    patterns.iter().any(|p| {
+        if p.contains(['*', '?', '[']) {
+            glob::Pattern::new(p).map(|g| g.matches(name)).unwrap_or(false)
+        } else {
+            p == name
+        }
+    })
+}
+
+/// Every directory below `root` whose name matches a `proofs` pattern — the discovery model for
+/// `[run] proofs`. Walks the tree (skipping prova's nook, hidden dirs, and build trees) and PRUNES at
+/// a match: a matched `proofs/` owns its whole subtree (handed to `discover_suites`), so a `proofs/`
+/// nested inside it is not matched again. Sorted for deterministic order.
+fn find_proof_dirs(root: &Path, patterns: &[String]) -> Vec<PathBuf> {
+    fn walk(dir: &Path, patterns: &[String], out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let mut subdirs: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect();
+        subdirs.sort();
+        for path in subdirs {
+            let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if is_skipped_dir(name) {
+                continue;
+            }
+            if name_matches(name, patterns) {
+                out.push(path); // prune — the subtree is this suite's, not re-scanned for `proofs/`
+            } else if crate::home::has_manifest(&path) {
+                continue; // a nested, independent package — its proofs are its own, not ours
+            } else {
+                walk(&path, patterns, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    // `"."` is the flat escape hatch: discover the whole tree from the root itself (for a package
+    // whose proofs are not tucked under a named directory). It composes with name patterns.
+    if patterns.iter().any(|p| p == ".") {
+        out.push(root.to_path_buf());
+    }
+    walk(root, patterns, &mut out);
+    out.sort();
+    out.dedup();
+    out
+}
+
 fn expand_pattern(base_dir: &Path, pattern: &str) -> Result<Vec<PathBuf>, String> {
     if !pattern.contains('*') {
         return Ok(vec![base_dir.join(pattern)]);
@@ -1721,7 +1789,8 @@ fn expand_pattern(base_dir: &Path, pattern: &str) -> Result<Vec<PathBuf>, String
 fn collect_suites(
     base_dir: &Path,
     declared: &BTreeMap<String, SuiteDecl>,
-    paths: &[String],
+    proofs: &[String],
+    patterns: bool,
 ) -> Result<Vec<Suite>, String> {
     let mut suites: Vec<Suite> = Vec::new();
     for (name, decl) in declared {
@@ -1740,10 +1809,20 @@ fn collect_suites(
             });
         }
     }
-    for arg in paths {
-        for dir in expand_pattern(base_dir, arg)? {
-            let found = discover_suites(&dir).map_err(|err| format!("{arg}: {err}"))?;
+    if patterns {
+        // Manifest `[run] proofs`: each entry is a directory-NAME pattern found anywhere below the
+        // package root.
+        for dir in find_proof_dirs(base_dir, proofs) {
+            let found = discover_suites(&dir).map_err(|err| format!("{}: {err}", dir.display()))?;
             suites.extend(found);
+        }
+    } else {
+        // Explicit `prova <path>...` args: literal files/dirs (with glob support), relative to cwd.
+        for arg in proofs {
+            for dir in expand_pattern(base_dir, arg)? {
+                let found = discover_suites(&dir).map_err(|err| format!("{arg}: {err}"))?;
+                suites.extend(found);
+            }
         }
     }
     Ok(suites)
@@ -1859,9 +1938,9 @@ fn resolve_from_manifest(
         eprintln!("prova: {e}");
         ExitCode::from(2)
     })?;
-    if resolved.paths.is_empty() && resolved.suites.is_empty() {
+    if resolved.proofs.is_empty() && resolved.suites.is_empty() {
         eprintln!(
-            "prova: manifest {} defines no paths or suites to run",
+            "prova: manifest {} defines no proofs or suites to run",
             path.display()
         );
         return Err(ExitCode::from(2));
@@ -1997,7 +2076,7 @@ fn resolve_from_manifest(
         },
     };
     Ok(ManifestRun {
-        paths: resolved.paths,
+        proofs: resolved.proofs,
         jobs,
         format,
         suites: resolved.suites,
@@ -2102,7 +2181,7 @@ fn skill_subcommand(args: Vec<String>) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     let root = match home::find(&std::env::current_dir().unwrap_or_default()) {
-        Ok(Some(h)) => h.editor_root(),
+        Ok(Some(h)) => h.dir,
         _ => std::env::current_dir().unwrap_or_default(),
     };
     let dir = root.join(".claude/skills/prova");

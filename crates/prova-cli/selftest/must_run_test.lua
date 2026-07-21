@@ -27,12 +27,12 @@ local function project(manifest_extra)
   local dir = fs.tempdir()
   fs.write(dir .. "/prova.toml", table.concat({
     '[run]',
-    'paths = ["suite.lua"]',
+    'proofs = ["."]',
     '[luals]',
     'manage = "never"',
     manifest_extra or '',
   }, "\n"))
-  fs.write(dir .. "/suite.lua", table.concat({
+  fs.write(dir .. "/x_test.lua", table.concat({
     'prova.test("plain", function(t) t:expect(1):equals(1) end)',
     'prova.test("needs absent", { requires = { "' .. ABSENT .. '" } }, function(t)',
     '  t:expect(1):equals(1)',

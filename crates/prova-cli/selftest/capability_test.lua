@@ -36,13 +36,13 @@ local function project(companion, manifest_extra)
   local dir = fs.tempdir()
   fs.write(dir .. "/prova.toml", table.concat({
     '[run]',
-    'paths = ["suite.lua"]',
+    'proofs = ["."]',
     '[luals]',
     'manage = "never"',
     manifest_extra or '',
   }, "\n"))
   if companion then fs.write(dir .. "/prova.lua", companion) end
-  fs.write(dir .. "/suite.lua", table.concat({
+  fs.write(dir .. "/x_test.lua", table.concat({
     'prova.test("plain", function(t) t:expect(1):equals(1) end)',
     'prova.test("needs gpu", { requires = { "gpu" } }, function(t) t:expect(1):equals(1) end)',
   }, "\n"))
@@ -132,7 +132,7 @@ prova.test("the predicate is evaluated ONCE per run, not per test", function(t)
   -- per test, which is not a capability — it is a coin flip. (It also could not be checked as a
   -- precondition, since that happens before any test exists.)
   local dir = fs.tempdir()
-  fs.write(dir .. "/prova.toml", '[run]\npaths = ["suite.lua"]\n[luals]\nmanage = "never"\n')
+  fs.write(dir .. "/prova.toml", '[run]\nproofs = ["."]\n[luals]\nmanage = "never"\n')
   fs.write(dir .. "/prova.lua", table.concat({
     'local n = 0',
     'runtime.capability("counted", function()',
@@ -141,7 +141,7 @@ prova.test("the predicate is evaluated ONCE per run, not per test", function(t)
     '  return true',
     'end)',
   }, "\n"))
-  fs.write(dir .. "/suite.lua", table.concat({
+  fs.write(dir .. "/x_test.lua", table.concat({
     'prova.test("a", { requires = { "counted" } }, function(t) t:expect(1):equals(1) end)',
     'prova.test("b", { requires = { "counted" } }, function(t) t:expect(1):equals(1) end)',
   }, "\n"))
@@ -203,9 +203,9 @@ prova.test("a predicate returning a version satisfies a constraint", function(t)
   -- so a registered capability composes with the same expression grammar rather than being a second
   -- class of thing.
   local dir = fs.tempdir()
-  fs.write(dir .. "/prova.toml", '[run]\npaths = ["suite.lua"]\n[luals]\nmanage = "never"\n')
+  fs.write(dir .. "/prova.toml", '[run]\nproofs = ["."]\n[luals]\nmanage = "never"\n')
   fs.write(dir .. "/prova.lua", 'runtime.capability("gpu", function() return "2.4.0" end)\n')
-  fs.write(dir .. "/suite.lua", table.concat({
+  fs.write(dir .. "/x_test.lua", table.concat({
     'prova.test("ok", { requires = { "gpu >= 2.0" } }, function(t) t:expect(1):equals(1) end)',
     'prova.test("too new", { requires = { "gpu >= 9.0" } }, function(t) error("must not run") end)',
   }, "\n"))
@@ -218,9 +218,9 @@ end)
 
 prova.test("a version-reporting predicate's skip says what it found", function(t)
   local dir = fs.tempdir()
-  fs.write(dir .. "/prova.toml", '[run]\npaths = ["suite.lua"]\n[luals]\nmanage = "never"\n')
+  fs.write(dir .. "/prova.toml", '[run]\nproofs = ["."]\n[luals]\nmanage = "never"\n')
   fs.write(dir .. "/prova.lua", 'runtime.capability("gpu", function() return "2.4.0" end)\n')
-  fs.write(dir .. "/suite.lua",
+  fs.write(dir .. "/x_test.lua",
     'prova.test("too new", { requires = { "gpu >= 9.0" } }, function(t) error("must not run") end)')
   local r = shell.run(prova_bin .. " --format json", { cwd = dir })
   t:expect(r.stdout, "reports the found version, not just the constraint"):contains("2.4.0")

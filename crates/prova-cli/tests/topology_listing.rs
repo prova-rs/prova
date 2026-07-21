@@ -34,7 +34,7 @@ fn up_no_arg(cwd: &Path) -> (bool, String) {
 #[test]
 fn up_with_no_arg_lists_defined_topologies() {
     let dir = tmp("some");
-    write(&dir, ".prova.toml", "[run]\npaths = [\".\"]\n");
+    write(&dir, ".prova.toml", "[run]\nproofs = [\".\"]\n");
     write(
         &dir,
         "topo_test.lua",
@@ -51,7 +51,7 @@ fn up_with_no_arg_lists_defined_topologies() {
 #[test]
 fn up_with_no_arg_and_no_topologies_says_none() {
     let dir = tmp("none");
-    write(&dir, ".prova.toml", "[run]\npaths = [\".\"]\n");
+    write(&dir, ".prova.toml", "[run]\nproofs = [\".\"]\n");
     write(
         &dir,
         "plain_test.lua",

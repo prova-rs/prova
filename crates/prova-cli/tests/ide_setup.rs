@@ -15,7 +15,7 @@ fn scratch(tag: &str) -> (PathBuf, PathBuf) {
     let _ = std::fs::remove_dir_all(&base);
     let project = base.join("project");
     std::fs::create_dir_all(project.join("proofs")).unwrap();
-    std::fs::write(project.join(".prova.toml"), "[run]\npaths = [\"proofs\"]\n").unwrap();
+    std::fs::write(project.join(".prova.toml"), "[run]\nproofs = [\"proofs\"]\n").unwrap();
     let xdg = base.join("xdg");
     std::fs::create_dir_all(&xdg).unwrap();
     (project, xdg)
@@ -62,7 +62,7 @@ fn scratch_nested(tag: &str) -> (PathBuf, PathBuf) {
     std::fs::create_dir_all(project.join("proofs")).unwrap();
     std::fs::write(
         project.join(".prova/prova.toml"),
-        "[run]\npaths = [\"../proofs\"]\n",
+        "[run]\nproofs = [\"proofs\"]\n",
     )
     .unwrap();
     let xdg = base.join("xdg");

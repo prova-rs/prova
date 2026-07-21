@@ -51,7 +51,7 @@ fn a_string_option_reaches_the_factory() {
     write(
         &dir,
         ".prova.toml",
-        "[run]\npaths = [\"proofs\"]\nplugin_root = \".prova/plugins\"\n\n\
+        "[run]\nproofs = [\"proofs\"]\nplugin_root = \".prova/plugins\"\n\n\
          [topologies]\n\
          site = { plugin = \"site\", factory = \"web\", options = { image = \"ubuntu-24.04\" } }\n",
     );
@@ -82,7 +82,7 @@ fn typed_and_nested_options_round_trip() {
     write(
         &dir,
         ".prova.toml",
-        "[run]\npaths = [\"proofs\"]\nplugin_root = \".prova/plugins\"\n\n\
+        "[run]\nproofs = [\"proofs\"]\nplugin_root = \".prova/plugins\"\n\n\
          [topologies]\n\
          site = { plugin = \"site\", factory = \"web\", options = { cpus = 2, wait = { ssh = true } } }\n",
     );
@@ -112,7 +112,7 @@ fn option_strings_are_escaped_not_injected() {
     write(
         &dir,
         ".prova.toml",
-        "[run]\npaths = [\"proofs\"]\nplugin_root = \".prova/plugins\"\n\n\
+        "[run]\nproofs = [\"proofs\"]\nplugin_root = \".prova/plugins\"\n\n\
          [topologies]\n\
          site = { plugin = \"site\", factory = \"web\", options = { name = \"a\\\") os.exit(1) --\" } }\n",
     );

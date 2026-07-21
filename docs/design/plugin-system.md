@@ -121,7 +121,7 @@ Discovery is the only implicit step: prova walks up for `.prova.toml`, `prova.to
 
 ```toml
 [run]
-paths        = ["proofs"]            # root-relative
+proofs       = ["proofs"]            # directory-name patterns; default, usually omitted — match every such dir anywhere below the root
 config       = "config.lua"          # home-relative
 plugin_root  = ".prova/plugins"      # root-relative; no default; exactly one
 ```
@@ -157,7 +157,7 @@ selects the package, `--config` / `PROVA_CONFIG` selects the companion, and in-p
 
 **The user-level config** (`~/.config/prova/config.toml`, not yet implemented) must stay on the right
 side of this line: it may change **how prova presents things** (format, jobs, colour, IDE prefs); it
-may never change **what prova resolves** (plugin roots, paths, plugin sources). A user config that
+may never change **what prova resolves** (plugin roots, proofs, plugin sources). A user config that
 could contribute a plugin root would be the machine-global plugin dir again under another name.
 
 ### Private dependencies (bundled + isolated)

@@ -16,7 +16,7 @@ defaults.** No magic conftest file, no fixture-inheritance, no phase-gated dual-
 [run]
 config  = "shared/config.lua"   # phase 1: loaded ONCE, pre-suite — runtime.* (capabilities)
 preload = ["shared.global"]     # phase 2: auto-require'd into EVERY suite VM — ambient setup
-paths   = ["suites"]            # discovery: suite.lua grouping + *_test.lua
+proofs  = ["suites"]            # discovery: suite.lua grouping + *_test.lua
 ```
 
 The whole home collapses to three clean things, because files are referenced by *path*, not summoned
@@ -137,9 +137,9 @@ layout — and the seed of the default `prova init` template.
 - **Nested-suite fixture inheritance** — rejected; `suite.lua` is directory-local, sharing is
   `require`.
 - **Tests mutating `runtime.*`** — rejected (see Bonus).
-- **Per-module independent homes / monorepo glob `paths`** — a real future shape (a sub-module with
-  its own `prova.toml`, or `paths = ["**/prova/suites"]` from one home), but deferred until a real
-  multi-module project needs it. One home + `paths` today.
+- **Per-module independent homes / monorepo glob `proofs`** — a real future shape (a sub-module with
+  its own `prova.toml`, or `proofs = ["**/prova/suites"]` from one home), but deferred until a real
+  multi-module project needs it. One home + `proofs` today.
 - **`prova init --template <archetype>`** — the flexibility endgame (default templates registered,
   user ones in `~/.config/prova/config.toml`, rendered via the `archetect` plugin). This canonical
   layout is what the default template *is*; build the template machinery once the layout has proven

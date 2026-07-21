@@ -36,7 +36,7 @@ fn build_mylib(base: &Path) {
     write(
         base,
         "mylib/prova.toml",
-        "[plugin]\nname = \"mylib\"\nentry = \"src/mylib.lua\"\n\n[run]\npaths = [\"proofs\"]\n",
+        "[plugin]\nname = \"mylib\"\nentry = \"src/mylib.lua\"\n\n[run]\nproofs = [\"proofs\"]\n",
     );
     write(base, "mylib/src/mylib.lua", "return { answer = 42 }\n");
     write(
@@ -68,7 +68,7 @@ fn one_manifest_is_both_a_requireable_plugin_and_a_runnable_suite() {
     write(
         &base,
         "app/prova.toml",
-        "[run]\npaths = [\"proofs\"]\n\n[plugins]\nmylib = { path = \"../mylib\" }\n",
+        "[run]\nproofs = [\"proofs\"]\n\n[plugins]\nmylib = { path = \"../mylib\" }\n",
     );
     write(
         &base,

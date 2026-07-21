@@ -109,7 +109,7 @@ fn an_advertised_topology_is_referenced_by_name() {
     write(
         &dir,
         ".prova.toml",
-        "[run]\npaths = [\"proofs\"]\n\n\
+        "[run]\nproofs = [\"proofs\"]\n\n\
          [plugins]\npg = { path = \"pg\" }\n\n\
          [topologies]\ndb = { plugin = \"pg\", topology = \"single\" }\n",
     );
@@ -146,7 +146,7 @@ fn an_unadvertised_topology_name_fails_clearly() {
     write(
         &dir,
         ".prova.toml",
-        "[run]\npaths = [\"proofs\"]\n\n[plugins]\npg = { path = \"pg\" }\n\n\
+        "[run]\nproofs = [\"proofs\"]\n\n[plugins]\npg = { path = \"pg\" }\n\n\
          [topologies]\ncluster = { plugin = \"pg\", topology = \"replicated\" }\n",
     );
     let (ok, out) = up_no_arg(&dir);
@@ -172,7 +172,7 @@ fn both_factory_and_topology_is_an_error() {
     write(
         &dir,
         ".prova.toml",
-        "[run]\npaths = [\"proofs\"]\nplugin_root = \".prova/plugins\"\n\n\
+        "[run]\nproofs = [\"proofs\"]\nplugin_root = \".prova/plugins\"\n\n\
          [topologies]\nx = { plugin = \"site\", factory = \"web\", topology = \"web\" }\n",
     );
     let (ok, out) = up_no_arg(&dir);
@@ -198,7 +198,7 @@ fn a_bad_factory_reference_fails_clearly() {
     write(
         &dir,
         ".prova.toml",
-        "[run]\npaths = [\"proofs\"]\nplugin_root = \".prova/plugins\"\n\n\
+        "[run]\nproofs = [\"proofs\"]\nplugin_root = \".prova/plugins\"\n\n\
          [topologies]\nbroken = { plugin = \"site\", factory = \"nope\" }\n",
     );
     let (ok, out) = up_no_arg(&dir);

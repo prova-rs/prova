@@ -51,7 +51,7 @@ fn manifest_entry_and_vendored_sibling_resolve_under_alias() {
     write(
         &project.join("prova.toml"),
         &format!(
-            "[run]\npaths = [\"tests\"]\n\n[plugins]\ngreet = {{ path = \"{}\" }}\n",
+            "[run]\nproofs = [\"tests\"]\n\n[plugins]\ngreet = {{ path = \"{}\" }}\n",
             plugin.to_string_lossy().replace('\\', "/")
         ),
     );
@@ -98,7 +98,7 @@ fn incompatible_plugin_version_is_rejected() {
     write(
         &project.join("prova.toml"),
         &format!(
-            "[run]\npaths = [\"tests\"]\n\n[plugins]\nfuture = {{ path = \"{}\" }}\n",
+            "[run]\nproofs = [\"tests\"]\n\n[plugins]\nfuture = {{ path = \"{}\" }}\n",
             plugin.to_string_lossy().replace('\\', "/")
         ),
     );

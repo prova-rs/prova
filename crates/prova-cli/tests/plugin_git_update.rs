@@ -54,7 +54,7 @@ fn write_project(project: &Path, remote: &Path, expect: &str, updates_toml: &str
     std::fs::write(
         project.join("prova.toml"),
         format!(
-            "[run]\npaths = [\"tests\"]\n\n[plugins]\ngreet = {{ git = \"{}\" }}\n{updates_toml}",
+            "[run]\nproofs = [\"tests\"]\n\n[plugins]\ngreet = {{ git = \"{}\" }}\n{updates_toml}",
             remote.to_string_lossy().replace('\\', "/"),
         ),
     )

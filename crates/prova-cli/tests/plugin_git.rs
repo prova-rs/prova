@@ -56,7 +56,7 @@ fn manifest_git_plugin_is_fetched_and_required() {
     std::fs::write(
         project.join("prova.toml"),
         format!(
-            "[run]\npaths = [\"tests\"]\n\n[plugins]\ngreet = {{ git = \"{}\", rev = \"{}\" }}\n",
+            "[run]\nproofs = [\"tests\"]\n\n[plugins]\ngreet = {{ git = \"{}\", rev = \"{}\" }}\n",
             remote.to_string_lossy().replace('\\', "/"),
             rev
         ),

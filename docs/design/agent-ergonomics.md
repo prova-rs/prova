@@ -102,8 +102,8 @@ is an undocumented coincidence, and CI or a nested run breaks it).
 
 `prova.workspace` exists and, by name, looked like the answer; it exposes only `create`.
 
-**Fix:** expose the resolved manifest root (e.g. `prova.root`, or `ctx.root`) — the directory the
-`prova.toml` was found in. One field. It is the anchor every path in a repo plugin needs, and the
+**Fix:** expose the resolved package root (home) (e.g. `prova.root`, or `ctx.root`) — the directory
+everything resolves against. One field. It is the anchor every path in a repo plugin needs, and the
 runtime already knows it (it resolved the manifest to get here).
 
 ---
@@ -143,9 +143,9 @@ because the thing under test **is** the local machine's integration.*
 ## 4. ~~Manifest discovery walks up only~~ — **WRONG. Already implemented.**
 
 > **Retracted 2026-07-16, the same day it was filed.** `home::find` already checks, at each ancestor,
-> the directory itself **and** its `prova/` / `.prova/` child — `Home` even documents the split
-> (`root` = the project root the editor binds to; `dir` = where `prova.toml` lives, "the root itself,
-> or its `prova/` / `.prova/` child"). Verified empirically: a tree containing only
+> the directory itself **and** its `prova/` / `.prova/` child — `Home` documents that `home.dir` is
+> the root: where everything (including `.luarc.json`) resolves and the editor attaches, whether
+> `prova.toml` sits in the root itself or tucked in its `prova/` / `.prova/` child. Verified empirically: a tree containing only
 > `prova/prova.toml` + `prova/tests/` is discovered and run from the repo root.
 >
 > **How the error happened, because it is the thesis in miniature.** I read `plugin-system.md`
@@ -178,8 +178,8 @@ invisible from `<repo>` — the exact layout the convention wants. (`.cargo/`, `
 all solved this the same way.)
 
 **Fix:** during the walk, at each level check `./prova.toml` **then `./prova/prova.toml`**. Keeps
-the root-manifest layout working, makes the directory standard discoverable, and lets `[run] paths`
-and `[plugins]` stay relative to the manifest (which they already are).
+the root-manifest layout working, makes the directory standard discoverable, and lets `[run] proofs`
+and `[plugins]` resolve from the package root (home) (which they already do).
 
 ---
 

@@ -115,7 +115,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
         }
     };
 
-    let (mut plugins_resolved, sources, paths, declared, jobs, capabilities) = match &home {
+    let (mut plugins_resolved, sources, proofs, declared, jobs, capabilities) = match &home {
         Some(home) => {
             match crate::resolve_from_manifest(
                 home, profile, None, None, None, &layout, false, false,
@@ -123,7 +123,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
                 Ok(r) => (
                     r.plugins,
                     r.sources,
-                    r.paths,
+                    r.proofs,
                     r.suites,
                     r.jobs,
                     r.capabilities,
@@ -150,7 +150,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
         layout,
         home,
         cli_plugins,
-        paths,
+        proofs,
         declared,
         jobs,
         plugins: plugins_resolved,
@@ -215,8 +215,8 @@ struct McpEnv {
     home: Option<Home>,
     /// `-P name=source` server args, re-layered when a call re-resolves with a `profile`.
     cli_plugins: Vec<String>,
-    /// Manifest `[run] paths` (empty when there is no manifest).
-    paths: Vec<String>,
+    /// Manifest `[run] proofs` (empty when there is no manifest).
+    proofs: Vec<String>,
     /// Manifest `[suites.*]` declarations.
     declared: BTreeMap<String, SuiteDecl>,
     jobs: usize,
@@ -232,7 +232,7 @@ struct CallEnv {
     /// `engine_config` roots `prova.root`/`prova.home` at the package the call actually targets.
     home: Home,
     base_dir: PathBuf,
-    paths: Vec<String>,
+    proofs: Vec<String>,
     declared: BTreeMap<String, SuiteDecl>,
     jobs: usize,
     plugins: plugins::ResolvedPlugins,
@@ -286,7 +286,7 @@ impl McpEnv {
             None => Ok(CallEnv {
                 home: home.clone(),
                 base_dir: home.dir.clone(),
-                paths: self.paths.clone(),
+                proofs: self.proofs.clone(),
                 declared: self.declared.clone(),
                 jobs: self.jobs,
                 plugins: self.plugins.clone(),
@@ -319,7 +319,7 @@ impl McpEnv {
                 Ok(CallEnv {
                     home: home.clone(),
                     base_dir: home.dir.clone(),
-                    paths: run.paths,
+                    proofs: run.proofs,
                     declared: run.suites,
                     jobs: run.jobs,
                     plugins: run.plugins,
@@ -525,7 +525,7 @@ fn topology_files(call: &CallEnv) -> Result<Vec<PathBuf>, String> {
         files.extend(found);
         Ok(())
     };
-    for p in &call.paths {
+    for p in &call.proofs {
         discover(p)?;
     }
     for decl in call.declared.values() {
@@ -751,7 +751,7 @@ fn run_blocking(env: &McpEnv, req: RunRequest) -> Result<(serde_json::Value, boo
         }
     }
 
-    let suites = crate::collect_suites(&call.base_dir, &call.declared, &call.paths)?;
+    let suites = crate::collect_suites(&call.base_dir, &call.declared, &call.proofs, true)?;
     if suites.is_empty() {
         return Err("no test files found (looked for *_test.lua / *.test.lua)".into());
     }
@@ -794,7 +794,7 @@ fn list_blocking(env: &McpEnv, req: SelectionArgs) -> Result<(serde_json::Value,
         }
     }
 
-    let suites = crate::collect_suites(&call.base_dir, &call.declared, &call.paths)?;
+    let suites = crate::collect_suites(&call.base_dir, &call.declared, &call.proofs, true)?;
     let mut config = crate::engine_config(1, &call.plugins, Some(&call.home))
         .with_capabilities(call.capabilities.clone());
     config.selection = selection;

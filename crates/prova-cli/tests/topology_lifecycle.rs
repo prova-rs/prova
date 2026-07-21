@@ -25,7 +25,7 @@ fn start_ps_down_supervises_a_detached_topology() {
 
     std::fs::write(
         root.join("prova.toml"),
-        "[run]\npaths = [\".\"]\n[luals]\nmanage = \"never\"\n",
+        "[run]\nproofs = [\".\"]\n[luals]\nmanage = \"never\"\n",
     )
     .unwrap();
     // A no-docker topology: two fake resources with `url`s, and a deferred teardown that appends to a

@@ -4,7 +4,7 @@
 //!
 //! ```toml
 //! [run]                         # the default profile
-//! paths  = ["tests"]            # files/dirs to discover
+//! proofs = ["proofs"]          # dir-name patterns; omit to default to ["proofs"]
 //! jobs   = 4                    # concurrency (throughput only)
 //! format = "console"           # "console" | "json"
 //!
@@ -278,10 +278,14 @@ pub struct SuiteDecl {
 /// One run profile. Every field is optional so a profile can override just what it needs.
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct Profile {
+    /// Directory-NAME patterns marking proof locations. Prova runs the `*_test.lua` in every directory
+    /// matching one of these anywhere below the package root — a pattern is a basename (glob
+    /// metacharacters allowed), NOT a path, so `["proofs"]` finds every `proofs/` dir at any depth, not
+    /// just `<root>/proofs`. Omitted → the default `["proofs"]` (see [`Resolved::DEFAULT_PROOFS`]).
     #[serde(default)]
-    pub paths: Vec<String>,
+    pub proofs: Vec<String>,
     /// The directory holding this package's own plugins, relative to the package **root** (like
-    /// `paths`). No default: the one place prova scans is the one this file names.
+    /// `proofs`). No default: the one place prova scans is the one this file names.
     ///
     /// Deliberately singular. An ambient root exists for a single job — "my package's plugins, don't
     /// make me name each one" — and that is inherently one place. A plugin from anywhere else gets a
@@ -324,7 +328,9 @@ pub struct Profile {
 /// A fully-resolved run configuration (base `[run]` with an optional profile overlaid).
 #[derive(Debug, PartialEq)]
 pub struct Resolved {
-    pub paths: Vec<String>,
+    /// The proof directory-name patterns to discover (never empty — an omitted `[run] proofs`
+    /// resolves to [`Resolved::DEFAULT_PROOFS`]).
+    pub proofs: Vec<String>,
     /// The package's plugin directory (`[run] plugin_root`), relative to the package root. `None`
     /// means the package declared none — the searcher then has nowhere to scan, and says so.
     pub plugin_root: Option<String>,
@@ -333,7 +339,7 @@ pub struct Resolved {
     pub jobs: Option<usize>,
     pub format: Option<String>,
     pub env: BTreeMap<String, String>,
-    /// Explicitly-declared suites (`[suites.*]`), run in addition to `paths`.
+    /// Explicitly-declared suites (`[suites.*]`), run in addition to the discovered `proofs`.
     pub suites: BTreeMap<String, SuiteDecl>,
     /// Declared plugins (`[plugins.*]`) — name → source, applied to every run.
     pub plugins: BTreeMap<String, PluginSource>,
@@ -350,6 +356,12 @@ pub struct Resolved {
     /// because a context that could retract a guarantee would let the strictest bar be silenced by
     /// selecting a laxer profile.
     pub must_run: Vec<String>,
+}
+
+impl Resolved {
+    /// The proof directory-name patterns used when `[run] proofs` is omitted — every `proofs/` dir
+    /// below the package root.
+    pub const DEFAULT_PROOFS: &'static [&'static str] = &["proofs"];
 }
 
 impl Manifest {
@@ -371,9 +383,12 @@ impl Manifest {
             ),
         };
 
-        let paths = match overlay {
-            Some(p) if !p.paths.is_empty() => p.paths.clone(),
-            _ => base.paths.clone(),
+        // An omitted (or empty) `proofs` resolves to the default, so zero-config discovery finds every
+        // `proofs/` dir. A profile's non-empty list replaces the base's.
+        let proofs = match overlay {
+            Some(p) if !p.proofs.is_empty() => p.proofs.clone(),
+            _ if !base.proofs.is_empty() => base.proofs.clone(),
+            _ => Resolved::DEFAULT_PROOFS.iter().map(|s| s.to_string()).collect(),
         };
         // A profile that names a root means "scan here instead" — it replaces, never adds, so
         // selecting a profile can not widen resolution.
@@ -406,7 +421,7 @@ impl Manifest {
         }
 
         // Guarantees are the UNION of the baseline and the profile's — additive, never overriding,
-        // unlike `paths`/`jobs`/`format`. A profile promises more than the package, never less.
+        // unlike `proofs`/`jobs`/`format`. A profile promises more than the package, never less.
         let mut must_run = base.must_run.clone();
         if let Some(p) = overlay {
             for cap in &p.must_run {
@@ -417,7 +432,7 @@ impl Manifest {
         }
 
         Ok(Resolved {
-            paths,
+            proofs,
             plugin_root,
             config,
             jobs,
@@ -440,7 +455,7 @@ mod tests {
 
     const SAMPLE: &str = r#"
 [run]
-paths  = ["tests"]
+proofs = ["tests"]
 jobs   = 4
 format = "console"
 
@@ -453,7 +468,7 @@ jobs = 8
 CI = "true"
 
 [profiles.smoke]
-paths = ["tests/smoke"]
+proofs = ["tests/smoke"]
 "#;
 
     fn env(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
@@ -470,7 +485,7 @@ paths = ["tests/smoke"]
         assert_eq!(
             r,
             Resolved {
-                paths: vec!["tests".into()],
+                proofs: vec!["tests".into()],
                 plugin_root: None,
                 config: None,
                 jobs: Some(4),
@@ -492,7 +507,7 @@ paths = ["tests/smoke"]
         let m = Manifest::parse(
             r#"
 [run]
-paths = ["tests"]
+proofs = ["tests"]
 
 [plugins]
 greet    = "./plugins/greet.lua"
@@ -539,7 +554,7 @@ nats     = { git = "https://example.com/acme/prova-nats", rev = "abc123", module
         let m = Manifest::parse(
             r#"
 [run]
-paths = ["tests"]
+proofs = ["tests"]
 
 [suites.grpc]
 paths = ["services/grpc"]
@@ -565,7 +580,7 @@ paths = ["services/rest"]
         let m = Manifest::parse(
             r#"
 [run]
-paths = ["tests"]
+proofs = ["tests"]
 
 [sources]
 acme   = "github:acme"
@@ -589,18 +604,18 @@ redis = "acme:prova-redis@v1"
     fn profile_overlays_base_and_merges_env() {
         let m = Manifest::parse(SAMPLE).unwrap();
         let r = m.resolve(Some("ci")).unwrap();
-        // jobs overridden; paths + format inherited from [run]; env is base-then-profile.
+        // jobs overridden; proofs + format inherited from [run]; env is base-then-profile.
         assert_eq!(r.jobs, Some(8));
-        assert_eq!(r.paths, vec!["tests".to_string()]);
+        assert_eq!(r.proofs, vec!["tests".to_string()]);
         assert_eq!(r.format.as_deref(), Some("console"));
         assert_eq!(r.env, env(&[("CI", "true"), ("LOG", "info")]));
     }
 
     #[test]
-    fn profile_can_override_paths() {
+    fn profile_can_override_proofs() {
         let m = Manifest::parse(SAMPLE).unwrap();
         let r = m.resolve(Some("smoke")).unwrap();
-        assert_eq!(r.paths, vec!["tests/smoke".to_string()]);
+        assert_eq!(r.proofs, vec!["tests/smoke".to_string()]);
         assert_eq!(r.jobs, Some(4)); // inherited
     }
 
@@ -632,14 +647,14 @@ redis = "acme:prova-redis@v1"
         let m = Manifest::parse(
             r#"
 [run]
-paths = ["proofs"]
+proofs = ["proofs"]
 plugin_root = ".prova/plugins"
 
 [profiles.vendored]
 plugin_root = "vendor/plugins"
 
 [profiles.smoke]
-paths = ["proofs/smoke"]
+proofs = ["proofs/smoke"]
 "#,
         )
         .unwrap();
@@ -668,7 +683,7 @@ paths = ["proofs/smoke"]
         let m = Manifest::parse(
             r#"
 [run]
-paths = ["tests"]
+proofs = ["tests"]
 
 [plugins]
 redis = "./plugins/redis.lua"
@@ -713,10 +728,11 @@ redis = "./plugins/redis-ci.lua"
     }
 
     #[test]
-    fn empty_manifest_resolves_to_empty_defaults() {
+    fn empty_manifest_resolves_to_default_proofs() {
         let m = Manifest::parse("").unwrap();
         let r = m.resolve(None).unwrap();
-        assert!(r.paths.is_empty());
+        // An omitted `[run] proofs` resolves to the default, so discovery still finds `proofs/` dirs.
+        assert_eq!(r.proofs, vec!["proofs".to_string()]);
         assert_eq!(r.jobs, None);
     }
 }

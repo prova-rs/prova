@@ -1,14 +1,14 @@
 use std::process::Command;
 
-/// `**/proofs` pattern discovery: `paths = ["**/proofs"]` finds every `proofs/` directory at any
-/// depth — the multi-crate layout, from one hidden manifest. (Cross-root *sharing* is a plugin now,
-/// via `.prova/plugins/`, not `package.path` — so this proves discovery, not require.)
+/// Name-pattern discovery: the bare pattern `proofs = ["proofs"]` finds every `proofs/` directory at
+/// any depth — the multi-crate layout, from one manifest. (Cross-root *sharing* is a plugin now, via
+/// `.prova/plugins/`, not `package.path` — so this proves discovery, not require.)
 #[test]
-fn glob_paths_discover_proofs_dirs_at_any_depth() {
+fn name_pattern_discovers_proofs_dirs_at_any_depth() {
     let dir = std::env::temp_dir().join(format!("prova-pattern-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("proofs")).unwrap();
     std::fs::create_dir_all(dir.join("mod/proofs")).unwrap();
-    std::fs::write(dir.join("prova.toml"), "[run]\npaths = [\"**/proofs\"]\n").unwrap();
+    std::fs::write(dir.join("prova.toml"), "[run]\nproofs = [\"proofs\"]\n").unwrap();
     std::fs::write(
         dir.join("proofs/a_test.lua"),
         "prova.test(\"root proof\", function(t) t:expect(1):equals(1) end)\n",

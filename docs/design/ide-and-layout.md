@@ -14,70 +14,57 @@ is to how much the package has opted in.
 Two facts drive the whole design:
 
 1. **LuaLS binds to the workspace root you open**, and reads a `.luarc.json` there. prova writes that
-   pointer into the **home directory** — which is the package as prova sees it.
+   pointer into the **home directory** — which is the package root an editor attaches to.
 2. **`---@meta <name>` makes `require("<name>")` resolve by module name** — decoupled from the file's
    path. That's what lets a plugin cached under a ref-hashed directory still be found as
    `require("postgres")`.
 
 ## The "prova home"
 
-**Home = the directory that contains the manifest, and it is the base for everything** — every
-manifest-relative path (`paths`, `config`, `plugin_root`) and every generated artifact (`.luarc.json`,
-`running/`) resolves against it. There is no separate "project root": home *is* the root. A package
-picks one of four manifest locations:
+**Home = the project ROOT — the directory an editor opens and where `proofs/` live — and it is the
+base for everything.** Every manifest-relative key (`proofs`, `config`, `plugin_root`) and every
+generated artifact (`.luarc.json`, `running/`) resolves against it. A package picks one of four
+manifest locations:
 
-| Manifest location | Home dir | Feel |
+| Manifest location | Home (root) | Feel |
 |---|---|---|
 | `prova.toml` | the dir holding it | flat — zero nesting |
 | `.prova.toml` | the dir holding it | flat, hidden — one manifest, out of sight |
-| `prova/prova.toml` | `prova/` | visible nested — a self-contained `prova/` |
-| `.prova/prova.toml` | `.prova/` | hidden nested — a self-contained `.prova/` |
+| `prova/prova.toml` | the dir **above** `prova/` | visible nested — config tucked in `prova/` |
+| `.prova/prova.toml` | the dir **above** `.prova/` | hidden nested — config tucked in `.prova/` |
 
-Because home is the manifest's own directory, a package is a **relocatable unit**: move the manifest
-and its files from `prova/` up to the root and *nothing in the manifest changes* — every path was
-always relative to wherever the manifest sits. That is the whole reason to unify root and home: one
-base, one mental model, and a layout an agent can read off a single file.
+The nested forms are how a package hides prova's own files — the manifest, `config.lua`, `plugins/` —
+inside a `prova/` or `.prova/` **nook**, while the ROOT stays the parent: where `proofs/` live in the
+open, and where an editor attaches. So `config = ".prova/config.lua"` and `proofs = ["proofs"]` in a
+`.prova/prova.toml` resolve to `<root>/.prova/config.lua` and (via discovery) `<root>/proofs` — both
+relative to the root, never to the manifest's own directory. One base, one mental model, a layout an
+agent reads off a single file. A package stays a **relocatable unit**: home is the root whether the
+manifest sits flat at the root or tucked into a nook — the only difference is that `config`/
+`plugin_root` point *into* the nook for the nested form.
 
 Discovery walks **up** from the current directory (like git finding `.git`), so `prova` runs from
-anywhere inside a package. Two rules:
+anywhere inside a package — including from inside the nook itself. Two rules:
 
 - **Exactly one of the four variants per directory.** Two in one directory is an ambiguous layout;
-  prova refuses to guess. (Across *different* levels is fine — see nested projects below.)
+  prova refuses to guess. (Across *different* levels is fine — see nested packages below.)
 - **The nearest manifest wins, and a deeper one is its own package.** A `prova.toml` further down the
   tree is an independent package, not a child of an ancestor's — running from inside it resolves it,
-  not the ancestor.
-
-No name-based special-casing is needed: `cd prova && prova` finds the flat `prova/prova.toml` (home
-`prova/`); running from the parent finds the nested `prova/prova.toml` (home also `prova/`). Both
-agree because home is always the manifest's directory.
-
-**The editor pointer is the one exception.** Everything the *manifest* references resolves against the
-home dir — but `.luarc.json` is an editor artifact, not a manifest path, and its location is governed
-by where the editor attaches: the **editor root**. That is the home dir for a flat manifest, and the
-*parent* of a nested `prova/` / `.prova/` home (you open `myproject/`, never `myproject/.prova/`). So:
-
-```
-myproject/
-├── .prova.toml          ← flat manifest — editor root == home == root
-├── .luarc.json          ← beside it
-└── subproject/
-    ├── .luarc.json      ← beside the .prova/ dir, at the editor root
-    └── .prova/          ← nested home; paths resolve here, but the pointer sits one level up
-        └── prova.toml
-```
-
-`prova ide setup` writes `.luarc.json` at the editor root of whatever home it discovers, so running it
-at the top wires the top and running it in a subproject wires the subproject. A subproject with no
-setup of its own inherits the nearest ancestor's `.luarc.json` (LuaLS walks up); running setup there
-drops a more-specific one that LuaLS then prefers — self-correcting exactly when someone asks. (This
-is the sole use of the editor root; path resolution never touches it.)
+  not the ancestor, and its `proofs/` are never swept into the ancestor's discovery.
 
 The signal for "nested" is the manifest **filename**, not the directory name alone: only a *bare*
 `prova.toml` inside a directory named `prova`/`.prova` is nested (which reserves those two directory
-names for that role). A hidden `.prova.toml` is a flat file whatever its directory is called, so it
-never hoists — the escape hatch is exact: to root a *flat* package in a directory literally named
+names for that role, and makes discovery from inside the nook resolve the same root as discovery from
+outside it). A hidden `.prova.toml` is a flat file whatever its directory is called, so it never
+hoists — the escape hatch is exact: to root a *flat* package in a directory literally named
 `prova`/`.prova`, use `.prova.toml`. The one on-disk ambiguity — a bare `prova.toml` in such a
 directory — is decided by the reservation, deterministically, wherever you run prova from.
+
+Because the root *is* the editor-attach point, `.luarc.json` needs no special-casing: it goes at home,
+the same directory everything else resolves against. `prova ide setup` writes it at the discovered
+home, so running it at the top wires the top and running it in a nested package wires that package. A
+package with no setup of its own inherits the nearest ancestor's `.luarc.json` (LuaLS walks up);
+running setup there drops a more-specific one that LuaLS then prefers — self-correcting exactly when
+someone asks.
 
 A typical hidden-flat layout (what prova itself uses):
 
@@ -85,8 +72,21 @@ A typical hidden-flat layout (what prova itself uses):
 myproject/
 ├── .prova.toml          ← the manifest — home IS the root
 ├── .luarc.json          ← the editor pointer, at the root LuaLS binds to
-├── proofs/              ← visible tests (paths = ["proofs"])
+├── proofs/              ← visible tests (proofs = ["proofs"], the default)
 └── .prova/              ← just a nook for config + plugins the manifest points into
+    ├── config.lua       #   config = ".prova/config.lua"
+    └── plugins/         #   plugin_root = ".prova/plugins"
+```
+
+The nested form (`.prova/prova.toml`) is the same picture with the manifest moved into the nook — the
+root, and `proofs/` at it, are unchanged:
+
+```
+myproject/                ← still the home (root)
+├── .luarc.json          ← still here, at the root
+├── proofs/              ← still here, discovered from the root
+└── .prova/
+    ├── prova.toml       ← the manifest now lives in the nook
     ├── config.lua       #   config = ".prova/config.lua"
     └── plugins/         #   plugin_root = ".prova/plugins"
 ```

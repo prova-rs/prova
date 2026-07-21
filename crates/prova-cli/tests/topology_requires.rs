@@ -79,7 +79,7 @@ fn a_registration_requirement_gates_up() {
         &dir,
         ".prova.toml",
         &format!(
-            "[run]\npaths = [\"proofs\"]\nplugin_root = \".prova/plugins\"\n\n\
+            "[run]\nproofs = [\"proofs\"]\nplugin_root = \".prova/plugins\"\n\n\
              [topologies]\nvm = {{ plugin = \"site\", factory = \"web\", requires = [\"{MISSING}\"] }}\n"
         ),
     );
@@ -114,7 +114,7 @@ fn an_advertised_requirement_gates_up() {
     write(
         &dir,
         ".prova.toml",
-        "[run]\npaths = [\"proofs\"]\n\n[plugins]\npg = { path = \"pg\" }\n\n\
+        "[run]\nproofs = [\"proofs\"]\n\n[plugins]\npg = { path = \"pg\" }\n\n\
          [topologies]\ndb = { plugin = \"pg\", topology = \"single\" }\n",
     );
     let (ok, out) = up(&dir, "db");

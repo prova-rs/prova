@@ -9,16 +9,16 @@ local function project()
   local dir = fs.tempdir()
   fs.write(dir .. "/prova.toml", table.concat({
     '[run]',
-    'paths = ["green.lua"]',
+    'proofs = ["green"]',            -- default profile discovers the green/ proofs dir
     '[run.env]',
     'PROVA_SELFTEST_ENV = "from-manifest"',
     '',
     '[profiles.red]',
-    'paths = ["red.lua"]',
+    'proofs = ["red"]',             -- --profile red discovers the red/ proofs dir instead
   }, "\n"))
-  fs.write(dir .. "/green.lua",
+  fs.write(dir .. "/green/env_test.lua",
     'prova.test("env is injected", function(t) t:expect(os.getenv("PROVA_SELFTEST_ENV")):equals("from-manifest") end)')
-  fs.write(dir .. "/red.lua",
+  fs.write(dir .. "/red/fail_test.lua",
     'prova.test("fails on purpose", function(t) t:expect(1):equals(2) end)')
   return dir
 end

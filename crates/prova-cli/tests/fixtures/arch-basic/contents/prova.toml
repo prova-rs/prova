@@ -1,3 +1,3 @@
-# Rendered by the arch-basic fixture — a complete (if tiny) prova project.
+# Rendered by the arch-basic fixture — a complete (if tiny) prova package.
 [run]
-paths = ["{{ proof_dir }}"]
+proofs = ["{{ proof_dir }}"]

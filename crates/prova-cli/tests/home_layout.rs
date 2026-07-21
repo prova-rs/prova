@@ -1,10 +1,11 @@
-//! Home discovery + resolution: the manifest's directory is the base for EVERYTHING, so root and
-//! home are one thing. Black-box, through the binary.
+//! Home discovery + resolution: `home.dir` is the project ROOT, and every manifest-relative key
+//! (`proofs`, `config`, `plugin_root`) resolves against it — whether the manifest sits flat at the
+//! root or is tucked into a `prova/` / `.prova/` nook. Black-box, through the binary.
 //!
-//! The headline property is relocatability: a prova project is a self-contained unit. Move its
-//! manifest — from a nested `prova/` up to the project root — with the files it references, and the
-//! manifest itself does not change a byte, because every path in it (`paths`, `config`,
-//! `plugin_root`) resolves against the manifest's own directory.
+//! The headline property: the nested form lets a package hide prova's own files (the manifest,
+//! `config.lua`, `plugins/`) inside `.prova/` while the ROOT — where `proofs/` live and where an
+//! editor attaches — stays the parent. So a flat and a nested layout resolve the SAME root; only the
+//! `config`/`plugin_root` paths differ (they point into the nook for the nested one).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -34,94 +35,98 @@ fn run(cwd: &Path) -> (bool, String) {
     (out.status.success(), combined)
 }
 
-// One manifest, three home-relative keys — the whole point is that these bytes are identical whether
-// the manifest sits in `prova/` or at the root.
-const MANIFEST: &str = "\
-[run]
-paths = [\"proofs\"]
-config = \"config.lua\"
-plugin_root = \"plugins\"
-";
 const CONFIG: &str = "runtime.capability(\"wired\", function() return true end)\n";
 const PLUGIN: &str = "return { answer = 42 }\n";
-// Exercises all three keys at once: `paths` found this file, `config` registered `wired` (so the
-// `requires` gate passes rather than skipping), and `plugin_root` resolved `require(\"helper\")`.
+// Exercises all three keys at once: `proofs` discovered this file, `config` registered `wired` (so
+// the `requires` gate passes rather than skipping), and `plugin_root` resolved `require(\"helper\")`.
 const PROOF: &str = "\
 local helper = require(\"helper\")
-prova.test(\"everything resolves against the manifest dir\", { requires = { \"wired\" } }, function(t)
+prova.test(\"everything resolves from the package root\", { requires = { \"wired\" } }, function(t)
   t:expect(helper.answer):equals(42)
 end)
 ";
 
-fn install(root: &Path, prefix: &str) {
-    let at = |rel: &str| {
-        if prefix.is_empty() {
-            rel.to_string()
-        } else {
-            format!("{prefix}/{rel}")
-        }
-    };
-    write(root, &at("prova.toml"), MANIFEST);
-    write(root, &at("config.lua"), CONFIG);
-    write(root, &at("plugins/helper/init.lua"), PLUGIN);
-    write(root, &at("proofs/x_test.lua"), PROOF);
+// Flat: the manifest and prova's files all live at the root, referenced by bare names.
+const FLAT_MANIFEST: &str = "\
+[run]
+proofs = [\"proofs\"]
+config = \"config.lua\"
+plugin_root = \"plugins\"
+";
+// Nested: the manifest and prova's files tuck into `.prova/`; the three keys point INTO the nook, all
+// relative to the ROOT. `proofs/` stays at the root, in the open.
+const NESTED_MANIFEST: &str = "\
+[run]
+proofs = [\"proofs\"]
+config = \".prova/config.lua\"
+plugin_root = \".prova/plugins\"
+";
+
+fn install_flat(root: &Path) {
+    write(root, "prova.toml", FLAT_MANIFEST);
+    write(root, "config.lua", CONFIG);
+    write(root, "plugins/helper/init.lua", PLUGIN);
+    write(root, "proofs/x_test.lua", PROOF);
 }
 
-/// The same manifest bytes resolve whether the project lives in a nested `prova/` or flat at the
-/// root. RED before root/home unify: with a nested `prova/prova.toml`, `paths` resolves against the
-/// parent (the old "root"), so `proofs/` under `prova/` is never found.
-#[test]
-fn a_project_relocates_without_editing_its_manifest() {
-    let nested = tmp("relocate-nested");
-    install(&nested, "prova");
-    let (ok, out) = run(&nested);
-    assert!(ok && out.contains("\"passed\":1"), "nested prova/: {out}");
+fn install_nested(root: &Path) {
+    write(root, ".prova/prova.toml", NESTED_MANIFEST);
+    write(root, ".prova/config.lua", CONFIG);
+    write(root, ".prova/plugins/helper/init.lua", PLUGIN);
+    write(root, "proofs/x_test.lua", PROOF); // at the ROOT, visible
+}
 
+/// The project root is the home whether the manifest is flat at the root or tucked into `.prova/`.
+/// Both discover `proofs/` at the root and resolve `config`/`plugin_root` from the root.
+#[test]
+fn flat_and_nested_both_root_at_the_package_root() {
     let flat = tmp("relocate-flat");
-    install(&flat, "");
+    install_flat(&flat);
     let (ok, out) = run(&flat);
     assert!(ok && out.contains("\"passed\":1"), "flat root: {out}");
+
+    let nested = tmp("relocate-nested");
+    install_nested(&nested);
+    let (ok, out) = run(&nested);
+    assert!(ok && out.contains("\"passed\":1"), "nested .prova/: {out}");
 }
 
-/// Discovery is stable no matter where inside the project prova runs — from the nested home dir
-/// itself, resolution is identical to running from the parent.
+/// Discovery is stable from inside the `.prova/` nook: home resolves to the parent (the root), so the
+/// same suite runs — `prova` works from anywhere inside the package, including the nook itself.
 #[test]
-fn discovery_is_stable_from_inside_the_home_dir() {
+fn discovery_is_stable_from_inside_the_nook() {
     let dir = tmp("relocate-inside");
-    install(&dir, "prova");
-    let (ok, out) = run(&dir.join("prova"));
-    assert!(
-        ok && out.contains("\"passed\":1"),
-        "cd prova && prova: {out}"
-    );
+    install_nested(&dir);
+    let (ok, out) = run(&dir.join(".prova"));
+    assert!(ok && out.contains("\"passed\":1"), "cd .prova && prova: {out}");
 }
 
 /// Exactly one of the four manifest variants may sit in a single directory. Two is an ambiguous
-/// layout prova refuses to guess at.
+/// layout prova refuses to guess at — both would root at the same directory.
 #[test]
 fn two_variants_in_one_dir_is_ambiguous() {
     let dir = tmp("ambiguous");
-    write(&dir, "prova.toml", MANIFEST);
-    write(&dir, ".prova/prova.toml", MANIFEST);
+    write(&dir, "prova.toml", FLAT_MANIFEST);
+    write(&dir, ".prova/prova.toml", NESTED_MANIFEST);
     let (ok, out) = run(&dir);
     assert!(!ok, "ambiguous layout must fail: {out}");
     assert!(out.contains("ambiguous"), "names the problem: {out}");
 }
 
-/// A manifest deeper in the tree is its OWN project — not an ambiguity with an ancestor's manifest,
+/// A manifest deeper in the tree is its OWN package — not an ambiguity with an ancestor's manifest,
 /// and not merged into it. Running from the child resolves the child; the parent's suite never runs.
 #[test]
-fn a_deeper_manifest_is_an_independent_project() {
-    let dir = tmp("nested-projects");
-    // Parent project: a test that FAILS, so we can tell if it ever runs.
-    write(&dir, "prova.toml", "[run]\npaths = [\"proofs\"]\n");
+fn a_deeper_manifest_is_an_independent_package() {
+    let dir = tmp("nested-packages");
+    // Parent package: a test that FAILS, so we can tell if it ever runs.
+    write(&dir, "prova.toml", "[run]\nproofs = [\"proofs\"]\n");
     write(
         &dir,
         "proofs/parent_test.lua",
         "prova.test(\"PARENT\", function(t) t:expect(1):equals(2) end)\n",
     );
-    // Child project in a subdir: a passing test.
-    write(&dir, "sub/prova.toml", "[run]\npaths = [\"proofs\"]\n");
+    // Child package in a subdir: a passing test.
+    write(&dir, "sub/prova.toml", "[run]\nproofs = [\"proofs\"]\n");
     write(
         &dir,
         "sub/proofs/child_test.lua",
@@ -131,7 +136,7 @@ fn a_deeper_manifest_is_an_independent_project() {
     let (ok, out) = run(&dir.join("sub"));
     assert!(
         ok && out.contains("\"passed\":1") && out.contains("\"failed\":0"),
-        "child project runs, parent does not: {out}"
+        "child package runs, parent does not: {out}"
     );
     assert!(!out.contains("PARENT"), "parent suite must not run: {out}");
 }

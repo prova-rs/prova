@@ -18,7 +18,7 @@ fn scratch(tag: &str) -> std::path::PathBuf {
     .unwrap();
     std::fs::write(
         d.join(".prova.toml"),
-        "[run]\npaths = [\"proofs\"]\n", // no `config` key: default would be prova.lua (absent)
+        "[run]\nproofs = [\"proofs\"]\n", // no `config` key: default would be prova.lua (absent)
     )
     .unwrap();
     std::fs::write(

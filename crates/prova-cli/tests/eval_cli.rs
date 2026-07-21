@@ -154,7 +154,7 @@ fn manifest_plugin_provisions_and_ctx_tears_down() {
     .unwrap();
     std::fs::write(
         dir.join("prova.toml"),
-        "[run]\npaths = [\".\"]\n\n[luals]\nmanage = \"never\"\n\n[plugins]\nwhoami = { path = \"whoami.lua\" }\n",
+        "[run]\nproofs = [\".\"]\n\n[luals]\nmanage = \"never\"\n\n[plugins]\nwhoami = { path = \"whoami.lua\" }\n",
     )
     .unwrap();
 

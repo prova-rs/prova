@@ -45,7 +45,7 @@ fn registered_alias_shorthand_is_fetched_and_required() {
     std::fs::write(
         project.join("prova.toml"),
         format!(
-            "[run]\npaths = [\"tests\"]\n\n[sources]\nacme = \"{}\"\n\n[plugins]\ngreet = \"acme:greetplugin\"\n",
+            "[run]\nproofs = [\"tests\"]\n\n[sources]\nacme = \"{}\"\n\n[plugins]\ngreet = \"acme:greetplugin\"\n",
             remotes.to_string_lossy().replace('\\', "/")
         ),
     )
