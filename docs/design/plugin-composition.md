@@ -71,7 +71,7 @@ The one gap is that today the searcher resolves a bare `require("pg")` against a
 (the *consumer's* `[plugins]` aliases) plus disk roots, and it only receives the *name* being
 required — not *which plugin's code is doing the requiring*. So the extension is:
 
-1. **A per-plugin private dependency map.** `prova-plugin.toml` declares the plugin's own plugin
+1. **A per-plugin private dependency map.** A plugin's `prova.toml [plugins]` declares its own plugin
    dependencies. Resolution of a `require` originating in plugin `P` consults `P`'s dependency map
    first — so `require("pg")` inside `P` hits `P`'s declared `prova-postgres`, invisibly to the
    consumer.
@@ -87,7 +87,7 @@ a natural extension of the canonical-namespace searcher, not a new subsystem —
 ### Manifest surface
 
 ```toml
-# prova-plugin.toml — the library that reuses Postgres
+# prova.toml [plugin] — the library that reuses Postgres
 [plugin]
 name  = "shop-topologies"
 entry = "shop.lua"

@@ -38,7 +38,7 @@
 //! # Private dependencies (bundled + isolated)
 //!
 //! The four steps above are the *consumer's* namespace. A plugin may also declare its own private
-//! dependencies in its `prova-plugin.toml`:
+//! dependencies in its `prova.toml` (`[plugins]`):
 //!
 //! ```toml
 //! [plugins]
@@ -197,7 +197,7 @@ fn disk_loader(lua: &Lua, path: &Path) -> mlua::Result<mlua::Function> {
 
 /// Evaluate a plugin file.
 ///
-/// When the plugin declares private dependencies (`prova-plugin.toml [plugins]`), its chunk runs in
+/// When the plugin declares private dependencies (`prova.toml [plugins]`), its chunk runs in
 /// an environment whose `require` consults *its own* dependency map first. That is what makes a
 /// library able to use a dependency the consumer cannot see: the name resolves for the library and
 /// nowhere else.
@@ -276,7 +276,7 @@ fn private_cache(lua: &Lua) -> mlua::Result<mlua::Table> {
     Ok(table)
 }
 
-/// A plugin's declared private dependencies, read from the `prova-plugin.toml` beside its entry.
+/// A plugin's declared private dependencies, read from the `prova.toml` beside its entry.
 ///
 /// Only `path` sources resolve here: the searcher never downloads (see the module docs), so a git
 /// dependency has to be fetched earlier. Anything unparseable is treated as "no private deps" rather
@@ -287,7 +287,7 @@ fn private_deps(entry: &Path) -> BTreeMap<String, PathBuf> {
     let Some(dir) = entry.parent() else {
         return out;
     };
-    let Ok(src) = std::fs::read_to_string(dir.join("prova-plugin.toml")) else {
+    let Ok(src) = std::fs::read_to_string(dir.join("prova.toml")) else {
         return out;
     };
     let Ok(table) = src.parse::<toml::Table>() else {

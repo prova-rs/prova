@@ -164,7 +164,7 @@ could contribute a plugin root would be the machine-global plugin dir again unde
 
 The steps above are the *consumer's* namespace: anything at the top of a plugin root is ambient —
 requirable by test suites and by other plugins alike, with nothing declared. A plugin may also
-declare its own dependencies in its `prova-plugin.toml`:
+declare its own dependencies in its `prova.toml` (`[plugins]`):
 
 ```toml
 [plugins]
@@ -215,8 +215,10 @@ Wired now (the "easy to install" story):
   remote (a surprise fetch); use `github:org/repo` for a ref-less remote, or the table form for a
   commit `rev`. `@ref` maps to `git clone --branch`, which accepts a tag *or* a branch.
 
-- **Plugin manifest** (`prova-plugin.toml`) — a published plugin carries its own manifest, the
-  analogue of archetect's `archetype.yaml`:
+- **Plugin section** (`prova.toml [plugin]`) — a published plugin carries its contract in the SAME
+  `prova.toml` a project uses (there is no separate file); the `[plugin]` table is the analogue of
+  archetect's `archetype.yaml`, and a repo with `[plugin]` + `[run]` is both a plugin and its own
+  test suite:
 
   ```toml
   [plugin]
@@ -287,7 +289,7 @@ and tested through the public seam with no behavior change.
   loadable namespace (`prova.workspace`); ambient plugins via the declared `[run] plugin_root`;
   the XDG `SystemLayout`; `[plugins]` manifest sources with **git fetch + cache**,
   verified end-to-end through the real binary (`tests/plugin_git.rs`); **private plugin dependencies**
-  (`prova-plugin.toml [plugins]`), scoped at load via the chunk environment and cached by path
+  (`prova.toml [plugins]`), scoped at load via the chunk environment and cached by path
   (`tests/plugin_private_deps.rs`, `proofs/plugins/`). Existing globals unchanged and first-class.
 - **Removed:** the machine-global `data_dir/plugins` root — nothing populated it, and it was a
   "works on my machine" path outside version control (see above).

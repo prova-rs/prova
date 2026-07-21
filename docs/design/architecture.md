@@ -241,7 +241,7 @@ left open by good architecture; we are not walking through it.
   `<a/b>/init.lua`). **Everything is declared**: no default root, no `PROVA_PLUGIN_PATH`, no
   cwd-relative fallback, no machine-global dir — discovery finds `prova.toml`, and from there the file
   names every place a plugin may come from, so a clean clone resolves what the author's machine does
-  and one file answers "where could this require have come from?". A plugin may also declare **private dependencies** in its own `prova-plugin.toml`
+  and one file answers "where could this require have come from?". A plugin may also declare **private dependencies** in its own `prova.toml` (`[plugins]`)
   (`[plugins]`), which resolve for that plugin's code alone — the "bundled + isolated" model that
   lets a library depend on something without exposing it to consumers. A plugin is authored exactly
   like a first-party recipe: one namespace table following the grammar, composing primitives,

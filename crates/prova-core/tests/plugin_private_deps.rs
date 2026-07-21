@@ -9,7 +9,7 @@ fn testdata(name: &str) -> PathBuf {
 }
 
 /// The bundled + isolated plugin-composition contract: a plugin declares private dependencies in its
-/// own `prova-plugin.toml` (`[plugins]`), those names resolve for *that plugin's* code, and for
+/// own `prova.toml` (`[plugins]`), those names resolve for *that plugin's* code, and for
 /// nobody else.
 ///
 /// The fixture makes the isolation load-bearing rather than incidental: `alpha` and `beta` privately

@@ -3,8 +3,8 @@
 //! Local sources resolve straight to a path. Git sources are fetched via the shared
 //! `archetect-git-cache` crate — the same TTL + remote-hash freshness gate archetect uses — into the
 //! layout's plugin cache, pinned by ref, so a repeat run reuses the checkout (and, once the interval
-//! lapses, cheaply confirms the remote hasn't moved before pulling). A directory plugin may carry a
-//! `prova-plugin.toml`
+//! lapses, cheaply confirms the remote hasn't moved before pulling). A directory plugin's `prova.toml`
+//! may carry a `[plugin]`
 //! (the analogue of `archetype.yaml`): it declares the `entry` file — so resolution no longer depends
 //! on the consumer's alias matching a filename — plus a compatibility range (`requires.prova`) and
 //! metadata. The result is handed to `RunConfig`, making the manifest the authoritative plugin source.
@@ -49,7 +49,7 @@ pub struct ResolvedPlugins {
     pub named: BTreeMap<String, PathBuf>,
     pub namespaces: BTreeMap<String, PathBuf>,
     /// Each plugin's root directory (the checkout dir, or a local dir/file's parent) keyed by
-    /// canonical name — where its `prova-plugin.toml` and `library/` annotation stub live. Used to
+    /// canonical name — where its `prova.toml` and `library/` annotation stub live. Used to
     /// sync IDE annotations into the project's `annotations/` dir.
     pub roots: BTreeMap<String, PathBuf>,
     /// The directory scanned for undeclared (ambient) plugins — the manifest's `[run] plugin_root`,
@@ -58,9 +58,10 @@ pub struct ResolvedPlugins {
     pub search_root: Option<PathBuf>,
 }
 
-/// A plugin's own manifest (`prova-plugin.toml`) — the analogue of `archetype.yaml`. All fields are
-/// optional; a plugin without a manifest just falls back to filename conventions and declares no
-/// compatibility constraint.
+/// The plugin-relevant view of a `prova.toml`: the `[plugin]` contract and the `[requires]` compat
+/// block. Every field is optional — a plugin without a `[plugin]` section falls back to filename
+/// conventions and declares no compatibility constraint. Other sections (`[run]`, `[plugins]`, …) are
+/// ignored here; the manifest is one file wearing whichever hats it declares.
 #[derive(Debug, Deserialize, Default)]
 struct PluginManifest {
     #[serde(default)]
@@ -124,7 +125,7 @@ pub fn resolve_plugins(
 }
 
 /// One resolved plugin: its entry file, canonical namespace name, and root directory (where the
-/// `prova-plugin.toml` and `library/` annotation stub live).
+/// `prova.toml` and `library/` annotation stub live).
 struct ResolvedOne {
     entry: PathBuf,
     canonical: String,
@@ -258,7 +259,7 @@ fn resolve_one(
         (None, None) => return Err("needs a `path` or a `git` source".into()),
     };
 
-    // A directory source may carry a `prova-plugin.toml`. When the source is a direct file, its own
+    // A directory source may carry a `prova.toml` with a `[plugin]` section. When the source is a direct file, its own
     // directory is the plugin root (so a single-file plugin can still declare a manifest beside it).
     let manifest_dir = if root.is_file() {
         root.parent().map(Path::to_path_buf)
@@ -288,7 +289,7 @@ fn resolve_one(
         .and_then(|m| m.plugin.name.clone())
         .unwrap_or_else(|| name.to_string());
 
-    // Plugin root: where `prova-plugin.toml` and `library/` live (the dir for a directory source, a
+    // Plugin root: where `prova.toml` and `library/` live (the dir for a directory source, a
     // file's parent for a single-file source).
     let plugin_root = manifest_dir.unwrap_or_else(|| root.clone());
 
@@ -300,7 +301,7 @@ fn resolve_one(
 }
 
 /// The plugin namespace for a standalone entry file (`prova plugin lint <file>`): its canonical name
-/// (from a sibling `prova-plugin.toml`, else the file stem) mapped to its directory, so the file's
+/// (from a sibling `prova.toml [plugin] name`, else the file stem) mapped to its directory, so the file's
 /// own `require("<canonical>.<sub>")` siblings resolve during lint. `None` if the file has no parent.
 pub fn namespace_for_file(file: &Path) -> Option<(String, PathBuf)> {
     let dir = file.parent()?;
@@ -316,13 +317,16 @@ pub fn namespace_for_file(file: &Path) -> Option<(String, PathBuf)> {
     Some((canonical, dir.to_path_buf()))
 }
 
-/// Read a `prova-plugin.toml` from `dir` if present. `Ok(None)` when absent; `Err` on malformed TOML.
+/// Read a `dir/prova.toml`'s plugin view if present. `Ok(None)` when absent; `Err` on malformed TOML.
 fn read_plugin_manifest(dir: &Path) -> Result<Option<PluginManifest>, String> {
-    let path = dir.join("prova-plugin.toml");
+    // A plugin's manifest IS a `prova.toml` — the same file a project uses. It reads the `[plugin]`
+    // (and `[requires]`) sections and ignores the rest (`[run]`, `[plugins]`, …), so one manifest can
+    // be a plugin, a suite, or both. There is no separate `prova-plugin.toml`.
+    let path = dir.join("prova.toml");
     match std::fs::read_to_string(&path) {
         Ok(text) => toml::from_str::<PluginManifest>(&text)
             .map(Some)
-            .map_err(|e| format!("invalid prova-plugin.toml: {e}")),
+            .map_err(|e| format!("invalid prova.toml [plugin]: {e}")),
         Err(_) => Ok(None),
     }
 }
@@ -358,7 +362,7 @@ fn resolve_relative(base_dir: &Path, path: &str) -> PathBuf {
 /// the consumer's `module=` override → the manifest's `entry` → `init.lua` → `<name>.lua`. The
 /// manifest/`init.lua` are the robust paths; `<name>.lua` is a last-ditch back-compat fallback that
 /// couples the file to the consumer's alias (which is exactly why a published plugin declares
-/// `entry` in `prova-plugin.toml` instead).
+/// `entry` in `prova.toml [plugin]` instead).
 fn module_file(
     root: &Path,
     name: &str,
@@ -374,7 +378,7 @@ fn module_file(
     // A declared entry (consumer override, then the plugin's own manifest) must exist if given.
     for (source, declared) in [
         ("module", module),
-        ("prova-plugin.toml entry", manifest_entry),
+        ("prova.toml [plugin] entry", manifest_entry),
     ] {
         if let Some(rel) = declared {
             let candidate = root.join(rel);
@@ -395,7 +399,7 @@ fn module_file(
         }
     }
     Err(format!(
-        "no entry file in {} (add `prova-plugin.toml` with `entry = \"…\"`, an `init.lua`, \
+        "no entry file in {} (add `[plugin] entry = \"…\"` to prova.toml, an `init.lua`, \
          or set `module`)",
         root.display()
     ))
@@ -518,7 +522,7 @@ mod tests {
 
     #[test]
     fn manifest_entry_resolves_under_a_different_alias() {
-        // A repo whose entry file is `rabbitmq.lua`, declared in prova-plugin.toml — pulled under a
+        // A repo whose entry file is `rabbitmq.lua`, declared in prova.toml [plugin] — pulled under a
         // DIFFERENT consumer alias `mq`. Filename-matching would look for `mq.lua` and fail; the
         // manifest entry makes it resolve regardless of the alias, and namespaces it by canonical name.
         let dir = std::env::temp_dir().join(format!("prova-plugin-entry-{}", std::process::id()));
@@ -530,7 +534,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(
-            repo.join("prova-plugin.toml"),
+            repo.join("prova.toml"),
             "[plugin]\nname = \"rabbitmq\"\nentry = \"rabbitmq.lua\"\n",
         )
         .unwrap();

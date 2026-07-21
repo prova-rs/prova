@@ -1,5 +1,5 @@
 //! `prova plugin lint` on a multi-file plugin: the entry's `require("<canonical>.<sub>")` must
-//! resolve during lint (the CLI registers the plugin's namespace from its `prova-plugin.toml`).
+//! resolve during lint (the CLI registers the plugin's namespace from its `prova.toml [plugin]`).
 
 use std::path::PathBuf;
 use std::process::Command;

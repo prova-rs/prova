@@ -378,7 +378,10 @@ mod tests {
         let two = install_core_stubs(&layout, V).unwrap();
         assert_eq!(one, two, "same version must resolve to one shared dir");
         let next = install_core_stubs(&layout, "9.9.9").unwrap();
-        assert_eq!(one, next, "an upgrade refreshes the same stable dir, not a new one");
+        assert_eq!(
+            one, next,
+            "an upgrade refreshes the same stable dir, not a new one"
+        );
         assert!(one.join("prova.lua").is_file());
     }
 

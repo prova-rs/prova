@@ -294,7 +294,7 @@ everyone's binary.
 Two things Prova's plugin system deliberately does **not** do — each avoids a tar pit that would
 outweigh its benefit:
 
-- **No plugin dependency resolver.** `prova-plugin.toml` has no `[dependencies]` field, and won't. A
+- **No plugin dependency resolver.** A plugin's `prova.toml [plugins]` names direct, pinned deps and stops there — no version-solving `[dependencies]` graph, and won't. A
   dependency graph would drag in transitive resolution, version-conflict resolution, and a lockfile —
   and it is *unsatisfiable* here anyway: all plugins share one Lua state where `require("x")` is a
   global singleton, so two plugins wanting different versions of `x` could never both be honored.
@@ -340,7 +340,7 @@ outweigh its benefit:
    stronger dogfood than re-exposing a bundled recipe.)* Also: `prova.containerized`'s `client`
    factory now receives the `container` (`client(url, opts, container)`) so docker-exec clients can
    `exec` into it — the "fix the starter first" change this plugin surfaced.
-6. **Plugin manifest (`prova-plugin.toml`)** — entry declaration (fixes alias↔filename frailty),
+6. **Plugin section (`prova.toml [plugin]`)** — entry declaration (fixes alias↔filename frailty),
    `requires.prova` compatibility gate, intra-plugin `require` by canonical namespace. **(done)** —
    see [plugin-system.md](plugin-system.md). Plugins are self-contained (no dependency resolver — see
    Non-goals).

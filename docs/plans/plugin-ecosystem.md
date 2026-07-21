@@ -15,7 +15,7 @@ tail.
 - **exec-CLI SDK** — `container:run(argv|string, {stdin})`, `prova.parse.{lines,rows,table,json}`,
   and `prova.containerized` fixed-ports + `extra()`. A docker-exec plugin now writes only
   image + port + CLI commands.
-- **prova-plugin.toml** manifest (entry/name/requires.prova), intra-plugin `require("<name>.helpers")`
+- **prova.toml `[plugin]`** section (entry/name/requires.prova), intra-plugin `require("<name>.helpers")`
   by canonical namespace, and the **self-contained rule** (no dependency resolver — vendor or promote
   to primitives).
 - **`prova plugin lint`** — classifies plugin shape (Resource / Library) and validates facets.

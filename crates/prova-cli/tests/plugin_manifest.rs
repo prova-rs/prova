@@ -1,4 +1,4 @@
-//! End-to-end (hermetic — no docker, no network): a directory plugin with a `prova-plugin.toml`
+//! End-to-end (hermetic — no docker, no network): a directory plugin with a `prova.toml [plugin]`
 //! resolves via its declared `entry` even under a *different* consumer alias, vendors a sibling
 //! module via the plugin namespace, and is version-gated by `requires.prova`.
 
@@ -20,7 +20,7 @@ fn run(project: &Path, home: &Path) -> std::process::Output {
         .expect("run prova")
 }
 
-/// A plugin repo whose entry is `impl.lua` (declared in prova-plugin.toml) and which `require`s a
+/// A plugin repo whose entry is `impl.lua` (declared in prova.toml [plugin]) and which `require`s a
 /// vendored sibling — pulled under the alias `greet`. Filename-matching would look for `greet.lua`
 /// and fail; the manifest entry + namespace make it resolve regardless of the alias.
 #[test]
@@ -34,7 +34,7 @@ fn manifest_entry_and_vendored_sibling_resolve_under_alias() {
     // The plugin: entry impl.lua (NOT named after the consumer alias) + a vendored sibling words.lua.
     // A permissive `>=0.1` compat so the test tracks the workspace version across 0.x bumps.
     write(
-        &plugin.join("prova-plugin.toml"),
+        &plugin.join("prova.toml"),
         "[plugin]\nname = \"greeter\"\nentry = \"impl.lua\"\n\n[requires]\nprova = \">=0.1\"\n",
     );
     write(
@@ -88,7 +88,7 @@ fn incompatible_plugin_version_is_rejected() {
     let home = root.join("home");
 
     write(
-        &plugin.join("prova-plugin.toml"),
+        &plugin.join("prova.toml"),
         "[plugin]\nname = \"future\"\nentry = \"impl.lua\"\n\n[requires]\nprova = \">=99.0\"\n",
     );
     write(

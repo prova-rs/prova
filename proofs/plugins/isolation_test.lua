@@ -1,6 +1,6 @@
 -- Dogfoods the plugin-composition / isolation contract (the "bundled + isolated" model). A library
 -- plugin (`lib`) privately depends on a provider plugin (`inner`), declared in lib's own
--- `prova-plugin.toml [plugins]`. The invariant: a consumer that requires `lib` can use what `lib`
+-- `prova.toml [plugins]`. The invariant: a consumer that requires `lib` can use what `lib`
 -- chose to expose, but CANNOT reach `inner` — the inner plugin is lib's private dependency, not part
 -- of the consumer's namespace ("if one plugin pulls in another, the inner plugin is never exposed to
 -- the caller"). Names are isolated; the caller only sees what it required.
