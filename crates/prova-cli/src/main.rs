@@ -1781,7 +1781,7 @@ fn skill_subcommand(args: Vec<String>) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     let root = match home::find(&std::env::current_dir().unwrap_or_default()) {
-        Ok(Some(h)) => h.dir,
+        Ok(Some(h)) => h.editor_root(),
         _ => std::env::current_dir().unwrap_or_default(),
     };
     let dir = root.join(".claude/skills/prova");

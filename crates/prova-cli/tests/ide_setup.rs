@@ -53,6 +53,48 @@ fn core_stub_exists(xdg: &Path) -> bool {
         .any(|e| e.path().join("prova.lua").is_file())
 }
 
+/// A scratch project with a NESTED manifest (`.prova/prova.toml`), plus an isolated XDG home. The
+/// project dir is the editor root; `.prova/` is the prova home under it.
+fn scratch_nested(tag: &str) -> (PathBuf, PathBuf) {
+    let base = std::env::temp_dir().join(format!("prova-ide-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let project = base.join("project");
+    std::fs::create_dir_all(project.join(".prova")).unwrap();
+    std::fs::create_dir_all(project.join("proofs")).unwrap();
+    std::fs::write(
+        project.join(".prova/prova.toml"),
+        "[run]\npaths = [\"../proofs\"]\n",
+    )
+    .unwrap();
+    let xdg = base.join("xdg");
+    std::fs::create_dir_all(&xdg).unwrap();
+    (project, xdg)
+}
+
+/// `.luarc.json` goes at the EDITOR root — the directory you open as a workspace — not inside the
+/// prova home. For a nested `.prova/prova.toml` that means the project dir (the parent of `.prova/`),
+/// so LuaLS, which binds to the workspace root, actually finds it. Path resolution is unaffected;
+/// only the editor pointer follows the editor root.
+#[test]
+fn nested_home_writes_luarc_at_the_editor_root_not_inside_prova() {
+    let (project, xdg) = scratch_nested("nested");
+    let out = ide_setup(&project, &xdg, &[]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        project.join(".luarc.json").is_file(),
+        "`.luarc.json` should sit at the project (editor) root, beside `.prova/`"
+    );
+    assert!(
+        !project.join(".prova/.luarc.json").exists(),
+        "`.luarc.json` must NOT be written inside the `.prova/` home dir"
+    );
+    cleanup(&project);
+}
+
 /// Proof 1: in a project with a manifest, `ide setup` writes `.luarc.json` and exits 0.
 #[test]
 fn writes_luarc_and_installs_stubs() {

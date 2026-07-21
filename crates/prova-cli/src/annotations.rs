@@ -81,7 +81,9 @@ pub fn setup(
         ..Default::default()
     };
 
-    let luarc = home.dir.join(".luarc.json");
+    // The editor pointer goes at the EDITOR root (the workspace you open), not the home dir — for a
+    // nested `.prova/` home that is its parent, so LuaLS actually finds it. See `Home::editor_root`.
+    let luarc = home.editor_root().join(".luarc.json");
     let exists = luarc.is_file();
     match (manage, exists) {
         // Never touch the pointer; the core stubs are still installed above.

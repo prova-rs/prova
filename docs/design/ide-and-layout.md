@@ -51,11 +51,33 @@ No name-based special-casing is needed: `cd prova && prova` finds the flat `prov
 `prova/`); running from the parent finds the nested `prova/prova.toml` (home also `prova/`). Both
 agree because home is always the manifest's directory.
 
-**Consequence for the editor.** `.luarc.json` lands in the home dir. For a flat manifest that is the
-project root, so opening the repo Just Works. For a *nested* manifest, `.luarc.json` sits in `prova/`
-(or `.prova/`), so IDE support attaches when that directory is the workspace root — the nested dir is
-a self-contained unit, by design. Want repo-root IDE support? Use a flat manifest at the root (this
-repo does: a hidden `.prova.toml` at the root, with `.prova/` holding only config and plugins).
+**The editor pointer is the one exception.** Everything the *manifest* references resolves against the
+home dir — but `.luarc.json` is an editor artifact, not a manifest path, and its location is governed
+by where the editor attaches: the **editor root**. That is the home dir for a flat manifest, and the
+*parent* of a nested `prova/` / `.prova/` home (you open `myproject/`, never `myproject/.prova/`). So:
+
+```
+myproject/
+├── .prova.toml          ← flat manifest — editor root == home == root
+├── .luarc.json          ← beside it
+└── subproject/
+    ├── .luarc.json      ← beside the .prova/ dir, at the editor root
+    └── .prova/          ← nested home; paths resolve here, but the pointer sits one level up
+        └── prova.toml
+```
+
+`prova ide setup` writes `.luarc.json` at the editor root of whatever home it discovers, so running it
+at the top wires the top and running it in a subproject wires the subproject. A subproject with no
+setup of its own inherits the nearest ancestor's `.luarc.json` (LuaLS walks up); running setup there
+drops a more-specific one that LuaLS then prefers — self-correcting exactly when someone asks. (This
+is the sole use of the editor root; path resolution never touches it.)
+
+The signal for "nested" is the manifest **filename**, not the directory name alone: only a *bare*
+`prova.toml` inside a directory named `prova`/`.prova` is nested (which reserves those two directory
+names for that role). A hidden `.prova.toml` is a flat file whatever its directory is called, so it
+never hoists — the escape hatch is exact: to root a *flat* project in a directory literally named
+`prova`/`.prova`, use `.prova.toml`. The one on-disk ambiguity — a bare `prova.toml` in such a
+directory — is decided by the reservation, deterministically, wherever you run prova from.
 
 A typical hidden-flat layout (what prova itself uses):
 

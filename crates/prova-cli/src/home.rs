@@ -29,10 +29,40 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq)]
 pub struct Home {
     /// The home directory — where the manifest lives (a flat root, or a `prova/` / `.prova/` child).
-    /// The single base for `paths`, `config`, `plugin_root`, `.luarc.json`, and `running/`.
+    /// The single base for every manifest-relative path (`paths`, `config`, `plugin_root`) and for
+    /// `running/` state.
     pub dir: PathBuf,
     /// The manifest file inside `dir`.
     pub manifest: PathBuf,
+}
+
+impl Home {
+    /// The directory an editor opens as the workspace — where `.luarc.json` (and `.claude/skills/`)
+    /// belong. It is the home dir for a flat manifest, and the **parent** of a nested `prova/` /
+    /// `.prova/` home (you open `myproject/`, never `myproject/.prova/`).
+    ///
+    /// This is the *only* thing that does not resolve against the home dir, and deliberately so: an
+    /// editor artifact's location is governed by where the editor attaches, not by where the manifest
+    /// resolves paths.
+    ///
+    /// The disambiguator is the manifest **filename**, not the directory name alone. Only a *bare*
+    /// `prova.toml` inside a directory named `prova`/`.prova` is a nested home (root = the parent) —
+    /// which reserves those two directory names for the purpose. A hidden `.prova.toml` is a flat
+    /// file whatever its directory is called, so it never hoists. The lone irreducible case — a bare
+    /// `prova.toml` in a dir named `prova`/`.prova`, indistinguishable on disk from a nested home — is
+    /// resolved by that reservation; to root a *flat* project in such a directory, use `.prova.toml`.
+    pub fn editor_root(&self) -> PathBuf {
+        let nested = self.manifest.file_name().and_then(|s| s.to_str()) == Some("prova.toml")
+            && matches!(
+                self.dir.file_name().and_then(|s| s.to_str()),
+                Some("prova" | ".prova")
+            );
+        if nested {
+            self.dir.parent().unwrap_or(&self.dir).to_path_buf()
+        } else {
+            self.dir.clone()
+        }
+    }
 }
 
 /// Walk up from `start`, returning the first ancestor that holds a manifest. `Ok(None)` means no
@@ -235,5 +265,42 @@ mod tests {
         let t = Tmp::new("none");
         t.write("just/files.txt", "x");
         assert!(find(&t.0.join("just")).unwrap().is_none());
+    }
+
+    // The editor root (where `.luarc.json` goes) is the home dir for a flat manifest, and the PARENT
+    // of a nested `prova/` / `.prova/` home — the directory you actually open in an editor.
+    #[test]
+    fn editor_root_is_home_for_flat_and_parent_for_nested() {
+        let t = Tmp::new("editor-root");
+        t.write("flat/prova.toml", "[run]\npaths=[\".\"]\n");
+        t.write("nested/.prova/prova.toml", "[run]\npaths=[\".\"]\n");
+        let flat = find(&t.0.join("flat")).unwrap().unwrap();
+        let nested = find(&t.0.join("nested")).unwrap().unwrap();
+
+        assert_eq!(flat.editor_root(), flat.dir); // flat: editor root == home
+        assert_eq!(
+            nested.dir,
+            t.0.canonicalize().unwrap().join("nested/.prova")
+        );
+        assert_eq!(
+            nested.editor_root(),
+            t.0.canonicalize().unwrap().join("nested")
+        ); // parent of .prova
+    }
+
+    // The disambiguator is the manifest FILENAME, not the dir name alone. A hidden-flat `.prova.toml`
+    // is flat even when its directory is literally named `prova`/`.prova`, so its editor root is that
+    // dir, NOT the parent. (Only a bare `prova.toml` inside such a dir is a nested home.)
+    #[test]
+    fn hidden_flat_in_a_prova_named_dir_roots_at_that_dir() {
+        let t = Tmp::new("editor-root-name");
+        // A dir literally named `prova`, holding a hidden-flat `.prova.toml` — a flat project.
+        t.write("prova/.prova.toml", "[run]\npaths=[\".\"]\n");
+        let home = find(&t.0.join("prova")).unwrap().unwrap();
+        let dir = t.0.canonicalize().unwrap().join("prova");
+        assert_eq!(home.dir, dir);
+        // Editor root is the project dir itself — keying on the dir name alone would wrongly hoist
+        // this to the parent.
+        assert_eq!(home.editor_root(), dir);
     }
 }
