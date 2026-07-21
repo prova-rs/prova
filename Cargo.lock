@@ -110,8 +110,8 @@ dependencies = [
 
 [[package]]
 name = "archetect-aml"
-version = "3.2.0"
-source = "git+https://github.com/archetect/archetect.git?tag=v3.2.0#21792db4bb7cfd9b31b3b41078d7cb8d46f20cfd"
+version = "3.2.1"
+source = "git+https://github.com/archetect/archetect.git?tag=v3.2.1#949b14a4d1bcac8a4de5748a8a06a695295ca027"
 dependencies = [
  "archetect-inflections",
  "serde",
@@ -121,8 +121,8 @@ dependencies = [
 
 [[package]]
 name = "archetect-api"
-version = "3.2.0"
-source = "git+https://github.com/archetect/archetect.git?tag=v3.2.0#21792db4bb7cfd9b31b3b41078d7cb8d46f20cfd"
+version = "3.2.1"
+source = "git+https://github.com/archetect/archetect.git?tag=v3.2.1#949b14a4d1bcac8a4de5748a8a06a695295ca027"
 dependencies = [
  "serde",
  "serde_json",
@@ -131,8 +131,8 @@ dependencies = [
 
 [[package]]
 name = "archetect-core"
-version = "3.2.0"
-source = "git+https://github.com/archetect/archetect.git?tag=v3.2.0#21792db4bb7cfd9b31b3b41078d7cb8d46f20cfd"
+version = "3.2.1"
+source = "git+https://github.com/archetect/archetect.git?tag=v3.2.1#949b14a4d1bcac8a4de5748a8a06a695295ca027"
 dependencies = [
  "anyhow",
  "archetect-aml",
@@ -188,12 +188,13 @@ dependencies = [
 
 [[package]]
 name = "archetect-git-cache"
-version = "3.2.0"
-source = "git+https://github.com/archetect/archetect.git?tag=v3.2.0#21792db4bb7cfd9b31b3b41078d7cb8d46f20cfd"
+version = "3.2.1"
+source = "git+https://github.com/archetect/archetect.git?tag=v3.2.1#949b14a4d1bcac8a4de5748a8a06a695295ca027"
 dependencies = [
  "camino",
  "chrono",
  "farmhash",
+ "fs4",
  "git2",
  "log",
  "thiserror 2.0.18",
@@ -201,16 +202,16 @@ dependencies = [
 
 [[package]]
 name = "archetect-inflections"
-version = "3.2.0"
-source = "git+https://github.com/archetect/archetect.git?tag=v3.2.0#21792db4bb7cfd9b31b3b41078d7cb8d46f20cfd"
+version = "3.2.1"
+source = "git+https://github.com/archetect/archetect.git?tag=v3.2.1#949b14a4d1bcac8a4de5748a8a06a695295ca027"
 dependencies = [
  "regex",
 ]
 
 [[package]]
 name = "archetect-terminal-io"
-version = "3.2.0"
-source = "git+https://github.com/archetect/archetect.git?tag=v3.2.0#21792db4bb7cfd9b31b3b41078d7cb8d46f20cfd"
+version = "3.2.1"
+source = "git+https://github.com/archetect/archetect.git?tag=v3.2.1#949b14a4d1bcac8a4de5748a8a06a695295ca027"
 dependencies = [
  "archetect-api",
  "archetect-validations",
@@ -224,8 +225,8 @@ dependencies = [
 
 [[package]]
 name = "archetect-validations"
-version = "3.2.0"
-source = "git+https://github.com/archetect/archetect.git?tag=v3.2.0#21792db4bb7cfd9b31b3b41078d7cb8d46f20cfd"
+version = "3.2.1"
+source = "git+https://github.com/archetect/archetect.git?tag=v3.2.1#949b14a4d1bcac8a4de5748a8a06a695295ca027"
 
 [[package]]
 name = "async-trait"
@@ -1188,6 +1189,16 @@ checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
 dependencies = [
  "libc",
  "winapi",
+]
+
+[[package]]
+name = "fs4"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8640e34b88f7652208ce9e88b1a37a2ae95227d84abec377ccd3c5cfeb141ed4"
+dependencies = [
+ "rustix",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4690,6 +4701,15 @@ name = "windows-sys"
 version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
+dependencies = [
+ "windows-targets 0.52.6",
+]
+
+[[package]]
+name = "windows-sys"
+version = "0.59.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
 dependencies = [
  "windows-targets 0.52.6",
 ]
