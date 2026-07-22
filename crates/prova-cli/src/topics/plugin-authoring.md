@@ -1,7 +1,13 @@
 # plugin-authoring — package a capability others require()
 
-Scaffold: `prova init plugin` (see `prova learn init`). A plugin is itself a prova package —
-its manifest is a `prova.toml` with a `[plugin]` section, and it self-tests with its own proofs.
+Scaffold: `prova init plugin` (see `prova learn init`). ONE archetype, two shapes, decided by
+WHERE you run it: inside a package it scaffolds a LOCAL plugin into `plugin_root` (core files
+only, `require()`-able with zero declaration); outside — or with `-s standalone` anywhere — a
+repo-ready STANDALONE plugin (core + LICENSE/CI/.version-line) consumers pin as a git dep. Same
+core either way, so graduating local → standalone is a directory move. A plugin is itself a
+prova package — its manifest is a `prova.toml` with a `[plugin]` section, and it self-tests with
+its own proofs (a LOCAL plugin's manifest makes it a nested-package boundary, so its proofs stay
+out of the owning project's suite — run them from inside its directory).
 
 ```
 my-plugin/
@@ -44,8 +50,8 @@ prova = ">=0.4"                   # compat-gated against the running prova
 
 | Stage | Where |
 |---|---|
-| Package-local (this repo only) | a dir under `plugin_root` — requirable by name, zero declaration |
-| Shared, pinned | its own repo; consumers declare `[plugins] name = "owner/repo@ref"` |
+| Package-local (this repo only) | a dir under `plugin_root` — requirable by name, zero declaration; `prova init plugin` in-package scaffolds one |
+| Shared, pinned | its own repo (`prova init plugin -s standalone`); consumers declare `[plugins] name = "owner/repo@ref"` |
 | A local file while incubating | `[plugins] name = "./plugins/name.lua"` or `-P name=./...` |
 
 Self-test it like any package: `prova` inside the plugin repo runs its proofs against its own
