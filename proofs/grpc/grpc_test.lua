@@ -38,3 +38,29 @@ prova.group("grpc", { requires = { "docker" } }, function(g)
     t:expect(res.message):equals("nope")
   end)
 end)
+
+-- Reflection dependency-chasing regression: tonic-based servers answer
+-- `file_containing_symbol` with ONLY the named file; imported files (the
+-- well-known types here) must be fetched with `file_by_filename` follow-ups
+-- and added to the pool in dependency order. Before that chase existed, this
+-- client failed with "imported file 'google/protobuf/empty.proto' has not
+-- been added". No docker: the mock IS a tonic server.
+prova.test("client chases imported descriptor files through reflection", function(t)
+	local dir = t:tempdir()
+	fs.write(dir .. "/ping.proto", [[
+syntax = "proto3";
+package ping;
+import "google/protobuf/empty.proto";
+service Ping {
+  rpc Poke (google.protobuf.Empty) returns (Pong);
+}
+message Pong {
+  string note = 1;
+}
+]])
+	local mock = grpc.mock(t, { proto = dir .. "/ping.proto" })
+	mock:on({ method = "ping.Ping/Poke" }):reply({ response = { note = "poked" } })
+	local client = grpc.client(mock.host .. ":" .. mock.port)
+	local resp = client:call("ping.Ping/Poke", {})
+	t:expect(resp.note):equals("poked")
+end)

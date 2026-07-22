@@ -4338,9 +4338,25 @@ mod grpc {
 
     /// Build a descriptor pool for every service the server advertises, via reflection. Negotiates
     /// the reflection protocol version (v1, falling back to the older v1alpha many servers still use).
+    ///
+    /// Some servers (tonic among them) answer `file_containing_symbol` with ONLY the named file,
+    /// not its transitive imports — grpcurl chases the missing imports with `file_by_filename`
+    /// follow-ups, and so do we. Files are then added to the pool in dependency order, since a
+    /// dependent added before its import fails pool construction.
     async fn build_pool(channel: &Channel) -> mlua::Result<DescriptorPool> {
         let (services, rv) = list_services_negotiated(channel).await?;
         let mut files: HashMap<String, FileDescriptorProto> = HashMap::new();
+        let mut decode_into = |raw: Vec<Vec<u8>>,
+                               files: &mut HashMap<String, FileDescriptorProto>|
+         -> mlua::Result<()> {
+            for bytes in raw {
+                let fdp = FileDescriptorProto::decode(bytes.as_slice())
+                    .map_err(|e| err(format!("grpc: decoding file descriptor: {e}")))?;
+                let name = fdp.name().to_string();
+                files.entry(name).or_insert(fdp);
+            }
+            Ok(())
+        };
         for service in &services {
             // The reflection service describes itself; skip it — we only want the app's schema.
             if service.starts_with("grpc.reflection.") {
@@ -4353,15 +4369,59 @@ mod grpc {
                     e.code()
                 ))
             })?;
-            for bytes in raw {
-                let fdp = FileDescriptorProto::decode(bytes.as_slice())
-                    .map_err(|e| err(format!("grpc: decoding file descriptor: {e}")))?;
-                let name = fdp.name().to_string();
-                files.entry(name).or_insert(fdp);
+            decode_into(raw, &mut files)?;
+        }
+
+        // Chase missing imports until the set is closed (bounded — a real
+        // schema's import graph is shallow; 32 rounds is generous).
+        for _ in 0..32 {
+            let missing: Vec<String> = files
+                .values()
+                .flat_map(|f| f.dependency.iter().cloned())
+                .filter(|dep| !files.contains_key(dep))
+                .collect();
+            if missing.is_empty() {
+                break;
+            }
+            for dep in missing {
+                let raw = files_for_filename(channel, rv, &dep).await.map_err(|e| {
+                    err(format!(
+                        "grpc: fetching imported file {dep}: {} ({})",
+                        e.message(),
+                        e.code()
+                    ))
+                })?;
+                decode_into(raw, &mut files)?;
             }
         }
+
+        // Dependency order: imports before importers. A dependency we never
+        // obtained doesn't block ordering — the pool reports the precise
+        // failure. A stalled round (cycle) appends the rest as-is, same
+        // reasoning.
+        let held: std::collections::HashSet<String> = files.keys().cloned().collect();
+        let mut ordered: Vec<FileDescriptorProto> = Vec::with_capacity(files.len());
+        let mut placed: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut remaining: Vec<FileDescriptorProto> = files.into_values().collect();
+        while !remaining.is_empty() {
+            let before = remaining.len();
+            let (ready, blocked): (Vec<_>, Vec<_>) = remaining.into_iter().partition(|f| {
+                f.dependency
+                    .iter()
+                    .all(|d| placed.contains(d) || !held.contains(d))
+            });
+            for f in &ready {
+                placed.insert(f.name().to_string());
+            }
+            ordered.extend(ready);
+            remaining = blocked;
+            if remaining.len() == before {
+                ordered.extend(remaining.drain(..));
+            }
+        }
+
         let mut pool = DescriptorPool::new();
-        pool.add_file_descriptor_protos(files.into_values())
+        pool.add_file_descriptor_protos(ordered)
             .map_err(|e| err(format!("grpc: building descriptor pool: {e}")))?;
         Ok(pool)
     }
@@ -4405,11 +4465,22 @@ mod grpc {
         }
     }
 
+    async fn files_for_filename(
+        channel: &Channel,
+        rv: Rv,
+        filename: &str,
+    ) -> Result<Vec<Vec<u8>>, Status> {
+        match rv {
+            Rv::V1 => files_for_filename_v1(channel, filename).await,
+            Rv::V1alpha => files_for_filename_v1alpha(channel, filename).await,
+        }
+    }
+
     // The two reflection protocol versions have structurally identical messages under different
     // module paths; this macro generates the list/file-fetch pair for each so the orchestration above
     // stays version-agnostic.
     macro_rules! reflection_ops {
-        ($modpath:ident, $list_fn:ident, $files_fn:ident) => {
+        ($modpath:ident, $list_fn:ident, $files_fn:ident, $byname_fn:ident) => {
             async fn $list_fn(channel: &Channel) -> Result<Vec<String>, Status> {
                 use tonic_reflection::pb::$modpath::{
                     server_reflection_client::ServerReflectionClient,
@@ -4428,6 +4499,37 @@ mod grpc {
                     match resp.message_response {
                         Some(MessageResponse::ListServicesResponse(list)) => {
                             out.extend(list.service.into_iter().map(|s| s.name));
+                        }
+                        Some(MessageResponse::ErrorResponse(e)) => {
+                            return Err(Status::new(
+                                tonic::Code::from(e.error_code),
+                                e.error_message,
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(out)
+            }
+
+            async fn $byname_fn(channel: &Channel, filename: &str) -> Result<Vec<Vec<u8>>, Status> {
+                use tonic_reflection::pb::$modpath::{
+                    server_reflection_client::ServerReflectionClient,
+                    server_reflection_request::MessageRequest,
+                    server_reflection_response::MessageResponse, ServerReflectionRequest,
+                };
+                let mut client = ServerReflectionClient::new(channel.clone());
+                let req = ServerReflectionRequest {
+                    host: String::new(),
+                    message_request: Some(MessageRequest::FileByFilename(filename.to_string())),
+                };
+                let stream = futures::stream::iter(std::iter::once(req));
+                let mut inner = client.server_reflection_info(stream).await?.into_inner();
+                let mut out = Vec::new();
+                while let Some(resp) = inner.message().await? {
+                    match resp.message_response {
+                        Some(MessageResponse::FileDescriptorResponse(fdr)) => {
+                            out.extend(fdr.file_descriptor_proto);
                         }
                         Some(MessageResponse::ErrorResponse(e)) => {
                             return Err(Status::new(
@@ -4474,8 +4576,8 @@ mod grpc {
         };
     }
 
-    reflection_ops!(v1, list_services_v1, files_for_symbol_v1);
-    reflection_ops!(v1alpha, list_services_v1alpha, files_for_symbol_v1alpha);
+    reflection_ops!(v1, list_services_v1, files_for_symbol_v1, files_for_filename_v1);
+    reflection_ops!(v1alpha, list_services_v1alpha, files_for_symbol_v1alpha, files_for_filename_v1alpha);
 
     fn opt_duration(opts: &Option<Table>, key: &str) -> mlua::Result<Option<Duration>> {
         Ok(match opts {
