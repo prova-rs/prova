@@ -2772,7 +2772,7 @@ dependencies = [
 
 [[package]]
 name = "prova-archetect"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "archetect-api",
  "archetect-core",
@@ -2784,7 +2784,7 @@ dependencies = [
 
 [[package]]
 name = "prova-cli"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "archetect-git-cache",
  "camino",
@@ -2805,7 +2805,7 @@ dependencies = [
 
 [[package]]
 name = "prova-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "bollard",
  "bytes",
@@ -4888,7 +4888,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "clap",
