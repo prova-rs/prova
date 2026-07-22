@@ -45,6 +45,9 @@ struct PackageState {
 fn package_state() -> Option<PackageState> {
     let cwd = std::env::current_dir().ok()?;
     let home = crate::home::find(&cwd).ok().flatten()?;
+    // `home.dir` is canonicalized by discovery (on Windows that's the `\\?\` verbatim form, on macOS
+    // symlinked temp dirs resolve) — canonicalize the cwd the same way or strip_prefix can't match.
+    let cwd = cwd.canonicalize().unwrap_or(cwd);
     let package_root = match cwd.strip_prefix(&home.dir) {
         Ok(rel) => {
             let depth = rel.components().count();
