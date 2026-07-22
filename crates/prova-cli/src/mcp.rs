@@ -481,7 +481,7 @@ struct WarmRunOutcome {
     skipped: usize,
     deselected: usize,
     duration_ms: u64,
-    failures: Vec<(String, String)>,
+    failures: Vec<Failure>,
 }
 
 /// The holder thread's whole life: provision the topology (reporting readiness or the error over
@@ -686,7 +686,7 @@ impl ProvaMcpServer {
 
     #[tool(
         name = "run",
-        description = "Run the package's test suite with an optional selection (the MCP mirror of the CLI's -k/--tags/--node/--last-failed/--profile/--jobs flags). With `topology`, run WARM against a topology held by a prior `up`: t:use resolves the held live instance instead of provisioning (never provisions implicitly — an un-held topology is an error). Returns compact JSON: { passed, failed, skipped, deselected, duration_ms, failures: [{ path, message }] }. The result is marked isError when any node failed, and a selection that matches NOTHING is an error (usually a typo — mirror of the CLI's default; the CLI's --allow-empty has no MCP counterpart). Also records the failed nodes so a later run with last_failed=true (or CLI --last-failed) re-runs exactly them; last_failed with no recorded state runs everything and says so in a `note` field. Pass `package` (a directory or manifest path) to target ANOTHER package anywhere on disk — the server's startup package is only the default, and a `package` resolves fresh, so a manifest you just scaffolded works without a restart."
+        description = "Run the package's test suite with an optional selection (the MCP mirror of the CLI's -k/--tags/--node/--last-failed/--profile/--jobs flags). With `topology`, run WARM against a topology held by a prior `up`: t:use resolves the held live instance instead of provisioning (never provisions implicitly — an un-held topology is an error). Returns compact JSON: { passed, failed, skipped, deselected, duration_ms, failures: [{ path, message, file?, line? }] } (file/line = the failing test's declaration site, when known). The result is marked isError when any node failed, and a selection that matches NOTHING is an error (usually a typo — mirror of the CLI's default; the CLI's --allow-empty has no MCP counterpart). Also records the failed nodes so a later run with last_failed=true (or CLI --last-failed) re-runs exactly them; last_failed with no recorded state runs everything and says so in a `note` field. Pass `package` (a directory or manifest path) to target ANOTHER package anywhere on disk — the server's startup package is only the default, and a `package` resolves fresh, so a manifest you just scaffolded works without a restart."
     )]
     async fn run(&self, Parameters(req): Parameters<RunRequest>) -> CallToolResult {
         let _serialized = self.run_lock.lock().await;
@@ -854,11 +854,33 @@ where
     }
 }
 
-/// Collects each failed node's (path, message) — the per-failure detail in the `run` result, and
-/// the state the next `last_failed` selection re-runs.
+/// One failed node's detail for the `run` result: path + message, plus the source location when
+/// the leaf had file backing.
+struct Failure {
+    path: String,
+    message: String,
+    file: Option<String>,
+    line: Option<u32>,
+}
+
+/// The per-failure JSON in a `run`/warm-run result. `file`/`line` only appear when known, so the
+/// compact shape stays additive over `{ path, message }`.
+fn failure_json(f: &Failure) -> serde_json::Value {
+    let mut v = json!({ "path": f.path, "message": f.message });
+    if let Some(file) = &f.file {
+        v["file"] = json!(file);
+    }
+    if let Some(line) = f.line {
+        v["line"] = json!(line);
+    }
+    v
+}
+
+/// Collects each failed node — the per-failure detail in the `run` result, and the state the next
+/// `last_failed` selection re-runs.
 #[derive(Default)]
 struct FailureCollector {
-    failures: Vec<(String, String)>,
+    failures: Vec<Failure>,
 }
 
 impl Reporter for FailureCollector {
@@ -867,11 +889,17 @@ impl Reporter for FailureCollector {
             path,
             outcome: Outcome::Failed,
             message,
+            file,
+            line,
             ..
         } = event
         {
-            self.failures
-                .push((path.to_string(), message.unwrap_or("").to_string()));
+            self.failures.push(Failure {
+                path: path.to_string(),
+                message: message.unwrap_or("").to_string(),
+                file: file.map(str::to_string),
+                line: *line,
+            });
         }
     }
 }
@@ -927,14 +955,10 @@ fn run_blocking(env: &McpEnv, req: RunRequest) -> Result<(serde_json::Value, boo
     }
 
     // Keep the `--last-failed` state in step with CLI runs — the two transports share one loop.
-    let failed_paths: Vec<String> = reporter.failures.iter().map(|(p, _)| p.clone()).collect();
+    let failed_paths: Vec<String> = reporter.failures.iter().map(|f| f.path.clone()).collect();
     crate::store_last_failed(&lf_home, &failed_paths);
 
-    let failures: Vec<serde_json::Value> = reporter
-        .failures
-        .iter()
-        .map(|(path, message)| json!({ "path": path, "message": message }))
-        .collect();
+    let failures: Vec<serde_json::Value> = reporter.failures.iter().map(failure_json).collect();
     let mut result = json!({
         "passed": summary.passed,
         "failed": summary.failed,
@@ -1132,14 +1156,10 @@ fn warm_run_blocking(
     }
 
     // Keep the `--last-failed` state in step with cold runs — every transport shares one loop.
-    let failed_paths: Vec<String> = outcome.failures.iter().map(|(p, _)| p.clone()).collect();
+    let failed_paths: Vec<String> = outcome.failures.iter().map(|f| f.path.clone()).collect();
     crate::store_last_failed(&lf_home, &failed_paths);
 
-    let failures: Vec<serde_json::Value> = outcome
-        .failures
-        .iter()
-        .map(|(path, message)| json!({ "path": path, "message": message }))
-        .collect();
+    let failures: Vec<serde_json::Value> = outcome.failures.iter().map(failure_json).collect();
     let mut result = json!({
         "passed": outcome.passed,
         "failed": outcome.failed,

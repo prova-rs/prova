@@ -36,6 +36,10 @@ prova.test("--format json emits the JSONL event protocol", function(t)
   t:expect(r.code):equals(0)
   t:expect(r.stdout):contains('"type":"node_finished"')
   t:expect(r.stdout):contains('"outcome":"passed"')
+  -- Events carry the declaration's source location (file path + line).
+  t:expect(r.stdout):contains('"file":')
+  t:expect(r.stdout):contains('passing.lua')
+  t:expect(r.stdout):contains('"line":')
 end)
 
 prova.test("--format tap emits the TAP protocol", function(t)
@@ -57,6 +61,10 @@ prova.test("--junit writes a JUnit XML file alongside console output", function(
   t:expect(xml):contains("<testsuites")
   t:expect(xml):contains('failures="1"')
   t:expect(xml):contains("<failure")
+  -- Test cases carry their source location, so dashboards can link back to the file.
+  t:expect(xml):contains('file="')
+  t:expect(xml):contains('mixed.lua')
+  t:expect(xml):contains('line="')
 end)
 
 prova.test("snapshots: update writes, re-run matches, a change fails with a diff", function(t)

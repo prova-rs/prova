@@ -54,6 +54,15 @@ impl Suite {
             config,
         )
     }
+
+    /// The file to blame on a suite-level load/collection error: the setup (it loads first), else
+    /// the suite's first file. Best-effort — the error message itself names the exact source line.
+    fn error_file(&self) -> Option<String> {
+        self.setup
+            .as_deref()
+            .or_else(|| self.files.first().map(PathBuf::as_path))
+            .map(|p| p.to_string_lossy().into_owned())
+    }
 }
 
 /// Owned counterpart of a node-level `Event`, so results can cross the worker→coordinator channel
@@ -69,6 +78,8 @@ enum OwnedEvent {
         duration: Duration,
         assertions: usize,
         message: Option<String>,
+        file: Option<String>,
+        line: Option<u32>,
     },
 }
 
@@ -90,12 +101,16 @@ impl Reporter for ChannelReporter {
                 duration,
                 assertions,
                 message,
+                file,
+                line,
             } => OwnedEvent::NodeFinished {
                 path: (*path).to_string(),
                 outcome: *outcome,
                 duration: *duration,
                 assertions: *assertions,
                 message: message.map(str::to_string),
+                file: file.map(str::to_string),
+                line: *line,
             },
             Event::RunStarted | Event::RunFinished { .. } => return,
         };
@@ -280,6 +295,7 @@ fn run_pooled(suites: &[Suite], reporter: &mut dyn Reporter, config: &RunConfig)
                         // Surface a collection/load error as a synthetic failed node for the suite.
                         let path = suite.name.clone();
                         let message = err.to_string();
+                        let file = suite.error_file();
                         sink.event(&Event::NodeStarted { path: &path });
                         sink.event(&Event::NodeFinished {
                             path: &path,
@@ -287,6 +303,8 @@ fn run_pooled(suites: &[Suite], reporter: &mut dyn Reporter, config: &RunConfig)
                             duration: Duration::ZERO,
                             assertions: 0,
                             message: Some(&message),
+                            file: file.as_deref(),
+                            line: None,
                         });
                     }
                 }
@@ -320,6 +338,8 @@ fn forward(reporter: &mut dyn Reporter, summary: &mut Summary, event: OwnedEvent
             duration,
             assertions,
             message,
+            file,
+            line,
         } => {
             summary.tally(outcome);
             reporter.event(&Event::NodeFinished {
@@ -328,6 +348,8 @@ fn forward(reporter: &mut dyn Reporter, summary: &mut Summary, event: OwnedEvent
                 duration,
                 assertions,
                 message: message.as_deref(),
+                file: file.as_deref(),
+                line,
             });
         }
     }
@@ -339,6 +361,7 @@ fn report_suite_error(
     suite: &Suite,
     message: &str,
 ) {
+    let file = suite.error_file();
     reporter.event(&Event::NodeStarted { path: &suite.name });
     summary.tally(Outcome::Failed);
     reporter.event(&Event::NodeFinished {
@@ -347,5 +370,7 @@ fn report_suite_error(
         duration: Duration::ZERO,
         assertions: 0,
         message: Some(message),
+        file: file.as_deref(),
+        line: None,
     });
 }

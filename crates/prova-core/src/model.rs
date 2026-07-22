@@ -113,6 +113,11 @@ pub enum Event<'a> {
         /// Assertions executed in the body (0 → the test asserted nothing).
         assertions: usize,
         message: Option<&'a str>,
+        /// Source file the leaf was declared in (absolute; reporters relativize for display).
+        /// `None` when the run has no file backing (an `eval`, a topology snippet).
+        file: Option<&'a str>,
+        /// 1-based line of the declaration call (`prova.test(...)` / `flow:step(...)`).
+        line: Option<u32>,
     },
     RunFinished {
         summary: &'a Summary,
@@ -141,6 +146,7 @@ impl Reporter for ConsoleReporter {
                 duration,
                 assertions,
                 message,
+                ..
             } => {
                 let mark = match outcome {
                     Outcome::Passed => "PASS",
@@ -233,6 +239,8 @@ pub fn event_to_json(event: &Event) -> serde_json::Value {
             duration,
             assertions,
             message,
+            file,
+            line,
         } => json!({
             "type": "node_finished",
             "path": path,
@@ -240,6 +248,8 @@ pub fn event_to_json(event: &Event) -> serde_json::Value {
             "durationMs": duration.as_secs_f64() * 1000.0,
             "assertions": assertions,
             "message": message,
+            "file": file,
+            "line": line,
         }),
         Event::RunFinished { summary } => json!({
             "type": "run_finished",
@@ -267,6 +277,10 @@ struct JUnitCase {
     outcome: Outcome,
     duration: Duration,
     message: Option<String>,
+    /// Source location of the declaration, when the leaf has file backing — emitted as `file`/
+    /// `line` attributes, which is how CI dashboards link a case back to its source.
+    file: Option<String>,
+    line: Option<u32>,
 }
 
 /// Writes a JUnit XML report — the format Jenkins, GitLab, GitHub Actions, CircleCI, etc. ingest to
@@ -332,6 +346,8 @@ impl<W: Write> Reporter for JUnitReporter<W> {
                 outcome,
                 duration,
                 message,
+                file,
+                line,
                 ..
             } => {
                 let (classname, name) = split_classname(path, &self.suite_name);
@@ -341,6 +357,8 @@ impl<W: Write> Reporter for JUnitReporter<W> {
                     outcome: *outcome,
                     duration: *duration,
                     message: message.map(str::to_string),
+                    file: file.map(str::to_string),
+                    line: *line,
                 });
             }
             Event::RunFinished { summary } => {
@@ -366,12 +384,18 @@ impl<W: Write> Reporter for JUnitReporter<W> {
                     secs(summary.duration)
                 );
                 for c in &self.cases {
-                    let head = format!(
+                    let mut head = format!(
                         "    <testcase classname=\"{}\" name=\"{}\" time=\"{}\"",
                         xml_escape(&c.classname),
                         xml_escape(&c.name),
                         secs(c.duration)
                     );
+                    if let Some(file) = &c.file {
+                        head.push_str(&format!(" file=\"{}\"", xml_escape(file)));
+                    }
+                    if let Some(line) = c.line {
+                        head.push_str(&format!(" line=\"{line}\""));
+                    }
                     match c.outcome {
                         Outcome::Passed => {
                             let _ = writeln!(w, "{head}/>");
@@ -442,6 +466,8 @@ impl<W: Write> Reporter for TapReporter<W> {
                 path,
                 outcome,
                 message,
+                file,
+                line,
                 ..
             } => {
                 self.count += 1;
@@ -456,10 +482,18 @@ impl<W: Write> Reporter for TapReporter<W> {
                     }
                     Outcome::Failed => {
                         let _ = writeln!(self.writer, "not ok {n} - {path}");
-                        if let Some(m) = message {
+                        if message.is_some() || file.is_some() {
                             // A YAML diagnostic block — TAP consumers surface it as the failure detail.
                             let _ = writeln!(self.writer, "  ---");
-                            let _ = writeln!(self.writer, "  message: {}", tap_yaml_scalar(m));
+                            if let Some(m) = message {
+                                let _ = writeln!(self.writer, "  message: {}", tap_yaml_scalar(m));
+                            }
+                            if let Some(f) = file {
+                                let _ = writeln!(self.writer, "  file: {}", tap_yaml_scalar(f));
+                            }
+                            if let Some(l) = line {
+                                let _ = writeln!(self.writer, "  line: {l}");
+                            }
                             let _ = writeln!(self.writer, "  ...");
                         }
                     }
@@ -523,6 +557,8 @@ mod tests {
             duration: d,
             assertions: 1,
             message: None,
+            file: Some("/proj/proofs/orders_test.lua"),
+            line: Some(12),
         });
         reporter.event(&Event::NodeFinished {
             path: "orders › rejects <bad> & \"quoted\"",
@@ -530,6 +566,8 @@ mod tests {
             duration: d,
             assertions: 1,
             message: Some("expected 200 got 500 <tag> & \"q\""),
+            file: Some("/proj/proofs/orders_test.lua"),
+            line: Some(31),
         });
         reporter.event(&Event::NodeFinished {
             path: "top-level check",
@@ -537,6 +575,8 @@ mod tests {
             duration: Duration::ZERO,
             assertions: 0,
             message: Some("docker unavailable"),
+            file: None,
+            line: None,
         });
         let summary = Summary {
             passed: 1,
@@ -590,9 +630,16 @@ mod tests {
             xml.contains(r#"<skipped message="docker unavailable"/>"#),
             "{xml}"
         );
-        // Passed case is a self-closing testcase (no children).
+        // Passed case is a self-closing testcase (no children), carrying its source location.
         assert!(
-            xml.contains(r#"name="creates a row" time="0.002"/>"#),
+            xml.contains(
+                r#"name="creates a row" time="0.002" file="/proj/proofs/orders_test.lua" line="12"/>"#
+            ),
+            "{xml}"
+        );
+        // A leaf without file backing omits the location attributes entirely.
+        assert!(
+            xml.contains(r#"name="top-level check" time="0.000">"#),
             "{xml}"
         );
     }
@@ -610,16 +657,18 @@ mod tests {
         assert_eq!(lines[0], "TAP version 13");
         assert_eq!(lines[1], "ok 1 - orders › creates a row");
         assert_eq!(lines[2], "not ok 2 - orders › rejects <bad> & \"quoted\"");
-        // Failure diagnostic YAML block, message flattened + quoted.
+        // Failure diagnostic YAML block: message flattened + quoted, plus the source location.
         assert_eq!(lines[3], "  ---");
         assert_eq!(
             lines[4],
             r#"  message: "expected 200 got 500 <tag> & \"q\"""#
         );
-        assert_eq!(lines[5], "  ...");
-        assert_eq!(lines[6], "ok 3 - top-level check # SKIP docker unavailable");
+        assert_eq!(lines[5], r#"  file: "/proj/proofs/orders_test.lua""#);
+        assert_eq!(lines[6], "  line: 31");
+        assert_eq!(lines[7], "  ...");
+        assert_eq!(lines[8], "ok 3 - top-level check # SKIP docker unavailable");
         // Trailing plan reflects the count.
-        assert_eq!(lines[7], "1..3");
+        assert_eq!(lines[9], "1..3");
     }
 
     #[test]

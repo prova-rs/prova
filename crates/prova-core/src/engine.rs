@@ -519,6 +519,15 @@ struct RunState {
 impl RunState {
     /// The directory a test's `.snap` files live in: `<source-file-dir>/snapshots`, or `None` if the
     /// file index has no recorded path (e.g. an ad-hoc topology run).
+    /// The source path for a file index as a display string, or `None` when the index has no
+    /// recorded path (an `eval`/topology run) — feeds the reported per-leaf source location.
+    fn file_path_str(&self, file: usize) -> Option<String> {
+        self.file_paths
+            .get(file)
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(|p| p.to_string_lossy().into_owned())
+    }
+
     fn snapshot_dir(&self, file: usize) -> Option<PathBuf> {
         let p = self.file_paths.get(file)?;
         if p.as_os_str().is_empty() {
@@ -589,6 +598,8 @@ async fn teardown_all_and_warn(state: &RunState) {
     late.extend(teardown_results(
         "suite",
         teardown_scope(&state.suite).await,
+        None,
+        None,
     ));
     for r in &late {
         eprintln!(
@@ -605,7 +616,12 @@ async fn teardown_all_and_warn(state: &RunState) {
     }
 }
 
-fn teardown_results(label: &str, errors: Vec<String>) -> Vec<NodeResult> {
+fn teardown_results(
+    label: &str,
+    errors: Vec<String>,
+    file: Option<&str>,
+    line: Option<u32>,
+) -> Vec<NodeResult> {
     errors
         .into_iter()
         .map(|message| NodeResult {
@@ -614,6 +630,8 @@ fn teardown_results(label: &str, errors: Vec<String>) -> Vec<NodeResult> {
             duration: Duration::ZERO,
             assertions: 0,
             message: Some(message),
+            file: file.map(str::to_string),
+            line,
             teardown: true,
         })
         .collect()
@@ -655,6 +673,10 @@ struct Node {
     /// Index of the source file this node was collected from (a suite may load several files into one
     /// state). Set by `Collector::add`; drives per-file `Scope.File`. Always 0 for a single file.
     file: usize,
+    /// 1-based line of the declaration call (`prova.test(...)`, `flow:step(...)`) in that file,
+    /// captured from the Lua stack at registration. `None` when no frame in the current file was
+    /// on the stack (a synthetic node, or a declaration made entirely from a helper chunk).
+    line: Option<u32>,
 }
 
 struct Collector {
@@ -693,6 +715,7 @@ impl Collector {
                 body: None,
                 case: None,
                 file: 0,
+                line: None,
             }],
             fixtures: vec![],
             topologies: BTreeMap::new(),
@@ -1861,7 +1884,8 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
             lua.create_function(move |lua, (name, a, b): (String, Value, Value)| {
                 reject_bare_in_builder(&col, "test")?;
                 let parent = col.borrow().current_parent();
-                let ix = register_test(&col, parent, name, a, b, None)?;
+                let line = caller_line(lua, &col);
+                let ix = register_test(&col, parent, name, a, b, None, line)?;
                 lua.create_userdata(UnitHandle { ix })
             })?,
         )?;
@@ -1907,9 +1931,9 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
         let col = col.clone();
         prova.set(
             "describe",
-            lua.create_function(move |_lua, (label, body): (String, Function)| {
+            lua.create_function(move |lua, (label, body): (String, Function)| {
                 reject_bare_in_builder(&col, "describe")?;
-                register_describe(&col, label, body)
+                register_describe(lua, &col, label, body)
             })?,
         )?;
     }
@@ -2193,7 +2217,8 @@ struct GroupBuilder {
 impl UserData for GroupBuilder {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("test", |lua, this, (name, a, b): (String, Value, Value)| {
-            let ix = register_test(&this.col, this.ix, name, a, b, None)?;
+            let line = caller_line(lua, &this.col);
+            let ix = register_test(&this.col, this.ix, name, a, b, None, line)?;
             lua.create_userdata(UnitHandle { ix })
         });
 
@@ -2236,8 +2261,45 @@ impl UserData for GroupBuilder {
     }
 }
 
+/// The line of the innermost Lua stack frame that lives in the file currently being collected —
+/// i.e. the call site of the `prova.test`/`group`/`flow`/`step` declaration executing right now.
+///
+/// Chunks are loaded with `set_name("@<file path>")` (see `file_chunk_name`), so a frame belongs
+/// to the current file exactly when its debug source — prefix stripped — equals the collector's
+/// `file_paths[current_file]`. Walking until that match (rather than taking the innermost Lua
+/// frame) attributes a declaration made *through a helper* to the test file's call site, not the
+/// helper's body. `None` when nothing matches (an `eval` snippet, a topology chunk, or a
+/// declaration driven entirely from foreign code).
+fn caller_line(lua: &Lua, col: &SharedCollector) -> Option<u32> {
+    let expect: Option<String> = {
+        let c = col.borrow();
+        c.file_paths
+            .get(c.current_file)
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(|p| p.to_string_lossy().into_owned())
+    };
+    for level in 0..=16 {
+        let frame = lua.inspect_stack(level, |d| {
+            let src = d.source().source.map(|s| s.into_owned());
+            (src, d.current_line())
+        })?; // past the top of the stack — no matching frame
+        let (Some(src), Some(line)) = frame else {
+            continue; // a C frame, or a frame with no line info
+        };
+        // Strip Lua's chunk-name prefixes: '@' marks a file source (ours), '=' a synthetic one.
+        let src = src.strip_prefix(['@', '=']).unwrap_or(&src);
+        match &expect {
+            Some(e) if src == e => return Some(line as u32),
+            Some(_) => continue,
+            None => return Some(line as u32), // no file to match — take the innermost Lua frame
+        }
+    }
+    None
+}
+
 /// Register a leaf `test`/`step` node under `parent`; returns its arena index (the unit handle id).
-/// `case` is the `test_each` case value (`None` for an ordinary test).
+/// `case` is the `test_each` case value (`None` for an ordinary test); `line` is the declaration
+/// call site (see `caller_line`), shared across every case of a `test_each`.
 fn register_test(
     col: &SharedCollector,
     parent: NodeIx,
@@ -2245,6 +2307,7 @@ fn register_test(
     a: Value,
     b: Value,
     case: Option<Value>,
+    line: Option<u32>,
 ) -> mlua::Result<NodeIx> {
     let (opts, body) = split_opts_body(a, b)?;
     Ok(col.borrow_mut().add(
@@ -2258,6 +2321,7 @@ fn register_test(
             body: Some(body),
             case,
             file: 0,
+            line,
         },
     ))
 }
@@ -2274,6 +2338,7 @@ fn register_test_each(
     cases: Table,
     factory: Function,
 ) -> mlua::Result<Table> {
+    let line = caller_line(lua, col); // the one test_each call site, shared by every case
     let handles = lua.create_table()?;
     for i in 1..=cases.raw_len() {
         let case: Value = cases.get(i)?;
@@ -2285,6 +2350,7 @@ fn register_test_each(
             Value::Function(factory.clone()),
             Value::Nil,
             Some(case),
+            line,
         )?;
         handles.push(lua.create_userdata(UnitHandle { ix })?)?;
     }
@@ -2351,6 +2417,7 @@ fn register_group(
     b: Value,
 ) -> mlua::Result<NodeIx> {
     let (opts, body) = split_opts_body(a, b)?;
+    let line = caller_line(lua, col);
     let gix = col.borrow_mut().add(
         parent,
         Node {
@@ -2362,6 +2429,7 @@ fn register_group(
             body: None,
             case: None,
             file: 0,
+            line,
         },
     );
     let gb = lua.create_userdata(GroupBuilder {
@@ -2389,7 +2457,13 @@ fn register_group(
 /// the body nest under the label (dynamic scoping). Structurally a group — labeling only, no new
 /// fixture scope. The stack is popped even if the body errors, so one bad `describe` can't corrupt
 /// the ambient parent for the rest of the file.
-fn register_describe(col: &SharedCollector, label: String, body: Function) -> mlua::Result<()> {
+fn register_describe(
+    lua: &Lua,
+    col: &SharedCollector,
+    label: String,
+    body: Function,
+) -> mlua::Result<()> {
+    let line = caller_line(lua, col);
     let ix = {
         let mut c = col.borrow_mut();
         let parent = c.current_parent();
@@ -2404,6 +2478,7 @@ fn register_describe(col: &SharedCollector, label: String, body: Function) -> ml
                 body: None,
                 case: None,
                 file: 0,
+                line,
             },
         )
     };
@@ -2427,6 +2502,7 @@ fn register_flow(
     b: Value,
 ) -> mlua::Result<NodeIx> {
     let (opts, body) = split_opts_body(a, b)?;
+    let line = caller_line(lua, col);
     let fix = col.borrow_mut().add(
         parent,
         Node {
@@ -2438,6 +2514,7 @@ fn register_flow(
             body: None,
             case: None,
             file: 0,
+            line,
         },
     );
     let fb = lua.create_userdata(FlowBuilder {
@@ -2470,8 +2547,9 @@ struct FlowBuilder {
 
 impl UserData for FlowBuilder {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("step", |_, this, (name, a, b): (String, Value, Value)| {
+        methods.add_method("step", |lua, this, (name, a, b): (String, Value, Value)| {
             let (opts, body) = split_opts_body(a, b)?;
+            let line = caller_line(lua, &this.col);
             this.col.borrow_mut().add(
                 this.ix,
                 Node {
@@ -2483,6 +2561,7 @@ impl UserData for FlowBuilder {
                     body: Some(body),
                     case: None,
                     file: 0,
+                    line,
                 },
             );
             Ok(())
@@ -2501,6 +2580,8 @@ struct PlanItem {
     case: Option<Value>,
     /// Source file index — selects this item's `Scope.File` instance.
     file: usize,
+    /// Declaration line in that file (captured at registration), for reported source locations.
+    line: Option<u32>,
 }
 
 /// A scheduling atom. Independent units may run concurrently (`buffer_unordered`); a flow's steps
@@ -2518,6 +2599,15 @@ impl PlanUnit {
             PlanUnit::Flow { steps } => steps.iter().map(|s| s.path.as_str()).collect(),
         }
     }
+
+    /// Every reported leaf item in this unit — `leaf_paths` with the whole item, for callers that
+    /// also need the source location.
+    fn items(&self) -> Vec<&PlanItem> {
+        match self {
+            PlanUnit::Test(item) => vec![item],
+            PlanUnit::Flow { steps } => steps.iter().collect(),
+        }
+    }
 }
 
 fn plan_item(node: &Node, ancestors: &[String]) -> PlanItem {
@@ -2529,6 +2619,7 @@ fn plan_item(node: &Node, ancestors: &[String]) -> PlanItem {
         timeout: node.opts.timeout,
         case: node.case.clone(),
         file: node.file,
+        line: node.line,
     }
 }
 
@@ -3178,6 +3269,10 @@ struct NodeResult {
     duration: Duration,
     assertions: usize,
     message: Option<String>,
+    /// Source location of the declaration (file path + 1-based line), when the leaf has file
+    /// backing — threaded into `Event::NodeFinished` for reporters.
+    file: Option<String>,
+    line: Option<u32>,
     /// True for a `⟶ teardown` leaf.
     ///
     /// Reported exactly like any other node — but it **never gates**. A cleanup that raised is not
@@ -3232,6 +3327,7 @@ async fn run_one(
     };
     let ctx_ud = lua.create_userdata(ctx).expect("create context");
 
+    let file = state.file_path_str(item.file);
     let start = Instant::now();
     let call = item.body.call_async::<()>((ctx_ud, case_arg));
 
@@ -3249,9 +3345,11 @@ async fn run_one(
                     duration: start.elapsed(),
                     assertions,
                     message: Some(format!("timed out after {budget:?}")),
+                    file: file.clone(),
+                    line: item.line,
                     teardown: false,
                 }];
-                out.extend(teardown_results(&item.path, errors));
+                out.extend(teardown_results(&item.path, errors, file.as_deref(), item.line));
                 return out;
             }
         },
@@ -3282,9 +3380,11 @@ async fn run_one(
         duration,
         assertions,
         message,
+        file: file.clone(),
+        line: item.line,
         teardown: false,
     }];
-    out.extend(teardown_results(&item.path, errors));
+    out.extend(teardown_results(&item.path, errors, file.as_deref(), item.line));
     out
 }
 
@@ -3305,6 +3405,8 @@ async fn run_flow(lua: &Lua, steps: &[PlanItem], state: &Rc<RunState>) -> Vec<No
                 duration: Duration::ZERO,
                 assertions: 0,
                 message: Some(reason.clone()),
+                file: state.file_path_str(step.file),
+                line: step.line,
                 teardown: false,
             });
             continue;
@@ -3326,7 +3428,8 @@ async fn run_flow(lua: &Lua, steps: &[PlanItem], state: &Rc<RunState>) -> Vec<No
         .map(|s| flow_label(&s.path))
         .unwrap_or("flow")
         .to_string();
-    results.extend(teardown_results(&label, errors));
+    let file = steps.first().and_then(|s| state.file_path_str(s.file));
+    results.extend(teardown_results(&label, errors, file.as_deref(), None));
     results
 }
 
@@ -3368,15 +3471,17 @@ fn unit_outcome(results: &[NodeResult]) -> Outcome {
 
 /// Build skipped results for a unit that never ran (a dependency did not pass) — one per reported
 /// path (a flow reports one skip per step), so the report stays consistent with a unit that ran.
-fn skip_leaf(unit: &PlanUnit, reason: &str) -> Vec<NodeResult> {
-    unit.leaf_paths()
+fn skip_leaf(unit: &PlanUnit, reason: &str, state: &RunState) -> Vec<NodeResult> {
+    unit.items()
         .into_iter()
-        .map(|path| NodeResult {
-            path: path.to_string(),
+        .map(|item| NodeResult {
+            path: item.path.clone(),
             outcome: Outcome::Skipped,
             duration: Duration::ZERO,
             assertions: 0,
             message: Some(reason.to_string()),
+            file: state.file_path_str(item.file),
+            line: item.line,
             teardown: false,
         })
         .collect()
@@ -3391,6 +3496,8 @@ fn emit_finished(reporter: &mut dyn Reporter, summary: &mut Summary, results: &[
             duration: result.duration,
             assertions: result.assertions,
             message: result.message.as_deref(),
+            file: result.file.as_deref(),
+            line: result.line,
         });
     }
 }
@@ -3489,7 +3596,7 @@ async fn run_plan(
                         })
                 };
                 if let Some(reason) = reason {
-                    let results = skip_leaf(&leaves[i].unit, &reason);
+                    let results = skip_leaf(&leaves[i].unit, &reason, state);
                     for path in leaves[i].unit.leaf_paths() {
                         reporter.event(&Event::NodeStarted { path });
                     }
@@ -3543,6 +3650,13 @@ async fn run_plan(
 // Public entry points
 // ---------------------------------------------------------------------------------------------
 
+/// A file-backed chunk's name: the path with Lua's `@` file-source prefix, so error messages and
+/// tracebacks render as `path:line:` (and truncation keeps the path's *tail*) instead of the
+/// `[string "path…"]` string-chunk form. Matches the plugin loaders' existing convention.
+fn file_chunk_name(path: &Path) -> String {
+    format!("@{}", path.display())
+}
+
 fn read_and_collect(path: &Path, config: &RunConfig) -> mlua::Result<(Lua, SharedCollector)> {
     let code = std::fs::read_to_string(path)
         .map_err(|e| mlua::Error::RuntimeError(format!("cannot read {}: {e}", path.display())))?;
@@ -3553,7 +3667,7 @@ fn read_and_collect(path: &Path, config: &RunConfig) -> mlua::Result<(Lua, Share
         .to_string();
     let (lua, col) = build_lua(stem, config)?;
     col.borrow_mut().set_file_path(0, path); // singleton file → index 0, for snapshot colocation
-    lua.load(&code).set_name(path.to_string_lossy()).exec()?;
+    lua.load(&code).set_name(file_chunk_name(path)).exec()?;
     Ok((lua, col))
 }
 
@@ -3635,7 +3749,7 @@ pub(crate) fn run_suite_files(
         let code = std::fs::read_to_string(setup).map_err(|e| {
             mlua::Error::RuntimeError(format!("cannot read {}: {e}", setup.display()))
         })?;
-        lua.load(&code).set_name(setup.to_string_lossy()).exec()?;
+        lua.load(&code).set_name(file_chunk_name(setup)).exec()?;
     }
 
     // Each member file loads under a file-group node, with its own file index (1-based).
@@ -3665,7 +3779,7 @@ fn load_member_files(lua: &Lua, col: &SharedCollector, files: &[PathBuf]) -> mlu
         let code = std::fs::read_to_string(file).map_err(|e| {
             mlua::Error::RuntimeError(format!("cannot read {}: {e}", file.display()))
         })?;
-        lua.load(&code).set_name(file.to_string_lossy()).exec()?;
+        lua.load(&code).set_name(file_chunk_name(file)).exec()?;
         {
             let mut c = col.borrow_mut();
             c.parent_stack.pop();
@@ -3713,6 +3827,8 @@ fn execute_collected(
         late.extend(teardown_results(
             "suite",
             teardown_scope(&state.suite).await,
+            None,
+            None,
         ));
         emit_finished(reporter, &mut summary, &late);
         summary.duration = started.elapsed();
@@ -3820,7 +3936,7 @@ pub fn load_project_config(
         .map_err(|e| format!("{}: {e}", path.display()))?;
 
     lua.load(&src)
-        .set_name(path.to_string_lossy().as_ref())
+        .set_name(file_chunk_name(path))
         .exec()
         .map_err(|e| format!("{}: {e}", path.display()))?;
 
@@ -4113,7 +4229,7 @@ pub fn list_topologies(files: &[PathBuf], config: &RunConfig) -> mlua::Result<Ve
         let code = std::fs::read_to_string(file).map_err(|e| {
             mlua::Error::RuntimeError(format!("cannot read {}: {e}", file.display()))
         })?;
-        lua.load(&code).set_name(file.to_string_lossy()).exec()?;
+        lua.load(&code).set_name(file_chunk_name(file)).exec()?;
     }
     exec_topology_registrations(&lua, config)?;
     let names: Vec<String> = col.borrow().topologies.keys().cloned().collect();
@@ -4130,7 +4246,7 @@ fn load_topology(
         let code = std::fs::read_to_string(file).map_err(|e| {
             mlua::Error::RuntimeError(format!("cannot read {}: {e}", file.display()))
         })?;
-        lua.load(&code).set_name(file.to_string_lossy()).exec()?;
+        lua.load(&code).set_name(file_chunk_name(file)).exec()?;
     }
     exec_topology_registrations(&lua, config)?;
 
@@ -4341,7 +4457,7 @@ impl HeldTopology {
             })?;
             self.lua
                 .load(&code)
-                .set_name(files[0].to_string_lossy())
+                .set_name(file_chunk_name(&files[0]))
                 .exec()?;
         } else {
             *self.col.borrow_mut() = Collector::new(self.name.clone());
@@ -4407,6 +4523,8 @@ impl HeldTopology {
             late.extend(teardown_results(
                 "suite",
                 teardown_scope(&state.suite).await,
+                None,
+                None,
             ));
             emit_finished(reporter, &mut summary, &late);
             summary.duration = started.elapsed();
@@ -4527,6 +4645,7 @@ fn group_node(name: String) -> Node {
         body: None,
         case: None,
         file: 0,
+        line: None,
     }
 }
 
@@ -4548,11 +4667,9 @@ async fn teardown_file_scopes(state: &RunState) -> Vec<NodeResult> {
         if errors.is_empty() {
             continue;
         }
-        let label = match state.file_paths.get(idx) {
-            Some(p) if !p.as_os_str().is_empty() => p.to_string_lossy().to_string(),
-            _ => format!("file {idx}"),
-        };
-        out.extend(teardown_results(&label, errors));
+        let file = state.file_path_str(idx);
+        let label = file.clone().unwrap_or_else(|| format!("file {idx}"));
+        out.extend(teardown_results(&label, errors, file.as_deref(), None));
     }
     out
 }
@@ -4616,7 +4733,7 @@ pub fn inspect_plugin(path: &Path, config: &RunConfig) -> mlua::Result<PluginRep
     let code = std::fs::read_to_string(path)
         .map_err(|e| mlua::Error::RuntimeError(format!("cannot read {}: {e}", path.display())))?;
     let (lua, _col) = build_lua("plugin".to_string(), config)?;
-    let value: Value = lua.load(&code).set_name(path.to_string_lossy()).eval()?;
+    let value: Value = lua.load(&code).set_name(file_chunk_name(path)).eval()?;
 
     let mut report = PluginReport::default();
     let Value::Table(ns) = value else {
