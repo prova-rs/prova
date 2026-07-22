@@ -25,18 +25,20 @@ fn scratch(tag: &str) -> (PathBuf, PathBuf) {
     std::fs::create_dir_all(&cfg_dir).unwrap();
     // Three entries, each pointing at a local fixture archetype. `basic` also carries a baked answer
     // so the precedence test has something to override.
+    // TOML literal (single-quoted) strings: Windows fixture paths carry
+    // backslashes, which basic strings treat as escape sequences.
     let config = format!(
         "[init.basic]\n\
          description = \"basic fixture\"\n\
-         source = \"{basic}\"\n\
+         source = '{basic}'\n\
          [init.basic.answers]\n\
          project_name = \"baked\"\n\
          [init.switched]\n\
          description = \"switch fixture\"\n\
-         source = \"{switched}\"\n\
+         source = '{switched}'\n\
          [init.undef]\n\
          description = \"undefaulted fixture\"\n\
-         source = \"{undef}\"\n",
+         source = '{undef}'\n",
         basic = fixture("arch-basic").display(),
         switched = fixture("arch-switched").display(),
         undef = fixture("arch-undefaulted").display(),
