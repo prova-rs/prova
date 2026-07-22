@@ -10,7 +10,7 @@ edition = "2021"
 homepage = "https://prova-rs.github.io"
 license = "MIT"
 repository = "https://github.com/prova-rs/prova"
-version = "0.8.0"
+version = "0.8.1"
 
 [workspace.dependencies]
 # Match archetect's mlua: Lua 5.4, vendored so we don't depend on a system Lua.
