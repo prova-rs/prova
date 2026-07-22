@@ -106,7 +106,7 @@ file changes.
 **Built and tested.** A file-index is threaded through `Node → PlanItem → Ctx` (per-file `Scope.File`);
 `run_suite_files` loads a suite's setup + members into one state and runs a combined plan with one
 suite teardown; `discover_suites` groups by the `suite.lua` convention (+ singletons); the CLI runs
-suites. `suite.config{ name, requires }` gates a whole suite. `examples/suite/` provisions ONE Postgres
+suites. `suite.config{ name, requires }` gates a whole suite. `proofs/suites/` shares ONE in-memory store
 in a `Scope.Suite` fixture and shares it across two files (`b_read_test` sees the row `a_create_test`
 inserted) — verified real, one container, torn down once. **Manifest `[suites.*]` also landed** — an explicit suite with `paths` + `setup`, CLI-verified. All five plan steps are built.
 

@@ -16,7 +16,7 @@ fn docker_available() -> bool {
 #[test]
 fn grpc_module_calls_real_server_or_skips() {
     let _docker = common::docker_guard();
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/grpc_test.lua");
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/grpc.lua");
     let summary = common::run_proof(&path);
 
     assert_eq!(

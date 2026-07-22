@@ -128,7 +128,7 @@ exactly the "batteries-included, no capability ceilings" pitch. Implemented in `
   (`default-features=false`), `prost`/`prost-types` 0.14, `prost-reflect` 0.16 (`serde`). Plaintext-
   only in v1 (matching `http`). **Not transitive** — prova-core stays domain-agnostic (no archetect
   edge); the tonic/prost tree merely happened to already be compiled via `prova-archetect`.
-- *Verified:* `examples/grpc_test.lua` + `tests/grpc.rs` — three round-trips (unary SayHello, DummyUnary
+- *Verified:* `proofs/grpc/grpc_test.lua` + `tests/grpc.rs` — three round-trips (unary SayHello, DummyUnary
   field echo, a `NotFound` via `call_status`) against a real reflection server (`moul/grpcbin`, which
   speaks **v1alpha** — exercises the fallback) in an ephemeral container, `requires{docker}`-gated so
   it skips cleanly without a daemon. Clippy + LuaLS clean.

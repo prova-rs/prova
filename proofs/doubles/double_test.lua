@@ -1,5 +1,5 @@
--- prova.double — the transport-agnostic programmable double. These prove the three roles (mock /
--- proxy / spy) and the ordered event log, which is the point: you assert on call ordering.
+-- Dogfoods prova.double: the transport-agnostic programmable double — the three roles
+-- (mock / proxy / spy) plus the ordered event log you assert call sequences against.
 
 local double = require("prova.double")
 
@@ -37,12 +37,11 @@ prova.test("mock: an unstubbed call raises — an unpredicted call is a finding"
 end)
 
 prova.test("proxy: unstubbed calls pass through to the target and are logged; stubs win", function(t)
-  -- The real thing behind the boundary.
   local real = function(input) return { echoed = input.msg } end
   local d = double{ target = real }
   d:on{ msg = "override-me" }:reply({ echoed = "STUBBED" })
 
-  t:expect(d{ msg = "override-me" }.echoed):equals("STUBBED")   -- stub wins
+  t:expect(d{ msg = "override-me" }.echoed):equals("STUBBED")     -- stub wins
   t:expect(d{ msg = "passthrough" }.echoed):equals("passthrough") -- reaches the real target
 
   local log = d:received()
@@ -58,7 +57,6 @@ prova.test("spy: a target with no stubs is a logging pass-through", function(t)
 end)
 
 prova.test("the event log preserves ORDER — assert on the sequence of calls", function(t)
-  -- The thing the ordinary matchers cannot get from a return value: WHAT happened, in WHAT order.
   local d = double()
   d:on(nil):reply(true)                        -- match anything
 

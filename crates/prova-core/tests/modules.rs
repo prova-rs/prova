@@ -24,7 +24,7 @@ fn fixture_factories_can_await() {
 #[cfg(unix)]
 #[test]
 fn shell_and_fs_modules_drive_a_workspace() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/shell_fs_test.lua");
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/shell_fs.lua");
     let summary = run(path);
     assert_eq!(summary.passed, 5, "passed");
     assert_eq!(summary.failed, 0, "failed");

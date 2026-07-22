@@ -195,14 +195,14 @@ left open by good architecture; we are not walking through it.
   Filesystem matchers
   `:exists()`/`:is_file()`/`:is_dir()` take a path-string **or handle-table** subject. This is the
   slice that lets prova test a real rendered workspace and a running service.
-  *(`examples/shell_fs_test.lua`; `examples/http_probe_test.lua` boots a server + probes it.)*
+  *(`proofs/shell/shell_fs_test.lua`; `proofs/http/probe_test.lua` boots a server + probes it.)*
   `http` is feature-gated (default on) and HTTP-only in v1 — an `https`/rustls feature layers on
   later; the rest of the stack needs no TLS. Also **`docker`** (`docker.run{image, ports, env,
   wait}` → a `Container`: `.id`, `:host_port(p)`/`:endpoint(p)`, async `:logs()`/`:exec(cmd)`/
   `:stop()`) — testcontainers-style ephemeral deps via the typed **bollard** daemon client (not CLI
   parsing): pull, create + start with random host-port bindings, inspect for the mapped ports,
   readiness wait (port TCP-connect or log-substring), `remove_container(force)` on `:stop()` with a
-  `Drop` backstop so a container never leaks. *(`examples/docker_dependency_test.lua`; verified
+  `Drop` backstop so a container never leaks. *(`proofs/docker/dependency_test.lua`; verified
   against a real daemon — whoami HTTP, redis exec/logs, real Postgres.)*
 - **`sqlite` module** — an embedded SQL query API over **sqlx's `Any` driver**: `sqlite.client(url)`
   (`sqlite::memory:` or `sqlite://…?mode=rwc`) returns a `Connection` with async `:execute` (rows
@@ -231,7 +231,7 @@ left open by good architecture; we are not walking through it.
   `DynamicMessage` with a generic tonic codec; reflection negotiates v1, falling back to the older
   v1alpha many servers still speak. Plaintext-only in v1 (matching `http`'s no-TLS stance);
   feature-gated `grpc` (default on). Chosen over shelling to `grpcurl` to preserve prova's
-  single-self-contained-binary promise. *(`examples/grpc_test.lua` + `tests/grpc.rs` run the three
+  single-self-contained-binary promise. *(`proofs/grpc/grpc_test.lua` + `tests/grpc.rs` run the three
   round-trips — unary, field echo, and a `NotFound` status — against a real reflection-enabled server
   (`moul/grpcbin`) in an ephemeral container, gated by `requires` so it skips without a daemon.)*
 - **Plugin system** — `require("name")` resolves Lua plugins through a custom `package.searchers`
@@ -252,7 +252,7 @@ left open by good architecture; we are not walking through it.
   `cache_dir/plugins`, pinned by ref and cached** (CLI `plugins.rs::resolve_plugins`). Ships one
   bundled loadable namespace, **`prova.workspace`** (`workspace.create(ctx)` → a scratch dir tied to
   the scope via `ctx:manage`, composing `fs`), proving the loadable path first-party recipes will
-  migrate onto. *(`examples/workspace_plugin_test.lua`; `tests/plugins.rs` = bundled + disk + clean
+  migrate onto. *(`proofs/shared/shared_plugin_test.lua`; `tests/plugins.rs` = bundled + disk + clean
   miss; `crates/prova-cli/tests/plugin_git.rs` fetches a git plugin end-to-end through the real
   binary.)* Design: **[plugin-system.md](plugin-system.md)**. Next: migrate a real recipe (e.g.
   `redis`) onto the loadable path; `prova plugin add`; read `~/.config/prova`.
@@ -281,7 +281,7 @@ left open by good architecture; we are not walking through it.
   in declared order, sharing closure upvalues (the flow context bag) and a `flow`-scope instance;
   once a step fails the rest **cascade-skip** (skip, not fail; a self-`skip` does not cascade); the
   flow scope tears down after the last step. Flows parallelize with sibling units.
-  *(`examples/flow_poc_test.lua` runs green: shared upvalue, shared flow-fixture, cascade proven.)*
+  *(`proofs/flows/lifecycle_test.lua` runs green: shared upvalue, shared flow-fixture, cascade proven.)*
 - **Dependency DAG** (`depends_on`): `prova.test`/`flow`/`group` return `UnitHandle`s. `build_plan`
   flattens the tree into leaves (tests + flows; a group is not a leaf) and expands each unit's
   `depends_on` — folding in **inherited** group-level deps — into concrete leaf edges (a dep on a
@@ -290,7 +290,7 @@ left open by good architecture; we are not walking through it.
   dependency leaves have **passed**; any failed/skipped dep **cascade-skips** it (transitively,
   skip-not-fail — TestNG behavior). Edges gate on pass/fail only; **data flows through fixtures**,
   not deps. Independent leaves run concurrently up to `concurrency`; an edge orders regardless of
-  job count. *(`examples/depends_on_test.lua`: login→populate→journeys + transitive group-edge
+  job count. *(`proofs/ordering/depends_on_test.lua`: login→populate→journeys + transitive group-edge
   cascade; `dag_serial` proves a chain serializes under `concurrency = 8`.)*
 - **Resources + the concurrency scheduler**: typed constructors `prova.port(n)` /
   `prova.resource(tok)` (exclusive) and `prova.shared(x)` (concurrent reader), plus bare-string
@@ -301,7 +301,7 @@ left open by good architecture; we are not walking through it.
   deadlock. `serial` is desugared to an exclusive hold on a reserved global token that every other
   leaf reads (injected only when some leaf is serial). Declarations are **inert at `concurrency =
   1`** and enforced above it — so raising `--jobs` is the throughput-only, surprise-free knob the
-  design promises. *(`examples/resources_test.lua`; `resources` tests prove exclusive holders
+  design promises. *(`proofs/resources/scheduler_test.lua`; `resources` tests prove exclusive holders
   serialize (~80ms) while shared readers overlap (~40ms) under `concurrency = 8`.)* CLI: `--jobs N`
   / `-j N`.
 - **Assertions**: `t:expect(subject, label?)` → matchers `equals`/`eq` (**deep** for tables), `is`

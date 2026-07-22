@@ -465,7 +465,7 @@ Asked (2026-07-16) for "helpers for creating stateful mocks/proxies, and to asse
 on the Proxy/Mock". The honest answer is that **the raw capability already is the feature**, and it
 falls out of decision 3 rather than needing anything new: a `:reply` handler is real Lua, so a fake's
 state is an ordinary table the fixture closes over — and because it is an ordinary table, `t:expect`
-already asserts over it. `examples/ordering_test.lua` is the worked proof: create → read back →
+already asserts over it. `proofs/mocks/http_mock_test.lua` is the worked proof: create → read back →
 cancel against a fake that really stores orders, then
 `t:expect(svc.orders[id].status):equals("cancelled")`. No state API, no mini-language, no new concept.
 This is what a templating language costs you and a real language does not.

@@ -11,7 +11,7 @@ use prova_core::{run_path, NullReporter};
 /// rather than executing any of it.
 #[test]
 fn runs_the_depends_on_example() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/depends_on_test.lua");
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/depends_on.lua");
     assert!(path.exists(), "example not found at {}", path.display());
 
     let mut reporter = NullReporter;

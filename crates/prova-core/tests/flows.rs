@@ -10,7 +10,7 @@ use prova_core::{run_path, NullReporter};
 /// skip means the failing second step correctly cascade-skipped the third instead of executing it.
 #[test]
 fn runs_the_flow_poc_example() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/flow_poc_test.lua");
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/flows.lua");
     assert!(path.exists(), "example not found at {}", path.display());
 
     let mut reporter = NullReporter;
