@@ -10,8 +10,9 @@ local project = fixtures .. "/mcp-project"
 
 prova.group("plugin introspection (CLI)", function(g)
   g:test("prova.help answers for a declared plugin's stub", function(t)
+    -- argv form: no shell quoting — single-quoted sh strings are not a thing on Windows cmd.
     local r = shell.run(
-      prova_bin .. [[ eval 'local hits = prova.help("greet.hello"); return hits[1] and hits[1].summary or "MISSING"']],
+      { prova_bin, "eval", 'local hits = prova.help("greet.hello"); return hits[1] and hits[1].summary or "MISSING"' },
       { cwd = project })
     t:expect(r.code):equals(0)
     t:expect(r.stdout):contains("greeting")
@@ -20,7 +21,7 @@ prova.group("plugin introspection (CLI)", function(g)
   g:test("the plugin's API is callable exactly as introspected", function(t)
     -- Introspection is only worth serving if it is TRUE: call what it advertises.
     local r = shell.run(
-      prova_bin .. [[ eval 'return require("greet").hello("prova")']],
+      { prova_bin, "eval", 'return require("greet").hello("prova")' },
       { cwd = project })
     t:expect(r.code):equals(0)
     t:expect(r.stdout):contains("hello, prova")
