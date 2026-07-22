@@ -13,3 +13,6 @@ context:prompt_text("Proof Dir:", "proof_dir", {
 })
 
 directory.render("contents", context)
+
+-- User-facing announcement — `prova init` must forward this to its stdout (in-test renders drop it).
+output.print("scaffolded " .. tostring(context:get("project_name")))

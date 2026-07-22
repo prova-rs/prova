@@ -246,6 +246,7 @@ pub fn render_headless(
     let handle = CapturingIoHandle {
         writes: writes.clone(),
         pending: Mutex::new(None),
+        forward_print: false, // in-test render: stdout belongs to prova's reporters
         last_diag: Mutex::new(None),
     };
 
@@ -336,6 +337,7 @@ pub fn render_interactive(
         let handle = CapturingIoHandle {
             writes: writes.clone(),
             pending: Mutex::new(None),
+            forward_print: true, // `prova init --headless`: the archetype's announcement is UX
             last_diag: Mutex::new(None),
         };
         let archetect = Archetect::builder()
@@ -382,6 +384,11 @@ pub fn render_interactive(
 struct CapturingIoHandle {
     writes: Arc<Mutex<Vec<String>>>,
     pending: Mutex<Option<ClientMessage>>,
+    /// Forward `ScriptMessage::Print` — the archetype's user-facing `output.print` — to stdout.
+    /// On for `prova init` (the announcement is the scaffold's UX, same stream as init's own
+    /// messages); off for in-test renders, whose stdout belongs to prova's reporters
+    /// (`--format json` must stay parseable).
+    forward_print: bool,
     /// The last diagnostic printed. A failing script arrives twice — once as `LogError`, once as
     /// `CompleteError`, same text — and printing both reads as two failures; drop the echo.
     last_diag: Mutex<Option<String>>,
@@ -408,6 +415,12 @@ impl ScriptIoHandle for CapturingIoHandle {
                 };
                 *self.pending.lock().unwrap() = Some(reply);
             }
+            // The archetype's user-facing output (`output.print`) — stdout, when forwarding is on.
+            ScriptMessage::Print(m) => {
+                if self.forward_print {
+                    println!("{m}");
+                }
+            }
             // Diagnostics: to stderr, keeping stdout clean for prova's JSON protocol.
             ScriptMessage::LogWarn(m)
             | ScriptMessage::LogError(m)
@@ -419,7 +432,7 @@ impl ScriptIoHandle for CapturingIoHandle {
                     *last = Some(m);
                 }
             }
-            _ => {} // Log{Trace,Debug,Info}, Print, CompleteSuccess, PromptFor* (never in headless)
+            _ => {} // Log{Trace,Debug,Info}, CompleteSuccess, PromptFor* (never in headless)
         }
         Ok(())
     }

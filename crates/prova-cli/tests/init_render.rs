@@ -87,6 +87,22 @@ fn renders_the_selected_archetype_into_the_project() {
     cleanup(&project);
 }
 
+/// The archetype's own `output.print` lines reach init's stdout — the scaffold announces itself
+/// (arch-basic prints "scaffolded <project_name>"). Without forwarding, a promptless archetype's
+/// render is silent.
+#[test]
+fn forwards_the_archetypes_user_output() {
+    let (project, xdg) = scratch("announce");
+    let out = init(&project, &xdg, &["basic", "--headless"]);
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("scaffolded baked"),
+        "archetype output.print not forwarded to stdout: {stdout}"
+    );
+    cleanup(&project);
+}
+
 /// Proof 8: precedence — a CLI `--answer` overrides the entry's baked answer (`project_name=baked`).
 #[test]
 fn cli_answer_overrides_a_baked_answer() {

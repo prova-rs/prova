@@ -6,7 +6,7 @@
 //! ```toml
 //! [init.default]                  # a matching key REPLACES the built-in entry outright
 //! description = "A standard prova package (a proof suite)"
-//! source      = "https://github.com/prova-rs/prova-init-default-archetype.git#main"
+//! source      = "https://github.com/prova-rs/prova-init-default-archetype.git#v1"
 //! switches    = ["ci"]            # always passed to the render for this entry
 //! defaults    = true              # take the archetype's default for any unanswered prompt
 //!
@@ -69,11 +69,12 @@ impl Catalog {
         entries.insert(
             "default".to_string(),
             InitEntry {
-                description: "A standard prova package — a proof suite (prova.toml + a first proof)"
+                description: "The full default prova package — a .prova/ nook (manifest, config, \
+                              shared lib plugin) + a starter proof suite"
                     .to_string(),
-                // Still on `#main`: the default archetype has no `v1` tag yet (its layout is being
-                // refactored). Pin to `#v1` once that tag is cut, like the `plugin` entry below.
-                source: "https://github.com/prova-rs/prova-init-default-archetype.git#main"
+                // Pinned to the released `v1` tag — reproducible scaffolding that doesn't drift when
+                // the archetype's `main` moves.
+                source: "https://github.com/prova-rs/prova-init-default-archetype.git#v1"
                     .to_string(),
                 switches: Vec::new(),
                 defaults: false,
@@ -87,7 +88,7 @@ impl Catalog {
                               [plugin] + self-test)"
                     .to_string(),
                 // Pinned to the released `v1` tag — reproducible scaffolding that doesn't drift when
-                // the archetype's `main` moves. (The `default` entry follows once its `v1` is cut.)
+                // the archetype's `main` moves.
                 source: "https://github.com/prova-rs/prova-init-plugin-archetype.git#v1"
                     .to_string(),
                 switches: Vec::new(),
