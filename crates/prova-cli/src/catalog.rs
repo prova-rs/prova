@@ -4,13 +4,13 @@
 //! `~/.config/prova/config.toml` layers `[init.*]` entries on top of it:
 //!
 //! ```toml
-//! [init.default]                  # a matching key REPLACES the built-in entry outright
+//! [init.project]                  # a matching key REPLACES the built-in entry outright
 //! description = "A standard prova package (a proof suite)"
 //! source      = "https://github.com/prova-rs/prova-init-default-archetype.git#v1"
 //! switches    = ["ci"]            # always passed to the render for this entry
 //! defaults    = true              # take the archetype's default for any unanswered prompt
 //!
-//! [init.default.answers]          # baked answers — never prompted, always supplied
+//! [init.project.answers]          # baked answers — never prompted, always supplied
 //! proof_dir = "proofs"
 //!
 //! [init.service]                  # a new key ADDS an entry
@@ -18,9 +18,26 @@
 //! source      = "/Users/me/archetypes/prova-service"
 //! ```
 //!
-//! Replacement is whole-entry rather than field-level: redefining `default` means you own it, which
+//! Replacement is whole-entry rather than field-level: redefining `project` means you own it, which
 //! is easier to reason about than a half-inherited entry. A `source` is anything `prova-archetect`
 //! resolves — a git URL (optionally `#ref`) or a local path.
+//!
+//! ## Package-state injection
+//!
+//! `init` tells every archetype where it is running — generically, not per-entry. When the current
+//! directory is inside an existing package (manifest discovery walks up, like `prova` itself), the
+//! render receives:
+//!
+//! - switch `prova:in-package`
+//! - answer `prova_package_root` — the package root, relative to the cwd (`.` when they coincide)
+//! - answer `prova_plugin_root` — the manifest's `[run] plugin_root`, when declared (package-root
+//!   relative, verbatim)
+//!
+//! Outside a package none of these are supplied, so an archetype can distinguish the two by probing
+//! `archetype.switches` / its context. Any archetype can use this state (an entry's own
+//! `switches`/`answers` and the CLI still win on conflict); archetypes that don't care ignore it.
+//! Whether an entry is *allowed* to render inside a package is the entry's `in_package` policy
+//! (`deny` — the default, never-clobber — or `allow` for entries that augment a package).
 
 use std::collections::BTreeMap;
 
@@ -44,6 +61,24 @@ pub struct InitEntry {
     /// Baked answers — supplied to every render of this key, never prompted. CLI `--answer` wins.
     #[serde(default)]
     pub answers: BTreeMap<String, String>,
+    /// Whether this entry may render inside an already-initialized package. `deny` (the default)
+    /// keeps init's never-clobber guard: a manifest in the current directory is an error. `allow` is
+    /// for entries that AUGMENT a package rather than create one (e.g. scaffolding a local plugin
+    /// into `plugin_root`) — the guard steps aside and the archetype decides what to write, informed
+    /// by the injected package state (see the module docs on state injection).
+    #[serde(default)]
+    pub in_package: InPackage,
+}
+
+/// The `in_package` policy for an entry. See [`InitEntry::in_package`].
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum InPackage {
+    /// Refuse to render when the current directory already holds a manifest (never-clobber).
+    #[default]
+    Deny,
+    /// Render even inside an initialized package — the entry augments it.
+    Allow,
 }
 
 /// The merged catalog: built-in entries with the user's `[init.*]` layered over them.
@@ -62,12 +97,12 @@ struct UserConfig {
 }
 
 impl Catalog {
-    /// The catalog prova ships with. `default` is present unconditionally, which is what makes
+    /// The catalog prova ships with. `project` is present unconditionally, which is what makes
     /// `prova init` work on a machine with no config at all.
     pub fn builtin() -> Catalog {
         let mut entries = BTreeMap::new();
         entries.insert(
-            "default".to_string(),
+            "project".to_string(),
             InitEntry {
                 description: "The full default prova package — a .prova/ nook (manifest, config, \
                               shared lib plugin) + a starter proof suite"
@@ -79,6 +114,7 @@ impl Catalog {
                 switches: Vec::new(),
                 defaults: false,
                 answers: BTreeMap::new(),
+                in_package: InPackage::Deny,
             },
         );
         entries.insert(
@@ -94,6 +130,9 @@ impl Catalog {
                 switches: Vec::new(),
                 defaults: false,
                 answers: BTreeMap::new(),
+                // A plugin can be scaffolded INTO an existing package (the local variant) — the
+                // archetype reads the injected package state and places itself under `plugin_root`.
+                in_package: InPackage::Allow,
             },
         );
         Catalog { entries }
@@ -120,9 +159,18 @@ impl Catalog {
     /// Look up a key, or an error naming the keys that do exist — a typo should never render the
     /// wrong archetype or fail silently.
     pub fn get(&self, key: &str) -> Result<&InitEntry, String> {
-        self.entries
-            .get(key)
-            .ok_or_else(|| format!("unknown init key {key:?} — available: {}", self.keys_line()))
+        self.entries.get(key).ok_or_else(|| {
+            // The built-in formerly named `default` — steer old muscle memory to the new key.
+            let hint = if key == "default" && self.entries.contains_key("project") {
+                " (the built-in default entry is now named \"project\")"
+            } else {
+                ""
+            };
+            format!(
+                "unknown init key {key:?} — available: {}{hint}",
+                self.keys_line()
+            )
+        })
     }
 
     /// The available keys, comma-separated, for error messages.
@@ -170,11 +218,11 @@ mod tests {
     }
 
     #[test]
-    fn builtin_default_is_present_without_any_config() {
+    fn builtin_project_is_present_without_any_config() {
         let at = tmp("builtin");
         let c = Catalog::load(&at).unwrap();
-        assert!(c.entries.contains_key("default"));
-        assert!(!c.entries["default"].description.is_empty());
+        assert!(c.entries.contains_key("project"));
+        assert!(!c.entries["project"].description.is_empty());
         std::fs::remove_dir_all(&at.0).ok();
     }
 
@@ -183,28 +231,31 @@ mod tests {
         let at = tmp("merge");
         write_config(
             &at,
-            "[init.default]\n\
+            "[init.project]\n\
              description = \"mine\"\n\
              source = \"/local/arch\"\n\
              switches = [\"ci\"]\n\
              defaults = true\n\
-             [init.default.answers]\n\
+             in_package = \"allow\"\n\
+             [init.project.answers]\n\
              proof_dir = \"tests\"\n\
              [init.service]\n\
              description = \"svc\"\n\
              source = \"/local/svc\"\n",
         );
         let c = Catalog::load(&at).unwrap();
-        // Two builtins (default, plugin) with `default` replaced and `service` added → 3.
+        // Two builtins (project, plugin) with `project` replaced and `service` added → 3.
         assert_eq!(c.entries.len(), 3);
-        let d = &c.entries["default"];
+        let d = &c.entries["project"];
         assert_eq!(d.description, "mine");
         assert_eq!(d.source, "/local/arch"); // whole-entry replacement, not a field merge
         assert_eq!(d.switches, vec!["ci".to_string()]);
         assert!(d.defaults);
+        assert_eq!(d.in_package, InPackage::Allow);
         assert_eq!(d.answers["proof_dir"], "tests");
         assert_eq!(c.entries["service"].description, "svc");
         assert!(c.entries.contains_key("plugin")); // the untouched builtin survives the merge
+        assert_eq!(c.entries["service"].in_package, InPackage::Deny); // unstated → never-clobber
         std::fs::remove_dir_all(&at.0).ok();
     }
 
@@ -221,6 +272,12 @@ mod tests {
     fn unknown_key_lists_the_available_ones() {
         let err = Catalog::builtin().get("bogus").unwrap_err();
         assert!(err.contains("bogus"), "{err}");
-        assert!(err.contains("default"), "{err}");
+        assert!(err.contains("project"), "{err}");
+    }
+
+    #[test]
+    fn the_old_default_key_points_at_project() {
+        let err = Catalog::builtin().get("default").unwrap_err();
+        assert!(err.contains("now named \"project\""), "{err}");
     }
 }

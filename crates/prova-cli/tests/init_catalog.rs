@@ -61,15 +61,15 @@ fn list_prints_the_builtin_default() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("default"), "no `default` key in: {stdout}");
+    assert!(stdout.contains("project"), "no `project` key in: {stdout}");
     // A key alone is not a catalog listing — the description is what makes it choosable.
     let line = stdout
         .lines()
-        .find(|l| l.contains("default"))
+        .find(|l| l.contains("project"))
         .unwrap_or_default();
     assert!(
-        line.trim().len() > "default".len() + 4,
-        "`default` listed without a description: {line:?}"
+        line.trim().len() > "project".len() + 4,
+        "`project` listed without a description: {line:?}"
     );
     // `--list` is scriptable: it must not scaffold anything as a side effect.
     assert!(
@@ -126,7 +126,7 @@ fn unknown_key_errors_and_lists_the_available_keys() {
         "error omits the bad key: {stderr}"
     );
     assert!(
-        stderr.contains("default"),
+        stderr.contains("project"),
         "error should list the available keys: {stderr}"
     );
     assert!(

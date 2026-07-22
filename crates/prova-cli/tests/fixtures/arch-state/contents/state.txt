@@ -1,0 +1,3 @@
+in_package={{ in_package }}
+package_root={{ prova_package_root }}
+plugin_root={{ prova_plugin_root }}

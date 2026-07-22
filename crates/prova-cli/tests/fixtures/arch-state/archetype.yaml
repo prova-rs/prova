@@ -1,0 +1,10 @@
+---
+description: "State-echo fixture — renders the package state prova injects into a file"
+authors: ["prova test suite"]
+
+requires:
+  archetect: "3.0.0"
+
+templating:
+  trim_blocks: true
+  lstrip_blocks: true

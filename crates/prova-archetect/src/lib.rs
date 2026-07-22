@@ -243,11 +243,12 @@ pub fn render_headless(
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     let writes = Arc::new(Mutex::new(Vec::new()));
+    let diag = Arc::new(Mutex::new(None));
     let handle = CapturingIoHandle {
         writes: writes.clone(),
         pending: Mutex::new(None),
         forward_print: false, // in-test render: stdout belongs to prova's reporters
-        last_diag: Mutex::new(None),
+        last_diag: diag.clone(),
     };
 
     let configuration = Configuration::default().with_headless(true);
@@ -276,7 +277,7 @@ pub fn render_headless(
         ctx = ctx.with_use_defaults_all(true);
     }
 
-    archetype.render(ctx)?; // ArchetypeError -> ArchetectError via #[from]
+    fold_diag(archetype.render(ctx), &diag)?;
 
     let writes = Arc::try_unwrap(writes)
         .map(|m| m.into_inner().unwrap_or_default())
@@ -334,11 +335,12 @@ pub fn render_interactive(
     // routed through one generic helper.
     if headless {
         let writes = Arc::new(Mutex::new(Vec::new()));
+        let diag = Arc::new(Mutex::new(None));
         let handle = CapturingIoHandle {
             writes: writes.clone(),
             pending: Mutex::new(None),
             forward_print: true, // `prova init --headless`: the archetype's announcement is UX
-            last_diag: Mutex::new(None),
+            last_diag: diag.clone(),
         };
         let archetect = Archetect::builder()
             .with_driver(handle)
@@ -353,7 +355,7 @@ pub fn render_interactive(
         if defaults {
             ctx = ctx.with_use_defaults_all(true);
         }
-        archetype.render(ctx)?;
+        fold_diag(archetype.render(ctx), &diag)?;
         let writes = Arc::try_unwrap(writes)
             .map(|m| m.into_inner().unwrap_or_default())
             .unwrap_or_else(|arc| arc.lock().unwrap().clone());
@@ -390,8 +392,27 @@ struct CapturingIoHandle {
     /// (`--format json` must stay parseable).
     forward_print: bool,
     /// The last diagnostic printed. A failing script arrives twice — once as `LogError`, once as
-    /// `CompleteError`, same text — and printing both reads as two failures; drop the echo.
-    last_diag: Mutex<Option<String>>,
+    /// `CompleteError`, same text — and printing both reads as two failures; drop the echo. Shared
+    /// with the render call so a failure's error can carry the script's actual message (the engine's
+    /// own error is just "Archetype Script Aborted").
+    last_diag: Arc<Mutex<Option<String>>>,
+}
+
+/// Fold the captured script diagnostic into a failed render's error — `error("...")` in an archetype
+/// script surfaces from the engine as a bare "Archetype Script Aborted", with the message only ever
+/// sent as a diagnostic. Callers (a proof asserting on the error, a user reading `prova init`
+/// output) want the message on the error itself.
+fn fold_diag<T>(
+    result: Result<T, archetect_core::errors::ArchetypeError>,
+    diag: &Arc<Mutex<Option<String>>>,
+) -> Result<T, ArchetectError> {
+    result.map_err(|e| {
+        let captured = diag.lock().unwrap_or_else(|p| p.into_inner()).take();
+        match captured {
+            Some(msg) => ArchetectError::GeneralError(format!("{e}: {msg}")),
+            None => e.into(),
+        }
+    })
 }
 
 impl ScriptIoHandle for CapturingIoHandle {

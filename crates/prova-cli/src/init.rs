@@ -15,7 +15,10 @@
 //! `[init.*]` in `~/.config/prova/config.toml`. The catalog and the target key are resolved *before*
 //! anything touches the filesystem, so a typo'd key or a broken config never leaves a half-scaffolded
 //! package behind. `init` refuses to run if the package already has a manifest — it never clobbers an
-//! existing layout.
+//! existing layout — unless the entry declares `in_package = "allow"` (it augments a package rather
+//! than creating one). Every render also receives generic package-state (an in-package switch, the
+//! package root, `plugin_root`) so any archetype can adapt to where it is running; see the catalog
+//! module docs.
 //!
 //! Answer precedence (highest first): CLI `--answer` → the entry's baked `answers` → an interactive
 //! prompt (unless `--headless`) → the archetype's own default (via `--defaults`).
@@ -24,8 +27,54 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-/// The catalog key used when none is given on the command line.
-const DEFAULT_KEY: &str = "default";
+/// The catalog key the interactive picker pre-highlights.
+const DEFAULT_KEY: &str = "project";
+
+/// Package state discovered before a render — what `init` knows about WHERE it is running, injected
+/// generically into every archetype (see the catalog module docs on state injection).
+struct PackageState {
+    /// The package root, relative to the cwd (`.` when they coincide).
+    package_root: String,
+    /// The manifest's `[run] plugin_root`, verbatim (package-root relative), when declared.
+    plugin_root: Option<String>,
+}
+
+/// Discover the enclosing package, if any, walking up from the cwd exactly like `prova` itself.
+/// A manifest that exists but fails to parse still counts as "in a package" (the switch and root are
+/// facts); only its `plugin_root` is unknowable — warn and carry on rather than fail the init.
+fn package_state() -> Option<PackageState> {
+    let cwd = std::env::current_dir().ok()?;
+    let home = crate::home::find(&cwd).ok().flatten()?;
+    let package_root = match cwd.strip_prefix(&home.dir) {
+        Ok(rel) => {
+            let depth = rel.components().count();
+            if depth == 0 {
+                ".".to_string()
+            } else {
+                vec![".."; depth].join("/")
+            }
+        }
+        Err(_) => home.dir.display().to_string(), // unrelated roots (symlinks) — absolute is still true
+    };
+    let plugin_root = match std::fs::read_to_string(&home.manifest)
+        .map_err(|e| e.to_string())
+        .and_then(|text| crate::manifest::Manifest::parse(&text))
+        .and_then(|m| m.resolve(None))
+    {
+        Ok(resolved) => resolved.plugin_root,
+        Err(err) => {
+            eprintln!(
+                "prova init: note — could not read {}: {err} (rendering without `prova_plugin_root`)",
+                home.manifest.display()
+            );
+            None
+        }
+    };
+    Some(PackageState {
+        package_root,
+        plugin_root,
+    })
+}
 
 pub fn run(args: Vec<String>) -> ExitCode {
     let mut luals = true;
@@ -129,28 +178,45 @@ pub fn run(args: Vec<String>) -> ExitCode {
         }
     };
 
-    // Refuse to clobber: any known manifest location already present means this project is initialized.
+    // Refuse to clobber — unless the entry declares it AUGMENTS an initialized package
+    // (`in_package = "allow"`), in which case the archetype decides what to write.
     let root = Path::new(".");
-    for existing in [
-        "prova.toml",
-        ".prova.toml",
-        "prova/prova.toml",
-        ".prova/prova.toml",
-    ] {
-        if root.join(existing).is_file() {
-            eprintln!("prova init: already initialized ({existing} exists)");
-            return ExitCode::from(2);
+    if entry.in_package == crate::catalog::InPackage::Deny {
+        for existing in [
+            "prova.toml",
+            ".prova.toml",
+            "prova/prova.toml",
+            ".prova/prova.toml",
+        ] {
+            if root.join(existing).is_file() {
+                eprintln!("prova init: already initialized ({existing} exists)");
+                return ExitCode::from(2);
+            }
         }
     }
 
-    // Answers: baked entry answers first, CLI `--answer` overrides. Switches: entry ∪ CLI. Defaults:
-    // either the entry opts in or `--defaults` is passed.
-    let mut merged: BTreeMap<String, String> = entry.answers.clone();
+    // Package-state injection: tell the archetype where it is running. Lowest precedence — the
+    // entry's baked answers/switches and the CLI both win, so an entry can override the facts.
+    let state = package_state();
+    let mut merged: BTreeMap<String, String> = BTreeMap::new();
+    if let Some(state) = &state {
+        merged.insert("prova_package_root".to_string(), state.package_root.clone());
+        if let Some(plugin_root) = &state.plugin_root {
+            merged.insert("prova_plugin_root".to_string(), plugin_root.clone());
+        }
+    }
+
+    // Answers: baked entry answers over the injected state, CLI `--answer` over both. Switches:
+    // state ∪ entry ∪ CLI. Defaults: either the entry opts in or `--defaults` is passed.
+    merged.extend(entry.answers.clone());
     for (k, v) in cli_answers {
         merged.insert(k, v);
     }
-    let mut switches = entry.switches.clone();
-    for s in cli_switches {
+    let mut switches = Vec::new();
+    if state.is_some() {
+        switches.push("prova:in-package".to_string());
+    }
+    for s in entry.switches.iter().cloned().chain(cli_switches) {
         if !switches.contains(&s) {
             switches.push(s);
         }
@@ -196,7 +262,11 @@ pub fn run(args: Vec<String>) -> ExitCode {
         }
     }
 
-    println!("\nprova: initialized. Run `prova` to execute the suite.");
+    if state.is_some() && entry.in_package == crate::catalog::InPackage::Allow {
+        println!("\nprova: rendered {key:?} into the existing package. Run `prova` to execute the suite.");
+    } else {
+        println!("\nprova: initialized. Run `prova` to execute the suite.");
+    }
     ExitCode::SUCCESS
 }
 
