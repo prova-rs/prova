@@ -45,6 +45,36 @@ impl ColorMode {
     }
 }
 
+/// Whether to add the GitHub Actions sink (workflow-command annotations + step summary).
+/// Resolution order: `--gha` flag > `PROVA_GHA` env > manifest `github` key > `Auto`. Under
+/// `Auto` the sink turns on exactly when `GITHUB_ACTIONS=true` — zero-config in CI, silent
+/// everywhere else.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum GhaMode {
+    Auto,
+    On,
+    Off,
+}
+
+impl GhaMode {
+    pub fn parse(s: &str) -> Option<GhaMode> {
+        match s {
+            "auto" => Some(GhaMode::Auto),
+            "on" => Some(GhaMode::On),
+            "off" => Some(GhaMode::Off),
+            _ => None,
+        }
+    }
+
+    pub fn enabled(self) -> bool {
+        match self {
+            GhaMode::On => true,
+            GhaMode::Off => false,
+            GhaMode::Auto => std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true"),
+        }
+    }
+}
+
 const PASS: Style = AnsiColor::Green.on_default();
 const FAIL: Style = AnsiColor::Red.on_default().bold();
 const SKIP: Style = AnsiColor::Yellow.on_default();
@@ -109,6 +139,179 @@ fn write_message(out: &mut impl std::io::Write, indent: &str, message: &str) {
     }
     for rest in lines {
         let _ = writeln!(out, "{indent}  {rest}");
+    }
+}
+
+/// The GitHub Actions sink: an *additional* reporter (composes with any `--format`) that turns
+/// failures into `::error` workflow commands — inline PR annotations on the failing test's
+/// file:line — skips into `::notice` commands, and the whole run into a markdown table appended
+/// to `$GITHUB_STEP_SUMMARY`.
+///
+/// Workflow commands go to stdout by contract (GitHub strips them from the rendered log), and
+/// annotation paths must be relative to `$GITHUB_WORKSPACE` — not the cwd — or they silently
+/// fail to attach when the workflow sets a `working-directory`.
+///
+/// Deliberately NO per-suite `::group::` folding: parallel suites interleave their events
+/// through one coordinator channel, so groups would scramble. Findability is carried by the
+/// annotations and the step-summary table instead.
+pub struct GitHubReporter {
+    /// Base annotation paths are made relative to (`$GITHUB_WORKSPACE`, else the cwd).
+    workspace: PathBuf,
+    /// `$GITHUB_STEP_SUMMARY` — the file GitHub renders as the job's summary panel.
+    step_summary: Option<PathBuf>,
+    /// Non-passed results, buffered for the summary table.
+    rows: Vec<SummaryRow>,
+}
+
+struct SummaryRow {
+    mark: &'static str, // ❌ / ⏭️
+    path: String,
+    location: Option<String>,
+    detail: String,
+}
+
+impl GitHubReporter {
+    /// Build from the Actions environment (`GITHUB_WORKSPACE`, `GITHUB_STEP_SUMMARY`).
+    pub fn from_env() -> Self {
+        Self {
+            workspace: std::env::var_os("GITHUB_WORKSPACE")
+                .map(PathBuf::from)
+                .or_else(|| std::env::current_dir().ok())
+                .unwrap_or_else(|| PathBuf::from(".")),
+            step_summary: std::env::var_os("GITHUB_STEP_SUMMARY").map(PathBuf::from),
+            rows: Vec::new(),
+        }
+    }
+
+    fn rel(&self, file: &str) -> String {
+        std::path::Path::new(file)
+            .strip_prefix(&self.workspace)
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| file.to_string())
+    }
+
+    /// `file=...,line=...,title=...` — the annotation's property list, empty when no location.
+    fn props(&self, file: Option<&str>, line: Option<u32>, title: &str) -> String {
+        let mut props: Vec<String> = Vec::new();
+        if let Some(file) = file {
+            props.push(format!("file={}", gha_escape_property(&self.rel(file))));
+            if let Some(line) = line {
+                props.push(format!("line={line}"));
+            }
+        }
+        props.push(format!("title={}", gha_escape_property(title)));
+        props.join(",")
+    }
+}
+
+/// Escape workflow-command *data* (the message after `::`): `%`, CR, LF.
+fn gha_escape_data(s: &str) -> String {
+    s.replace('%', "%25").replace('\r', "%0D").replace('\n', "%0A")
+}
+
+/// Escape a workflow-command *property* value: data escapes plus `:` and `,`.
+fn gha_escape_property(s: &str) -> String {
+    gha_escape_data(s).replace(':', "%3A").replace(',', "%2C")
+}
+
+/// A markdown table cell: newlines flattened, pipes escaped, long messages truncated (the full
+/// text is in the log and the annotation; the table is a map, not the territory).
+fn summary_cell(s: &str) -> String {
+    const MAX: usize = 200;
+    let flat = s.replace('\n', " ").replace('|', "\\|");
+    match flat.char_indices().nth(MAX) {
+        Some((i, _)) => format!("{}…", &flat[..i]),
+        None => flat,
+    }
+}
+
+impl Reporter for GitHubReporter {
+    fn event(&mut self, event: &Event) {
+        match event {
+            Event::NodeFinished {
+                path,
+                outcome,
+                message,
+                file,
+                line,
+                ..
+            } => match outcome {
+                Outcome::Failed => {
+                    let detail = message.unwrap_or("test failed");
+                    println!(
+                        "::error {}::{}",
+                        self.props(*file, *line, path),
+                        gha_escape_data(detail)
+                    );
+                    self.rows.push(SummaryRow {
+                        mark: "❌",
+                        path: path.to_string(),
+                        location: file.map(|f| {
+                            let f = self.rel(f);
+                            match line {
+                                Some(l) => format!("{f}:{l}"),
+                                None => f,
+                            }
+                        }),
+                        detail: detail.to_string(),
+                    });
+                }
+                Outcome::Skipped => {
+                    let detail = message.unwrap_or("skipped");
+                    println!(
+                        "::notice {}::{}",
+                        self.props(*file, *line, path),
+                        gha_escape_data(detail)
+                    );
+                    self.rows.push(SummaryRow {
+                        mark: "⏭️",
+                        path: path.to_string(),
+                        location: file.map(|f| {
+                            let f = self.rel(f);
+                            match line {
+                                Some(l) => format!("{f}:{l}"),
+                                None => f,
+                            }
+                        }),
+                        detail: detail.to_string(),
+                    });
+                }
+                Outcome::Passed => {}
+            },
+            Event::RunFinished { summary } => {
+                let Some(path) = &self.step_summary else {
+                    return;
+                };
+                let mut md = String::new();
+                let mark = if summary.failed > 0 { "❌" } else { "✅" };
+                md.push_str(&format!(
+                    "### {mark} prova — {} passed, {} failed, {} skipped in {:.1?}\n",
+                    summary.passed, summary.failed, summary.skipped, summary.duration
+                ));
+                if !self.rows.is_empty() {
+                    md.push_str("\n| | test | location | detail |\n|---|---|---|---|\n");
+                    for row in &self.rows {
+                        md.push_str(&format!(
+                            "| {} | {} | {} | {} |\n",
+                            row.mark,
+                            summary_cell(&row.path),
+                            row.location
+                                .as_deref()
+                                .map(|l| format!("`{l}`"))
+                                .unwrap_or_default(),
+                            summary_cell(&row.detail)
+                        ));
+                    }
+                }
+                // Append, never truncate — other steps share this file.
+                let _ = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .and_then(|mut f| f.write_all(md.as_bytes()));
+            }
+            _ => {}
+        }
     }
 }
 

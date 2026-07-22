@@ -138,6 +138,7 @@ options:
       --color auto|always|never  color console output (default auto: TTY only; honors NO_COLOR)
   -q, --quiet               only print failures, the recap, and the summary
       --junit PATH          also write a JUnit XML report to PATH (for CI; composes with --format)
+      --gha auto|on|off     GitHub Actions annotations + step summary (default auto: when in GHA)
   -j, --jobs N              run up to N units concurrently
   -P, --plugin name=source  add an ad-hoc plugin (repeatable; layers over the manifest)
   -k PATTERN                select nodes whose path contains PATTERN (repeatable; !PAT excludes)
@@ -1256,6 +1257,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     let mut cli_color: Option<report::ColorMode> = None;
     let mut cli_quiet = false;
     let mut cli_junit: Option<String> = None;
+    let mut cli_gha: Option<report::GhaMode> = None;
     let mut cli_jobs: Option<usize> = None;
     let mut update_snapshots = false;
     let mut unreferenced = String::from("ignore"); // ignore | warn | delete
@@ -1354,6 +1356,17 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             cli_junit = Some(v);
             continue;
         }
+        // `--gha auto|on|off`: the GitHub Actions sink (annotations + step summary).
+        if let Some(v) = value_flag(&arg, &mut args, &["--gha"]) {
+            match report::GhaMode::parse(&v) {
+                Some(mode) => cli_gha = Some(mode),
+                None => {
+                    eprintln!("prova: unknown --gha {v:?} (expected auto|on|off)");
+                    return ExitCode::from(2);
+                }
+            }
+            continue;
+        }
         // `--unreferenced ignore|warn|delete`: what to do with `.snap` files no test referenced.
         if let Some(v) = value_flag(&arg, &mut args, &["--unreferenced"]) {
             match v.as_str() {
@@ -1435,6 +1448,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         format,
         manifest_color,
         manifest_quiet,
+        manifest_gha,
         declared,
         mut plugins_resolved,
         sources,
@@ -1446,6 +1460,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             explicit_paths,
             cli_jobs.unwrap_or(1),
             cli_format.unwrap_or(Format::Console),
+            None,
             None,
             None,
             BTreeMap::new(),
@@ -1483,6 +1498,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                 r.format,
                 r.color,
                 r.quiet,
+                r.github,
                 r.suites,
                 r.plugins,
                 r.sources,
@@ -1616,6 +1632,19 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             }
         }
     }
+    // The GitHub Actions sink (CLI > PROVA_GHA env > manifest > auto). An *additional* sink:
+    // annotations + step summary compose with whatever --format prints.
+    let gha = cli_gha
+        .or_else(|| {
+            std::env::var("PROVA_GHA")
+                .ok()
+                .and_then(|v| report::GhaMode::parse(&v))
+        })
+        .or(manifest_gha)
+        .unwrap_or(report::GhaMode::Auto);
+    if gha.enabled() {
+        sinks.push(Box::new(report::GitHubReporter::from_env()));
+    }
     // Record failed node paths so the next `--last-failed` can re-run exactly them.
     let mut reporter = FailureRecorder {
         inner: Box::new(MultiReporter::new(sinks)),
@@ -1725,10 +1754,11 @@ struct ManifestRun {
     proofs: Vec<String>,
     jobs: usize,
     format: Format,
-    /// Manifest `color`/`quiet` (pre-parsed) — the CLI flags and `PROVA_COLOR` env override them
-    /// at the wiring site.
+    /// Manifest `color`/`quiet`/`github` (pre-parsed) — the CLI flags and `PROVA_COLOR`/
+    /// `PROVA_GHA` env vars override them at the wiring site.
     color: Option<report::ColorMode>,
     quiet: Option<bool>,
+    github: Option<report::GhaMode>,
     suites: BTreeMap<String, SuiteDecl>,
     plugins: plugins::ResolvedPlugins,
     sources: BTreeMap<String, String>,
@@ -2169,12 +2199,23 @@ fn resolve_from_manifest(
             }
         },
     };
+    let github = match resolved.github.as_deref() {
+        None => None,
+        Some(s) => match report::GhaMode::parse(s) {
+            Some(mode) => Some(mode),
+            None => {
+                eprintln!("prova: unknown github {s:?} in manifest (expected auto|on|off)");
+                return Err(ExitCode::from(2));
+            }
+        },
+    };
     Ok(ManifestRun {
         proofs: resolved.proofs,
         jobs,
         format,
         color,
         quiet: resolved.quiet,
+        github,
         suites: resolved.suites,
         plugins: plugins_resolved,
         sources: resolved.sources,

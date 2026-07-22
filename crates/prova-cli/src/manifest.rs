@@ -9,6 +9,7 @@
 //! format = "console"           # "console" | "json" | "tap"
 //! color  = "auto"               # "auto" | "always" | "never" (console format only)
 //! quiet  = false                # true → only failures, the recap, and the summary
+//! github = "auto"               # "auto" | "on" | "off" — GHA annotations + step summary
 //!
 //! [run.env]                     # environment for the run
 //! LOG = "info"
@@ -311,6 +312,9 @@ pub struct Profile {
     pub color: Option<String>,
     /// Only print failures, the recap, and the summary. CLI `--quiet` wins (it can only enable).
     pub quiet: Option<bool>,
+    /// GitHub Actions sink: `"auto"` (default; on exactly when `GITHUB_ACTIONS=true`) | `"on"` |
+    /// `"off"`. CLI `--gha` and `PROVA_GHA` win.
+    pub github: Option<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
     /// Profile-scoped plugins (`[profiles.<name>.plugins]`), overlaid on the package-wide
@@ -352,6 +356,7 @@ pub struct Resolved {
     pub format: Option<String>,
     pub color: Option<String>,
     pub quiet: Option<bool>,
+    pub github: Option<String>,
     pub env: BTreeMap<String, String>,
     /// Explicitly-declared suites (`[suites.*]`), run in addition to the discovered `proofs`.
     pub suites: BTreeMap<String, SuiteDecl>,
@@ -422,6 +427,9 @@ impl Manifest {
             .and_then(|p| p.color.clone())
             .or_else(|| base.color.clone());
         let quiet = overlay.and_then(|p| p.quiet).or(base.quiet);
+        let github = overlay
+            .and_then(|p| p.github.clone())
+            .or_else(|| base.github.clone());
 
         let mut env = base.env.clone();
         if let Some(p) = overlay {
@@ -459,6 +467,7 @@ impl Manifest {
             format,
             color,
             quiet,
+            github,
             env,
             suites: self.suites.clone(),
             plugins,
@@ -515,6 +524,7 @@ proofs = ["tests/smoke"]
                 format: Some("console".into()),
                 color: None,
                 quiet: None,
+                github: None,
                 env: env(&[("LOG", "info")]),
                 suites: BTreeMap::new(),
                 plugins: BTreeMap::new(),

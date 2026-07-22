@@ -89,6 +89,27 @@ prova.test("--junit writes a JUnit XML file alongside console output", function(
   t:expect(xml):contains('line="')
 end)
 
+prova.test("GitHub Actions mode: annotations + step summary, honoring --gha off", function(t)
+  local summary = fs.tempdir() .. "/step_summary.md"
+  local gha_env = { GITHUB_ACTIONS = "true", GITHUB_STEP_SUMMARY = summary }
+
+  -- Detected via GITHUB_ACTIONS=true: failures become ::error annotations (with file/line
+  -- properties) alongside the normal console output, and the run appends a markdown summary.
+  local r = shell.run(prova_bin .. " " .. fixtures .. "/mixed.lua", { env = gha_env })
+  t:expect(r.code):equals(1)
+  t:expect(r.stdout):contains("::error file=")
+  t:expect(r.stdout):contains("line=")
+  t:expect(r.stdout):contains("1 failed")            -- console tally still prints
+  local md = fs.read(summary)
+  t:expect(md):contains("prova —")
+  t:expect(md):contains("| ❌ |")
+  t:expect(md):contains("mixed.lua")
+
+  -- The escape hatch: --gha off suppresses the sink even inside Actions.
+  local off = shell.run(prova_bin .. " --gha off " .. fixtures .. "/mixed.lua", { env = gha_env })
+  t:expect(off.stdout:find("::error", 1, true)):is_falsy()
+end)
+
 prova.test("snapshots: update writes, re-run matches, a change fails with a diff", function(t)
   local dir = fs.tempdir()
   local test = dir .. "/snap_test.lua"
