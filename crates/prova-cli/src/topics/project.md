@@ -1,9 +1,10 @@
 # project — this package's shape
 
-A prova **package** is rooted where its manifest lives: `prova.toml` or `.prova.toml`, at the
-project root or in a `prova/` / `.prova/` child. Discovery walks UP from the working directory,
-so run `prova` from anywhere inside the repo. `prova.root` (project root) and `prova.home`
-(manifest's directory) are available in every test/eval; anchor repo paths on them, never on cwd.
+A prova **package** is rooted at the project ROOT: the directory holding a flat `prova.toml` /
+`.prova.toml`, or the PARENT of a `prova/` / `.prova/` nook (which just tucks prova's own files away).
+Discovery walks UP from the working directory, so run `prova` from anywhere inside the repo — the nook
+included. `prova.root` and `prova.home` are synonyms for that root, available in every test/eval;
+anchor repo paths on them, never on cwd.
 
 ## This package
 

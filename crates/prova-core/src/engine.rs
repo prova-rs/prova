@@ -198,9 +198,9 @@ pub struct RunConfig {
     plugin_namespaces: std::collections::BTreeMap<String, std::path::PathBuf>,
     /// Resolved plugin roots whose `library/*.lua` stubs feed `prova.help()` (see `with_help_root`).
     help_roots: Vec<std::path::PathBuf>,
-    /// The project directory — where the manifest lives, and the base every manifest-relative path
-    /// resolves against. Surfaced to authors as `prova.root` / `prova.home` (synonyms: root and home
-    /// are the same thing). See `with_project`.
+    /// The project ROOT — the base every manifest-relative path resolves against (for a nested
+    /// manifest, the dir ABOVE the `prova/`/`.prova/` nook, not where the manifest file sits).
+    /// Surfaced to authors as `prova.root` / `prova.home` (synonyms). See `with_project`.
     project_dir: Option<std::path::PathBuf>,
     /// Manifest-declared topologies (`[topologies]`): each desugars to a `prova.topology(alias,
     /// require(plugin).factory)` call the up/list path execs after loading files. Empty for a plain
@@ -313,9 +313,9 @@ impl RunConfig {
 
     /// Register a plugin namespace: `require("<canonical>.<sub>")` resolves `<sub>` under `dir`, so a
     /// multi-file plugin can require its own sibling modules.
-    /// Where the project is: the directory the manifest lives in, which is the base every
-    /// manifest-relative path resolves against. Root and home are the same thing — for a nested
-    /// `prova/prova.toml` this is `prova/`, not its parent.
+    /// Where the project ROOT is — the base every manifest-relative path resolves against. Root and
+    /// home are the same thing; for a nested `prova/` / `.prova/` manifest this is the PARENT of the
+    /// nook (the nook holds prova's own files; the root stays above it).
     ///
     /// Surfaced to authors as **`prova.root`** and **`prova.home`** (synonyms). A repo-local plugin
     /// needs it to locate repo artifacts — a built binary, testdata — relative to the project
@@ -2049,8 +2049,8 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
 
     // Where the project is (`RunConfig::with_project`) — so a repo-local plugin can say
     // `prova.root .. "/target/debug/miniond"` instead of hardcoding an absolute path or trusting the
-    // process cwd. `prova.root` and `prova.home` are synonyms for the manifest's directory (root and
-    // home are one thing). Absent (nil) when there is no manifest, e.g. a bare `prova <file>` run.
+    // process cwd. `prova.root` and `prova.home` are synonyms for the project ROOT. Absent (nil) when
+    // there is no manifest, e.g. a bare `prova <file>` run.
     if let Some(dir) = &config.project_dir {
         let dir = dir.to_string_lossy();
         prova.set("root", dir.as_ref())?;
