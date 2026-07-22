@@ -85,6 +85,7 @@ fn up(args: &[&str], xdg: &Path) -> (bool, String) {
 
 /// `prova up <url>` fetches the repo and lists the topologies it advertises. RED today: `up`'s single
 /// argument is read as a local topology NAME, so a URL just isn't found.
+#[cfg_attr(windows, ignore = "local-path git fetch hits ERROR_ACCESS_DENIED on Windows CI runners")]
 #[test]
 fn up_url_lists_the_repos_advertised_topologies() {
     let (root, url) = remote_topology_plugin("list", "");
@@ -101,6 +102,7 @@ fn up_url_lists_the_repos_advertised_topologies() {
 
 /// `prova up <topology> <url>` where the repo doesn't advertise that name fails loudly, listing what
 /// it does advertise — the fetch happened and the advertisement was consulted.
+#[cfg_attr(windows, ignore = "local-path git fetch hits ERROR_ACCESS_DENIED on Windows CI runners")]
 #[test]
 fn up_topology_url_rejects_an_unadvertised_name() {
     let (root, url) = remote_topology_plugin("badname", "");
@@ -117,6 +119,7 @@ fn up_topology_url_rejects_an_unadvertised_name() {
 
 /// `prova up <topology> <url>` honors the topology's advertised `requires`: an unmet one blocks the
 /// stand-up (after the fetch), before provisioning.
+#[cfg_attr(windows, ignore = "local-path git fetch hits ERROR_ACCESS_DENIED on Windows CI runners")]
 #[test]
 fn up_topology_url_honors_advertised_requires() {
     let (root, url) = remote_topology_plugin("req", "requires = [\"definitelymissing\"]\n");

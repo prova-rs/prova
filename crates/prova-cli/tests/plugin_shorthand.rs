@@ -19,6 +19,7 @@ fn git(args: &[&str], cwd: &Path) {
     assert!(status.success(), "git {args:?} failed");
 }
 
+#[cfg_attr(windows, ignore = "local-path git fetch hits ERROR_ACCESS_DENIED on Windows CI runners")]
 #[test]
 fn registered_alias_shorthand_is_fetched_and_required() {
     let root = std::env::temp_dir().join(format!("prova-shorthand-{}", std::process::id()));
