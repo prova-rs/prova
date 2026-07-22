@@ -12,6 +12,20 @@ use prova_core::{run_path, NullReporter};
 /// mapping in a real container's /etc/hosts. Two probes skip on a host with no non-loopback IPv4.
 #[test]
 fn mock_network_vantage_wiring() {
+    // Opt-in. The `network` cases bind 0.0.0.0 (the whole point — proving the cross-substrate
+    // vantage), which fires the macOS Application Firewall's "accept incoming connections?" prompt
+    // on every rebuild, since each build re-hashes the test binary's path. CI sets
+    // PROVA_TEST_NETWORK_VANTAGE on every leg (.github/workflows/build.yml), so coverage is
+    // unchanged there; a local `cargo test` / `cargo xtask test` skips and stays quiet. This gates
+    // only the test harness — a prova *user* meets this prompt solely when a proof explicitly asks
+    // for an off-box `network` mock, which is exactly when being network-reachable is intended.
+    if std::env::var_os("PROVA_TEST_NETWORK_VANTAGE").is_none() {
+        eprintln!(
+            "skipping mock_network_vantage: binds 0.0.0.0 (macOS firewall prompt). \
+             Set PROVA_TEST_NETWORK_VANTAGE=1 to run."
+        );
+        return;
+    }
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("testdata")
         .join("mock_network_vantage.lua");

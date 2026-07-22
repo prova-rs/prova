@@ -14,6 +14,17 @@ use prova_core::{run_path, NullReporter};
 /// that makes it meaningful — is run by `scripts/vm-linux-proof.sh` inside a Linux VM.
 #[test]
 fn c2_containerized_sut_reaches_host_bound_mock() {
+    // Opt-in — same gate as `mock_network_vantage`: the host-bound mock binds 0.0.0.0, which trips
+    // the macOS firewall prompt when Docker is up locally. CI sets PROVA_TEST_NETWORK_VANTAGE on
+    // every leg (.github/workflows/build.yml) so the ubuntu leg still runs it in full; locally it
+    // stays quiet. (`requires { "docker" }` already self-skips this where no daemon exists.)
+    if std::env::var_os("PROVA_TEST_NETWORK_VANTAGE").is_none() {
+        eprintln!(
+            "skipping c2_e2e: binds 0.0.0.0 (macOS firewall prompt). \
+             Set PROVA_TEST_NETWORK_VANTAGE=1 to run."
+        );
+        return;
+    }
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("testdata")
         .join("c2_e2e.lua");

@@ -40,3 +40,9 @@ jobs:
 
       - name: Test
         run: cargo test
+        env:
+          # Opt-in for the suites that bind 0.0.0.0 to prove the cross-substrate mock vantage
+          # (mock_network_vantage, c2_e2e). Off by default so a local `cargo test` never trips the
+          # macOS Application Firewall's "accept incoming connections?" prompt; CI runs them on
+          # every leg. GitHub runners have the firewall disabled, so no prompt blocks the run.
+          PROVA_TEST_NETWORK_VANTAGE: "1"
