@@ -30,9 +30,10 @@ matching nothing is an error unless `--allow-empty`.
   "path"` does the same with no flag) for CI dashboards.
 - Inside GitHub Actions, failures auto-emit `::error file=,line=` PR annotations and a
   step-summary table (`--gha off` disables).
-- Console failures print their `file:line`, and a `failures:` recap at the end re-states each
-  with a `prova --node "<path>"` rerun line — copy-paste it, don't grep. `-q` = failures +
-  recap + tally only. Color is TTY-only by default (`--color`, `NO_COLOR`).
+- Console output is a tree — file header, group/flow headers, indented leaves with `:line` —
+  and a `failures:` recap at the end re-states each failure (full path + `file:line`) with a
+  `prova --node "<path>"` rerun line — copy-paste it, don't grep. `-q` = failures (with their
+  header chain) + recap + tally only. Color is TTY-only by default (`--color`, `NO_COLOR`).
 - `-j/--jobs N` is throughput ONLY — it can never change what a run means.
 
 ## Profiles and guarantees

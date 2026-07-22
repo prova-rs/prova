@@ -39,6 +39,21 @@ prova.test("console output is plain when piped, ANSI under --color always", func
   t:expect(forced.stdout:find(esc, 1, true)):is_truthy()
 end)
 
+prova.test("console output is a tree: file header, group header, indented leaf", function(t)
+  local dir = fs.tempdir()
+  fs.write(dir .. "/hier_test.lua",
+    'prova.group("billing", function(g)\n' ..
+    '  g:test("refund", function(t) t:expect(true):is_truthy() end)\n' ..
+    'end)\n')
+  local r = run(dir .. "/hier_test.lua")
+  t:expect(r.code):equals(0)
+  t:expect(r.stdout):contains("hier_test.lua")           -- the file section header
+  t:expect(r.stdout):contains("\n  billing\n")           -- the group header, indented under it
+  t:expect(r.stdout):contains("    PASS  refund")        -- the leaf, indented under the group
+  -- The leaf prints its own name only — the ancestry lives in the headers above it.
+  t:expect(r.stdout:find("billing › refund", 1, true)):is_falsy()
+end)
+
 prova.test("--quiet suppresses PASS/SKIP lines but keeps the tally", function(t)
   local r = run("-q " .. fixtures .. "/passing.lua")
   t:expect(r.code):equals(0)

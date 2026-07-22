@@ -84,9 +84,11 @@ timeout (best-effort, itself bounded).
 - **`Reporter`** — one method, `event(&Event)`. Core implementations (unstyled by design):
   `ConsoleReporter` (plain fallback), `JsonReporter` (JSONL wire protocol), `JUnitReporter` (CI
   file sink: locations, timestamp, properties), `TapReporter` (TAP 13), `NullReporter` (tests /
-  load driver). The CLI layers presentation in `prova-cli/src/report.rs`: `HumanReporter`
-  (color via anstream — auto TTY/`NO_COLOR` detection, skip reasons, failures recap, `--quiet`)
-  and `GitHubReporter` (auto-on under `GITHUB_ACTIONS`: `::error` annotations + step summary).
+  load driver). The CLI layers presentation in `prova-cli/src/report.rs`: `HumanReporter` (a
+  streaming *tree* — file → group/flow → leaf, rendered by transition so sequential runs print
+  each header once and parallel interleaving honestly reprints; color via anstream with auto
+  TTY/`NO_COLOR` detection, skip reasons, failures recap, `--quiet`) and `GitHubReporter`
+  (auto-on under `GITHUB_ACTIONS`: `::error` annotations + step summary).
 - **`MultiReporter`** — fan-out, so console + a JUnit writer + the GitHub sink run simultaneously.
 - Planned sinks: a load-metrics aggregator (consumes the same stream, emits latency
   histograms/percentiles instead of pass/fail lines).

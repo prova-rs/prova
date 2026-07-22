@@ -79,6 +79,7 @@ const PASS: Style = AnsiColor::Green.on_default();
 const FAIL: Style = AnsiColor::Red.on_default().bold();
 const SKIP: Style = AnsiColor::Yellow.on_default();
 const DIM: Style = Style::new().dimmed();
+const FILE: Style = Style::new().bold();
 
 /// A failure held back for the end-of-run recap.
 struct Recap {
@@ -87,10 +88,17 @@ struct Recap {
     location: Option<String>,
 }
 
-/// The human console reporter: colored streaming `PASS`/`FAIL`/`SKIP` lines with source
-/// locations, skip reasons inline, and a `failures:` recap before the summary so the red is
-/// findable without scrolling. The marks stay words (never glyphs) and the text is identical
-/// uncolored, so grep and piped captures keep working.
+/// The human console reporter: a streaming **tree** — file headers, then group/flow headers,
+/// then colored `PASS`/`FAIL`/`SKIP` leaves — with skip reasons inline and a `failures:` recap
+/// before the summary so the red is findable without scrolling. The marks stay words (never
+/// glyphs) and the text is identical uncolored, so grep and piped captures keep working.
+///
+/// The tree is rendered by *transition*: each leaf prints only the header levels that differ
+/// from the previously printed chain. A sequential run (the default) therefore renders each
+/// file and group exactly once; a parallel run (`-j>1`), whose suites interleave through one
+/// coordinator channel, honestly reprints a header when output re-enters a file — never
+/// buffered, so long runs keep their live feedback. Headers print lazily (only above a leaf
+/// that actually prints), so `--quiet` shows exactly the chains that lead to failures.
 pub struct HumanReporter {
     out: AutoStream<Stdout>,
     /// Suppress `PASS`/`SKIP` lines (`--quiet`): failures, the recap, and the summary remain.
@@ -99,6 +107,10 @@ pub struct HumanReporter {
     /// relative to it when they are under it, absolute otherwise.
     rel_root: PathBuf,
     failures: Vec<Recap>,
+    /// The header chain (file, then group segments) most recently printed.
+    sections: Vec<String>,
+    /// Whether anything has printed yet (drives the blank line between file sections).
+    printed_any: bool,
 }
 
 impl HumanReporter {
@@ -108,20 +120,75 @@ impl HumanReporter {
             quiet,
             rel_root,
             failures: Vec::new(),
+            sections: Vec::new(),
+            printed_any: false,
         }
     }
 
-    /// `file:line` with the file relativized against `rel_root` when it lives under it.
-    fn location(&self, file: Option<&str>, line: Option<u32>) -> Option<String> {
-        let file = file?;
-        let shown = std::path::Path::new(file)
+    /// The file path relativized against `rel_root` when it lives under it.
+    fn rel_file(&self, file: &str) -> String {
+        std::path::Path::new(file)
             .strip_prefix(&self.rel_root)
             .map(|p| p.display().to_string())
-            .unwrap_or_else(|_| file.to_string());
+            .unwrap_or_else(|_| file.to_string())
+    }
+
+    /// `file:line` for the recap, relativized like the headers.
+    fn location(&self, file: Option<&str>, line: Option<u32>) -> Option<String> {
+        let file = file?;
+        let shown = self.rel_file(file);
         Some(match line {
             Some(line) => format!("{shown}:{line}"),
             None => shown,
         })
+    }
+
+    /// The header chain a leaf sits under — its file, then its ancestor group/flow segments —
+    /// plus the leaf's own name. In a multi-file suite each file's nodes are wrapped in a
+    /// file-group named after the file's stem; that segment duplicates the file header, so it
+    /// is folded away.
+    fn sections_for<'p>(&self, path: &'p str, file: Option<&str>) -> (Vec<String>, &'p str) {
+        let mut segments: Vec<&str> = path.split(" › ").collect();
+        let leaf = segments.pop().unwrap_or(path);
+        let mut sections: Vec<String> = Vec::new();
+        if let Some(file) = file {
+            sections.push(self.rel_file(file));
+            if let Some(first) = segments.first() {
+                let stem = std::path::Path::new(file)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("");
+                if *first == stem {
+                    segments.remove(0);
+                }
+            }
+        }
+        sections.extend(segments.iter().map(|s| s.to_string()));
+        (sections, leaf)
+    }
+
+    /// Print the header levels of `sections` that differ from the last printed chain — the
+    /// transition rendering that turns the flat event stream into a tree.
+    fn enter(&mut self, sections: &[String], has_file: bool) {
+        let common = self
+            .sections
+            .iter()
+            .zip(sections)
+            .take_while(|(a, b)| a == b)
+            .count();
+        for (level, section) in sections.iter().enumerate().skip(common) {
+            let indent = "  ".repeat(level);
+            if level == 0 && has_file {
+                if self.printed_any {
+                    let _ = writeln!(self.out);
+                }
+                let _ = writeln!(self.out, "{indent}{FILE}{section}{FILE:#}");
+            } else {
+                let _ = writeln!(self.out, "{indent}{section}");
+            }
+            self.printed_any = true;
+        }
+        self.sections = sections.to_vec();
     }
 }
 
@@ -327,46 +394,44 @@ impl Reporter for HumanReporter {
                 file,
                 line,
             } => {
+                if matches!(outcome, Outcome::Passed | Outcome::Skipped) && self.quiet {
+                    return;
+                }
+                let (sections, leaf) = self.sections_for(path, *file);
+                self.enter(&sections, file.is_some());
+                // Leaves indent one level below their headers (min one level, so a header-less
+                // leaf — a file-less run — still reads as a row, not a heading).
+                let indent = "  ".repeat(sections.len().max(1));
+                // `:line` only — the file is the section header above.
+                let line_col = line
+                    .map(|l| format!("  {DIM}:{l}{DIM:#}"))
+                    .unwrap_or_default();
                 let location = self.location(*file, *line);
                 let out = &mut self.out;
                 match outcome {
-                    Outcome::Passed if !self.quiet => {
+                    Outcome::Passed => {
                         let n = *assertions;
                         let plural = if n == 1 { "assert" } else { "asserts" };
-                        let _ = write!(
+                        let _ = writeln!(
                             out,
-                            "  {PASS}PASS{PASS:#}  {path}  {DIM}({}, {n} {plural}){DIM:#}",
+                            "{indent}{PASS}PASS{PASS:#}  {leaf}  {DIM}({}, {n} {plural}){DIM:#}{line_col}",
                             dur(*duration)
                         );
-                        if let Some(loc) = &location {
-                            let _ = write!(out, "  {DIM}{loc}{DIM:#}");
-                        }
-                        let _ = writeln!(out);
                     }
-                    Outcome::Passed => {}
-                    Outcome::Skipped if !self.quiet => {
-                        let _ = write!(out, "  {SKIP}SKIP{SKIP:#}  {path}");
-                        if let Some(reason) = message {
-                            let _ = write!(out, "  {DIM}— {reason}{DIM:#}");
-                        }
-                        if let Some(loc) = &location {
-                            let _ = write!(out, "  {DIM}{loc}{DIM:#}");
-                        }
-                        let _ = writeln!(out);
+                    Outcome::Skipped => {
+                        let reason = message
+                            .map(|m| format!("  {DIM}— {m}{DIM:#}"))
+                            .unwrap_or_default();
+                        let _ = writeln!(out, "{indent}{SKIP}SKIP{SKIP:#}  {leaf}{reason}{line_col}");
                     }
-                    Outcome::Skipped => {}
                     Outcome::Failed => {
-                        let _ = write!(
+                        let _ = writeln!(
                             out,
-                            "  {FAIL}FAIL{FAIL:#}  {path}  {DIM}({}){DIM:#}",
+                            "{indent}{FAIL}FAIL{FAIL:#}  {leaf}  {DIM}({}){DIM:#}{line_col}",
                             dur(*duration)
                         );
-                        if let Some(loc) = &location {
-                            let _ = write!(out, "  {DIM}{loc}{DIM:#}");
-                        }
-                        let _ = writeln!(out);
                         if let Some(m) = message {
-                            write_message(out, "        ", m);
+                            write_message(out, &format!("{indent}      "), m);
                         }
                         self.failures.push(Recap {
                             path: path.to_string(),
@@ -375,6 +440,7 @@ impl Reporter for HumanReporter {
                         });
                     }
                 }
+                self.printed_any = true;
             }
             Event::RunFinished { summary } => {
                 let out = &mut self.out;
