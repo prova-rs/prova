@@ -22,6 +22,28 @@ prova.test("a suite with a failure exits 1", function(t)
   t:expect(r.stdout):contains("1 passed")
   t:expect(r.stdout):contains("1 failed")
   t:expect(r.stdout):contains("1 skipped")
+  -- Failures are findable: each line carries its source location, and a recap re-states every
+  -- failure at the end with a copy-pasteable exact-node rerun.
+  t:expect(r.stdout):contains("failures:")
+  t:expect(r.stdout):contains("mixed.lua:")
+  t:expect(r.stdout):contains("rerun: prova --node")
+end)
+
+prova.test("console output is plain when piped, ANSI under --color always", function(t)
+  local esc = string.char(27) .. "["
+  -- Captured output is a pipe, so the default (auto) emits no escape codes...
+  local piped = run(fixtures .. "/passing.lua")
+  t:expect(piped.stdout:find(esc, 1, true)):is_falsy()
+  -- ...and `--color always` forces them even into a pipe (what CI log viewers want).
+  local forced = run("--color always " .. fixtures .. "/passing.lua")
+  t:expect(forced.stdout:find(esc, 1, true)):is_truthy()
+end)
+
+prova.test("--quiet suppresses PASS/SKIP lines but keeps the tally", function(t)
+  local r = run("-q " .. fixtures .. "/passing.lua")
+  t:expect(r.code):equals(0)
+  t:expect(r.stdout):contains("2 passed")
+  t:expect(r.stdout:find("PASS", 1, true)):is_falsy()
 end)
 
 prova.test("--list discovers tests without running them", function(t)

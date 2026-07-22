@@ -6,7 +6,9 @@
 //! [run]                         # the default profile
 //! proofs = ["proofs"]          # dir-name patterns; omit to default to ["proofs"]
 //! jobs   = 4                    # concurrency (throughput only)
-//! format = "console"           # "console" | "json"
+//! format = "console"           # "console" | "json" | "tap"
+//! color  = "auto"               # "auto" | "always" | "never" (console format only)
+//! quiet  = false                # true → only failures, the recap, and the summary
 //!
 //! [run.env]                     # environment for the run
 //! LOG = "info"
@@ -305,6 +307,10 @@ pub struct Profile {
     pub config: Option<String>,
     pub jobs: Option<usize>,
     pub format: Option<String>,
+    /// Console color mode: `"auto"` (default) | `"always"` | `"never"`. CLI `--color` wins.
+    pub color: Option<String>,
+    /// Only print failures, the recap, and the summary. CLI `--quiet` wins (it can only enable).
+    pub quiet: Option<bool>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
     /// Profile-scoped plugins (`[profiles.<name>.plugins]`), overlaid on the package-wide
@@ -344,6 +350,8 @@ pub struct Resolved {
     pub config: Option<String>,
     pub jobs: Option<usize>,
     pub format: Option<String>,
+    pub color: Option<String>,
+    pub quiet: Option<bool>,
     pub env: BTreeMap<String, String>,
     /// Explicitly-declared suites (`[suites.*]`), run in addition to the discovered `proofs`.
     pub suites: BTreeMap<String, SuiteDecl>,
@@ -410,6 +418,10 @@ impl Manifest {
         let format = overlay
             .and_then(|p| p.format.clone())
             .or_else(|| base.format.clone());
+        let color = overlay
+            .and_then(|p| p.color.clone())
+            .or_else(|| base.color.clone());
+        let quiet = overlay.and_then(|p| p.quiet).or(base.quiet);
 
         let mut env = base.env.clone();
         if let Some(p) = overlay {
@@ -445,6 +457,8 @@ impl Manifest {
             config,
             jobs,
             format,
+            color,
+            quiet,
             env,
             suites: self.suites.clone(),
             plugins,
@@ -499,6 +513,8 @@ proofs = ["tests/smoke"]
                 config: None,
                 jobs: Some(4),
                 format: Some("console".into()),
+                color: None,
+                quiet: None,
                 env: env(&[("LOG", "info")]),
                 suites: BTreeMap::new(),
                 plugins: BTreeMap::new(),

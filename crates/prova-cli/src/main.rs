@@ -22,6 +22,7 @@ mod learn;
 mod manifest;
 mod mcp;
 mod plugins;
+mod report;
 mod runstate;
 
 use std::collections::BTreeMap;
@@ -32,9 +33,9 @@ use std::time::{Duration, Instant};
 use home::Home;
 use manifest::{Manage, Manifest, SuiteDecl};
 use prova_core::{
-    discover_files, discover_path_with, discover_suites, run_suites, ConsoleReporter,
-    JUnitReporter, JsonReporter, MultiReporter, PortMode, Reporter, RunConfig, Suite, SystemLayout,
-    TapReporter, XdgSystemLayout,
+    discover_files, discover_path_with, discover_suites, run_suites, JUnitReporter, JsonReporter,
+    MultiReporter, PortMode, Reporter, RunConfig, Suite, SystemLayout, TapReporter,
+    XdgSystemLayout,
 };
 
 /// One subcommand: its dispatch name, its `--help` lines, and its entry point — ONE row per
@@ -134,6 +135,8 @@ options:
   -p, --profile NAME        run a profile from the manifest
       --manifest PATH       use a specific manifest (default ./prova.toml)
       --format console|json|tap  output format (--json is shorthand)
+      --color auto|always|never  color console output (default auto: TTY only; honors NO_COLOR)
+  -q, --quiet               only print failures, the recap, and the summary
       --junit PATH          also write a JUnit XML report to PATH (for CI; composes with --format)
   -j, --jobs N              run up to N units concurrently
   -P, --plugin name=source  add an ad-hoc plugin (repeatable; layers over the manifest)
@@ -1250,6 +1253,8 @@ fn parse_topology_args(
 
 fn run(cli_args: Vec<String>) -> ExitCode {
     let mut cli_format: Option<Format> = None;
+    let mut cli_color: Option<report::ColorMode> = None;
+    let mut cli_quiet = false;
     let mut cli_junit: Option<String> = None;
     let mut cli_jobs: Option<usize> = None;
     let mut update_snapshots = false;
@@ -1333,6 +1338,17 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             }
             continue;
         }
+        // `--color auto|always|never`: color the console output (auto = only on a terminal).
+        if let Some(v) = value_flag(&arg, &mut args, &["--color"]) {
+            match report::ColorMode::parse(&v) {
+                Some(mode) => cli_color = Some(mode),
+                None => {
+                    eprintln!("prova: unknown --color {v:?} (expected auto|always|never)");
+                    return ExitCode::from(2);
+                }
+            }
+            continue;
+        }
         // `--junit PATH`: write a JUnit XML report to a file, alongside whatever --format prints.
         if let Some(v) = value_flag(&arg, &mut args, &["--junit"]) {
             cli_junit = Some(v);
@@ -1360,6 +1376,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         }
         match arg.as_str() {
             "--list" => list = true,
+            "--quiet" | "-q" => cli_quiet = true,
             "--last-failed" => last_failed = true,
             "--allow-empty" => allow_empty = true,
             "--update-snapshots" | "-u" => update_snapshots = true,
@@ -1416,6 +1433,8 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         paths,
         jobs,
         format,
+        manifest_color,
+        manifest_quiet,
         declared,
         mut plugins_resolved,
         sources,
@@ -1427,6 +1446,8 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             explicit_paths,
             cli_jobs.unwrap_or(1),
             cli_format.unwrap_or(Format::Console),
+            None,
+            None,
             BTreeMap::new(),
             plugins::ResolvedPlugins::default(),
             BTreeMap::new(),
@@ -1460,6 +1481,8 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                 r.proofs,
                 r.jobs,
                 r.format,
+                r.color,
+                r.quiet,
                 r.suites,
                 r.plugins,
                 r.sources,
@@ -1558,10 +1581,29 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    // Color resolution, per key: CLI flag > `PROVA_COLOR` env > manifest > auto. Format never
+    // auto-switches (a piped console run stays console, just uncolored); only color detects.
+    let color = cli_color
+        .or_else(|| {
+            std::env::var("PROVA_COLOR")
+                .ok()
+                .and_then(|v| report::ColorMode::parse(&v))
+        })
+        .or(manifest_color)
+        .unwrap_or(report::ColorMode::Auto);
+    // `--quiet` can only *enable* — a flag that silences must not be silently un-silenced.
+    let quiet = cli_quiet || manifest_quiet.unwrap_or(false);
+    // Displayed source locations relativize against the package root (else the cwd).
+    let rel_root = home
+        .as_ref()
+        .map(|h| h.dir.clone())
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."));
+
     // The stdout sink chosen by --format, plus an optional JUnit XML *file* sink (--junit), fanned
     // out through a MultiReporter so a CI run can print to the console and drop a results.xml at once.
     let mut sinks: Vec<Box<dyn Reporter>> = vec![match format {
-        Format::Console => Box::new(ConsoleReporter),
+        Format::Console => Box::new(report::HumanReporter::new(color, quiet, rel_root)),
         Format::Json => Box::new(JsonReporter::new(std::io::stdout())),
         Format::Tap => Box::new(TapReporter::new(std::io::stdout())),
     }];
@@ -1683,6 +1725,10 @@ struct ManifestRun {
     proofs: Vec<String>,
     jobs: usize,
     format: Format,
+    /// Manifest `color`/`quiet` (pre-parsed) — the CLI flags and `PROVA_COLOR` env override them
+    /// at the wiring site.
+    color: Option<report::ColorMode>,
+    quiet: Option<bool>,
     suites: BTreeMap<String, SuiteDecl>,
     plugins: plugins::ResolvedPlugins,
     sources: BTreeMap<String, String>,
@@ -2113,10 +2159,22 @@ fn resolve_from_manifest(
             }
         },
     };
+    let color = match resolved.color.as_deref() {
+        None => None,
+        Some(s) => match report::ColorMode::parse(s) {
+            Some(mode) => Some(mode),
+            None => {
+                eprintln!("prova: unknown color {s:?} in manifest (expected auto|always|never)");
+                return Err(ExitCode::from(2));
+            }
+        },
+    };
     Ok(ManifestRun {
         proofs: resolved.proofs,
         jobs,
         format,
+        color,
+        quiet: resolved.quiet,
         suites: resolved.suites,
         plugins: plugins_resolved,
         sources: resolved.sources,

@@ -32,6 +32,11 @@ inquire = "0.9"
 # The suite manifest (`prova.toml`): declare what to run and how, for local + CI.
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+# Rich console output (the cargo/clap stack): `anstream::AutoStream` does the tty/NO_COLOR/
+# CLICOLOR_FORCE/Windows-console detection so styled output degrades to plain text when piped;
+# `anstyle` is the zero-dep style vocabulary.
+anstream = "0.6"
+anstyle = "1"
 # Reading/merging the project `.luarc.json` (LuaLS IDE pointer) during annotation sync.
 serde_json = "1"
 # Plugin compatibility gating: check a plugin's `prova.toml` `requires.prova` range against the
