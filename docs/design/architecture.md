@@ -78,13 +78,18 @@ timeout (best-effort, itself bounded).
 ## Output as a plugin surface
 
 - **`Event`** — the structured stream: `RunStarted`, `NodeStarted{path}`,
-  `NodeFinished{path, outcome, duration, assertions, message}`, `RunFinished{summary}`. The
-  executor only *emits*; it never prints.
-- **`Reporter`** — one method, `event(&Event)`. Implementations: `ConsoleReporter` (human),
-  `JsonReporter` (JSONL wire protocol), `NullReporter` (tests / load driver).
-- **`MultiReporter`** — fan-out, so console + a JUnit writer + a GUI socket can run simultaneously.
-- Planned sinks: JUnit XML, TAP, and a load-metrics aggregator (consumes the same stream, emits
-  latency histograms/percentiles instead of pass/fail lines).
+  `NodeFinished{path, outcome, duration, assertions, message, file, line}`, `RunFinished{summary}`.
+  The executor only *emits*; it never prints. `file`/`line` are the declaration's source location,
+  captured from the Lua stack at registration (`None` for file-less runs like `eval`).
+- **`Reporter`** — one method, `event(&Event)`. Core implementations (unstyled by design):
+  `ConsoleReporter` (plain fallback), `JsonReporter` (JSONL wire protocol), `JUnitReporter` (CI
+  file sink: locations, timestamp, properties), `TapReporter` (TAP 13), `NullReporter` (tests /
+  load driver). The CLI layers presentation in `prova-cli/src/report.rs`: `HumanReporter`
+  (color via anstream — auto TTY/`NO_COLOR` detection, skip reasons, failures recap, `--quiet`)
+  and `GitHubReporter` (auto-on under `GITHUB_ACTIONS`: `::error` annotations + step summary).
+- **`MultiReporter`** — fan-out, so console + a JUnit writer + the GitHub sink run simultaneously.
+- Planned sinks: a load-metrics aggregator (consumes the same stream, emits latency
+  histograms/percentiles instead of pass/fail lines).
 
 ## Frontend protocol (the companion GUI/IDE, and the CLI, over one core)
 

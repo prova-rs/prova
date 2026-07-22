@@ -8,6 +8,9 @@
 //!   prova --format json <path>       stream JSONL events (machine/GUI protocol)
 //!   prova --format tap <path>        emit TAP (Test Anything Protocol) to stdout
 //!   prova --junit results.xml <path> also write a JUnit XML report (for CI dashboards)
+//!   prova --color always|never       force/disable ANSI color (default: auto — TTY only)
+//!   prova -q <path>                  quiet: failures, the recap, and the tally only
+//!   prova --gha on|off <path>        GitHub Actions annotations + step summary (default: auto)
 //!   prova --list <path>              discover tests without running them
 //!   prova --jobs N <path>            run up to N units concurrently (throughput only)
 //!

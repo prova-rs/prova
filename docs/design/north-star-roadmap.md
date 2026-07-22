@@ -241,12 +241,27 @@ exactly the "batteries-included, no capability ceilings" pitch. Implemented in `
    (`SnapshotRegistry`) + `unreferenced_snapshots`. **Snapshots complete** (A+B+C). Design:
    `docs/plans/snapshots.md`.
 8. **Selectors** — tag expressions (`--tags`), `-k` name filter, `--last-failed`, sharding.
-9. **Reporters — DONE.** JUnit XML (`--junit PATH`, a *file* sink that composes with any `--format`,
-   the CI lingua franca) and TAP (`--format tap`, a stdout stream) both landed as `Reporter`s over the
-   event seam. JUnit buffers cases and writes one `<testsuites>` doc on `RunFinished` — path split into
-   `classname`/`name`, XML-escaped, failure/skipped elements, valid XML (xmllint-checked). TAP streams
-   `TAP version 13` + `ok/not ok N` (with `# SKIP` directives and YAML failure diagnostics) + a trailing
-   `1..N` plan. *(`model.rs` `JUnitReporter`/`TapReporter` + 3 unit tests; verified live via the CLI.)*
+9. **Reporters — DONE, then productionized.** JUnit XML (`--junit PATH`, a *file* sink that composes
+   with any `--format`, the CI lingua franca) and TAP (`--format tap`, a stdout stream) both landed as
+   `Reporter`s over the event seam. JUnit buffers cases and writes one `<testsuites>` doc on
+   `RunFinished` — path split into `classname`/`name`, XML-escaped, failure/skipped elements, valid XML
+   (xmllint-checked). TAP streams `TAP version 13` + `ok/not ok N` (with `# SKIP` directives and YAML
+   failure diagnostics) + a trailing `1..N` plan. *(`model.rs` `JUnitReporter`/`TapReporter`; verified
+   live via the CLI.)*
+   The output overhaul then landed on top of the same seam: **source locations** (file + line captured
+   from the Lua stack at declaration) travel `Node → PlanItem → NodeResult → Event::NodeFinished` into
+   every sink (JSONL `file`/`line` keys, JUnit `file=`/`line=` attrs, TAP diagnostics, MCP failures);
+   the CLI's **HumanReporter** (`prova-cli/src/report.rs` — core stays unstyled) adds color
+   (anstream/anstyle: auto TTY detection, `NO_COLOR`, `--color`, manifest `color`), skip reasons
+   inline, a `failures:` recap with `--node` rerun lines, and `-q/--quiet`; a **GitHubReporter**
+   auto-detects `GITHUB_ACTIONS` (`--gha`, `PROVA_GHA`, manifest `github`) and emits
+   `::error file=,line=` PR annotations + a `$GITHUB_STEP_SUMMARY` markdown table; JUnit gained
+   `timestamp`/`errors`/`assertions` attrs, `<properties>`, the package name as suite name, and a
+   manifest `junit = "path"` key. Config precedence everywhere: CLI flag > env > manifest > auto.
+   *Deliberate non-features:* no pattern-string format DSL (curated formats; `--format json` + the
+   `Reporter` trait are the escape hatches) and no per-suite `::group::` folding (parallel suites
+   interleave through one coordinator channel). *Follow-up:* a `FailureKind` on the event to split
+   JUnit `<error>` from `<failure>`.
 10. **Load executor — NON-GOAL (not on the roadmap).** The clean definition≠execution split means an
     alternate load driver *could* be dropped in over the same plan — but load/performance testing is
     an explicit non-goal (`foundations.md`: "stays with k6/Gatling… measure timing, not model load").

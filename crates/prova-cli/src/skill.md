@@ -192,8 +192,12 @@ Selection pulls dependencies in automatically, keeps flows atomic, and never pro
 for deselected work. Deselected ≠ skipped: summaries say `N deselected`.
 
 CI: `prova --profile ci` (profiles overlay `[run]`), `--format json` (JSONL events) or `tap`,
-`--junit path.xml`. GitHub Actions: `uses: prova-rs/run-action@v1`. **The suite you iterate
-against locally is byte-identical to the one CI enforces** — that is the point.
+`--junit path.xml` (or `[run] junit = "path"` in the manifest). Inside GitHub Actions prova
+auto-emits `::error` PR annotations (with file:line) and a step-summary table — no flag needed
+(`--gha off` / `PROVA_GHA=off` disables). Console output colors on a TTY only (`--color`,
+`NO_COLOR`); `-q` prints failures + tally only. Every failure line and JSON event carries the
+test's `file:line`. **The suite you iterate against locally is byte-identical to the one CI
+enforces** — that is the point.
 
 ## Driving Prova
 

@@ -24,9 +24,15 @@ matching nothing is an error unless `--allow-empty`.
 
 ## Output for machines
 
-- `--format json` — JSONL events (node_started/node_finished with outcomes) for closing the
-  loop without scraping.
-- `--format tap` · `--junit results.xml` (composes with any format) for CI dashboards.
+- `--format json` — JSONL events (node_started/node_finished with outcomes AND the test's
+  `file`/`line`) for closing the loop without scraping.
+- `--format tap` · `--junit results.xml` (composes with any format; manifest `[run] junit =
+  "path"` does the same with no flag) for CI dashboards.
+- Inside GitHub Actions, failures auto-emit `::error file=,line=` PR annotations and a
+  step-summary table (`--gha off` disables).
+- Console failures print their `file:line`, and a `failures:` recap at the end re-states each
+  with a `prova --node "<path>"` rerun line — copy-paste it, don't grep. `-q` = failures +
+  recap + tally only. Color is TTY-only by default (`--color`, `NO_COLOR`).
 - `-j/--jobs N` is throughput ONLY — it can never change what a run means.
 
 ## Profiles and guarantees
