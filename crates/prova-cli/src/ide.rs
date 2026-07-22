@@ -8,7 +8,7 @@
 //!
 //! ```text
 //! prova ide setup                 # create-or-merge .luarc.json (default: manage = always)
-//! prova ide setup --manage auto   # polite: create if absent, else hint (don't edit a file you own)
+//! prova ide setup --manage auto   # same, but an unmergeable (JSONC) file hints instead of erroring
 //! prova ide setup --manage never  # install stubs only; leave .luarc.json to you
 //! ```
 //!
@@ -117,10 +117,13 @@ pub fn wire(home: &Home, manage: Manage, layout: &dyn SystemLayout) -> Result<()
         // The pointer holds absolute, machine-local paths, so it is not shareable and should not be
         // committed. prova won't edit the user's .gitignore — it says so once, here.
         println!("prova: note — .luarc.json holds machine-local paths; add it to .gitignore");
+    } else if outcome.luarc_updated {
+        println!("prova: merged prova's annotation entries into .luarc.json");
     }
     if outcome.luarc_hint {
         println!(
-            "prova: .luarc.json exists and is yours — run `prova ide setup --manage always` to merge prova's entries"
+            "prova: .luarc.json is not plain JSON — merge skipped; add prova's entries by hand, \
+             or set [luals] manage = \"never\""
         );
     }
     println!(
@@ -137,7 +140,7 @@ fn print_help() {
          prova DSL and every declared plugin complete in your editor.\n\
          \n\
          --manage always  (default) create .luarc.json if absent, else merge prova's entries into it\n\
-         --manage auto    create if absent; if you already own one, leave it and print a hint\n\
+         --manage auto    same, but a file prova cannot parse (JSONC) gets a hint, not an error\n\
          --manage never   install stubs only; never touch .luarc.json"
     );
 }

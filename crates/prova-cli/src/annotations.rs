@@ -23,8 +23,14 @@
 //! there is nothing to orphan and therefore nothing to collect.
 //!
 //! The cost of the direct list is that the entry set changes when the plugin set does, so
-//! `.luarc.json` must be rewritten rather than left alone. prova rewrites files it created, and
-//! merges under `manage = "always"`; under `auto` with a user-owned file it prints a hint instead.
+//! `.luarc.json` must be reconciled rather than left alone. prova rewrites files it created and
+//! **merges non-destructively into user-owned files** — quietly, under the default `auto` — so
+//! editor wiring just works with zero ceremony. Every write is change-gated (identical content is
+//! never rewritten), and the caller narrates only actual changes: a steady-state run says nothing.
+//! The one file prova will not touch is one it cannot parse as plain JSON (JSONC/comments) — there
+//! it hints instead. `manage = "never"` opts a project out entirely (the right setting when a
+//! repo deliberately commits a hand-maintained `.luarc.json`, which machine-local absolute entries
+//! would otherwise keep dirtying).
 //!
 //! The only project-local artifact is `.luarc.json` itself. It holds machine-local absolute paths, so
 //! it isn't shareable and shouldn't be committed — `prova init` says so once and leaves the
@@ -52,7 +58,8 @@ use crate::manifest::Manage;
 use prova_core::help::CORE_STUBS;
 use prova_core::SystemLayout;
 
-/// What `setup` did, so the caller can print a concise, honest one-liner.
+/// What `setup` did, so the caller can print a concise, honest one-liner — and stay SILENT when
+/// nothing changed (this runs on every invocation; a steady-state run must not narrate).
 #[derive(Debug, Default)]
 pub struct Outcome {
     /// Plugin names whose `library/` dir is listed in `workspace.library`.
@@ -61,8 +68,11 @@ pub struct Outcome {
     pub core_dir: PathBuf,
     /// `.luarc.json` was created (didn't exist before).
     pub luarc_created: bool,
-    /// `.luarc.json` existed and lacked our entry, and policy was `Auto` — we left it alone. The
-    /// caller prints the "run `prova init`" hint.
+    /// `.luarc.json` existed and its entry list actually changed this run (a merge or refresh
+    /// that wrote bytes). False in the steady state, even though setup ran.
+    pub luarc_updated: bool,
+    /// `.luarc.json` exists but is not plain JSON (comments / JSONC), so prova cannot merge its
+    /// entries safely. The caller surfaces how to wire it by hand.
     pub luarc_hint: bool,
 }
 
@@ -89,23 +99,30 @@ pub fn setup(
     match (manage, exists) {
         // Never touch the pointer; the core stubs are still installed above.
         (Manage::Never, _) => {}
-        // Create when absent (prova owns config here — non-Lua project, or a fresh one).
+        // Create when absent (non-Lua project, or a fresh one).
         (Manage::Auto, false) | (Manage::Always, false) => {
             write_fresh_luarc(&luarc, &entries)?;
             outcome.luarc_created = true;
         }
-        // Present + Auto: either prova wrote this file (and may freely refresh a stale entry list),
-        // or the project is Lua-native and owns it — in which case stay a polite guest and hint.
+        // Present + Auto (the default): reconcile quietly. A file prova wrote is refreshed to the
+        // canonical shape; a user-owned file gets prova's entries merged NON-destructively
+        // (`merge_luarc` preserves every key and entry it doesn't manage). Editor wiring should
+        // just work — the one file prova cannot merge safely (JSONC / comments) downgrades to a
+        // hint rather than an error, because nothing is broken about the *run*.
         (Manage::Auto, true) => {
             if luarc_is_ours(&luarc) {
-                write_fresh_luarc(&luarc, &entries)?;
-            } else if !luarc_has_all(&luarc, &entries) {
-                outcome.luarc_hint = true;
+                outcome.luarc_updated = write_fresh_luarc(&luarc, &entries)?;
+            } else {
+                match merge_luarc(&luarc, &entries, layout) {
+                    Ok(changed) => outcome.luarc_updated = changed,
+                    Err(_) => outcome.luarc_hint = true,
+                }
             }
         }
-        // Present + Always: the explicit opt-in — reconcile our entries into it.
+        // Present + Always: the explicit opt-in — same reconcile, but an unmergeable file is a
+        // real error (the user asked for a merge that cannot happen).
         (Manage::Always, true) => {
-            merge_luarc(&luarc, &entries, layout)?;
+            outcome.luarc_updated = merge_luarc(&luarc, &entries, layout)?;
         }
     }
     Ok(outcome)
@@ -194,15 +211,21 @@ const OUR_KEYS: [&str; 3] = [
     "workspace.checkThirdParty",
 ];
 
-/// A fresh minimal `.luarc.json` for a project prova owns the config of.
-fn write_fresh_luarc(path: &Path, library: &[String]) -> Result<(), String> {
+/// A fresh minimal `.luarc.json` for a project prova owns the config of. Returns whether bytes
+/// actually changed — the steady state (this runs every invocation) is a read and no write.
+fn write_fresh_luarc(path: &Path, library: &[String]) -> Result<bool, String> {
     let doc = json!({
         "runtime.version": "Lua 5.4",
         "workspace.library": library,
         "workspace.checkThirdParty": false,
     });
-    let text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
-    std::fs::write(path, text + "\n").map_err(|e| format!("cannot write {}: {e}", path.display()))
+    let text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())? + "\n";
+    if std::fs::read_to_string(path).ok().as_deref() == Some(text.as_str()) {
+        return Ok(false);
+    }
+    std::fs::write(path, text)
+        .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    Ok(true)
 }
 
 /// Did prova write this `.luarc.json`? True only when the file carries *exactly* prova's own keys and
@@ -222,30 +245,14 @@ fn luarc_is_ours(path: &Path) -> bool {
     map.len() == OUR_KEYS.len() && OUR_KEYS.iter().all(|k| map.contains_key(*k))
 }
 
-/// Does an existing `.luarc.json` already list every entry we'd contribute? A parse failure (comments
-/// / invalid JSON) counts as "no" — we won't claim it's wired when we can't confirm it.
-fn luarc_has_all(path: &Path, library: &[String]) -> bool {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return false;
-    };
-    let Ok(Value::Object(map)) = serde_json::from_str::<Value>(&text) else {
-        return false;
-    };
-    match map.get("workspace.library") {
-        Some(Value::Array(items)) => library
-            .iter()
-            .all(|want| items.iter().any(|v| v.as_str() == Some(want.as_str()))),
-        _ => false,
-    }
-}
-
 /// Reconcile our entries into an existing `.luarc.json`: drop prova-managed entries that are no
 /// longer current (a dropped plugin, a previous version's core stubs), add the ones that are missing,
 /// and leave every entry we don't manage untouched. `runtime.version` is set only if unset — never
-/// overriding the user's. Non-destructive to other keys.
+/// overriding the user's. Non-destructive to other keys. Returns whether bytes actually changed —
+/// a file already carrying the current entry set is left untouched (no rewrite, no mtime churn).
 ///
 /// Errors (rather than corrupts) if the file isn't parseable JSON — the caller can surface a hint.
-fn merge_luarc(path: &Path, library: &[String], layout: &dyn SystemLayout) -> Result<(), String> {
+fn merge_luarc(path: &Path, library: &[String], layout: &dyn SystemLayout) -> Result<bool, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     let mut doc: Value = serde_json::from_str(&text).map_err(|e| {
@@ -281,13 +288,23 @@ fn merge_luarc(path: &Path, library: &[String], layout: &dyn SystemLayout) -> Re
     map.entry("runtime.version".to_string())
         .or_insert_with(|| json!("Lua 5.4"));
 
-    write_json(path, map)
+    write_json_if_changed(path, map, &text)
 }
 
-fn write_json(path: &Path, map: &Map<String, Value>) -> Result<(), String> {
+fn write_json_if_changed(
+    path: &Path,
+    map: &Map<String, Value>,
+    original: &str,
+) -> Result<bool, String> {
     let text =
-        serde_json::to_string_pretty(&Value::Object(map.clone())).map_err(|e| e.to_string())?;
-    std::fs::write(path, text + "\n").map_err(|e| format!("cannot write {}: {e}", path.display()))
+        serde_json::to_string_pretty(&Value::Object(map.clone())).map_err(|e| e.to_string())?
+            + "\n";
+    if text == original {
+        return Ok(false);
+    }
+    std::fs::write(path, text)
+        .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -413,8 +430,10 @@ mod tests {
         assert!(text.contains("Lua 5.4"), "{text}");
     }
 
+    /// The default policy merges into a user-owned file quietly and non-destructively: prova's
+    /// entries land, the user's keys survive, and the outcome reports an update (not a hint).
     #[test]
-    fn auto_is_polite_when_luarc_exists() {
+    fn auto_merges_into_a_user_owned_luarc_nondestructively() {
         let t = Tmp::new("auto-present");
         let home = home_at(&t.0, None);
         std::fs::write(
@@ -425,12 +444,56 @@ mod tests {
         let layout = layout_at(&t.0);
         let out = setup(&home, &BTreeMap::new(), Manage::Auto, &layout, V).unwrap();
         assert!(!out.luarc_created);
-        assert!(out.luarc_hint);
-        // The user's file is untouched.
+        assert!(!out.luarc_hint);
+        assert!(out.luarc_updated, "the merge is a real change");
         let text = std::fs::read_to_string(t.0.join(".luarc.json")).unwrap();
+        assert!(text.contains("vim"), "user key clobbered: {text}");
         assert!(
-            text.contains("vim") && !text.contains("annotations"),
-            "{text}"
+            text.contains(&path_entry(&out.core_dir)),
+            "our entry missing: {text}"
+        );
+    }
+
+    /// The steady state is SILENT: once the entries are current, another run neither writes the
+    /// file nor reports anything — this runs on every invocation, and must not narrate or churn.
+    #[test]
+    fn auto_is_silent_and_writeless_in_the_steady_state() {
+        let t = Tmp::new("auto-steady");
+        let home = home_at(&t.0, None);
+        std::fs::write(
+            t.0.join(".luarc.json"),
+            "{ \"diagnostics.globals\": [\"vim\"] }",
+        )
+        .unwrap();
+        let layout = layout_at(&t.0);
+        setup(&home, &BTreeMap::new(), Manage::Auto, &layout, V).unwrap();
+        let after_first = std::fs::read_to_string(t.0.join(".luarc.json")).unwrap();
+
+        let out = setup(&home, &BTreeMap::new(), Manage::Auto, &layout, V).unwrap();
+        assert!(!out.luarc_created && !out.luarc_updated && !out.luarc_hint);
+        assert_eq!(
+            std::fs::read_to_string(t.0.join(".luarc.json")).unwrap(),
+            after_first,
+            "steady state must not rewrite the file"
+        );
+    }
+
+    /// A file prova cannot parse as plain JSON (JSONC comments) is left alone with a hint under
+    /// `auto` — merging would corrupt it, and the run itself is fine.
+    #[test]
+    fn auto_hints_instead_of_touching_an_unparseable_luarc() {
+        let t = Tmp::new("auto-jsonc");
+        let home = home_at(&t.0, None);
+        let jsonc = "// my config\n{ \"diagnostics.globals\": [\"vim\"] }";
+        std::fs::write(t.0.join(".luarc.json"), jsonc).unwrap();
+        let layout = layout_at(&t.0);
+        let out = setup(&home, &BTreeMap::new(), Manage::Auto, &layout, V).unwrap();
+        assert!(out.luarc_hint);
+        assert!(!out.luarc_created && !out.luarc_updated);
+        assert_eq!(
+            std::fs::read_to_string(t.0.join(".luarc.json")).unwrap(),
+            jsonc,
+            "an unparseable file must be left byte-identical"
         );
     }
 
@@ -468,7 +531,8 @@ mod tests {
         );
     }
 
-    /// One user-added key is enough to make the file theirs — prova must stop rewriting it.
+    /// One user-added key is enough to make the file theirs — prova switches from the canonical
+    /// rewrite to the non-destructive merge, so the user's key survives every later sync.
     #[test]
     fn a_user_edited_luarc_stops_being_ours() {
         let t = Tmp::new("ownership");
@@ -490,13 +554,18 @@ mod tests {
             !luarc_is_ours(&luarc),
             "a user-added key must transfer ownership"
         );
-        let out = setup(&home, &BTreeMap::new(), Manage::Auto, &layout, V).unwrap();
-        assert!(
-            !out.luarc_hint,
-            "entries are all present, so no hint is due"
-        );
+        // A later sync (here: with a plugin added) merges rather than rewrites.
+        let plugin = plugin_with_stub(&t.0, "redis");
+        let mut roots = BTreeMap::new();
+        roots.insert("redis".to_string(), plugin.clone());
+        let out = setup(&home, &roots, Manage::Auto, &layout, V).unwrap();
+        assert!(out.luarc_updated && !out.luarc_hint);
         let text = std::fs::read_to_string(&luarc).unwrap();
         assert!(text.contains("vim"), "the user's key was clobbered: {text}");
+        assert!(
+            text.contains(&path_entry(&plugin.join("library"))),
+            "plugin entry not merged: {text}"
+        );
     }
 
     #[test]

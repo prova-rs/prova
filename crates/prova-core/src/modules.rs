@@ -4346,7 +4346,7 @@ mod grpc {
     async fn build_pool(channel: &Channel) -> mlua::Result<DescriptorPool> {
         let (services, rv) = list_services_negotiated(channel).await?;
         let mut files: HashMap<String, FileDescriptorProto> = HashMap::new();
-        let mut decode_into = |raw: Vec<Vec<u8>>,
+        let decode_into = |raw: Vec<Vec<u8>>,
                                files: &mut HashMap<String, FileDescriptorProto>|
          -> mlua::Result<()> {
             for bytes in raw {
@@ -4416,7 +4416,7 @@ mod grpc {
             ordered.extend(ready);
             remaining = blocked;
             if remaining.len() == before {
-                ordered.extend(remaining.drain(..));
+                ordered.append(&mut remaining);
             }
         }
 

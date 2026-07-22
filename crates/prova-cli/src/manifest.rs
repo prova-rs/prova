@@ -171,14 +171,17 @@ pub struct Luals {
 /// Resolved `.luarc.json` management policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Manage {
-    /// Create `.luarc.json` if absent; if one already exists, don't edit it — print a hint to run
-    /// `prova init`. This auto-detects project type: a non-Lua project (Lua present only for prova)
-    /// has no `.luarc.json`, so prova sets it up; a Lua-native project already owns one, so prova
-    /// stays a polite guest.
+    /// The default: create `.luarc.json` if absent, else reconcile prova's entries into it
+    /// **quietly and non-destructively** (user keys and entries are never touched; identical
+    /// content is never rewritten, so the steady state is silent). A file prova cannot parse as
+    /// plain JSON (JSONC/comments) is left alone with a hint — the run itself is fine.
     Auto,
-    /// Always create-or-merge our two keys into `.luarc.json`, even into an existing file.
+    /// Same reconcile, but an unmergeable file is an error — the explicit "wire my editor" ask
+    /// (`prova ide setup`) must not silently do nothing.
     Always,
     /// Never touch `.luarc.json` (annotations still sync; the user wires the pointer themselves).
+    /// The right policy when a repo deliberately commits a hand-maintained `.luarc.json` —
+    /// prova's entries are machine-local absolute paths, which would keep the tracked file dirty.
     Never,
 }
 

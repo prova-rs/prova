@@ -12,6 +12,14 @@ plugin_root  = ".prova/plugins"      # this project's own plugins (root-relative
 [plugins]
 parallels = { git = "https://github.com/prova-rs/prova-parallels", tag = "v1" }
 
+# This repo's /.luarc.json is deliberately COMMITTED and hand-maintained (it points at library/ —
+# the hand-written stub sources, because prova is where they come from). prova's own managed
+# entries are machine-local absolute paths, which would keep the tracked file dirty on every
+# contributor's machine — so the pointer is hands-off here. Annotations still sync to the shared
+# cache; only the pointer is unmanaged.
+[luals]
+manage = "never"
+
 # Topologies this project exposes by name (`prova up <name>`). `vm` comes from the `parallels` plugin's
 # advertisement; its `requires = ["prlctl"]` gates the stand-up, so on a machine without Parallels
 # Desktop `prova up vm` skips cleanly instead of failing. `options` is handed to the factory

@@ -1817,20 +1817,22 @@ fn missing_stub_warning(ns: &Option<(String, PathBuf)>) -> Option<String> {
     ))
 }
 
-/// Print a concise, honest one-liner (to stderr) about what the IDE annotation sync did.
+/// Print a concise, honest one-liner (to stderr) about what the IDE annotation sync did — and
+/// nothing at all when it did nothing. This runs on every invocation; the steady state is silence.
 fn report_annotations(outcome: &annotations::Outcome) {
-    if !outcome.linked_plugins.is_empty() {
-        eprintln!(
-            "prova: IDE annotations linked for {}",
-            outcome.linked_plugins.join(", ")
-        );
-    }
+    let linked = if outcome.linked_plugins.is_empty() {
+        String::new()
+    } else {
+        format!("; plugin annotations linked for {}", outcome.linked_plugins.join(", "))
+    };
     if outcome.luarc_created {
-        eprintln!("prova: wrote .luarc.json (editor IDE support enabled)");
-    }
-    if outcome.luarc_hint {
+        eprintln!("prova: wrote .luarc.json (editor IDE support enabled{linked})");
+    } else if outcome.luarc_updated {
+        eprintln!("prova: updated .luarc.json (IDE annotation entries reconciled{linked})");
+    } else if outcome.luarc_hint {
         eprintln!(
-            "prova: IDE annotations ready — run `prova ide setup` to point .luarc.json at them"
+            "prova: .luarc.json is not plain JSON, so prova cannot merge its IDE annotation \
+             entries — add them by hand, or set [luals] manage = \"never\" to silence this"
         );
     }
 }

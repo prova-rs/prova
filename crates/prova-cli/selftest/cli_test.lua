@@ -121,6 +121,14 @@ prova.test("a manifest junit key writes the report with the package's suite name
   -- The suite is named after the package (the home directory's basename), not a hardcoded "prova".
   local base = dir:match("([^/\\]+)$")
   t:expect(xml):contains('<testsuite name="' .. base .. '"')
+
+  -- IDE sync narrates only actual changes: the first run created .luarc.json (and said so on
+  -- stderr); a second, steady-state run must say nothing about annotations at all.
+  t:expect(r.stderr):contains("wrote .luarc.json")
+  local again = shell.run(prova_bin, { cwd = dir })
+  t:expect(again.code):equals(0)
+  t:expect(again.stderr:find("luarc", 1, true)):is_falsy()
+  t:expect(again.stderr:find("annotations", 1, true)):is_falsy()
 end)
 
 prova.test("GitHub Actions mode: annotations + step summary, honoring --gha off", function(t)
