@@ -78,7 +78,12 @@ pub fn find(start: &Path) -> Result<Option<Home>, String> {
 /// Build a `Home` from an explicit manifest path (`--manifest`). The root is the manifest's directory,
 /// hoisted to the parent when the manifest is a nested `prova/prova.toml` / `.prova/prova.toml`.
 pub fn from_manifest_path(manifest: &Path) -> Home {
-    let mdir = manifest.parent().unwrap_or(Path::new(".")).to_path_buf();
+    // A bare relative name like `prova.toml` has parent `""` — normalize to `.` or every
+    // root-relative walk (proof discovery above all) scans the empty path and finds nothing.
+    let mdir = match manifest.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
     let bare_prova = manifest.file_name().and_then(|s| s.to_str()) == Some("prova.toml");
     let dir = if bare_prova && dir_is_nook(&mdir) {
         mdir.parent().unwrap_or(&mdir).to_path_buf()
@@ -178,6 +183,15 @@ mod tests {
         fn drop(&mut self) {
             std::fs::remove_dir_all(&self.0).ok();
         }
+    }
+
+    // `--manifest prova.toml` (a bare relative name): the home dir must be `.`, never the empty
+    // path — discovery from `""` scans nothing and every proof goes undiscovered.
+    #[test]
+    fn bare_relative_manifest_path_homes_at_dot() {
+        let home = from_manifest_path(Path::new("prova.toml"));
+        assert_eq!(home.dir, PathBuf::from("."));
+        assert_eq!(home.manifest, PathBuf::from("prova.toml"));
     }
 
     // The two flat variants: home is the directory holding the manifest.
