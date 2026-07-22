@@ -25,6 +25,11 @@ The loop:
    fix the system, or renegotiate the bar with the human.
 5. Commit suite + implementation together: a proof-carrying change.
 
+Prova complements the language's own test harness; it does not replace it. Prove the CONTRACT
+with prova (behavior a real caller observes at the boundary); prove the INTERNALS with native
+unit/integration tests (one function's logic, seams the boundary can't reach). A change often
+needs both — the right tool for each job; `prova learn pdd` carries the decision table.
+
 ## Learning on the fly: never guess, ask the binary
 
 Everything below is the crash course; depth is one call away, computed for THIS package:
@@ -57,9 +62,11 @@ prova.test("rows persist", { requires = { "docker" } }, function(t)
 end)
 ```
 
-- `prova.test(name, [opts], fn)` / `prova.test_each(cases, ...)` / `prova.describe` for labeling.
+- `prova.test(name, [opts], fn)` / `prova.test_each(name_template, cases, fn)` /
+  `prova.describe` for labeling.
 - `prova.group` = independent, parallel, isolated. `prova.flow` = ordered steps sharing state,
-  cascade-skip on failure. Cross-unit gating: `depends_on = { handle }` (handles, not strings) —
+  cascade-skip on failure. Both bodies receive a BUILDER — children go on it (`g:test(...)`,
+  `flow:step(...)`); a bare `prova.test` inside either body is an error. Cross-unit gating: `depends_on = { handle }` (handles, not strings) —
   upstream failure **skips** downstream, never fails it, never passes state.
 - opts: `tags`, `requires`, `timeout = "60s"`,
   `resources = { prova.port(N), prova.shared("db") }`, `serial = true`. `--jobs` is throughput

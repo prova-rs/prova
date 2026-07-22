@@ -433,7 +433,9 @@ fn render_slot(slot: Slot, env: &RenderEnv, transport: Transport) -> String {
             Some(_) => "**Topologies**: none declared (`[topologies]` names a plugin's factory so \
                         `up` and proofs share one environment)."
                 .into(),
-            None => String::new(),
+            // Same one-liner as the Plugins slot: this slot sits under an "## In this package"
+            // heading in topologies.md, and a heading over nothing reads as a rendering bug.
+            None => "(no package in reach — declared topologies unknown)".into(),
         },
         Slot::ContextFiles => match &env.package {
             Some(_) => {

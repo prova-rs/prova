@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use prova_core::{load_project_config, RunConfig};
 
@@ -10,7 +10,7 @@ use prova_core::{load_project_config, RunConfig};
 /// per resolve and never cleared, so the second project saw the first's capabilities. The fix makes
 /// registration a per-load value ([`prova_core::Capabilities`]) carried in `RunConfig`, so there is
 /// no shared state to leak through.
-fn companion(dir: &PathBuf, name: &str, body: &str) -> PathBuf {
+fn companion(dir: &Path, name: &str, body: &str) -> PathBuf {
     let p = dir.join(name);
     std::fs::write(&p, body).unwrap();
     p

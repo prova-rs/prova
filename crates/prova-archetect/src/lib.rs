@@ -246,6 +246,7 @@ pub fn render_headless(
     let handle = CapturingIoHandle {
         writes: writes.clone(),
         pending: Mutex::new(None),
+        last_diag: Mutex::new(None),
     };
 
     let configuration = Configuration::default().with_headless(true);
@@ -335,6 +336,7 @@ pub fn render_interactive(
         let handle = CapturingIoHandle {
             writes: writes.clone(),
             pending: Mutex::new(None),
+            last_diag: Mutex::new(None),
         };
         let archetect = Archetect::builder()
             .with_driver(handle)
@@ -380,6 +382,9 @@ pub fn render_interactive(
 struct CapturingIoHandle {
     writes: Arc<Mutex<Vec<String>>>,
     pending: Mutex<Option<ClientMessage>>,
+    /// The last diagnostic printed. A failing script arrives twice — once as `LogError`, once as
+    /// `CompleteError`, same text — and printing both reads as two failures; drop the echo.
+    last_diag: Mutex<Option<String>>,
 }
 
 impl ScriptIoHandle for CapturingIoHandle {
@@ -407,7 +412,13 @@ impl ScriptIoHandle for CapturingIoHandle {
             ScriptMessage::LogWarn(m)
             | ScriptMessage::LogError(m)
             | ScriptMessage::CompleteError(m)
-            | ScriptMessage::Display(m) => eprintln!("{m}"),
+            | ScriptMessage::Display(m) => {
+                let mut last = self.last_diag.lock().unwrap();
+                if last.as_deref() != Some(m.as_str()) {
+                    eprintln!("{m}");
+                    *last = Some(m);
+                }
+            }
             _ => {} // Log{Trace,Debug,Info}, Print, CompleteSuccess, PromptFor* (never in headless)
         }
         Ok(())

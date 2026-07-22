@@ -20,10 +20,14 @@ the key.
 ## Flags that matter in automation
 
 ```
-prova init default --headless                 # never prompt; unanswerable prompt = error
-prova init default -a project_name=orders     # --answer k=v, repeatable; beats baked answers
-prova init default --defaults                 # take the archetype's default for the rest
-prova init default -s ci                      # --switch, repeatable
+prova init default --headless \
+  -a project_name=orders --defaults          # the working automation invocation, whole
+# the flags, separately:
+#   --headless        never prompt; an unanswerable prompt is an ERROR (project_name has no
+#                     default, so --headless alone fails — always pass it with -a)
+#   -a k=v            --answer, repeatable; beats baked answers
+#   --defaults        take the archetype's default for every remaining prompt
+#   -s ci             --switch, repeatable
 ```
 
 Answer precedence: CLI `--answer` > the entry's baked answers > prompt (or archetype default

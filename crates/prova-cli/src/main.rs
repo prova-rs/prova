@@ -1948,6 +1948,7 @@ fn layer_cli_plugins(
 /// Read the home's `prova.toml`, overlay `--profile`, apply env, merge CLI overrides, and resolve
 /// declared plugins (fetching git sources into the cache). All paths remain manifest-relative (the
 /// caller joins them to the home dir). Returns the resolved run or an exit code on error.
+#[allow(clippy::too_many_arguments)] // the run's independent axes; a params struct would just rename them
 fn resolve_from_manifest(
     home: &Home,
     profile: Option<String>,
@@ -2126,6 +2127,7 @@ fn resolve_from_manifest(
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)] // the helpers below are shared with mcp.rs, not test-only
 mod tests {
     use super::*;
 

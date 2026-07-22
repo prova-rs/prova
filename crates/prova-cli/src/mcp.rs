@@ -454,6 +454,9 @@ struct WarmHandle {
     endpoints: Vec<Endpoint>,
     tx: std::sync::mpsc::Sender<WarmCmd>,
     join: std::thread::JoinHandle<()>,
+    /// The home the topology's `up` resolved against — where warm runs read/write `last_failed`
+    /// state, so warm and cold runs on the same package share one red set.
+    home: Home,
 }
 
 /// A command executed on the holder thread — the thread that owns the topology's Lua state.
@@ -683,7 +686,7 @@ impl ProvaMcpServer {
 
     #[tool(
         name = "run",
-        description = "Run the package's test suite with an optional selection (the MCP mirror of the CLI's -k/--tags/--node/--last-failed/--profile/--jobs flags). With `topology`, run WARM against a topology held by a prior `up`: t:use resolves the held live instance instead of provisioning (never provisions implicitly — an un-held topology is an error). Returns compact JSON: { passed, failed, skipped, deselected, duration_ms, failures: [{ path, message }] }. The result is marked isError when any node failed. Also records the failed nodes so a later run with last_failed=true (or CLI --last-failed) re-runs exactly them. Pass `package` (a directory or manifest path) to target ANOTHER package anywhere on disk — the server's startup package is only the default, and a `package` resolves fresh, so a manifest you just scaffolded works without a restart."
+        description = "Run the package's test suite with an optional selection (the MCP mirror of the CLI's -k/--tags/--node/--last-failed/--profile/--jobs flags). With `topology`, run WARM against a topology held by a prior `up`: t:use resolves the held live instance instead of provisioning (never provisions implicitly — an un-held topology is an error). Returns compact JSON: { passed, failed, skipped, deselected, duration_ms, failures: [{ path, message }] }. The result is marked isError when any node failed, and a selection that matches NOTHING is an error (usually a typo — mirror of the CLI's default; the CLI's --allow-empty has no MCP counterpart). Also records the failed nodes so a later run with last_failed=true (or CLI --last-failed) re-runs exactly them; last_failed with no recorded state runs everything and says so in a `note` field. Pass `package` (a directory or manifest path) to target ANOTHER package anywhere on disk — the server's startup package is only the default, and a `package` resolves fresh, so a manifest you just scaffolded works without a restart."
     )]
     async fn run(&self, Parameters(req): Parameters<RunRequest>) -> CallToolResult {
         let _serialized = self.run_lock.lock().await;
@@ -881,12 +884,21 @@ fn run_blocking(env: &McpEnv, req: RunRequest) -> Result<(serde_json::Value, boo
 
     let mut selection = to_selection(&req.selection);
     // `last_failed`: fold the previous run's failed node paths in, exactly like `--last-failed`.
+    // State lives in the home the call RESOLVED to (`call.home`) — a `package` call must read and
+    // write that package's state, not the server's startup affinity.
+    let lf_home = Some(call.home.clone());
+    let mut note: Option<String> = None;
     if req.selection.last_failed.unwrap_or(false) {
-        match crate::load_last_failed(&env.home) {
+        match crate::load_last_failed(&lf_home) {
             Some(paths) if !paths.is_empty() => selection.nodes.extend(paths),
-            _ => eprintln!(
-                "prova mcp: last_failed: no failure state from a previous run here; running everything"
-            ),
+            // Over MCP stderr is invisible — carry the fallback in the result, or the caller
+            // cannot tell "re-ran the red set" from "ran everything".
+            _ => {
+                note = Some(
+                    "last_failed: no failure state from a previous run here; ran everything"
+                        .to_string(),
+                )
+            }
         }
     }
 
@@ -903,16 +915,27 @@ fn run_blocking(env: &McpEnv, req: RunRequest) -> Result<(serde_json::Value, boo
     let mut reporter = FailureCollector::default();
     let summary = run_suites(&suites, &mut reporter, &config).map_err(|e| e.to_string())?;
 
+    // The CLI's empty-selection contract, mirrored: a selection that matched NOTHING is an error,
+    // not a green run — it usually means a typo, and a typo must not read as success.
+    let ran = summary.passed + summary.failed + summary.skipped;
+    if ran == 0 && !config.selection.is_empty() {
+        return Err(format!(
+            "selection matched no tests ({} deselected) — usually a typo; loosen the selection \
+             or check `list`",
+            summary.deselected
+        ));
+    }
+
     // Keep the `--last-failed` state in step with CLI runs — the two transports share one loop.
     let failed_paths: Vec<String> = reporter.failures.iter().map(|(p, _)| p.clone()).collect();
-    crate::store_last_failed(&env.home, &failed_paths);
+    crate::store_last_failed(&lf_home, &failed_paths);
 
     let failures: Vec<serde_json::Value> = reporter
         .failures
         .iter()
         .map(|(path, message)| json!({ "path": path, "message": message }))
         .collect();
-    let result = json!({
+    let mut result = json!({
         "passed": summary.passed,
         "failed": summary.failed,
         "skipped": summary.skipped,
@@ -920,6 +943,9 @@ fn run_blocking(env: &McpEnv, req: RunRequest) -> Result<(serde_json::Value, boo
         "duration_ms": summary.duration.as_millis() as u64,
         "failures": failures,
     });
+    if let Some(n) = note {
+        result["note"] = json!(n);
+    }
     Ok((result, summary.failed > 0))
 }
 
@@ -928,7 +954,7 @@ fn list_blocking(env: &McpEnv, req: SelectionArgs) -> Result<(serde_json::Value,
 
     let mut selection = to_selection(&req);
     if req.last_failed.unwrap_or(false) {
-        if let Some(paths) = crate::load_last_failed(&env.home) {
+        if let Some(paths) = crate::load_last_failed(&Some(call.home.clone())) {
             selection.nodes.extend(paths);
         }
     }
@@ -1016,6 +1042,7 @@ fn up_blocking(
                     endpoints,
                     tx: cmd_tx,
                     join,
+                    home: call.home.clone(),
                 },
             );
             Ok((json!({ "name": name, "resources": resources }), false))
@@ -1057,28 +1084,36 @@ fn down_blocking(warm: &WarmRegistry, name: &str) -> Result<(serde_json::Value, 
 /// A warm run: resolve the holder for `topology` (an un-held name is an explicit error — warm runs
 /// NEVER provision implicitly) and execute the run on its thread, where the Lua lives.
 fn warm_run_blocking(
-    env: &McpEnv,
+    _env: &McpEnv,
     warm: &WarmRegistry,
     topology: &str,
     req: RunRequest,
 ) -> Result<(serde_json::Value, bool), String> {
-    let tx = warm
+    let (tx, home) = warm
         .lock()
         .expect("warm registry")
         .get(topology)
-        .map(|h| h.tx.clone())
+        .map(|h| (h.tx.clone(), h.home.clone()))
         .ok_or_else(|| not_held(topology))?;
 
     let mut selection = to_selection(&req.selection);
+    // `last_failed` state lives in the held topology's home — the package its `up` resolved —
+    // so warm and cold runs on that package share one red set.
+    let lf_home = Some(home);
+    let mut note: Option<String> = None;
     if req.selection.last_failed.unwrap_or(false) {
-        match crate::load_last_failed(&env.home) {
+        match crate::load_last_failed(&lf_home) {
             Some(paths) if !paths.is_empty() => selection.nodes.extend(paths),
-            _ => eprintln!(
-                "prova mcp: last_failed: no failure state from a previous run here; running everything"
-            ),
+            _ => {
+                note = Some(
+                    "last_failed: no failure state from a previous run here; ran everything"
+                        .to_string(),
+                )
+            }
         }
     }
 
+    let had_selection = !selection.is_empty();
     let (reply_tx, reply_rx) = std::sync::mpsc::channel();
     tx.send(WarmCmd::Run {
         selection,
@@ -1087,16 +1122,25 @@ fn warm_run_blocking(
     .map_err(|_| not_held(topology))?;
     let outcome = reply_rx.recv().map_err(|_| not_held(topology))??;
 
+    // The CLI's empty-selection contract, mirrored (see `run_blocking`).
+    if outcome.passed + outcome.failed + outcome.skipped == 0 && had_selection {
+        return Err(format!(
+            "selection matched no tests ({} deselected) — usually a typo; loosen the selection \
+             or check `list`",
+            outcome.deselected
+        ));
+    }
+
     // Keep the `--last-failed` state in step with cold runs — every transport shares one loop.
     let failed_paths: Vec<String> = outcome.failures.iter().map(|(p, _)| p.clone()).collect();
-    crate::store_last_failed(&env.home, &failed_paths);
+    crate::store_last_failed(&lf_home, &failed_paths);
 
     let failures: Vec<serde_json::Value> = outcome
         .failures
         .iter()
         .map(|(path, message)| json!({ "path": path, "message": message }))
         .collect();
-    let result = json!({
+    let mut result = json!({
         "passed": outcome.passed,
         "failed": outcome.failed,
         "skipped": outcome.skipped,
@@ -1105,6 +1149,9 @@ fn warm_run_blocking(
         "failures": failures,
         "topology": topology,
     });
+    if let Some(n) = note {
+        result["note"] = json!(n);
+    }
     Ok((result, outcome.failed > 0))
 }
 

@@ -11,9 +11,9 @@ fn docker_available() -> bool {
 }
 
 /// The resource-vantage proof: a `prova.containerized` resource joined to a network with an alias
-/// exposes a second addressing vantage — `resource.network = { url, host, port, alias }` (the alias
-/// + container port an in-network SUT uses) alongside the host vantage (the mapped port the test
-/// runner uses). The real bar is a sibling container reaching the resource via `network.host`/`port`
+/// exposes a second addressing vantage — `resource.network = { url, host, port, alias }` (the
+/// alias plus container port an in-network SUT uses) alongside the host vantage (the mapped port
+/// the test runner uses). The real bar is a sibling container reaching the resource via `network.host`/`port`
 /// over embedded DNS. Runs where docker is present, skips (never fails) where it is absent.
 #[test]
 fn containerized_network_vantage_runs_or_skips_gracefully() {

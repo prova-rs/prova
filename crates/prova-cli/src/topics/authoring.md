@@ -18,11 +18,13 @@ end)
 
 ## The vocabulary
 
-- `prova.test(name, [opts], fn)` · `prova.test_each(cases, name, [opts], fn)` ·
+- `prova.test(name, [opts], fn)` · `prova.test_each(name_template, cases, fn)` ·
   `prova.describe(label, body)` (labels only).
 - `prova.group(name, [opts], body)` — independent, parallel, isolated.
   `prova.flow(name, [opts], body)` — ordered steps sharing state; a failed step
-  cascade-skips the rest.
+  cascade-skips the rest. **Both bodies receive a BUILDER** — declare children on it
+  (`function(g) g:test(...) end` · `function(flow) flow:step("...", fn) end`); a bare
+  `prova.test` inside either body is an error, not a child.
 - Cross-unit gating: `depends_on = { handle }` — handles, not strings. Upstream failure SKIPS
   downstream, never fails it, never passes state.
 - opts: `tags`, `requires`, `timeout = "60s"`, `serial = true`,

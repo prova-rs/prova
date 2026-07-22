@@ -668,6 +668,11 @@ struct Collector {
     /// `group`/`flow`). `prova.describe` pushes its labeling group so bare declarations inside its
     /// body nest under it (dynamic scoping); everything pops back to the file root (index 0).
     parent_stack: Vec<NodeIx>,
+    /// How many `group`/`flow` builder bodies are currently executing. Non-zero means bare
+    /// declarations are a misuse (they would silently register at the file root, outside the unit
+    /// being built) — children belong on the builder (`g:test`/`flow:step`), so the bare forms
+    /// error instead of registering somewhere the author did not mean.
+    builder_depth: usize,
     /// The index of the file currently being loaded (a suite loads several files into one collector).
     /// Every node added while this is set records it, so `Scope.File` can reset per file.
     current_file: usize,
@@ -692,6 +697,7 @@ impl Collector {
             fixtures: vec![],
             topologies: BTreeMap::new(),
             parent_stack: vec![0],
+            builder_depth: 0,
             current_file: 0,
             file_paths: Vec::new(),
         }
@@ -718,6 +724,22 @@ impl Collector {
     fn current_parent(&self) -> NodeIx {
         *self.parent_stack.last().unwrap_or(&0)
     }
+}
+
+/// Reject a bare declaration (`prova.test`/`test_each`/`group`/`flow`/`describe`) made while a
+/// `group`/`flow` builder body is executing. The bare form would register at the ambient parent —
+/// the file root — not inside the unit being built, so the flow would run zero of "its" steps and
+/// the tests would lose the parent's ordering/opts. Silently-wrong structure; error instead.
+fn reject_bare_in_builder(col: &SharedCollector, what: &str) -> mlua::Result<()> {
+    if col.borrow().builder_depth > 0 {
+        return Err(mlua::Error::RuntimeError(format!(
+            "bare `prova.{what}` inside a group/flow body — declare children on the builder \
+             argument instead (`function(g) g:test(...) end` / `function(flow) \
+             flow:step(name, fn) end`); the bare form registers at the file root, outside \
+             the unit being built"
+        )));
+    }
+    Ok(())
 }
 
 type SharedCollector = Rc<RefCell<Collector>>;
@@ -1837,6 +1859,7 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
         prova.set(
             "test",
             lua.create_function(move |lua, (name, a, b): (String, Value, Value)| {
+                reject_bare_in_builder(&col, "test")?;
                 let parent = col.borrow().current_parent();
                 let ix = register_test(&col, parent, name, a, b, None)?;
                 lua.create_userdata(UnitHandle { ix })
@@ -1849,6 +1872,7 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
             "test_each",
             lua.create_function(
                 move |lua, (name, cases, factory): (String, Table, Function)| {
+                    reject_bare_in_builder(&col, "test_each")?;
                     let parent = col.borrow().current_parent();
                     register_test_each(lua, &col, parent, name, cases, factory)
                 },
@@ -1860,6 +1884,7 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
         prova.set(
             "group",
             lua.create_function(move |lua, (name, a, b): (String, Value, Value)| {
+                reject_bare_in_builder(&col, "group")?;
                 let parent = col.borrow().current_parent();
                 let ix = register_group(lua, &col, parent, name, a, b)?;
                 lua.create_userdata(UnitHandle { ix })
@@ -1871,6 +1896,7 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
         prova.set(
             "flow",
             lua.create_function(move |lua, (name, a, b): (String, Value, Value)| {
+                reject_bare_in_builder(&col, "flow")?;
                 let parent = col.borrow().current_parent();
                 let ix = register_flow(lua, &col, parent, name, a, b)?;
                 lua.create_userdata(UnitHandle { ix })
@@ -1882,6 +1908,7 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
         prova.set(
             "describe",
             lua.create_function(move |_lua, (label, body): (String, Function)| {
+                reject_bare_in_builder(&col, "describe")?;
                 register_describe(&col, label, body)
             })?,
         )?;
@@ -2341,7 +2368,19 @@ fn register_group(
         col: col.clone(),
         ix: gix,
     })?;
-    body.call::<()>(gb)?;
+    col.borrow_mut().builder_depth += 1;
+    let ran = body.call::<()>(gb);
+    col.borrow_mut().builder_depth -= 1;
+    ran?;
+    let c = col.borrow();
+    if c.nodes[gix].children.is_empty() {
+        return Err(mlua::Error::RuntimeError(format!(
+            "group {:?} declared no children — declare them on the builder argument \
+             (`function(g) g:test(name, fn) end`)",
+            c.nodes[gix].name
+        )));
+    }
+    drop(c);
     Ok(gix)
 }
 
@@ -2405,7 +2444,19 @@ fn register_flow(
         col: col.clone(),
         ix: fix,
     })?;
-    body.call::<()>(fb)?;
+    col.borrow_mut().builder_depth += 1;
+    let ran = body.call::<()>(fb);
+    col.borrow_mut().builder_depth -= 1;
+    ran?;
+    let c = col.borrow();
+    if c.nodes[fix].children.is_empty() {
+        return Err(mlua::Error::RuntimeError(format!(
+            "flow {:?} declared no steps — declare them on the builder argument \
+             (`function(flow) flow:step(name, fn) end`)",
+            c.nodes[fix].name
+        )));
+    }
+    drop(c);
     Ok(fix)
 }
 
@@ -2760,10 +2811,10 @@ fn build_plan(col: &Collector, caps: &Capabilities) -> mlua::Result<Plan> {
 /// distinguishes the three ways it can go unmet, because they call for different actions — install
 /// the tool, upgrade it, or fix the typo:
 ///
-///   - **absent**    → "requires \"docker\" (unavailable)"
-///   - **too old**   → "requires \"dotnet >= 9\" (dotnet 8.0.421 does not satisfy >= 9)"
-///   - **malformed** → an error, not a skip: a constraint that can never parse would skip forever
-///                     and read as green, which is the vacuous green this contract exists to remove.
+/// - **absent**    → "requires \"docker\" (unavailable)"
+/// - **too old**   → "requires \"dotnet >= 9\" (dotnet 8.0.421 does not satisfy >= 9)"
+/// - **malformed** → an error, not a skip: a constraint that can never parse would skip forever
+///   and read as green, which is the vacuous green this contract exists to remove.
 fn resolve_requires(leaves: &mut [Leaf], caps: &Capabilities) {
     let mut cache: HashMap<String, Option<String>> = HashMap::new();
     for leaf in leaves.iter_mut() {
@@ -3648,8 +3699,10 @@ fn execute_collected(
     };
 
     let rt = new_runtime()?;
-    let mut summary = Summary::default();
-    summary.deselected = deselected;
+    let mut summary = Summary {
+        deselected,
+        ..Summary::default()
+    };
     block_on_local(&rt, async {
         let started = Instant::now();
         run_plan(lua, &plan, &state, config, reporter, &mut summary).await;
@@ -4340,8 +4393,10 @@ impl HeldTopology {
         config.selection = selection.clone();
 
         reporter.event(&Event::RunStarted);
-        let mut summary = Summary::default();
-        summary.deselected = deselected;
+        let mut summary = Summary {
+            deselected,
+            ..Summary::default()
+        };
         // The holder's runtime, not a fresh one: held resources may be bound to it.
         block_on_local(&self.rt, async {
             let started = Instant::now();

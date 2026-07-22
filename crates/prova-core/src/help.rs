@@ -71,11 +71,13 @@ pub fn parse_stub(src: &str) -> Vec<HelpEntry> {
     let mut prose: Vec<String> = Vec::new();
     let mut params: Vec<(String, String)> = Vec::new();
     let mut ret: Option<String> = None;
-    // A class stays open across its `---@field` lines and flushes when the block ends.
-    let mut class: Option<(String, String, Vec<(String, String, Option<String>)>)> = None;
+    // A class stays open across its `---@field` lines and flushes when the block ends:
+    // (name, summary, fields as (name, type, note)).
+    type OpenClass = (String, String, Vec<(String, String, Option<String>)>);
+    let mut class: Option<OpenClass> = None;
 
     let flush_class =
-        |class: &mut Option<(String, String, Vec<(String, String, Option<String>)>)>,
+        |class: &mut Option<OpenClass>,
          out: &mut Vec<HelpEntry>| {
             if let Some((name, summary, fields)) = class.take() {
                 let body = fields

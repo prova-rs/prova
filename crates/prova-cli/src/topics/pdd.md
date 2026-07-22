@@ -27,6 +27,20 @@ quietly lower it.
   without a human reading scrollback.
 - **Durable** — lives with the system, re-runs in CI byte-identical to your local run.
 
+## The right layer — proofs AND the language's own tests
+
+Prova does not replace the native test harness; the two prove different things, and a change
+often needs both. Prove the CONTRACT with prova; prove the INTERNALS with the language's own
+tests. The tell: if a real caller could observe the bug, it deserves a proof; if only the
+implementation can, it deserves a unit test.
+
+| The thing to prove | Tool |
+|---|---|
+| Behavior at the system boundary — API/CLI/rendered output, wiring, config, "it actually boots" | a prova proof |
+| Pure logic: algorithms, edge cases, error paths of one function/module | the language's unit tests (fast inner loop, refactors freely) |
+| Internal seams the public boundary can't reach or can't reach cheaply — concurrency, teardown-under-failure, storage invariants | the language's integration tests |
+| The same behavior twice | pick ONE home — a proof re-checking a pinned unit case is noise; a unit test mocking what a proof observes for real is false confidence |
+
 ## Decision rules
 
 | Situation | Move |
@@ -36,6 +50,7 @@ quietly lower it.
 | A proof fails and the fix is "adjust the assertion" | Stop — fix the system or ask the human |
 | Unknown API/shape blocks you | `prova eval` / `prova.help("<name>")`, not guesswork |
 | Whole system must exist first (render, build, boot) | That IS the fixture — see `prova learn doubles` for the dependency side |
+| The bug lives in one function's logic | Unit-test it natively; keep the proof at the boundary that exposed it |
 
 Go deeper: `prova learn project` (where things live here) · `prova learn init` (scaffolding) ·
 `prova learn doubles` (mocks and containers).
