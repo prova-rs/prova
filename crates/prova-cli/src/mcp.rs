@@ -416,6 +416,9 @@ struct IntrospectRequest {
     /// Case-insensitive substring, matched across name and summary — `"shell"`, `"retry"`,
     /// `"tempdir"`. Omit for the whole surface.
     filter: Option<String>,
+    /// A directory or manifest path: include THAT package's plugin stubs instead of the
+    /// server's startup package (which may be no package at all). Resolves fresh.
+    package: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -707,20 +710,34 @@ impl ProvaMcpServer {
         description = "Discover prova's API surface WITHOUT reading its source: every function, method, and value shape as { name, signature, summary } — the core AND every plugin this package declares (a plugin's library/ stub rides the same rail). `filter` narrows by substring across name+summary (e.g. \"shell\", \"tempdir\", \"postgres\"). Start here — it answers what to call, how to call it, and what comes back, so you don't have to probe with eval. Parsed from the same LuaCATS stubs that drive editor completion, so it cannot drift from what an author sees."
     )]
     async fn introspect(&self, Parameters(req): Parameters<IntrospectRequest>) -> CallToolResult {
-        // No Lua environment needed — the stubs are files, so introspection never provisions,
-        // never blocks on a run, and works before a manifest exists.
-        let all = prova_core::help::entries_with_plugins(
-            self.env.plugins.roots.values().map(|p| p.as_path()),
-        );
-        let entries = match req.filter.as_deref().map(str::trim) {
-            Some(n) if !n.is_empty() => prova_core::help::filter(&all, n),
-            _ => all,
-        };
-        let rows: Vec<_> = entries
-            .iter()
-            .map(|e| json!({ "name": e.name, "signature": e.signature, "summary": e.summary }))
-            .collect();
-        CallToolResult::success(vec![Content::text(json!({ "entries": rows }).to_string())])
+        // No Lua environment needed — the stubs are files, so introspection never provisions
+        // and works before a manifest exists. A `package` resolves that package's plugins fresh
+        // (may fetch a git source), so it runs off-thread like the other resolving tools.
+        let env = self.env.clone();
+        blocking(move || {
+            let plugin_roots: Vec<PathBuf> = match req.package.as_deref() {
+                Some(package) => env
+                    .resolve_call(None, Some(package))?
+                    .plugins
+                    .roots
+                    .values()
+                    .cloned()
+                    .collect(),
+                None => env.plugins.roots.values().cloned().collect(),
+            };
+            let all =
+                prova_core::help::entries_with_plugins(plugin_roots.iter().map(|p| p.as_path()));
+            let entries = match req.filter.as_deref().map(str::trim) {
+                Some(n) if !n.is_empty() => prova_core::help::filter(&all, n),
+                _ => all,
+            };
+            let rows: Vec<_> = entries
+                .iter()
+                .map(|e| json!({ "name": e.name, "signature": e.signature, "summary": e.summary }))
+                .collect();
+            Ok((json!({ "entries": rows }), false))
+        })
+        .await
     }
 
     #[tool(

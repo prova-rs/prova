@@ -156,11 +156,18 @@ prova.group("prova mcp", function(g)
     local by_id = mcp({
       { jsonrpc = "2.0", id = 20, method = "tools/call",
         params = { name = "introspect", arguments = { filter = "greet.hello" } } },
+      -- With `package`, the same answer comes from a server started ANYWHERE — the common
+      -- MCP case is a server whose startup cwd is not the package being worked on.
+      { jsonrpc = "2.0", id = 21, method = "tools/call",
+        params = { name = "introspect", arguments = { filter = "greet.hello", package = project } } },
     })
     local result = tool_json(by_id[20], "introspect")
     t:expect(#result.entries, "the plugin stub's entry is served"):equals(1)
     t:expect(result.entries[1].name):equals("greet.hello")
     t:expect(result.entries[1].summary):contains("greeting")
+    local targeted = tool_json(by_id[21], "introspect{package}")
+    t:expect(#targeted.entries, "package-targeted introspection"):equals(1)
+    t:expect(targeted.entries[1].name):equals("greet.hello")
   end)
 
   g:test("topics are also protocol-native resources", function(t)

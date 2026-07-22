@@ -311,9 +311,14 @@ Deviations and remainders:
   tail-shedding into topics remains available but was not forced — the MCP instructions must
   stay self-sufficient. The reference lint covers skill + topics, inline and fenced.
 - **M4 shipped the stub rail only**: a resolved plugin's `library/*.lua` merges into `help()`
-  and MCP `introspect` (read at call time off `RunConfig::help_roots`). Deferred: the
-  facet-inspection fallback for stub-less plugins, a `package` param on `introspect`, and
-  §2.6.5 feature-gated stubs.
+  and MCP `introspect` (read at call time off `RunConfig::help_roots`). `introspect` gained
+  `package` the same day — live-MCP dogfooding showed a server started outside any package
+  (the common Claude Code case) introspects zero plugins without it. Still deferred: the
+  facet-inspection fallback for stub-less plugins, and §2.6.5 feature-gated stubs.
+- **Dogfood polish (same day, live over the reloaded MCP)**: no-package degradation renders
+  ONCE per topic (long guidance on the proofs slot, one short parenthetical elsewhere), empty
+  slots collapse instead of leaving blank-line gaps, and the MCP-spelled degradation teaches
+  `package = "<dir>"` as the first remedy rather than only `prova init`.
 - **M5 deviation**: a declared-but-missing context doc is LOUD in `learn` (marked in the
   listing; exit 2 naming the path on read) but does not hard-error manifest load — breaking
   test runs over a docs file inverted the priority. `[run] context` (wrong placement, TOML

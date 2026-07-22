@@ -34,6 +34,7 @@ function Workspace:exists(rel) end
 --- Remove the workspace tree now (teardown calls this automatically at scope end).
 function Workspace:close() end
 
+--- The `prova.workspace` module: `create` is the whole surface.
 ---@class prova.workspace
 local workspace = {}
 

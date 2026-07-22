@@ -294,14 +294,17 @@ impl RenderEnv {
         if let Some(problem) = &self.problem {
             return format!("A manifest was found but could not be loaded: {problem}");
         }
-        let init = match transport {
-            Transport::Cli => "run `prova init`",
-            Transport::Mcp => "run `prova init` via the shell (no MCP tool scaffolds)",
-        };
-        format!(
-            "No prova.toml found from the working directory — {init} to scaffold a package \
-             (see `prova learn init`), or work from inside one."
-        )
+        match transport {
+            Transport::Cli => "No prova.toml found from the working directory — run `prova init` \
+                               to scaffold a package (see `prova learn init`), or run from \
+                               inside one."
+                .into(),
+            Transport::Mcp => "No prova.toml found from the server's working directory — pass \
+                               `package = \"<dir>\"` on this call to point at one, or shell out \
+                               to `prova init` to scaffold (no MCP tool scaffolds; see \
+                               `learn { topic = \"init\" }`)."
+                .into(),
+        }
     }
 }
 
@@ -396,7 +399,9 @@ fn render_slot(slot: Slot, env: &RenderEnv, transport: Transport) -> String {
             }
             Some(_) => "**Declared plugins**: none — add them under `[plugins]` in the manifest."
                 .into(),
-            None => env.no_package_line(transport),
+            // The long no-package guidance renders once, on the ProofPaths slot; here one short
+            // line keeps a doctrine topic readable outside a package.
+            None => "(no package in reach — declared plugins unknown)".into(),
         },
         Slot::Topologies => match &env.package {
             Some(p) if !p.resolved.topologies.is_empty() => {
@@ -528,6 +533,11 @@ pub fn render(topic: Topic, env: &RenderEnv, transport: Transport) -> String {
         }
     }
     out.push_str(rest);
+    // Empty slot renders leave runs of blank lines behind — collapse them so a degraded topic
+    // reads clean, not gappy.
+    while out.contains("\n\n\n") {
+        out = out.replace("\n\n\n", "\n\n");
+    }
     out
 }
 
@@ -695,6 +705,16 @@ mod tests {
                 assert!(
                     !text.contains("{{"),
                     "topic `{}` leaked an unrendered slot",
+                    topic.key()
+                );
+                assert!(
+                    !text.contains("\n\n\n"),
+                    "topic `{}` renders gappy (empty slots must collapse)",
+                    topic.key()
+                );
+                assert!(
+                    text.matches("No prova.toml found").count() <= 1,
+                    "topic `{}` repeats the no-package guidance",
                     topic.key()
                 );
                 let lines = text.lines().count();
