@@ -1449,6 +1449,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         manifest_color,
         manifest_quiet,
         manifest_gha,
+        manifest_junit,
         declared,
         mut plugins_resolved,
         sources,
@@ -1460,6 +1461,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             explicit_paths,
             cli_jobs.unwrap_or(1),
             cli_format.unwrap_or(Format::Console),
+            None,
             None,
             None,
             None,
@@ -1480,7 +1482,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         };
         match resolve_from_manifest(
             home,
-            profile,
+            profile.clone(),
             cli_jobs,
             cli_format,
             cli_config,
@@ -1499,6 +1501,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                 r.color,
                 r.quiet,
                 r.github,
+                r.junit,
                 r.suites,
                 r.plugins,
                 r.sources,
@@ -1623,11 +1626,32 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         Format::Json => Box::new(JsonReporter::new(std::io::stdout())),
         Format::Tap => Box::new(TapReporter::new(std::io::stdout())),
     }];
-    if let Some(path) = &cli_junit {
+    // `--junit PATH` wins over the manifest's `junit` key (a home-relative path, so a CI profile
+    // needs no extra flag). The suite is named after the package (the home directory's basename),
+    // and run metadata rides along as `<properties>`.
+    let junit_path: Option<PathBuf> = cli_junit
+        .as_ref()
+        .map(PathBuf::from)
+        .or_else(|| manifest_junit.as_ref().map(|p| base_dir.join(p)));
+    if let Some(path) = &junit_path {
+        let suite_name = home
+            .as_ref()
+            .and_then(|h| h.dir.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("prova");
+        let mut properties = vec![
+            ("prova.version".to_string(), PROVA_VERSION.to_string()),
+            ("prova.jobs".to_string(), jobs.to_string()),
+        ];
+        if let Some(name) = &profile {
+            properties.push(("prova.profile".to_string(), name.clone()));
+        }
         match std::fs::File::create(path) {
-            Ok(file) => sinks.push(Box::new(JUnitReporter::new(file, "prova"))),
+            Ok(file) => sinks.push(Box::new(
+                JUnitReporter::new(file, suite_name).with_properties(properties),
+            )),
             Err(e) => {
-                eprintln!("prova: cannot open --junit file {path:?}: {e}");
+                eprintln!("prova: cannot open junit report file {path:?}: {e}");
                 return ExitCode::from(2);
             }
         }
@@ -1759,6 +1783,8 @@ struct ManifestRun {
     color: Option<report::ColorMode>,
     quiet: Option<bool>,
     github: Option<report::GhaMode>,
+    /// Manifest `junit` (home-relative path) — `--junit` wins.
+    junit: Option<String>,
     suites: BTreeMap<String, SuiteDecl>,
     plugins: plugins::ResolvedPlugins,
     sources: BTreeMap<String, String>,
@@ -2216,6 +2242,7 @@ fn resolve_from_manifest(
         color,
         quiet: resolved.quiet,
         github,
+        junit: resolved.junit,
         suites: resolved.suites,
         plugins: plugins_resolved,
         sources: resolved.sources,

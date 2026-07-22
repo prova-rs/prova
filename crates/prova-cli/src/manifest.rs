@@ -10,6 +10,7 @@
 //! color  = "auto"               # "auto" | "always" | "never" (console format only)
 //! quiet  = false                # true → only failures, the recap, and the summary
 //! github = "auto"               # "auto" | "on" | "off" — GHA annotations + step summary
+//! junit  = "target/prova.xml"   # also write a JUnit XML report here (home-relative)
 //!
 //! [run.env]                     # environment for the run
 //! LOG = "info"
@@ -315,6 +316,9 @@ pub struct Profile {
     /// GitHub Actions sink: `"auto"` (default; on exactly when `GITHUB_ACTIONS=true`) | `"on"` |
     /// `"off"`. CLI `--gha` and `PROVA_GHA` win.
     pub github: Option<String>,
+    /// Also write a JUnit XML report to this home-relative path — the manifest form of `--junit`,
+    /// so a CI profile needs no extra flag. CLI `--junit` wins.
+    pub junit: Option<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
     /// Profile-scoped plugins (`[profiles.<name>.plugins]`), overlaid on the package-wide
@@ -357,6 +361,7 @@ pub struct Resolved {
     pub color: Option<String>,
     pub quiet: Option<bool>,
     pub github: Option<String>,
+    pub junit: Option<String>,
     pub env: BTreeMap<String, String>,
     /// Explicitly-declared suites (`[suites.*]`), run in addition to the discovered `proofs`.
     pub suites: BTreeMap<String, SuiteDecl>,
@@ -430,6 +435,9 @@ impl Manifest {
         let github = overlay
             .and_then(|p| p.github.clone())
             .or_else(|| base.github.clone());
+        let junit = overlay
+            .and_then(|p| p.junit.clone())
+            .or_else(|| base.junit.clone());
 
         let mut env = base.env.clone();
         if let Some(p) = overlay {
@@ -468,6 +476,7 @@ impl Manifest {
             color,
             quiet,
             github,
+            junit,
             env,
             suites: self.suites.clone(),
             plugins,
@@ -525,6 +534,7 @@ proofs = ["tests/smoke"]
                 color: None,
                 quiet: None,
                 github: None,
+                junit: None,
                 env: env(&[("LOG", "info")]),
                 suites: BTreeMap::new(),
                 plugins: BTreeMap::new(),

@@ -277,6 +277,7 @@ struct JUnitCase {
     outcome: Outcome,
     duration: Duration,
     message: Option<String>,
+    assertions: usize,
     /// Source location of the declaration, when the leaf has file backing — emitted as `file`/
     /// `line` attributes, which is how CI dashboards link a case back to its source.
     file: Option<String>,
@@ -289,6 +290,11 @@ pub struct JUnitReporter<W: Write> {
     writer: W,
     suite_name: String,
     cases: Vec<JUnitCase>,
+    /// Wall-clock start, captured on `RunStarted` → the `<testsuite timestamp="...">` attribute.
+    started: Option<std::time::SystemTime>,
+    /// `<properties>` for the suite (e.g. `prova.version`, `prova.jobs`) — run metadata dashboards
+    /// display but the schema has no dedicated attribute for.
+    properties: Vec<(String, String)>,
 }
 
 impl<W: Write> JUnitReporter<W> {
@@ -298,7 +304,15 @@ impl<W: Write> JUnitReporter<W> {
             writer,
             suite_name: suite_name.into(),
             cases: Vec::new(),
+            started: None,
+            properties: Vec::new(),
         }
+    }
+
+    /// Attach `<properties>` entries emitted on the `<testsuite>`.
+    pub fn with_properties(mut self, properties: Vec<(String, String)>) -> Self {
+        self.properties = properties;
+        self
     }
 }
 
@@ -341,14 +355,17 @@ fn xml_escape(s: &str) -> String {
 impl<W: Write> Reporter for JUnitReporter<W> {
     fn event(&mut self, event: &Event) {
         match event {
+            Event::RunStarted => {
+                self.started = Some(std::time::SystemTime::now());
+            }
             Event::NodeFinished {
                 path,
                 outcome,
                 duration,
+                assertions,
                 message,
                 file,
                 line,
-                ..
             } => {
                 let (classname, name) = split_classname(path, &self.suite_name);
                 self.cases.push(JUnitCase {
@@ -357,6 +374,7 @@ impl<W: Write> Reporter for JUnitReporter<W> {
                     outcome: *outcome,
                     duration: *duration,
                     message: message.map(str::to_string),
+                    assertions: *assertions,
                     file: file.map(str::to_string),
                     line: *line,
                 });
@@ -365,30 +383,49 @@ impl<W: Write> Reporter for JUnitReporter<W> {
                 let w = &mut self.writer;
                 let secs = |d: Duration| format!("{:.3}", d.as_secs_f64());
                 let total = self.cases.len();
+                // `errors="0"` on both elements: prova reports every non-pass as a <failure> (no
+                // <error> distinction yet), but dashboards expect the attribute to exist.
                 let _ = writeln!(w, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
                 let _ = writeln!(
                     w,
-                    "<testsuites tests=\"{}\" failures=\"{}\" skipped=\"{}\" time=\"{}\">",
+                    "<testsuites tests=\"{}\" failures=\"{}\" errors=\"0\" skipped=\"{}\" time=\"{}\">",
                     total,
                     summary.failed,
                     summary.skipped,
                     secs(summary.duration)
                 );
+                let timestamp = self
+                    .started
+                    .map(|t| format!(" timestamp=\"{}\"", humantime::format_rfc3339_seconds(t)))
+                    .unwrap_or_default();
                 let _ = writeln!(
                     w,
-                    "  <testsuite name=\"{}\" tests=\"{}\" failures=\"{}\" skipped=\"{}\" time=\"{}\">",
+                    "  <testsuite name=\"{}\" tests=\"{}\" failures=\"{}\" errors=\"0\" skipped=\"{}\" time=\"{}\"{timestamp}>",
                     xml_escape(&self.suite_name),
                     total,
                     summary.failed,
                     summary.skipped,
                     secs(summary.duration)
                 );
+                if !self.properties.is_empty() {
+                    let _ = writeln!(w, "    <properties>");
+                    for (name, value) in &self.properties {
+                        let _ = writeln!(
+                            w,
+                            "      <property name=\"{}\" value=\"{}\"/>",
+                            xml_escape(name),
+                            xml_escape(value)
+                        );
+                    }
+                    let _ = writeln!(w, "    </properties>");
+                }
                 for c in &self.cases {
                     let mut head = format!(
-                        "    <testcase classname=\"{}\" name=\"{}\" time=\"{}\"",
+                        "    <testcase classname=\"{}\" name=\"{}\" time=\"{}\" assertions=\"{}\"",
                         xml_escape(&c.classname),
                         xml_escape(&c.name),
-                        secs(c.duration)
+                        secs(c.duration),
+                        c.assertions
                     );
                     if let Some(file) = &c.file {
                         head.push_str(&format!(" file=\"{}\"", xml_escape(file)));
@@ -600,10 +637,10 @@ mod tests {
 
         // Document + suite totals.
         assert!(
-            xml.contains(r#"<testsuites tests="3" failures="1" skipped="1""#),
+            xml.contains(r#"<testsuites tests="3" failures="1" errors="0" skipped="1""#),
             "{xml}"
         );
-        assert!(xml.contains(r#"<testsuite name="prova" tests="3" failures="1" skipped="1""#));
+        assert!(xml.contains(r#"<testsuite name="prova" tests="3" failures="1" errors="0" skipped="1""#));
         // Path split: ancestors → classname, leaf → name.
         assert!(
             xml.contains(r#"classname="orders" name="creates a row""#),
@@ -630,16 +667,43 @@ mod tests {
             xml.contains(r#"<skipped message="docker unavailable"/>"#),
             "{xml}"
         );
-        // Passed case is a self-closing testcase (no children), carrying its source location.
+        // Passed case is a self-closing testcase (no children), carrying its assertion count and
+        // source location.
         assert!(
             xml.contains(
-                r#"name="creates a row" time="0.002" file="/proj/proofs/orders_test.lua" line="12"/>"#
+                r#"name="creates a row" time="0.002" assertions="1" file="/proj/proofs/orders_test.lua" line="12"/>"#
             ),
             "{xml}"
         );
         // A leaf without file backing omits the location attributes entirely.
         assert!(
-            xml.contains(r#"name="top-level check" time="0.000">"#),
+            xml.contains(r#"name="top-level check" time="0.000" assertions="0">"#),
+            "{xml}"
+        );
+        // Run metadata: a timestamp captured at RunStarted, and errors="0" for dashboards.
+        assert!(xml.contains(r#" timestamp=""#), "{xml}");
+        assert!(xml.contains(r#" errors="0""#), "{xml}");
+    }
+
+    #[test]
+    fn junit_emits_suite_properties_when_attached() {
+        let mut buf: Vec<u8> = Vec::new();
+        {
+            let mut r = JUnitReporter::new(&mut buf, "prova").with_properties(vec![
+                ("prova.version".into(), "0.4.0".into()),
+                ("prova.profile".into(), "ci <&>".into()),
+            ]);
+            drive(&mut r);
+        }
+        let xml = String::from_utf8(buf).unwrap();
+        assert!(xml.contains("<properties>"), "{xml}");
+        assert!(
+            xml.contains(r#"<property name="prova.version" value="0.4.0"/>"#),
+            "{xml}"
+        );
+        // Property values are XML-escaped like everything else.
+        assert!(
+            xml.contains(r#"<property name="prova.profile" value="ci &lt;&amp;&gt;"/>"#),
             "{xml}"
         );
     }

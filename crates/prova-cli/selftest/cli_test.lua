@@ -87,6 +87,25 @@ prova.test("--junit writes a JUnit XML file alongside console output", function(
   t:expect(xml):contains('file="')
   t:expect(xml):contains('mixed.lua')
   t:expect(xml):contains('line="')
+  -- Run metadata: a wall-clock timestamp, errors attr, per-case assertion counts, properties.
+  t:expect(xml):contains('timestamp="')
+  t:expect(xml):contains('errors="0"')
+  t:expect(xml):contains('assertions="')
+  t:expect(xml):contains('name="prova.version"')
+end)
+
+prova.test("a manifest junit key writes the report with the package's suite name", function(t)
+  local dir = fs.tempdir()
+  fs.write(dir .. "/prova.toml", '[run]\nproofs = ["proofs"]\njunit = "results.xml"\n')
+  fs.write(dir .. "/proofs/one_test.lua",
+    'prova.test("adds", function(t) t:expect(1+1):equals(2) end)\n')
+  local r = shell.run(prova_bin, { cwd = dir })
+  t:expect(r.code):equals(0)
+  local xml = fs.read(dir .. "/results.xml")
+  t:expect(xml):contains("<testsuites")
+  -- The suite is named after the package (the home directory's basename), not a hardcoded "prova".
+  local base = dir:match("([^/\\]+)$")
+  t:expect(xml):contains('<testsuite name="' .. base .. '"')
 end)
 
 prova.test("GitHub Actions mode: annotations + step summary, honoring --gha off", function(t)
