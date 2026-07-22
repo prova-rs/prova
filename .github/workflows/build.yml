@@ -39,7 +39,9 @@ jobs:
         run: cargo build
 
       - name: Test
-        run: cargo test
+        # --no-fail-fast: one run reports EVERY failing binary. Windows suites were being
+        # discovered one 9-minute cycle at a time as each fail-fast stop unmasked the next.
+        run: cargo test --no-fail-fast
         env:
           # Opt-in for the suites that bind 0.0.0.0 to prove the cross-substrate mock vantage
           # (mock_network_vantage, c2_e2e). Off by default so a local `cargo test` never trips the
