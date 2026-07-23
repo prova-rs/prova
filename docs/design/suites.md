@@ -62,7 +62,7 @@ suite.config{ name = "grpc", requires = { "docker" } }
 
 -- One Postgres for every file in the suite; the container stays up for the suite's lifetime.
 prova.fixture("pg", Scope.Suite, function(ctx)
-  return db.postgres(ctx, { database = "orders" }).conn   -- a live connection, cached in the suite state
+  return require("postgres").container(ctx, { database = "orders" }).client  -- live, cached in the suite state
 end)
 ```
 

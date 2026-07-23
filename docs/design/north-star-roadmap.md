@@ -40,8 +40,8 @@ fixture so you can add custom tests / the runtime tier alongside). *Verified aga
 p6m-archetypes is the impetus, **not the ceiling**. The goal is a general-purpose **black-box /
 acceptance / integration** framework people reach for in a **cloud-oriented, polyglot world** — where
 today they fall back to bash/Python/Go glue. Not a unit-test framework (pytest/JUnit win there); the
-wedge is out-of-process, environment-level testing where the batteries (`docker`, `db`, `http`,
-`grpc`, `yaml`, fixtures, resources, `requires`-gating) and the single-binary polyglot-agnostic
+wedge is out-of-process, environment-level testing where the batteries (`docker`, `http`,
+`grpc`, `graphql`, `yaml`, `sqlite`, DB/broker plugins, fixtures, resources, `requires`-gating) and the single-binary polyglot-agnostic
 packaging are the differentiator. Every DX decision serves *easy stuff easy, hard stuff possible* for
 that general audience.
 
@@ -71,12 +71,15 @@ The **spine and most capabilities are done**. Twelve+ increments, each with prov
   `has_length`, fs `exists/is_file/is_dir/is_empty`, …) + soft `expect_all`.
 - Capability modules: **`shell`** (`run` + `spawn`→managed `Process`), **`fs`**, **`http`**
   (`get/post/put/delete/wait_for`, `:json()`), **`docker`** (typed **bollard** client — pull/run/
-  port-map/logs/exec/stop, `requires`-gated), **`db`** (sqlx `Any` — one API over Postgres/MySQL/
-  SQLite by URL scheme), and the **`archetect`** plugin (in-process render, `prova-archetect` crate).
+  port-map/logs/exec/stop, `requires`-gated), the DB layer (originally a `db` module — sqlx `Any`,
+  one API by URL scheme — since **extracted**: `sqlite` stays built in, server DBs are the
+  `postgres`/`mysql` plugins; see `namespacing.md`), and the **`archetect`** plugin (in-process
+  render, `prova-archetect` crate).
 - Product surface: `prova.toml` **suite manifest** (profiles + env) + composite **GitHub Action**;
   **self-tests** (prova acceptance-tests its own CLI — caught a real `--format` bug).
 - **Verified against a live daemon (OrbStack):** whoami HTTP, redis exec/logs, and a **real Postgres
-  round-trip** (`docker.run{postgres}` + `db.connect` + query) — the North Star data layer, leak-free.
+  round-trip** (`docker.run{postgres}` + a DB connect + query; written pre-extraction as `db.connect`,
+  today `require("postgres")`) — the North Star data layer, leak-free.
 
 **North Star arc status:** render ✅ · assert layout ✅ · boot app (`shell.spawn`) ✅ · provision deps
 (`docker`) ✅ · drive HTTP ✅ · **query DB ✅** · **drive gRPC ✅** · **single-service assembly ✅** ·
@@ -96,7 +99,7 @@ answer, and that is what the topology arc is for. Plan + status: `docs/plans/moc
 (`examples/service_grpc_postgres_test.lua`): render `rust-grpc-service-archetype@dev` with
 `persistence=PostgreSQL` → `docker.run` Postgres → `cargo build` (~15s warm) → `shell.spawn` the binary
 wired via `APP_PERSISTENCE__URL`/`APP_SERVER__PORT` → `grpc.wait_for` → `grpc.call_status` the service
-→ `db.connect` the *same* Postgres and assert migrations ran. **31.8s, green, leak-free** (async
+→ connect to the *same* Postgres (today: `require("postgres")`) and assert migrations ran. **31.8s, green, leak-free** (async
 `ctx:defer` stops the container + process). This is the tier the pytest manifest structurally cannot
 express — and it **exposed that the archetype is a scaffold** (methods return `Unimplemented`, migration
 empty): *prova running the service is what reveals "renders + compiles" was hiding a hollow service.*
@@ -190,10 +193,11 @@ exactly the "batteries-included, no capability ceilings" pitch. Implemented in `
 
 ### Phase 2 — Compose the North Star (the capstone)
 
-**3. Ephemeral-infra recipes** — Postgres/MySQL/Pulsar as reusable fixtures. Mostly composition of
-   existing `docker` + `db`, but capture the readiness patterns as helpers:
+**3. Ephemeral-infra recipes** — Postgres/MySQL/Pulsar as reusable fixtures. Landed as the
+   plugin ecosystem (`prova-postgres`/`prova-mysql`/… over `prova.containerized`), which captures
+   the readiness patterns:
    - Postgres/MySQL: **connect-retry readiness** (they restart once at init — `pg_isready`/port are
-     false-positives; retry `pcall(db.connect, url)` until it holds — see `examples/db_postgres_test.lua`).
+     false-positives; retry the real connect until it holds — the plugins' `container()` does this).
    - **Pulsar:** `docker.run{ image = "apachepulsar/pulsar", ... }` running `bin/pulsar standalone`;
      readiness via `wait.log` (e.g. "messaging service is ready") or HTTP admin `:8080/admin/v2/...`.
      Producing/consuming: either (a) a small **`pulsar` module** (Rust `pulsar` crate) with
@@ -223,7 +227,8 @@ exactly the "batteries-included, no capability ceilings" pitch. Implemented in `
 
 ### Phase 3 — Scale & polish (daemon-independent, any order)
 
-6. **`graphql` module** (same async-module shape as `http`/`grpc`).
+6. **`graphql` module — DONE.** Same async-module shape as `http`/`grpc` (`graphql.client{ url }`
+   with `query`/`execute`); the network-interface trio is complete.
 7. **Snapshots — Phase A DONE (core); B/C in progress.** `t:expect(str):matches_snapshot(name?)`
    compares against a `.snap` colocated with the test (`<dir>/snapshots/<stem>__<key>.snap`);
    `--update-snapshots`/`-u` (re)writes. Missing → fail + reviewable `.snap.new`; mismatch → fail with
@@ -282,13 +287,13 @@ exactly the "batteries-included, no capability ceilings" pitch. Implemented in `
 - **Async boundary discipline.** Extract owned values off the Lua boundary *before* an `await`; never
   hold a Lua borrow or `RefCell` guard across `.await`. Async mlua methods: `add_async_method(_mut)`,
   `Fn(Lua, UserDataRef(Mut)<T>, A) -> Future + 'static` — clone cheap `Rc`/handles into the future.
-- **`db.connect` / `docker.run` / any async module call must run in a fixture or test body**, never at
+- **Any async module call (a DB connect, `docker.run`, …) must run in a fixture or test body**, never at
   file top level (collection runs synchronously, outside the runtime).
 - **DB placeholders are backend-native** (`$1` Postgres, `?` MySQL/SQLite). sqlx `Any` reports
   **no type kind for computed columns** (SQLite `count(*)`) → `extract_untyped` probe fallback.
 - **Container/DB readiness = retry the real thing**, not `pg_isready`/port-open (init restarts).
 - **Docker `:exec` needs a shell in the image** (`sh -c`); `traefik/whoami` is `FROM scratch`.
-- Feature flags: `http`, `db`, `docker` are default-on; the crate builds with `--no-default-features`.
+- Feature flags: `http`, `docker` (and friends) are default-on; the crate builds with `--no-default-features`.
 - **Verify every change:** `cargo test` (39 tests, some Docker/cargo-gated), `cargo clippy --all-targets`
   (zero warnings), `lua-language-server --check "$(pwd)"` (LuaLS-clean), and run touched
   `examples/*.lua` via the CLI. Keep the LuaCATS stub (`library/`) in lockstep with the runtime.
@@ -296,7 +301,7 @@ exactly the "batteries-included, no capability ceilings" pitch. Implemented in `
 ## Resume checklist
 
 1. Read auto-memory `prova-test-framework`; skim this file + `architecture.md` "Current status".
-2. `cd /Users/jimmie/personal/archetect/prova && cargo test && cargo clippy --all-targets` — green baseline.
-3. Confirm Docker: `docker info`. If up, the `docker`/`db_postgres` tests run for real.
+2. `cd /Users/jimmie/personal/prova-rs/prova-agents && cargo xtask test && cargo xtask clippy` — green baseline.
+3. Confirm Docker: `docker info`. If up, the `docker`/postgres-plugin tests run for real.
 4. Pick the next increment (Phase 1 → `grpc`). Make the invocation-strategy decision, build, verify,
    commit with the established message style, update memory + `architecture.md`.

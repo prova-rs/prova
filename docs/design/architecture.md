@@ -5,6 +5,8 @@
 > output as a plugin surface, and the frontend protocol that lets a GUI/IDE drive the same core
 > the CLI does. Status: **early implementation** (`crates/prova-core`). Not all of this is built
 > yet; what is built is noted, and everything here is a decision the built parts already respect.
+> For live, package-computed facts prefer the autodidact rails: `prova learn` (topics),
+> `prova.help()` / MCP `introspect` (API shapes).
 
 ## Principles (why the engine is shaped this way)
 
@@ -125,9 +127,9 @@ The core stays small; capability grows at the edges:
 `Container`, the same managed-lifecycle pattern `shell.spawn`'s `Process` established), paired with
 `requires` gating so a suite skips where Docker is absent. **`grpc`** is now built too — a native,
 dynamic, reflection-driven client (no `grpcurl`, no `.proto` files), the same async-module shape as
-`http` (call a method, assert on the response/status). Still planned:
-
-- The network-interface trio is complete: **`http`** (REST, + `http.client`), **`grpc`** (native/dynamic), **`graphql`** (`graphql.client` with `query`/`execute`).
+`http` (call a method, assert on the response/status). The network-interface trio is complete:
+**`http`** (REST, + `http.client`), **`grpc`** (native/dynamic), **`graphql`** (`graphql.client`
+with `query`/`execute`).
 
 The end-to-end arc the modules serve is now real through the network-drive step: **render the
 project → assert the layout → boot the app (`shell.spawn`) → spin up its dependencies (`docker`) →
@@ -334,7 +336,8 @@ left open by good architecture; we are not walking through it.
   directories**, `--list` / `--format json` / `--jobs N`.
 - **Package manifest** (`prova.toml`) + **CI**: `prova` with no args runs the suite declared in
   `prova.toml` (`[run]` = default profile; `[profiles.<name>]` overlays via `--profile`); a profile
-  sets `paths`/`jobs`/`format`/`env`. CLI flags override the manifest; explicit path args bypass it.
+  sets `proofs`/`jobs`/`format`/`env` (full schema: [`manifest.md`](manifest.md)). CLI flags
+  override the manifest; explicit path args bypass it.
   The `env` table is applied before the run, so the *same* suite targets ephemeral containers
   locally or CI-provided/live services just by switching profile. A composite GitHub Action
   ([`prova-rs/run-action`](https://github.com/prova-rs/run-action)) installs a released binary and
@@ -352,8 +355,9 @@ prova useful beyond testing itself:
 
 1. **Resource modules** — Redis (`cache`), Kafka/Pulsar (`messaging`), S3/Azure-blob (object storage):
    the remaining archetype resource types, as `docker`-provisioned ephemeral deps + thin client
-   modules. *(The network-interface trio `http`/`grpc`/`graphql` is done; `db` covers Postgres/MySQL;
-   `net.free_port` and `http.client` landed.)*
+   modules. *(The network-interface trio `http`/`grpc`/`graphql` is done; server databases are
+   plugins — `require("postgres")`/`require("mysql")` over the extracted `db` core, `sqlite` stays
+   built in (see [`namespacing.md`](namespacing.md)); `net.free_port` and `http.client` landed.)*
 2. **Snapshots** — `matches_snapshot`, `.snap` files + `--update-snapshots`.
 5. **Flow ergonomics — resolved.** `test_each` + `describe` shipped. `f:use(fixture)` builder sugar
    and parametrized fixtures (`ctx:param`) were both **dropped** as magic that fights the explicit,
@@ -372,7 +376,8 @@ consumer) from archetypes; provision the DBs, a Pulsar cluster/topic, and dynami
 containers; boot both apps wired to those endpoints; then drive gRPC + REST and query both databases
 to assert cross-service state. Every ingredient is a module behind the plugin boundary — `archetect`
 (generate, or generate scaffolding on the fly), `docker` (ephemeral deps), `shell.spawn` (boot),
-`http`/`grpc` (drive), `db` (assert state) — composed by fixtures and gated by `requires`. The same
+`http`/`grpc` (drive), the `postgres`/`mysql` plugins (assert state) — composed by fixtures and
+gated by `requires`. The same
 suite can instead point at a **dev Kubernetes cluster** (skip the containers, set endpoints via a
 manifest profile's `env`) — local, CI, and environment testing from one description.
 

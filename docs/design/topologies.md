@@ -21,17 +21,17 @@ substrate**: *provision + wire + drive an ephemeral topology*. Asserting over th
 thing you can do with it; **inhabiting** it (standing it up to develop against) is another. Same
 substrate, different terminal verb.
 
-## The Holy Grail: `prova up` and `prova test` on the same definition
+## The Holy Grail: `prova up` and `prova` on the same definition
 
 > **One topology definition. Multiple consumers.**
 
 You describe a topology once — resources, wiring, how they're driven — in Lua. Different verbs consume
 the *same* definition:
 
-- **`prova test`** — bring it up, drive it, **assert**, tear down. *(today)*
+- **`prova`** (the run path) — bring it up, drive it, **assert**, tear down. *(today)*
 - **`prova up`** — bring it up, print the endpoints, **hold it running** for you to develop against,
   tear down on signal. *(the reveal)*
-- **`prova watch`** — the above plus a live re-apply loop. *(further out; Tilt-ish, not day one)*
+- **`prova watch`** — the above plus a live re-apply loop. *(done — see below)*
 
 The point is not "it does both." It is that the **same definition powers your tests and your dev
 environment, so they cannot drift.** Today a compose file, a testcontainers setup, k8s manifests, and
@@ -113,7 +113,7 @@ test scope; `prova up orders` instantiates the identical object under a held env
 
 The definition is written once; the **verb** picks the port strategy, so the seam stays clean:
 
-1. **Testing** — random host ports (parallel-safe). `prova` / `prova test`.
+1. **Testing** — random host ports (parallel-safe). `prova`.
 2. **Inhabited, random** — `prova up`/`start` provision on random host ports and print each endpoint,
    so many topologies coexist without collisions.
 3. **Inhabited, fixed** — `prova up`/`start --fixed` pin each published port to its canonical container

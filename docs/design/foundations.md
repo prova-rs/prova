@@ -5,6 +5,10 @@
 > one-stop acceptance-testing tool or just adds to the pile. For the thesis behind the
 > *practice* — why these primitives matter more when an agent holds the pen, and why "done"
 > means a green proof — see [`proof-driven-development.md`](proof-driven-development.md).
+>
+> Reading is optional; the binary teaches itself. `prova learn` is the live topic catalog
+> (computed for your package), `prova.help()` / MCP `introspect` the API surface, and
+> `prova skill --install` hands your agent the whole practice.
 
 ## Thesis: orthogonal primitives, not a feature pile
 
@@ -62,8 +66,8 @@ Single tags are not enough; the winning capability is a **boolean expression lan
 tags (JUnit5 tag expressions, pytest `-m "slow and not network"`):
 
 ```
-prova test -m "acceptance and not slow"
-prova test -m "(smoke or regression) and not offline"
+prova --tags acceptance,!slow          # today: any-match lists with ! excludes
+prova --tags smoke,regression,!offline  # full boolean expressions remain the aspiration
 ```
 
 - **Tags attach at every level** (suite/file/`describe`/test) and **inherit downward**: tag

@@ -95,16 +95,18 @@ Nothing else is generated inside the package. `.luarc.json` names its annotation
 
 ```json
 "workspace.library": [
-  "~/.cache/prova/annotations/0.2.10",                        // core stubs: one per VERSION
+  "~/.local/share/prova/lua/annotations",                     // core stubs: ONE stable dir, .version-stamped
   "~/.cache/prova/plugins/…prova-postgres/tag-main/library"   // the checkout itself
 ]
 ```
 
 ```
+~/.local/share/prova/
+└── lua/annotations/                 ← core stubs: one STABLE dir shared by every project; a
+    ├── prova.lua                      `.version` stamp refreshes contents on upgrade, so the
+    ├── modules.lua                    `.luarc.json` entry is written once and never churns
+    └── .version
 ~/.cache/prova/
-├── annotations/<version>/           ← core stubs, shared by EVERY project on the machine
-│   ├── prova.lua
-│   └── modules.lua
 └── plugins/<url>/<ref>/library/     ← the plugin checkout, fetched once, shared by all projects
 ```
 
@@ -194,7 +196,7 @@ package has opted into prova:
 Renders a catalog archetype into the current directory, then wires IDE support as a finishing step.
 The archetype (not a flag) owns the layout — where `prova.toml` lands, what the proof dir is named —
 so `prova init <key>` scaffolds whatever that entry produces; `--no-ide` (alias `--no-luals`) skips
-the wiring. The catalog is prova's built-in `default` plus `[init.*]` from `~/.config/prova/config.toml`;
+the wiring. The catalog is prova's built-ins `project` and `plugin` plus `[init.*]` from `~/.config/prova/config.toml`;
 `prova init` with no key picks from it interactively, `prova init --list` prints it. It refuses to run
 if any manifest location already exists — it never clobbers an existing layout. IDE wiring itself is
 also available on its own as `prova ide setup` (see above).
