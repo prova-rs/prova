@@ -238,3 +238,59 @@ fn offline_uses_cache_without_network() {
 
     std::fs::remove_dir_all(&root).ok();
 }
+
+/// A moved TAG is followed once the TTL lapses — the ecosystem's floating-major convention
+/// (`tag = "v1"` tracking the latest v1.x.y release). A tag is a symbolic ref, not a
+/// content-addressed pin, so it takes the same cheap hash gate as a branch.
+#[cfg_attr(windows, ignore = "local-path git fetch hits ERROR_ACCESS_DENIED on Windows CI runners")]
+#[test]
+fn moved_tag_pin_is_followed_past_ttl() {
+    let root = scratch("tagmove");
+    let remote = root.join("remote");
+    let project = root.join("project");
+    let home = root.join("home");
+    init_plugin_remote(&remote, "one");
+    git(&["tag", "v1"], &remote);
+
+    // Pin the plugin by TAG, with a zero interval so every run is past the TTL.
+    std::fs::create_dir_all(project.join("tests")).unwrap();
+    std::fs::write(
+        project.join("prova.toml"),
+        format!(
+            "[run]\nproofs = [\"tests\"]\n\n[updates]\ninterval = \"0s\"\n\n\
+             [plugins]\ngreet = {{ git = \"{}\", tag = \"v1\" }}\n",
+            remote.to_string_lossy().replace('\\', "/"),
+        ),
+    )
+    .unwrap();
+    let test_for = |expect: &str| {
+        format!(
+            "local greet = require(\"greet\")\n\
+             prova.test(\"tag\", function(t)\n\
+             \x20 t:expect(greet.tag()):equals(\"{expect}\")\n\
+             end)\n",
+        )
+    };
+    std::fs::write(project.join("tests").join("greet_test.lua"), test_for("one")).unwrap();
+
+    let a = run_prova(&project, &home, &[]);
+    assert!(a.status.success(), "first run should pass on 'one'\n{}", String::from_utf8_lossy(&a.stderr));
+
+    // The floating-major move: v1 re-pointed at a new commit.
+    move_plugin_remote(&remote, "two");
+    git(&["tag", "-f", "v1"], &remote);
+    std::fs::write(project.join("tests").join("greet_test.lua"), test_for("two")).unwrap();
+
+    let b = run_prova(&project, &home, &[]);
+    let b_err = String::from_utf8_lossy(&b.stderr);
+    assert!(b.status.success(), "moved v1 should be followed past the TTL\n{b_err}");
+    assert!(b_err.contains("updating plugin"), "the follow must announce itself\n{b_err}");
+
+    // Unmoved: the probe matches and stays silent.
+    let c = run_prova(&project, &home, &[]);
+    let c_err = String::from_utf8_lossy(&c.stderr);
+    assert!(c.status.success(), "{c_err}");
+    assert!(!c_err.contains("updating plugin"), "an unmoved tag must be silent\n{c_err}");
+
+    std::fs::remove_dir_all(&root).ok();
+}

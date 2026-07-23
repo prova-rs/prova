@@ -603,9 +603,9 @@ fn module_file(
 
 /// Resolve a git plugin through the content-addressed cache, returning the immutable tree dir to
 /// require from and the session lease (held for the run). Freshness is the shared crate's gate: a
-/// `tag`/`rev` pin is immutable and never re-probed; a `branch` (or the default branch) is TTL-gated
-/// and, once stale, confirmed against the remote hash before any pull. Prefer `tag`/`rev` for
-/// reproducibility.
+/// bare `rev` pin is content-addressed and never re-probed; a `tag` or `branch` (or the default
+/// branch) is TTL-gated and, once stale, confirmed against the remote hash before any pull — so a
+/// floating major (`@v1`) follows its releases automatically. Pin a `rev` for reproducibility.
 fn fetch_git(
     url: &str,
     detail: &PluginDetail,
@@ -614,9 +614,12 @@ fn fetch_git(
 ) -> Result<(PathBuf, Lease), String> {
     use archetect_git_cache::{FetchOptions, Freshness, RefPin};
 
-    // Map the pin to (immutability, ref). A tag/rev never moves; a branch does.
+    // Map the pin to (immutability, ref). Only a bare `rev` is content-addressed and immutable;
+    // tags are symbolic refs like branches — the ecosystem's floating majors (`@v1` tracking the
+    // latest v1.x.y) depend on them moving — so both take the cheap ls-remote hash gate once the
+    // TTL lapses, pulling only when the remote oid actually differs.
     let (pin, gitref): (RefPin, Option<&str>) = match (&detail.tag, &detail.branch, &detail.rev) {
-        (Some(t), _, _) => (RefPin::Immutable, Some(t.as_str())),
+        (Some(t), _, _) => (RefPin::Mutable, Some(t.as_str())),
         (_, Some(b), _) => (RefPin::Mutable, Some(b.as_str())),
         (_, _, Some(r)) => (RefPin::Immutable, Some(r.as_str())),
         _ => (RefPin::Mutable, None),

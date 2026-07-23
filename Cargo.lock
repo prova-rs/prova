@@ -134,8 +134,8 @@ dependencies = [
 
 [[package]]
 name = "archetect-aml"
-version = "3.3.0"
-source = "git+https://github.com/archetect/archetect.git?tag=v3.3.0#36204d369a6d680a379026fe82e44cdbbfc8bbcb"
+version = "3.4.0"
+source = "git+https://github.com/archetect/archetect.git?tag=v3.4.0#908606ed7f3633800587c8e79de11d08f04dc8ed"
 dependencies = [
  "archetect-inflections",
  "serde",
@@ -145,8 +145,8 @@ dependencies = [
 
 [[package]]
 name = "archetect-api"
-version = "3.3.0"
-source = "git+https://github.com/archetect/archetect.git?tag=v3.3.0#36204d369a6d680a379026fe82e44cdbbfc8bbcb"
+version = "3.4.0"
+source = "git+https://github.com/archetect/archetect.git?tag=v3.4.0#908606ed7f3633800587c8e79de11d08f04dc8ed"
 dependencies = [
  "serde",
  "serde_json",
@@ -155,8 +155,8 @@ dependencies = [
 
 [[package]]
 name = "archetect-core"
-version = "3.3.0"
-source = "git+https://github.com/archetect/archetect.git?tag=v3.3.0#36204d369a6d680a379026fe82e44cdbbfc8bbcb"
+version = "3.4.0"
+source = "git+https://github.com/archetect/archetect.git?tag=v3.4.0#908606ed7f3633800587c8e79de11d08f04dc8ed"
 dependencies = [
  "anyhow",
  "archetect-aml",
@@ -212,8 +212,8 @@ dependencies = [
 
 [[package]]
 name = "archetect-git-cache"
-version = "3.3.0"
-source = "git+https://github.com/archetect/archetect.git?tag=v3.3.0#36204d369a6d680a379026fe82e44cdbbfc8bbcb"
+version = "3.4.0"
+source = "git+https://github.com/archetect/archetect.git?tag=v3.4.0#908606ed7f3633800587c8e79de11d08f04dc8ed"
 dependencies = [
  "camino",
  "chrono",
@@ -226,16 +226,16 @@ dependencies = [
 
 [[package]]
 name = "archetect-inflections"
-version = "3.3.0"
-source = "git+https://github.com/archetect/archetect.git?tag=v3.3.0#36204d369a6d680a379026fe82e44cdbbfc8bbcb"
+version = "3.4.0"
+source = "git+https://github.com/archetect/archetect.git?tag=v3.4.0#908606ed7f3633800587c8e79de11d08f04dc8ed"
 dependencies = [
  "regex",
 ]
 
 [[package]]
 name = "archetect-terminal-io"
-version = "3.3.0"
-source = "git+https://github.com/archetect/archetect.git?tag=v3.3.0#36204d369a6d680a379026fe82e44cdbbfc8bbcb"
+version = "3.4.0"
+source = "git+https://github.com/archetect/archetect.git?tag=v3.4.0#908606ed7f3633800587c8e79de11d08f04dc8ed"
 dependencies = [
  "archetect-api",
  "archetect-validations",
@@ -249,8 +249,8 @@ dependencies = [
 
 [[package]]
 name = "archetect-validations"
-version = "3.3.0"
-source = "git+https://github.com/archetect/archetect.git?tag=v3.3.0#36204d369a6d680a379026fe82e44cdbbfc8bbcb"
+version = "3.4.0"
+source = "git+https://github.com/archetect/archetect.git?tag=v3.4.0#908606ed7f3633800587c8e79de11d08f04dc8ed"
 
 [[package]]
 name = "async-trait"
