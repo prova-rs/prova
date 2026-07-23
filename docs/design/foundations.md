@@ -90,7 +90,7 @@ steps sharing context, cascade-skip). You read the container and you know. This 
 *make-invalid-states-unrepresentable* to execution — shared mutable context is a flow-only
 capability a `group` never receives — and it makes `--jobs` purely a throughput knob, never
 semantic. We do *not* randomize by default; randomization is an **opt-in hardening pass**
-(`--shuffle[=seed]`) that proves a group's children are truly independent. TestNG gained
+(`--shuffle[=seed]` — designed, not yet shipped) that proves a group's children are truly independent. TestNG gained
 traction precisely because it made ordered, dependent flows first-class where pytest fumbles
 them; we make both strategies first-class and visible. See `api.md` → "Execution model" for
 the full statement. The two ordering constructs:
@@ -183,7 +183,7 @@ sits behind — so the agnostic core never grows a Docker dependency.
 |---|---|---|
 | **Teardown skipped on failure/panic/timeout** | Leaked containers, ports, temp dirs poison later runs | Teardown is guaranteed: `defer`s run on pass, fail, assertion-abort, *and* test timeout; best-effort on signals. Teardown errors are reported, never swallowed. |
 | **`shell.run("server &")` orphans processes** | Backgrounded child escapes; port stays bound | No backgrounding. `shell.spawn` returns a handle; teardown kills the whole **process group** (not just the pid). |
-| **Hidden inter-test coupling** | Passes in order, fails when reordered/parallelized | **Isolation by construction** (no ambient global state to leak) prevents most coupling structurally; opt-in `--shuffle[=seed]` hardening surfaces anything that slips through, reproducibly. |
+| **Hidden inter-test coupling** | Passes in order, fails when reordered/parallelized | **Isolation by construction** (no ambient global state to leak) prevents most coupling structurally; opt-in `--shuffle[=seed]` hardening (designed, not yet shipped) surfaces anything that slips through, reproducibly. |
 | **Retries hide real flakiness** | Green build masks a genuine race | Retries allowed but **flakes are surfaced**: a test that passes only on retry is reported `FLAKY`, countable and quarantinable — not silently green. |
 | **Scope mismatch** | A `suite` fixture depends on a `test` fixture → nonsense lifetime | **Validated at collection**: a broader-scoped fixture may not depend on a narrower one; hard error with a clear message (pytest does this; we do it up front). |
 | **Parallel double-build of a `suite` fixture** | Two workers each construct the "once" resource | Once-guard keyed by `(fixture, run)` with cross-worker coordination; documented ownership model. |
@@ -262,7 +262,7 @@ pytest's plugin ecosystem did, while the core stays small and correct.
 2. **Resource model surface** — string tokens (`"port:8080"`) vs. typed resource objects;
    how `shared` vs. exclusive is expressed; interaction with `file`/`suite` fixtures.
 3. ~~Randomize-by-default~~ **Decided**: deterministic definition order + isolation by
-   construction; `--shuffle[=seed]` is opt-in hardening, not the default. (See api.md →
+   construction; `--shuffle[=seed]` is opt-in hardening (not yet shipped), never the default. (See api.md →
    Execution model.)
 4. **Capability registry** — how `requires = {"docker"}` resolves to a probe; are capabilities
    first-party-only or plugin-registerable?

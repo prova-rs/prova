@@ -95,6 +95,20 @@ timeout (best-effort, itself bounded).
 - Planned sinks: a load-metrics aggregator (consumes the same stream, emits latency
   histograms/percentiles instead of pass/fail lines).
 
+## Snapshots (folded from docs/plans/snapshots.md — landed A+B+C)
+
+`t:expect(subject):matches_snapshot([key], { level })` compares against a reviewable `.snap`
+colocated with the test (`<dir>/snapshots/<stem>__<key>.snap`; key = explicit name, else a slug
+of the node path + a per-test counter). `-u/--update-snapshots` (re)writes; a mismatch fails
+with a line diff; a missing snapshot fails and writes a `.snap.new` for review (insta parity).
+The **level** is the strictness dial and the anti-rot default lives in the API: `layout`
+(sorted relative paths — files added/removed/moved, low rot) is the default for tree subjects;
+`content` (paths + bytes) is the opt-in golden-file mode. The matcher stays generic through a
+snapshot *protocol*: a snapshottable handle serializes itself at a level; strings are their
+bytes. Discipline: a run-wide registry of referenced `.snap` files + `--unreferenced
+ignore|warn|delete` flags orphans — sound only on FULL runs (a filtered run would make unrun
+tests' snapshots look orphaned, so the check skips with a note).
+
 ## Frontend protocol (the companion GUI/IDE, and the CLI, over one core)
 
 The engine is designed so a **GUI app is not a fork** — it's another consumer of the same two

@@ -198,8 +198,14 @@ The archetype (not a flag) owns the layout — where `prova.toml` lands, what th
 so `prova init <key>` scaffolds whatever that entry produces; `--no-ide` (alias `--no-luals`) skips
 the wiring. The catalog is prova's built-ins `project` and `plugin` plus `[init.*]` from `~/.config/prova/config.toml`;
 `prova init` with no key picks from it interactively, `prova init --list` prints it. It refuses to run
-if any manifest location already exists — it never clobbers an existing layout. IDE wiring itself is
-also available on its own as `prova ide setup` (see above).
+if any manifest location already exists — it never clobbers an existing layout — unless the entry
+declares `in_package = "allow"` (the built-in `plugin` entry does: it scaffolds a local plugin INTO
+an existing package). For in-package renders, prova injects package state at lowest precedence: the
+answers `prova_package_root` (relative to cwd) and `prova_plugin_root` (from `[run] plugin_root`),
+plus the switch `prova:in-package`. Automation renders headlessly — `prova init <key> --headless
+-a k=v … --defaults` — where an unanswered, undefaulted prompt is an ERROR, never a hang; answer
+precedence is CLI `--answer` > the entry's baked answers > prompt (or archetype default with
+`--defaults`). IDE wiring itself is also available on its own as `prova ide setup` (see above).
 
 ## The plugin side
 
