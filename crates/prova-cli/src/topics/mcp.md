@@ -8,10 +8,10 @@ path), which resolves FRESH, so a package you just scaffolded works without a re
 
 | Tool | CLI twin | Notes |
 |---|---|---|
-| `run { keywords?, tags?, nodes?, last_failed?, profile?, jobs?, topology?, package? }` | `prova -k/--tags/--node/--last-failed/--profile/-j` | isError on any failure; failures carry `{ path, message }`; records last-failed |
+| `run { keywords?, tags?, nodes?, last_failed?, profile?, jobs?, topology?, package? }` | `prova -k/--tags/--node/--last-failed/--profile/-j` | isError on any failure; failures carry `{ path, message, file?, line? }`; records last-failed |
 | `list { same selection, package? }` | `prova --list` | `{ nodes: [{ path }] }` |
 | `eval { code, topology?, package? }` | `prova eval` | full environment, real ctx, auto-teardown |
-| `learn { topic?, package? }` / `introspect { filter? }` | `prova learn` / `prova.help()` | the knowledge surface |
+| `learn { topic?, package? }` / `introspect { filter?, package? }` | `prova learn` / `prova.help()` | the knowledge surface |
 | `up { name, package?, fixed? }` / `down { name }` / `status {}` | `prova up/down/ps` | held INSIDE the server (below) |
 
 Tools serialize FIFO — side-effects land in the order you call them.

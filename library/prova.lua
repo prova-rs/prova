@@ -215,7 +215,7 @@ function Matcher:matches_snapshot(opts) end
 
 --- Options shared by any schedulable unit (test/flow/group).
 ---@class prova.UnitOpts
----@field tags? string[]                 # selection tags (see `-m` expressions), free-form
+---@field tags? string[]                 # selection tags (select with `--tags a,b`; `!tag` excludes), free-form
 ---@field requires? prova.Capability[]   # skip (not fail) if a capability is unavailable
 ---@field depends_on? prova.Unit[]       # skip this unit if any upstream failed/was skipped
 ---@field resources? prova.Resource[]    # resources this unit needs (concurrency gating)

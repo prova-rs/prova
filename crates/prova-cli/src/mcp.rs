@@ -81,13 +81,16 @@ pub fn run(args: Vec<String>) -> ExitCode {
                      \n\
                      serve Prova as an MCP stdio server. Tools mirror the CLI one-to-one:\n\
                      \x20 run   {{ keywords?, keyword_excludes?, tags?, tag_excludes?, nodes?,\n\
-                     \x20         last_failed?, profile?, jobs? }}   ↔  prova + selection flags\n\
-                     \x20 list  {{ same selection fields }}           ↔  prova --list\n\
-                     \x20 eval  {{ code }}                            ↔  prova eval '<code>'\n\
+                     \x20         last_failed?, profile?, jobs?, topology?, package? }}\n\
+                     \x20                                            ↔  prova + selection flags\n\
+                     \x20 list  {{ same selection fields, package? }}  ↔  prova --list\n\
+                     \x20 eval  {{ code, topology?, package? }}       ↔  prova eval '<code>'\n\
+                     \x20 up/down/status · introspect {{ filter?, package? }} · learn {{ topic?, package? }}\n\
                      \n\
                      the environment (home, manifest, plugins) resolves once at startup from the\n\
-                     working directory, exactly like a CLI run. The embedded agent skill is served\n\
-                     as the connection's instructions."
+                     working directory, exactly like a CLI run; `package` retargets a single call.\n\
+                     `topology` runs WARM against an instance held by a prior `up`. The embedded\n\
+                     agent skill is served as the connection's instructions."
                 );
                 return ExitCode::SUCCESS;
             }

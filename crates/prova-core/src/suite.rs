@@ -133,9 +133,10 @@ pub fn discover_files(root: &Path) -> std::io::Result<Vec<PathBuf>> {
 }
 
 /// Group the tree under `root` into suites: a directory containing a `suite.lua` becomes one suite
-/// owning **all** the `*_test.lua` files in its subtree (with `suite.lua` as setup); every other test
-/// file is its own singleton suite. A plain file argument is a singleton suite. Sorted for
-/// determinism.
+/// owning the `*_test.lua` files in **that directory only** (with `suite.lua` as setup) — never the
+/// subtree; subdirectories are discovered independently, so a nested `suite.lua` is its own suite.
+/// Every other test file is its own singleton suite. A plain file argument is a singleton suite.
+/// Sorted for determinism.
 pub fn discover_suites(root: &Path) -> std::io::Result<Vec<Suite>> {
     if root.is_file() {
         return Ok(vec![Suite::singleton(root.to_path_buf())]);

@@ -44,7 +44,7 @@ Everything below is the crash course; depth is one call away, computed for THIS 
 
 ## Test files, in one screen
 
-Files match `*_test.lua`. Everything is a global — no imports except plugins.
+Files match `*_test.lua` (or `*.test.lua`). Everything is a global — no imports except plugins.
 
 ```lua
 local postgres = require("postgres")          -- plugin, declared in prova.toml [plugins]
@@ -98,8 +98,8 @@ postgres = "prova-rs/prova-postgres@main"   # owner/repo@ref | local path | { gi
 ```
 
 Official plugins: postgres, mysql, redis, kafka, pulsar, rabbitmq, s3. Built-ins: `fs`, `shell`,
-`net`, `http`, `grpc` (needs server reflection), `graphql`, `yaml`, `docker`, `sqlite`,
-`archetect`. No plugin for it? Compose `docker.run{ image, env, ports, wait }` +
+`net`, `http`, `grpc` (needs server reflection), `graphql`, `yaml`, `docker`, `sqlite` — plus
+`archetect`, a bundled plugin (always present in the standalone binary). No plugin for it? Compose `docker.run{ image, env, ports, wait }` +
 `container:run(argv)` + `prova.retry` — or author a plugin via `prova.containerized`.
 
 ## Built-ins, one line each

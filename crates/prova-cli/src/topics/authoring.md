@@ -1,6 +1,6 @@
 # authoring — the proof DSL, one screen
 
-Files match `*_test.lua`. Everything is a global — no imports except plugins via `require`.
+Files match `*_test.lua` (or `*.test.lua`). Everything is a global — no imports except plugins via `require`.
 
 ```lua
 local postgres = require("postgres")            -- declared in prova.toml [plugins]

@@ -27,7 +27,9 @@ anchor repo paths on them, never on cwd.
 | `[run] proofs = ["proofs"]` | directory-NAME patterns (not paths): every matching dir below the root holds `*_test.lua` proofs |
 | `[run] plugin_root` | THE directory of this package's own plugins; no default — undeclared means none scanned |
 | `[run] config` | Lua companion loaded pre-suite (defaults to `prova.lua` beside the manifest) — `runtime.capability` lives there |
-| `[run] jobs / format / env` | concurrency (throughput only), output format, run environment |
+| `[run] jobs / format / env` | concurrency (throughput only), output format (`console`\|`json`\|`tap`), run environment |
+| `[run] color / quiet` | console color (`auto`\|`always`\|`never`) · only failures + recap + tally |
+| `[run] github / junit` | GitHub Actions annotations sink (`auto`\|`on`\|`off`) · also write JUnit XML to this path |
 | `[run] must_run = ["docker"]` | capabilities this environment GUARANTEES — unmet fails the run, never skips |
 | `[profiles.<name>]` | overlay on `[run]`, selected with `--profile <name>`; `must_run` unions, the rest overrides |
 | `[suites.<name>]` | explicit suite: `paths` share one Lua state (+ optional `setup` file) |
