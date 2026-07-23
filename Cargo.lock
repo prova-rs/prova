@@ -2802,7 +2802,7 @@ dependencies = [
 
 [[package]]
 name = "prova-archetect"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "archetect-api",
  "archetect-core",
@@ -2814,7 +2814,7 @@ dependencies = [
 
 [[package]]
 name = "prova-cli"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "anstream 0.6.21",
  "anstyle",
@@ -2837,7 +2837,7 @@ dependencies = [
 
 [[package]]
 name = "prova-core"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "bollard",
  "bytes",
@@ -4921,7 +4921,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "clap",
