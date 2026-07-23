@@ -1,666 +1,184 @@
-# Prova — Test & Fixture API Design
+# Prova — The Authoring Surface
 
-> Status: **design draft** — we are nailing the authoring surface before building the
-> Rust engine. Nothing here is implemented yet. The goal of this document is to make the
-> Lua DSL feel right in example code first, then work backward to the runtime.
+> Companion to [`foundations.md`](foundations.md) (the thesis), [`architecture.md`](architecture.md)
+> (the engine), [`manifest.md`](manifest.md) (the package schema), and [`suites.md`](suites.md)
+> (multi-file structure). This doc is the **built** authoring surface — everything here runs today.
+>
+> **The always-current version of this material is the binary itself.** `prova learn authoring`
+> renders the one-screen version; `prova.help("<filter>")` (in any test or `prova eval`) and the
+> MCP `introspect` tool return every function's `{ name, signature, summary }`, parsed from the
+> same LuaCATS stubs that drive editor completion — so they cannot drift from what an author
+> sees. When this doc and the binary disagree, the binary is right and this doc has a bug.
 
 ## What Prova is
 
-A **programmable, language-agnostic acceptance-test runner**: a real scripting language
-(Lua) plus a real fixture model, shipped as a single static binary. It is not a unit-test
-framework (JUnit/pytest own that inside their languages) and it is not a single-protocol
-tool (Hurl owns HTTP). It occupies the **black-box acceptance/integration layer**: bring a
-system into existence (render it, build it, boot it), then poke it with shell + HTTP +
-filesystem assertions, with fixtures holding the setup/teardown together.
+A programmable, language-agnostic **black-box acceptance-test runner**: a real scripting language
+(Lua 5.4) plus a real fixture model, shipped as a single static binary. It brings a system into
+existence (render it, build it, boot it), then probes it from outside — shell, HTTP/gRPC/GraphQL,
+filesystem, containers — with fixtures holding setup and teardown together. Proofs are
+`*_test.lua` (or `*.test.lua`) files; a `prova.toml` manifest declares what to run and how.
 
-The wedge over the existing agnostic testers (Hurl, Bats, Venom, Robot Framework, goss) is
-deliberate:
+## Test files, and the globals in them
 
-- They are **single-domain** or **declarative YAML/Gherkin**. The moment a test needs a
-  loop, a computed value, a conditional, or reusable setup, YAML hits a wall.
-- None of them have a **fixture model** — scoped setup/teardown with dependency injection
-  and caching. That is the thing pytest users cannot live without, and it is structurally
-  impossible in a declarative format.
-
-So the two things this document must get right are the **fixture model** and the
-**assertion surface**. Everything else (discovery, reporting, the http/shell modules) is
-comparatively mechanical.
-
-## Architectural stance (informs the API)
-
-The core runner is **domain-agnostic**. Archetype rendering is a *plugin*, not a built-in.
-
-```
-prova-core      → discovery, fixtures, assertions, reporting, the `prova`/`ctx`/`expect` surface
-  modules (first-party plugins):
-    fs          → file/dir handles, exists/contains/snapshot
-    shell       → run commands, assert exit/stdout/stderr
-    http        → blocking get/post, assert status/body/json
-    archetect   → render(source, answers) in-process via archetect-core   ← the justifying use case
-```
-
-`prova-core` has **zero** archetect-specific assumptions. The `archetect` module is the
-first-party plugin that justifies the whole runner's existence and is our dogfooding
-target, but it sits behind the same plugin boundary that a `docker` or `terraform` module
-would. This lets the general-purpose framework *emerge* from a real shipped use case
-instead of being speculative.
-
----
-
-## The fixture model
-
-This is the heart of the design. Borrowed conceptually from pytest, adapted to honest Lua
-idioms (no decorators, no parameter-name reflection).
-
-### Declaring a fixture
-
-The runtime injects `prova` and the module globals (`fs`, `shell`, `http`, `archetect`) into
-every test file — **no `require` is needed**. (`require("prova")` still works and returns the
-same table, for anyone who prefers an explicit import.)
+Everything is a global — no imports except plugins via `require`:
 
 ```lua
--- prova.fixture(name, scope, factory)
--- scope: "test" (default) | "file" | "suite"
-prova.fixture("workspace", "file", function(ctx)
-  local dir = fs.tempdir()
-  ctx:defer(function() fs.remove_all(dir) end)   -- teardown, LIFO
-  return dir                                       -- the fixture value
+local postgres = require("postgres")            -- declared in prova.toml [plugins]
+
+local db = prova.fixture("db", Scope.File, function(ctx)
+  return postgres.container(ctx)                -- { client, url, container, host, port }
+end)
+
+prova.test("rows persist", { requires = { "docker" } }, function(t)
+  local d = t:use(db)                           -- lazy DI; built once per scope, torn down LIFO
+  d.client:execute("insert into items values (1, 'widget')")
+  t:expect(d.client:query_value("select count(*) from items")):equals(1)
 end)
 ```
 
-A fixture is a **named factory** that produces a value. It may register teardown via
-`ctx:defer(fn)` (Go-style; runs in LIFO order when the scope ends) and may depend on other
-fixtures via `ctx:use(name)`.
-
-We chose `ctx:defer()` over a coroutine `yield`-style teardown (pytest's `yield` fixtures)
-because it is trivial to drive across the Rust/Lua boundary, supports multiple cleanups
-per fixture, and reads clearly. A `yield`-style sugar could be layered on later, but there
-is exactly **one** blessed way for v1.
-
-### Requesting fixtures (dependency injection)
-
-Lua cannot reliably reflect a function's parameter names, so we do **not** auto-inject by
-signature the way pytest does. Injection is **explicit and lazy** via `ctx:use(...)`.
-
-`prova.fixture` **returns a handle**; you pass that handle to `use`:
-
-```lua
-local workspace = prova.fixture("workspace", "file", function(ctx)
-  return ctx:tempdir()                 -- factory returns string
-end)                                   -- workspace : prova.Fixture<string>
-
-prova.test("renders into a clean workspace", function(t)
-  local ws = t:use(workspace)          -- ws : string — type flows through (see LSP note)
-  ...
-end)
-```
-
-Handle-based (not string-based) `use` is a **deliberate, LSP-driven decision**. With
-LuaCATS generics, `prova.fixture(...)` returns `prova.Fixture<T>` (T = the factory's return
-type) and `ctx:use(handle)` recovers `T` at the call site — full completion and
-type-checking on fixture values. A string key (`use("workspace")`) is a type black hole:
-LuaLS can only type it as `any`. A bare-string overload is retained as an **escape hatch**
-for cross-file lookup by name, but it is untyped; prefer the handle.
-
-Explicit `use` (either form) also buys three things pytest's parameter-name magic hides:
-1. **Laziness** — a fixture is only built when something actually asks for it.
-2. **Traceability** — you can grep for the handle/name to find every dependent.
-3. **No name-collision surprises** between fixtures and local variables.
-
-Fixtures depend on other fixtures the same way — capture the handle, `use` it:
-
-```lua
-local rendered_project = prova.fixture("rendered_project", "file", function(ctx)
-  local ws = ctx:use(workspace)              -- fixture-to-fixture dependency (typed)
-  return archetect.render{ source = "…", destination = ws, defaults = true }
-end)
-```
-
-Cross-file fixtures: a `conftest`-equivalent module (`prova.lua`) can `return` a table of
-handles that sibling test files `require`, keeping types intact without a global registry.
-
-### Scopes and caching
-
-| Scope    | Instantiated              | Torn down                | Cache key                     |
-|----------|---------------------------|--------------------------|-------------------------------|
-| `test`   | first `use` in a test     | after that test          | (fixture, test invocation)    |
-| `flow`   | first `use` in a flow     | after the flow's steps   | (fixture, flow invocation)    |
-| `file`   | first `use` in a file     | after all tests in file  | (fixture, file)               |
-| `suite`  | first `use` in the run    | after the whole run      | (fixture, run)                |
-
-The `flow` scope is only valid inside a `flow` (see [Execution model](#flows--ordered-steps-with-shared-context));
-declaring it elsewhere is a collection error. Inside a flow, `test` scope means **per-step**.
-
-Caching is **per scope instance**: two tests in the same file that both `use("rendered_project")`
-(scope `file`) share one render; its teardown runs once, after the last test in the file.
-A `test`-scoped fixture is rebuilt fresh for every test.
-
-Teardown order is **LIFO within a scope**, and scopes tear down inner-to-outer
-(`test` before `file` before `suite`). A fixture's `defer`red cleanups run before the
-cleanups of any fixture it depended on — dependencies outlive their dependents.
-
-### Autouse fixtures
-
-A fixture can opt into running even when no test names it — useful for ambient setup
-(seeding a temp HOME, starting a mock server):
-
-```lua
-prova.fixture("mock_registry", { scope = "suite", autouse = true }, function(ctx)
-  return http.mock(ctx)   -- ctx:manage'd internally; torn down with the scope
-end)
-```
-
-(This example named a hypothetical `http.serve_mock` while the surface was being designed. The
-real thing is **`http.mock(ctx, opts?)`** — the `mock` facet; see `namespacing.md` and
-`docs/plans/mocks.md`.)
-
-(The options-table form `{ scope=..., autouse=... }` is accepted anywhere the bare scope
-string is; the string is just sugar for `{ scope = "..." }`.)
-
-### Parametrization stays explicit (no parametrized fixtures)
-
-Prova deliberately has **no** parametrized fixtures (`ctx:param`). A fixture that silently multiplies
-the tests using it is pytest's most-confusing feature — action-at-a-distance — and prova's lazy
-`ctx:use` model can't do the clean usage-driven version anyway. Instead, choose by whether the
-*assertions* are shared:
-
-```lua
--- Same assertions, varying data → test_each (explicit, visible at the test):
-prova.test_each("builds on {tc}", { { tc = "stable" }, { tc = "nightly" } }, function(t, case)
-  local r = shell.run("cargo +" .. case.tc .. " build", { cwd = t:use(workspace) })
-  t:expect(r.code):equals(0)
-end)
-```
-
-- **Divergent variants** (e.g. a Postgres vs a MongoDB rendering, whose CRUD assertions differ) →
-  **separate suites/files**, not one shared body.
-- **Env-level variation** (local / CI / cluster) → **profiles** in `prova.toml`.
-
-See `docs/design/north-star-roadmap.md` (§Phase 1.2) for the full rationale.
-
----
-
-## Tests
-
-```lua
--- prova.test(name, factory)   or   prova.test(name, opts, factory)
-prova.test("builds cleanly", function(t)
-  ...
-end)
-
-prova.test("flaky network path", { retries = 2, timeout = "30s", tags = { "net" } }, function(t)
-  ...
-end)
-```
-
-### Parametrized tests (table-driven)
-
-```lua
--- prova.test_each(name_template, cases, factory)
-prova.test_each("renders for {lang}", {
-  { lang = "rust", entry = "src/main.rs" },
-  { lang = "java", entry = "src/main/java/App.java" },
-}, function(t, case)
-  local out = archetect.render{ source = "…", answers = { language = case.lang }, defaults = true }
-  t:expect(out:file(case.entry)):exists()
-end)
-```
-
-`{lang}` in the name template is filled from the case table so each row reports as a
-distinct test.
-
-### Grouping
-
-`describe` is **organizational labeling** in v1 (nested names in the report), not a new
-fixture scope. `before_each`/`after_each`/`before_all`/`after_all` attach to the enclosing
-file (or `describe` block) and are convenience wrappers over autouse fixtures:
-
-```lua
-prova.describe("rust cli archetype", function()
-  prova.before_all(function() ... end)
-
-  prova.test("has a Cargo.toml", function(t) ... end)
-  prova.test("compiles", function(t) ... end)
-end)
-```
-
-> Open question: whether `describe` should introduce a real nested fixture scope (jest
-> semantics). Deferred — labeling-only keeps the scope model to three clean levels for v1.
-
----
-
-## Execution model: strategy is declared by the container
-
-Every test lives inside a **strategy container** that determines how its children run. You do
-not configure execution with CLI flags or a global default — you read the container and you
-know. There are exactly two, each with a fixed, nameable guarantee, and each is designed so
-that **invalid states are unrepresentable**: a container only exposes the capabilities its
-strategy permits.
-
-| Container     | Strategy    | Children                    | Order                        | Shared context             | Concurrency                 |
-|---------------|-------------|-----------------------------|------------------------------|----------------------------|-----------------------------|
-| `prova.group` | independent | tests, flows, nested groups | unspecified (don't rely)     | **none — not representable** | children parallelizable     |
-| `prova.flow`  | sequence    | ordered steps               | declared order               | **the flow context**       | steps serial, one worker    |
-
-- A **`group`** is a bag of independent units: isolated, unordered, parallelizable. Its
-  `GroupBuilder` exposes `test`/`flow`/`group` — and **no shared-state mechanism**, so
-  cross-child built-up context cannot be written. (Group children may also run on separate
-  workers, so a smuggled closure variable wouldn't work anyway — the execution model enforces
-  what the API already forbids.)
-- A **`flow`** is an ordered sequence. Its `FlowBuilder` exposes `step` plus a shared scope;
-  steps run in declared order on one worker and **cascade-skip** once a step fails.
-
-This is *make-invalid-states-unrepresentable* applied to execution: shared mutable context is
-a **flow-only capability**, granted by the `FlowBuilder`. A `group` never receives it, so
-"ordered tests quietly sharing state" is not a mistake you can express.
-
-**The file is an implicit `group`.** Bare `prova.test(...)`, `prova.flow(...)`, and
-`prova.group(...)` at the top level register into it — so the terse common case (a handful of
-independent tests) needs zero ceremony. And because the file defaults to the *independent*
-(safe) strategy, **the presence of a `flow` is always the visible signal that ordering and
-shared state are in play.** The dangerous axis is never silent; the safe axis is the quiet
-default.
-
-```lua
--- top level = the file's implicit group (independent)
-prova.test("renders Cargo.toml", function(t) ... end)
-prova.test("renders README",     function(t) ... end)   -- may run concurrently with the above
-
--- an explicit independent group, via its builder
-prova.group("http surface", function(g)
-  g:test("GET /health",  function(t) ... end)
-  g:test("GET /version", function(t) ... end)
-  g:flow("session lifecycle", function(f)               -- a flow nested in a group is one atomic unit
-    f:step("login",  function(t) ... end)
-    f:step("logout", function(t) ... end)
-  end)
-end)
-```
-
-### Units, isolation, and dependencies
-
-A **unit** is the atom of scheduling: a top-level `test`, a `flow`, or a `group`. One uniform
-rule governs how units relate:
-
-> Units with no dependency edge between them are mutually isolated and may run in parallel
-> (subject to resources). A dependency edge orders them and gates on success.
-
-So **two flows with no edge between them run in parallel** — a flow is internally serial, but
-flows are independent of *each other* unless you say otherwise. `prova.test`, `prova.flow`,
-and `prova.group` all return handles; `depends_on` accepts any unit:
-
-```lua
--- A login flow, then two independent journeys that both need a logged-in, populated account.
-local login = prova.flow("login", function(f)
-  f:step("authenticate", function(t) ... end)
-end)
-
-local populate = prova.flow("populate account", { depends_on = { login } }, function(f)
-  f:step("seed profile", function(t) ... end)
-  f:step("seed billing", function(t) ... end)
-end)
-
--- Same upstreams, no edge between them → these two run in parallel.
-prova.flow("checkout journey", { depends_on = { login, populate } }, function(f) ... end)
-prova.flow("settings journey", { depends_on = { login, populate } }, function(f) ... end)
-```
-
-- The dependency graph is a DAG over units; a cycle is a collection-time error.
-- If any upstream fails or is skipped, the dependent unit is **skipped, not failed**, with the
-  reason (the TestNG behavior). A failed `login` skips `populate`, `checkout`, and `settings`
-  — no cascade of spurious failures.
-- `depends_on` gates on **pass/fail only; it does not transfer state.** Data flows through a
-  fixture (or, within a linear sequence, the flow's own context). Keeping "did it pass?"
-  separate from "give me its value" is deliberate — conflating them is how brittle implicit
-  ordering creeps in.
-
-### Flows — ordered steps with shared context
-
-```lua
-prova.flow("order lifecycle", function(f)
-  local order                                 -- shared by all steps (the flow context)
-
-  f:step("create", function(t)
-    order = http.post(api .. "/orders", { json = { sku = "widget", qty = 2 } }):json()
-    t:expect(order.id):is_truthy()
-  end)
-
-  f:step("read back", function(t)             -- skipped if "create" failed
-    t:expect(http.get(api .. "/orders/" .. order.id):json().qty):equals(2)
-  end)
-
-  f:step("cancel", function(t)
-    t:expect(http.post(api .. "/orders/" .. order.id .. "/cancel").status):equals(204)
-  end)
-end)
-```
-
-- A flow is **one scheduling unit**: steps run serially, in order, on one worker — never split.
-- Flow-level fixtures via `f:use(fixture)` live for the flow's lifetime (`flow` scope). Inside
-  a flow, `test`-scoped fixtures are per-**step**.
-- A step may `t:skip(reason)` itself; a step is the flow's analog of a test for reporting.
-
-### Concurrency is `--jobs`; it is never semantic
-
-Because strategy is declared in the code, `--jobs N` sets only **how many workers may run** —
-never what the tests *mean*. A flow is serial at `--jobs 100`; an independent group is
-parallelizable at `--jobs 1` (it just won't actually overlap). The CLI cannot change
-semantics, so it cannot surprise you.
-
-Within the parallelizable set, shared *external* resources still need declaring so the
-scheduler co-schedules safely:
-
-```lua
-prova.test("boots on :8080",  { resources = { "port:8080" } },        function(t) ... end)  -- exclusive
-prova.test("reads shared db", { resources = { prova.shared("db") } }, function(t) ... end)  -- concurrent reader
-```
-
-Prefer the **typed constructors** over magic-format strings: `prova.port(8080)` and
-`prova.resource("db")` instead of `"port:8080"`. A bare string is still accepted for ad-hoc
-tokens and is **exclusive** by default; `prova.shared(x)` makes any resource a concurrent
-reader; `{ serial = true }` is sugar for a process-wide exclusive. Declarations are inert at
-`--jobs 1` and enforced above it, so you declare once and scale out without touching tests.
-
-### Typed values vs. stringly-typed values
-
-A deliberate stance on where strings are allowed, because "stringly-typed" is a classic
-source of silent bugs:
-
-- **Closed sets used inline stay string-literal *unions*** (`scope: "test"|"flow"|"file"|"suite"`,
-  `order: "any"|"declared"`). LuaCATS types these as literal unions, so `lua-language-server`
-  autocompletes the options and flags a typo at edit time — the enum benefit without the
-  ceremony of importing a constants table, and the call site stays terse.
-- **Magic-format strings become typed constructors.** A token like `"port:8080"` hides a
-  `prefix:value` convention you can typo silently (`"prot:8080"` is a *valid but wrong*
-  exclusive token). `prova.port(8080)` / `prova.resource("db")` can't be — and `port` can
-  validate its number. Bare strings remain accepted for genuinely ad-hoc tokens.
-- **Closed sets tied to real behavior are validated aliases.** `requires` takes
-  `prova.Capability` (`"docker"|"network"|…`); a typo is rejected at collection time with a
-  did-you-mean, not silently ignored (which would make a gate vanish).
-- **Free-form sets stay strings.** `tags` and `ctx:skip(reason)` are open by definition.
-- **Assertions were never stringly-typed** — matchers are methods (`:equals()`, `:contains()`),
-  not `expect(x, "equals", y)`. Same principle, already applied.
-- **Durations stay strings** (`"30s"`, `"500ms"`) — a well-known, readable micro-format — but
-  are parsed strictly.
-
-The cross-cutting rule underneath all of this: **every closed-set string is parsed into a Rust
-enum at the mlua boundary and rejected at *collection time* with a helpful error** (valid
-values / nearest match). The Lua-side literal-union types catch typos while editing; the
-Rust-side parse guarantees a bad value fails loudly and early regardless of how it was written
-— never a silent misbehavior at runtime.
-
-### Order within a group, and hardening
-
-A `group` makes **no order guarantee** — that contract is what keeps its children independent.
-The runner may iterate in definition order for reproducibility, but you must not rely on it;
-`prova test --shuffle[=seed]` randomizes (printing/reproducing the seed) to *prove*
-independence. Ordered execution is never a group's job — that is what `flow` is for.
-
-### Isolation — enforced by API shape, not sandboxing
-
-"Hermetic by default" is honest here because the DSL exposes **no ambient mutable global
-state**: no implicit cwd, no `os.chdir`; `shell.run(cmd, { cwd = …, env = … })` and
-`fs.read(path)` take context explicitly; scratch is per-scope `ctx:tempdir()`. The *only*
-sanctioned shared state is a flow's context (scoped, ordered, deterministically torn down) or
-a broader-scoped fixture (tracked, reported). Two independent units therefore cannot corrupt
-each other through the framework's own surface.
-
----
-
-## The test/fixture context (`t` / `ctx`)
-
-Tests receive a **TestContext** (`t`); fixtures receive a **Context** (`ctx`). They share a
-base; the test context adds assertions and skip/case.
-
-| Member            | On       | Purpose                                                        |
-|-------------------|----------|---------------------------------------------------------------|
-| `ctx:use(name)`   | both     | Instantiate/fetch a fixture value (lazy, scope-cached)        |
-| `ctx:defer(fn)`   | both     | Register LIFO teardown for the current scope                  |
-| `ctx:tempdir()`   | both     | A scratch dir auto-removed when the scope ends                |
-| `ctx:log(msg)`    | both     | Structured log line attached to the test/fixture in the report|
-| `t:expect(v, label?)` | tests    | Start a fluent assertion; optional `label` for messages   |
-| `t:expect_all(fn)`    | tests    | Soft assertions — collect all failures in `fn`            |
-| `t:skip(reason)`      | tests    | Skip the current test at runtime                          |
-| `t.name`              | tests    | The resolved test name                                    |
-| `t.case`              | tests    | The current case table (parametrized tests)               |
-
-Everything callable on `t`/`ctx` is a colon-method (`t:expect`, `t:use`, `t:defer`) — no
-dot/colon mix to trip over. The only dot members are plain data fields (`t.name`, `t.case`).
-
----
+### Declarators (the `prova` table)
+
+| Call | What it declares |
+|---|---|
+| `prova.test(name, [opts], fn)` | one test; returns a unit handle (usable in `depends_on`) |
+| `prova.test_each(template, cases, fn)` | one test per case; `{key}` placeholders fill the name; the case arrives as the body's 2nd arg and as `t.case` |
+| `prova.describe(label, fn)` | a labeling group; **bare** `prova.test`/`group`/`flow` inside the body nest under it |
+| `prova.group(name, [opts], fn)` | independent, parallelizable, isolated children — the body receives a **builder** (`g:test`, `g:test_each`, `g:group`, `g:flow`, `g:describe`) |
+| `prova.flow(name, [opts], fn)` | **ordered** steps sharing closure state — the body receives a builder (`flow:step(name, [opts], fn)`); once a step fails, later steps cascade-**skip** |
+| `prova.fixture(name, [scope,] factory)` | a named, scoped, lazy, cached resource (default `Scope.Test`) |
+| `prova.topology(name, [scope,] factory)` | a fixture that is also **name-addressable** by `prova up <name>` / MCP `up` (default `Scope.File`) |
+
+Inside a `group`/`flow` body, a *bare* `prova.test` is an error (it would register at the file
+root, outside the unit being built) — children go on the builder. `depends_on` takes **handles**,
+not strings; an upstream that failed or skipped **skips** the dependent (never fails it, never
+passes state).
+
+### Unit options (`opts` on test/group/flow/step)
+
+`tags = {...}` (select with `--tags a,b`; `!tag` excludes) · `requires = {...}` (capability
+gating, below) · `timeout = "60s"` · `depends_on = { handle, ... }` ·
+`resources = { prova.port(5432), prova.resource("db"), prova.shared("cache") }` ·
+`serial = true` (process-wide exclusive). Group-level `tags`/`requires`/`resources`/`serial`/
+`depends_on` are inherited by everything inside.
+
+## Fixtures and scopes
+
+A fixture is **named, scoped, lazy, and cached**; its teardown is registered in the factory and
+guaranteed LIFO at scope end. Scopes are **typed values**, not strings:
+
+- `Scope.Test` (default) — fresh per test, torn down after it.
+- `Scope.Flow` — one instance across a flow's steps.
+- `Scope.File` — one instance per source file.
+- `Scope.Suite` — one instance across all files that share a suite's Lua state (see
+  [`suites.md`](suites.md)); declared in `suite.lua`.
+
+`t:use(fixture)` resolves lazily at execution: first use builds (async — factories can await),
+later uses in the same scope hit the cache. Because caching is scope-keyed, `t:use(f)` inside a
+flow's steps returns the *same* instance — that is the flow-fixture story (see the decision
+record below for what was deliberately not built).
+
+A `prova.topology` is the same mechanism made name-addressable: `prova up <name>` provisions it
+and holds it warm; proofs and `prova eval` reach the held instance through the same `t:use`.
+Inside a topology factory, `ctx.network` is an ambient managed docker network.
+
+## The context (`t` / `ctx` — one object)
+
+`t:use(target)` · `t:defer(fn)` (own-scope teardown) · `t:manage(resource)` (auto `stop()`/
+`close()` at scope end; returns the resource) · `t:tempdir()` · `t:log(msg)` ·
+`t:expect(value, label?)` · `t:expect_all(fn)` (soft: collect several failures) ·
+`t:skip(reason)` · `t.case` (the `test_each` case).
 
 ## Assertions
 
-A single fluent entry point, `t:expect(subject, label?)`, returning a matcher. Matchers
-validate the subject's type at call time, so domain subjects (file handles, shell results)
-get rich checks.
+`t:expect(v)` returns a matcher: `equals` (deep) · `is` · `is_true` · `is_truthy` · `is_falsy` ·
+`is_nil` · `contains` · `matches` · `has_length` · `is_one_of` · `gt gte lt lte` · `exists` ·
+`is_file` · `is_dir` · `is_empty` · `is_fully_rendered` · `matches_snapshot`. Negate with
+`:never()`. Failures carry `expected X, got Y` detail plus the test's `file:line` in every
+reporter.
 
-```lua
-t:expect(r.code):equals(0)
-t:expect(r.stdout):contains("Compiling")
-t:expect(r.stdout):matches("Finished .+ in %d")     -- Lua pattern
-t:expect(out:file("Cargo.toml")):exists()
-t:expect(out:dir("target")):never():exists()         -- negation
-t:expect(res.status):is_one_of({ 200, 204 })
-t:expect(value):is_nil()
-t:expect(list):has_length(3)
-```
+- **Soft assertions**: `t:expect_all(function(e) e:expect(a):equals(1); e:expect(b):equals(2) end)`
+  — all failures collect into one message.
+- **Snapshots**: `t:expect(value_or_tree):matches_snapshot([key], { level = "layout"|"content" })`.
+  `.snap` files live beside the test file (`snapshots/`); `-u/--update-snapshots` rewrites;
+  `--unreferenced warn|delete` reconciles orphans on **full** runs only (a filtered run would
+  make unrun tests' snapshots look orphaned, so the check skips with a note).
 
-The optional second argument is a **label** woven into the failure message, so anonymous
-values still read clearly when they fail:
+## Async, timing, readiness
 
-```lua
-t:expect(order.id, "order id"):is_truthy()
--- on failure: "order id: expected a truthy value, got nil"
-```
+Bodies are async-driven; I/O awaits cooperatively. `prova.sleep(ms)` exists but readiness is
+never a sleep: `prova.retry(fn, { timeout = "30s", every = "500ms" })`, `http.wait_for(url,
+{ status, timeout })`, `grpc.wait_for(addr)` — gate on a condition that HOLDS. `timeout` on a
+unit cancels its future at the deadline (`timed out after …`); teardown still runs.
 
-### Core matchers (v1)
+## Capability gating: `requires` (skip) vs `must_run` (fail)
 
-| Matcher                     | Passes when …                                         |
-|-----------------------------|-------------------------------------------------------|
-| `:equals(x)` / `:eq(x)`     | deep-equal to `x`                                     |
-| `:is_truthy()` / `:is_falsy()` | Lua truthiness                                     |
-| `:is_true()` / `:is_false()`| strictly boolean                                      |
-| `:is_nil()`                 | value is nil                                          |
-| `:contains(x)`              | substring (strings) or membership (tables)            |
-| `:matches(pat)`             | Lua-pattern match (strings)                           |
-| `:has_length(n)`            | `#subject == n`                                       |
-| `:is_one_of(t)`             | membership in `t`                                     |
-| `:gt(n)` `:gte(n)` `:lt(n)` `:lte(n)` | numeric comparison                          |
-| `:exists()` / `:is_file()` / `:is_dir()` / `:is_empty()` | filesystem handle checks   |
+`requires = { "docker", "dotnet >= 9" }` states a **fact about the test** — what it needs. The
+vocabulary is open: a name is a binary probed on `PATH` (special cases: `docker` probes the live
+daemon; `github` checks `GITHUB_TOKEN`; native names like `http`/`grpc` check compiled
+features), and `runtime.capability(name, fn)` in the companion registers package-specific
+predicates. Unavailable ⇒ the node **skips with the reason shown, never fails** — which also
+means a typo'd name silently skips: read skip reasons. A profile's `must_run = [...]` is the
+other half — **policy about the environment**: same expressions, but unmet ⇒ the run FAILS
+(exit 2) before anything executes. See [`test-topology.md`](test-topology.md).
 
-`:never()` returns a negated matcher (`t:expect(x):never():contains("secret")`).
+## Modules (built-ins) and plugins
 
-### Soft assertions
+Built-ins, one line each: `shell.run(cmd, {cwd, env, timeout, check})` + `shell.spawn` (managed
+process) · `fs` (read/write/exists/glob/tempdir/remove_all) · `net.free_port()` ·
+`http.get/post/…` (async; `.status`, `:json()`), `http.client`, `http.wait_for` ·
+`grpc.client(addr)` (`:call`, `:call_status`; server reflection), `grpc.wait_for` ·
+`graphql.client{ url }` · `yaml.parse/parse_all` · `sqlite.client(url)` ·
+`docker.run{...}`/`build`/`network` · mock facets: `http.mock`/`grpc.mock` (stubs with Lua reply
+handlers + a request journal; see [`mocks-proxies-drivers.md`](mocks-proxies-drivers.md)) —
+plus `archetect.render{...}`/`verify{...}`, a bundled plugin (always present in the standalone
+binary).
 
-By default a failed assertion **fails the test immediately**. `t:expect_all(function() … end)`
-collects multiple failures before failing (useful for asserting many files at once):
+**There is no `db` module.** Server databases are plugins — `require("postgres")`,
+`require("mysql")` — following the resource grammar: `X.client(...)` attaches to something
+running; `X.container(ctx, opts?)` provisions ephemerally and returns
+`{ client, url, container, host, port }` (see [`namespacing.md`](namespacing.md)). The full,
+current surface — core and every plugin this package declares — is one call away:
+`prova.help()` / MCP `introspect`.
 
-```lua
-t:expect_all(function()
-  t:expect(out:file("README.md")):exists()
-  t:expect(out:file("LICENSE")):exists()
-  t:expect(out:file(".gitignore")):exists()
-end)  -- reports every missing file, not just the first
-```
+## Files that aren't tests
 
-### Snapshots
+- **`suite.lua`** — in a directory, groups that directory's test files into one suite sharing a
+  Lua state (`Scope.Suite` fixtures live here; `suite.config{ name?, requires? }` names/gates
+  the whole suite). Directory-scoped: subdirectories are discovered independently.
+- **`prova.lua`** (or the manifest's `config` path) — the package **companion**, loaded once
+  with the manifest, *before* any suite: `runtime.capability(name, fn)` registrations live
+  here. It is NOT a conftest — shared fixtures belong in `suite.lua`; shared helpers in a
+  `require`d plugin under `plugin_root`.
 
-We already lean on Rust's `insta` in the archetect workspace; the file module exposes the
-same idea to Lua for whole-file / whole-tree snapshotting:
+## Running (pointer)
 
-```lua
-t:expect(out:file("src/main.rs")):matches_snapshot()      -- .snap alongside the test file
-t:expect(out:tree()):matches_snapshot("full-layout")      -- named snapshot of the rendered tree
-```
+The run path is bare **`prova`** (`prova <file-or-dir>…` bypasses the manifest); there is no
+`test` verb. Selection: `-k PATTERN` / `--tags a,b` / `--node PATH` / `--last-failed` (an
+explicit selection matching nothing is an error; `--allow-empty` opts out). Output: `--format
+console|json|tap`, `--color`, `-q`, `--junit PATH`, `--gha` — the console is a streaming tree
+with a `failures:` recap, and every event carries the test's `file:line`. `--jobs` = concurrent
+**suites**, throughput only. Full schema and precedence: [`manifest.md`](manifest.md); live
+selection doctrine: `prova learn running`.
 
-`prova test --update-snapshots` rewrites them, mirroring `cargo insta`.
+## Decision record — deliberate absences
 
----
+These are not gaps; they were assessed and **dropped** (2026-07-15, phase-1 ergonomics):
 
-## Modules (first-party plugins)
-
-All are `require`-able and globally available inside test files.
-
-### `fs`
-
-```lua
-fs.tempdir()               -- create a temp dir (not auto-cleaned; pair with ctx:defer or ctx:tempdir)
-fs.remove_all(path)
-fs.read(path)              -- string
-fs.exists(path)            -- bool
-fs.glob(root, "**/*.rs")   -- list of paths
-```
-
-Rendered output and `fs` both yield **tree/file handles**:
-
-```lua
-local out = archetect.render{ … }          -- out is a tree handle rooted at the destination
-out.path                                    -- absolute root
-out:file("src/main.rs")                     -- file handle (relative to root)
-out:dir("src")                              -- dir handle
-out:file("x"):read()                        -- string contents
-out:tree()                                  -- serializable snapshot of the whole layout
-```
-
-### `shell`
-
-```lua
-local r = shell.run("cargo build", {
-  cwd = out.path,
-  env = { RUST_LOG = "info" },
-  timeout = "120s",
-  check = false,            -- if true, non-zero exit raises instead of returning
-})
-r.code        -- integer exit code
-r.stdout      -- string
-r.stderr      -- string
-r.duration    -- seconds (number)
-r:ok()        -- r.code == 0
-```
-
-### `http` (blocking in v1)
-
-Deliberately synchronous. Test suites are IO-bound but rarely need in-test concurrency;
-parallelism lives at the test-case level in the Rust runner, not inside a test.
-
-```lua
-local res = http.get("http://localhost:8080/health", { headers = { Accept = "application/json" } })
-res.status                 -- integer
-res.body                   -- string
-res.headers                -- table
-res:json()                 -- decoded table (raises on non-JSON)
-
-http.post(url, { json = { name = "widget" }, timeout = "10s" })
-
--- retry helper for boot-then-probe flows
-http.wait_for("http://localhost:8080/health", { status = 200, timeout = "30s", every = "500ms" })
-```
-
-### `archetect` (the justifying plugin)
-
-Renders **in-process** via `archetect-core` — the single biggest advantage over a
-pytest-style subprocess harness. Prompt answers are passed as data (no `-a k=v` string
-marshaling), errors surface as real diagnostics, and we can assert on the IO-protocol
-write operations, not just the post-hoc filesystem.
-
-```lua
-local out = archetect.render{
-  source = "https://github.com/archetect/archetype-rust-cli.git",  -- or a local path
-  answers = { project_name = "widget", description = "demo" },
-  switches = { "ci" },
-  defaults = true,                 -- use defaults for anything unanswered (headless)
-  destination = t:tempdir(),       -- optional; a temp dir is used if omitted
-}
-
-out:file("Cargo.toml")             -- tree handle, as above
-out.writes                         -- ordered list of IO-protocol write ops the render intended
-```
-
----
-
-## Discovery, layout, CLI
-
-- Test files match `**/*_test.lua` (and `**/*.test.lua`). Each file is one `file` scope.
-- A directory tree of test files is a **suite**; `suite`-scoped fixtures span the run.
-- Fixtures/helpers can live in a `conftest.lua`-equivalent (`prova.lua`) loaded before the
-  test files in its directory and inherited by subdirectories.
-
-```
-$ prova test                     # discover & run under CWD
-$ prova test tests/rust_cli      # a subtree
-$ prova test -k "compiles"       # filter by name substring
-$ prova test --tags net          # filter by tag
-$ prova test --update-snapshots
-$ prova test --jobs 8            # test-case-level parallelism (fixtures respect scope)
-$ prova test --format tap|pretty|json
-```
-
-Two front doors over the same `prova-core` lib (mirrors `archetect-core` ← `archetect-bin`):
-1. `prova` — the standalone binary (general-purpose positioning).
-2. `archetect test` — the same runner surfaced as an archetect subcommand for archetype
-   authors who already have the CLI. *"The generator ships its own test framework."*
-
----
-
-## Tooling / LSP (decided up front)
-
-Authoring quality is a first-class goal, so the LSP story is settled before the engine:
-
-- **LuaCATS via `lua-language-server`.** LuaCATS is the annotation dialect LuaLS consumes
-  (`---@class`, `---@param`, generics, `---@meta`). It gives types through comments with
-  **zero build step** — the right fit for a DSL where authors write plain Lua. We reject
-  Teal (a compile-to-Lua typed dialect) because it would force authors to write `.tl` and
-  compile. This also matches archetect's existing choice for its own Lua API annotations.
-- **Target Lua 5.4**, matching archetect's mlua (`features = ["lua54"]`). `runtime.version`
-  in `.luarc.json` is pinned to `Lua 5.4`.
-- **Annotations are the authoritative surface.** `library/prova.lua` + `library/modules.lua`
-  (`---@meta` stubs) define the API; the runtime must conform to them. Risk to manage:
-  drift between hand-written stubs and the Rust-registered API. For the POC we hand-maintain;
-  longer term we may generate the stubs from the Rust registration to guarantee they match.
-- **Generics carry fixture types.** `prova.fixture` → `prova.Fixture<T>`; `ctx:use(handle)`
-  → `T`. This is *why* `use` takes a handle, not a string (see DI section).
-- **Distribution mirrors `archetect ide setup`.** An `prova ide setup` command will
-  `include_str!` the stubs, install them to the data dir, and write/update a `.luarc.json`
-  (`runtime.version` + `workspace.library`). The repo checks in a `.luarc.json` pointing at
-  `library/` so the examples are typed during prototyping right now.
-
-## Open questions (to resolve while prototyping the engine)
-
-1. **`describe` scoping** — labeling-only (current) vs. real nested fixture scope (jest).
-2. ~~**Fixture finalization on failure** — surface teardown errors as separate failures or attach
-   them to the test?~~ **Resolved 2026-07-17: separate leaves.** A raising teardown is reported as
-   its own node, `<scope> ⟶ teardown`, counted in `failed`.
-
-   Attaching to a test cannot work in general — a `file`-scoped fixture tears down after *every*
-   test in its file, so no single test owns the failure, and picking one would blame whichever test
-   happened to sort last. It is also the wrong place: the teardown ran *after* the body passed, so
-   the defect is not in the test. It needed no new reporting concept; `Event::NodeFinished` already
-   carries a path, an outcome, and a message.
-
-   **A teardown leaf never gates.** It does not cascade-skip a flow's later steps and does not skip
-   a `depends_on` dependent: those gate on whether the unit's *work* passed, and a dependent's
-   premise still holds when only a cleanup raised. (The first implementation got this wrong and
-   skipped a flow's remaining steps; `testdata/teardown_errors.lua` is what caught it.) Every
-   teardown still runs even when an earlier one raises — one bad `defer` must not strand the
-   cleanups registered around it.
-
-   Why it mattered more than its size suggests: teardown errors were previously **discarded**
-   (`let _ = …`), and `ctx:manage` teardown is what stops containers — so a cleanup that raised was
-   a leaked container the run reported as green.
-
-   The paths with no reporter — `eval`, `up`, `watch`, `down`, partial-provision cleanup — report to
-   **stderr** instead, naming the scope and suggesting `docker ps`. Those are precisely the paths
-   that stop a held topology's containers, so silence there means a resource still running after
-   prova said it was done. `teardown_scope` is `#[must_use]` so a future call site cannot quietly
-   drop them again — which is not theoretical: it immediately caught six sites the first pass had
-   missed.
-3. **Parallelism vs. `suite`/`file` fixtures** — a `file`-scoped fixture is naturally
-   serialized within its file; across files we can parallelize freely. Confirm the cache
-   is keyed so parallel workers don't double-instantiate a `suite` fixture (needs a
-   once-guard in the runtime).
-4. **`http` async** — keep blocking for v1; revisit only if a real suite needs in-test
-   concurrency.
-5. **Assertion library: build vs. vendor** — leaning build (~150 lines, our idioms) over
-   vendoring busted, which assumes LuaRocks/standalone Lua and won't map onto embedded
-   mlua cleanly. Same "vendored fork on our terms" stance as MiniJinja/inquire.
+- **Parametrized fixtures** (`ctx:param()`, `{ params = ... }`): a parametrized fixture silently
+  multiplies the tests that use it — action-at-a-distance, pytest's most-confusing feature —
+  and the lazy `t:use` model has no static fixture graph to do it cleanly anyway. The need
+  decomposes: same assertions over data → `test_each`; divergent logic → separate files;
+  env-level variation → profiles.
+- **`f:use` (flow-level fixture binding)**: the flow *builder* runs at collection; fixture
+  *values* exist only at execution, so `f:use` could only be a lying proxy or a re-run builder —
+  and the only principled consumer of re-runnable builders is a load executor, an explicit
+  non-goal. Flow fixtures are `t:use` inside steps (scope-cached ⇒ same instance).
+- **`before_all`/`before_each`/`after_each`/`after_all` and autouse fixtures**: hooks reorder
+  action at a distance; prova's setup is explicit (`t:use`) and its teardown is owned by the
+  thing that created it (`defer`/`manage`, factory-registered). Nothing implicit runs around a
+  test.
+- **`describe_each`**: not built until a real trigger appears (the same case-list copied across
+  several `test_each`, or a whole block × N variants). It composes `describe` + `test_each`,
+  both shipped — a cheap add when the need is real.
+- **A params DSL**: parametrize with plain Lua — a `VARIANTS` table and a `for` loop generating
+  fixtures + groups is the idiom.
