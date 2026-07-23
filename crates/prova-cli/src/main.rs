@@ -14,7 +14,9 @@
 //!   prova --list <path>              discover tests without running them
 //!   prova --jobs N <path>            run up to N units concurrently (throughput only)
 //!
-//! CLI flags override manifest values; explicit path arguments bypass the manifest entirely.
+//! CLI flags override manifest values; explicit path arguments override the manifest's SELECTION
+//! (what runs) while the package environment (plugins, capabilities, run defaults) still applies —
+//! home discovery anchors at the named paths, so a file runs the same from anywhere.
 
 mod annotations;
 mod catalog;
@@ -378,7 +380,7 @@ fn eval_subcommand(args: Vec<String>) -> ExitCode {
     };
     let (mut plugins_resolved, sources) = match &home {
         Some(home) => {
-            match resolve_from_manifest(home, profile, None, None, None, &layout, false, false) {
+            match resolve_from_manifest(home, profile, None, None, None, &layout, false, false, false) {
                 Ok(r) => (r.plugins, r.sources),
                 Err(code) => return code,
             }
@@ -777,7 +779,7 @@ fn build_topology_run(
     // Locate the package (the manifest tells us where topologies + plugins live).
     let home = resolve_home(manifest_path.as_deref())?;
 
-    let run = resolve_from_manifest(&home, profile, None, None, None, &layout, false, false)?;
+    let run = resolve_from_manifest(&home, profile, None, None, None, &layout, false, false, true)?;
 
     // Gather every file that could declare a topology: the discovered `proofs` dirs plus any explicit
     // suites. `proofs` are directory-NAME patterns found anywhere below the root; suites are literal.
@@ -1424,13 +1426,21 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         }
     };
 
-    // Determine the prova home (the directory owning `prova.toml`), unless explicit path args bypass
-    // the manifest. `--manifest PATH` points directly at a manifest; otherwise discovery walks up
-    // from the current directory. An ambiguous layout (more than one manifest location) is an error.
-    let home: Option<Home> = if !explicit_paths.is_empty() {
-        None
-    } else if let Some(path) = &manifest_path {
+    // Determine the prova home (the directory owning `prova.toml`). `--manifest PATH` points
+    // directly at a manifest; a manifest-mode run walks up from the current directory; explicit
+    // path args anchor discovery at the NAMED paths themselves — a file selects what to run but
+    // keeps its package's environment, even when named from outside the package. An ambiguous
+    // layout (more than one manifest location) is an error, as is a selection spanning packages.
+    let home: Option<Home> = if let Some(path) = &manifest_path {
         Some(home::from_manifest_path(Path::new(path)))
+    } else if !explicit_paths.is_empty() {
+        match home_for_explicit_paths(&explicit_paths) {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("prova: {e}");
+                return ExitCode::from(2);
+            }
+        }
     } else {
         match home::find(Path::new(".")) {
             Ok(h) => h,
@@ -1441,8 +1451,10 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         }
     };
 
-    // Resolve the run. Explicit path args bypass the manifest (literal paths relative to cwd, no IDE
-    // management); otherwise read the home's `prova.toml` (a `proofs` name-pattern rooted at home).
+    // Resolve the run. Explicit path args are the SELECTION (literal paths relative to cwd, no
+    // declared-suite fan-out, no IDE management) but never strip the package environment: when the
+    // named paths live in a package, its manifest still supplies plugins, capabilities, and run
+    // defaults. Otherwise read the home's `prova.toml` (a `proofs` name-pattern rooted at home).
     let from_manifest = explicit_paths.is_empty();
     let (
         base_dir,
@@ -1459,23 +1471,57 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         manage,
         capabilities,
     ) = if !explicit_paths.is_empty() {
-        (
-            PathBuf::from("."),
-            explicit_paths,
-            cli_jobs.unwrap_or(1),
-            cli_format.unwrap_or(Format::Console),
-            None,
-            None,
-            None,
-            None,
-            BTreeMap::new(),
-            plugins::ResolvedPlugins::default(),
-            BTreeMap::new(),
-            Manage::Never,
-            // Explicit-path runs bypass the manifest, so there is no companion — built-in
-            // capabilities still work; registered ones are simply absent.
-            prova_core::Capabilities::default(),
-        )
+        match &home {
+            // The named paths belong to a package: borrow its environment (plugins, capabilities,
+            // jobs/format defaults — CLI flags still win inside resolve_from_manifest), while the
+            // selection stays the explicit paths and `[suites.*]` declarations do not fan out.
+            Some(home) => match resolve_from_manifest(
+                home,
+                profile.clone(),
+                cli_jobs,
+                cli_format,
+                cli_config,
+                &layout,
+                update_force,
+                offline,
+                false,
+            ) {
+                Ok(r) => (
+                    PathBuf::from("."),
+                    explicit_paths,
+                    r.jobs,
+                    r.format,
+                    r.color,
+                    r.quiet,
+                    r.github,
+                    r.junit,
+                    BTreeMap::new(),
+                    r.plugins,
+                    r.sources,
+                    Manage::Never,
+                    r.capabilities,
+                ),
+                Err(code) => return code,
+            },
+            // No package anywhere above the named paths: an ad-hoc run with built-ins only.
+            None => (
+                PathBuf::from("."),
+                explicit_paths,
+                cli_jobs.unwrap_or(1),
+                cli_format.unwrap_or(Format::Console),
+                None,
+                None,
+                None,
+                None,
+                BTreeMap::new(),
+                plugins::ResolvedPlugins::default(),
+                BTreeMap::new(),
+                Manage::Never,
+                // No manifest, so there is no companion — built-in capabilities still work;
+                // registered ones are simply absent.
+                prova_core::Capabilities::default(),
+            ),
+        }
     } else {
         let Some(home) = &home else {
             eprintln!(
@@ -1492,6 +1538,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             &layout,
             update_force,
             offline,
+            true,
         ) {
             Ok(r) => (
                 // `home.dir` IS the package root (the parent of a nested `.prova/`/`prova/` nook), so
@@ -1925,6 +1972,49 @@ fn expand_pattern(base_dir: &Path, pattern: &str) -> Result<Vec<PathBuf>, String
     Ok(out)
 }
 
+/// The prova home for an explicit-path selection: discovery anchors at each NAMED path (a file's
+/// directory, a directory itself, a glob's deepest existing ancestor) rather than the cwd, so a
+/// file keeps its own package's environment even when named from outside it. All paths must agree
+/// on one home — half a run with the wrong plugins is worse than a refusal — and paths outside any
+/// package resolve to `None` (an ad-hoc run) only when NO named path belongs to a package.
+fn home_for_explicit_paths(paths: &[String]) -> Result<Option<Home>, String> {
+    // The deepest existing directory at or above `arg` — a file anchors at its parent; a path that
+    // does not exist yet (a glob, a typo caught later at discovery) walks up to solid ground.
+    fn anchor(arg: &str) -> PathBuf {
+        let p = Path::new(arg);
+        let mut dir = if p.is_dir() { p } else { p.parent().unwrap_or(Path::new(".")) };
+        if dir.as_os_str().is_empty() {
+            dir = Path::new(".");
+        }
+        for d in dir.ancestors() {
+            let d = if d.as_os_str().is_empty() { Path::new(".") } else { d };
+            if d.is_dir() {
+                return d.to_path_buf();
+            }
+        }
+        PathBuf::from(".")
+    }
+
+    let mut found: Option<(String, Home)> = None;
+    for arg in paths {
+        let home = home::find(&anchor(arg))?;
+        match (&found, home) {
+            (_, None) => {}
+            (None, Some(h)) => found = Some((arg.clone(), h)),
+            (Some((_, h0)), Some(h)) if h0.dir == h.dir => {} // same package — nothing to record
+            (Some((first, h0)), Some(h)) => {
+                return Err(format!(
+                    "explicit paths span two prova packages ({first:?} is in {}, {arg:?} is in {}) \
+                     — run them separately, each with its own package environment",
+                    h0.dir.display(),
+                    h.dir.display()
+                ));
+            }
+        }
+    }
+    Ok(found.map(|(_, h)| h))
+}
+
 fn collect_suites(
     base_dir: &Path,
     declared: &BTreeMap<String, SuiteDecl>,
@@ -1957,11 +2047,37 @@ fn collect_suites(
         }
     } else {
         // Explicit `prova <path>...` args: literal files/dirs (with glob support), relative to cwd.
+        // A named FILE keeps its suite membership: a sibling `suite.lua` still wraps it (the setup
+        // runs, `Scope.Suite` fixtures resolve, explicitly-named members share one suite state) —
+        // selection narrows the files, never their environment. Directories group via
+        // `discover_suites` exactly as before.
+        let mut members: BTreeMap<PathBuf, Vec<PathBuf>> = BTreeMap::new();
         for arg in proofs {
-            for dir in expand_pattern(base_dir, arg)? {
-                let found = discover_suites(&dir).map_err(|err| format!("{arg}: {err}"))?;
+            for path in expand_pattern(base_dir, arg)? {
+                if path.is_file() {
+                    if let Some(dir) = path.parent() {
+                        if dir.join("suite.lua").is_file() {
+                            members.entry(dir.to_path_buf()).or_default().push(path);
+                            continue;
+                        }
+                    }
+                }
+                let found = discover_suites(&path).map_err(|err| format!("{arg}: {err}"))?;
                 suites.extend(found);
             }
+        }
+        for (dir, mut files) in members {
+            files.sort();
+            files.dedup();
+            suites.push(Suite {
+                name: dir
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("suite")
+                    .to_string(),
+                setup: Some(dir.join("suite.lua")),
+                files,
+            });
         }
     }
     Ok(suites)
@@ -2067,6 +2183,10 @@ fn resolve_from_manifest(
     // Combined here with the manifest's `[updates]` (interval + force) into the effective policy.
     force_update: bool,
     offline: bool,
+    // Whether the caller consumes `r.proofs` as its selection. A manifest run needs the key (an
+    // empty selection is a config error); explicit-path runs and `eval` bring their own selection
+    // and only borrow the package environment, so a plugins-only manifest is fine for them.
+    require_proofs: bool,
 ) -> Result<ManifestRun, ExitCode> {
     let path = &home.manifest;
 
@@ -2083,7 +2203,7 @@ fn resolve_from_manifest(
         eprintln!("prova: {e}");
         ExitCode::from(2)
     })?;
-    if resolved.proofs.is_empty() && resolved.suites.is_empty() {
+    if require_proofs && resolved.proofs.is_empty() && resolved.suites.is_empty() {
         eprintln!(
             "prova: manifest {} defines no proofs or suites to run",
             path.display()

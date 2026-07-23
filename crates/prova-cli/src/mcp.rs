@@ -126,7 +126,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
     let (mut plugins_resolved, sources, proofs, declared, jobs, capabilities) = match &home {
         Some(home) => {
             match crate::resolve_from_manifest(
-                home, profile, None, None, None, &layout, false, false,
+                home, profile, None, None, None, &layout, false, false, true,
             ) {
                 Ok(r) => (
                     r.plugins,
@@ -307,7 +307,7 @@ impl McpEnv {
                     Some(p.to_string())
                 };
                 // `resolve_from_manifest` reports detail on stderr (the diagnostic channel).
-                let mut run = crate::resolve_from_manifest(home, p.clone(), None, None, None, &self.layout, false, false)
+                let mut run = crate::resolve_from_manifest(home, p.clone(), None, None, None, &self.layout, false, false, true)
                     .map_err(|_| {
                         format!(
                             "could not resolve manifest at {} (profile {p:?}) — details on the server's stderr",
