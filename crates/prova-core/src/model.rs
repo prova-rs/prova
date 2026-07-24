@@ -186,8 +186,14 @@ impl Reporter for ConsoleReporter {
                     Outcome::Spec => "SPEC",
                 };
                 println!("  {mark}  {path}  ({duration:.1?}, {assertions} assert)");
-                if let (Outcome::Failed | Outcome::Spec, Some(m)) = (outcome, message) {
+                if let (Outcome::Failed, Some(m)) = (outcome, message) {
                     println!("          ↳ {m}");
+                }
+                // An open spec is expected-red: first line only, no traceback noise.
+                if let (Outcome::Spec, Some(m)) = (outcome, message) {
+                    if let Some(first) = m.lines().next() {
+                        println!("          ↳ {first}");
+                    }
                 }
             }
             Event::RunFinished { summary } => {

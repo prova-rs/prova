@@ -69,6 +69,27 @@ prova.test("TAP renders an open spec as a TODO directive", function(t)
   t:expect(r.stdout):contains("# TODO api-freeze")
 end)
 
+prova.test("an open spec renders reason + first error line, without the traceback", function(t)
+  local dir = write_suite(
+    'prova.test("todo", { spec = "gap-7" }, function(t) error("json.encode is not built") end)\n')
+  local r = run(dir)
+  t:expect(r.code):equals(0)
+  t:expect(r.stdout):contains("SPEC")
+  t:expect(r.stdout):contains("gap-7")
+  -- The first line of the error is the call to action…
+  t:expect(r.stdout):contains("json.encode is not built")
+  -- …but an EXPECTED failure carries no traceback noise (that is for unexpected red).
+  t:expect(r.stdout:find("stack traceback", 1, true)):is_falsy()
+end)
+
+prova.test("--strict-specs keeps the full failure detail, traceback included", function(t)
+  local dir = write_suite(
+    'prova.test("todo", { spec = "gap-7" }, function(t) error("json.encode is not built") end)\n')
+  local r = run("--strict-specs " .. dir)
+  t:expect(r.code):equals(1)
+  t:expect(r.stdout):contains("stack traceback")
+end)
+
 prova.test("a fully-graduated flag is a completion error", function(t)
   local dir = write_suite(
     'prova.group("done", { spec = "shipped" }, function(g)\n' ..

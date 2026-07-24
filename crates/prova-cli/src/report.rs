@@ -476,8 +476,11 @@ impl Reporter for HumanReporter {
                             .map(|r| format!("  {DIM}— {r}{DIM:#}"))
                             .unwrap_or_default();
                         let _ = writeln!(out, "{indent}{SKIP}SPEC{SKIP:#}  {leaf}{why}{line_col}");
-                        if let Some(m) = message {
-                            write_message(out, &format!("{indent}      "), m);
+                        // First line only: the error is the call to action, but an EXPECTED
+                        // failure carries no traceback noise. `--strict-specs` (where an open
+                        // spec is being actively worked) reports it as FAIL with full detail.
+                        if let Some(first) = message.and_then(|m| m.lines().next()) {
+                            write_message(out, &format!("{indent}      "), first);
                         }
                     }
                 }
