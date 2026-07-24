@@ -32,13 +32,31 @@ prova.test("open specs keep the run green and are counted", function(t)
   t:expect(r.stdout):contains("(1 graduated)")
 end)
 
-prova.test("an honored spec fails demanding graduation", function(t)
+prova.test("an honored spec with its OWN flag says: remove the flag", function(t)
   local dir = write_suite(
     'prova.test("done already", { spec = "oops" }, function(t) t:expect(1):equals(1) end)\n')
   local r = run(dir)
   t:expect(r.code):equals(1)
   t:expect(r.stdout):contains("spec honored")
-  t:expect(r.stdout):contains("graduate")
+  -- The flag is the test's own: removal is the one correct remedy. Suggesting spec = false
+  -- here would steer the author straight into the orphan-graduation error.
+  t:expect(r.stdout):contains("remove the spec flag from this test")
+  t:expect(r.stdout:find("spec = false", 1, true)):is_falsy()
+end)
+
+prova.test("an honored spec under an INHERITED flag prefers narrowing", function(t)
+  local dir = write_suite(
+    'prova.group("g", { spec = "wip" }, function(g)\n' ..
+    '  g:test("done", function(t) t:expect(1):equals(1) end)\n' ..
+    '  g:test("open", function(t) t:expect(1):equals(2) end)\n' ..
+    'end)\n')
+  local r = run(dir)
+  t:expect(r.code):equals(1)
+  t:expect(r.stdout):contains("spec honored")
+  -- A finished proof should end up carrying no annotation: prefer moving the flag onto the
+  -- still-open tests; spec = false remains the in-place mechanism.
+  t:expect(r.stdout):contains("narrow the enclosing flag")
+  t:expect(r.stdout):contains("spec = false")
 end)
 
 prova.test("--strict-specs turns open specs into failures", function(t)

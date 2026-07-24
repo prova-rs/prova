@@ -2777,6 +2777,10 @@ struct Leaf {
     /// wins; reason is `""` for a bare `spec = true`). Drives the outcome inversion: red body →
     /// `Outcome::Spec`, green body → a failure demanding graduation.
     spec: Option<String>,
+    /// True when the open flag is the leaf's OWN (not inherited): the honored-spec remedy is
+    /// then "remove the flag from this test" — suggesting `spec = false` would steer the author
+    /// into the orphan-graduation error.
+    spec_own: bool,
     /// True for a graduated leaf (`spec = false` under an open flag) — an ordinary test again,
     /// counted for the burndown meter.
     graduated: bool,
@@ -2946,8 +2950,10 @@ fn push_leaf(
     // The leaf's effective spec state: its own flag over the inherited one. An open leaf marks
     // its flag's origin as live (used); a flag no leaf keeps open is "complete" and refused.
     let (spec, graduated) = apply_spec_opt(ix, &node.name, &node.opts.spec, inherited, spec_ctx);
+    let mut spec_own = false;
     let spec = spec.map(|(origin, reason)| {
         spec_ctx.used.insert(origin);
+        spec_own = origin == ix;
         reason
     });
     let id = leaves.len();
@@ -2961,6 +2967,7 @@ fn push_leaf(
         precondition_skip: None,
         tags,
         spec,
+        spec_own,
         graduated,
     });
     id
@@ -3535,9 +3542,13 @@ struct NodeResult {
 /// - Any work result **failed** → the leaf is an **open spec**: each failure becomes
 ///   `Outcome::Spec` (CI green) — unless `strict` (driver mode), where open specs stay failures.
 /// - No failures and ≥1 pass → the spec is **honored**: each pass becomes a *failure* demanding
-///   graduation, so an implementation cannot land without flipping its flag in the same commit.
+///   the flag come off, so an implementation cannot land without flipping it in the same commit.
+///   The remedy is location-aware and removal-first: a finished proof should end up carrying no
+///   annotation at all. For the leaf's OWN flag, removal is the only correct advice (`spec =
+///   false` there would orphan); under an inherited flag, prefer narrowing the flag to the
+///   still-open tests, with `spec = false` as the in-place mechanism.
 /// - All skipped → untouched: an unmet `requires` wins over spec (nothing was observed).
-fn apply_spec_inversion(results: &mut [NodeResult], reason: &str, strict: bool) {
+fn apply_spec_inversion(results: &mut [NodeResult], reason: &str, own_flag: bool, strict: bool) {
     let failed = results
         .iter()
         .any(|r| !r.teardown && r.outcome == Outcome::Failed);
@@ -3553,15 +3564,17 @@ fn apply_spec_inversion(results: &mut [NodeResult], reason: &str, strict: bool) 
         }
         return;
     }
+    let remedy = if own_flag {
+        "spec honored — remove the spec flag from this test"
+    } else {
+        "spec honored — narrow the enclosing flag to the still-open tests, or graduate in place (spec = false)"
+    };
     for r in results
         .iter_mut()
         .filter(|r| !r.teardown && r.outcome == Outcome::Passed)
     {
         r.outcome = Outcome::Failed;
-        r.message = Some(
-            "spec honored — graduate it (set spec = false on this test, or remove the flag)"
-                .to_string(),
-        );
+        r.message = Some(remedy.to_string());
     }
 }
 
@@ -3935,7 +3948,7 @@ async fn run_plan(
         // (or a real failure under --strict-specs), green → "graduate it". Gating sees the
         // post-inversion truth, so a dependent of an open spec still cascade-skips.
         if let Some(reason) = &leaves[i].spec {
-            apply_spec_inversion(&mut results, reason, config.strict_specs);
+            apply_spec_inversion(&mut results, reason, leaves[i].spec_own, config.strict_specs);
         }
         outcome[i] = Some(unit_outcome(&results));
         emit_finished(reporter, summary, &results);
