@@ -4,4 +4,4 @@
 # network into every `cargo test` sandbox. The selftest needs no services, no network,
 # and no plugins; this manifest is where discovery stops.
 [run]
-proofs = ["."]
+proofs = []  # nothing runs by pattern here — the selftest harness passes explicit files
