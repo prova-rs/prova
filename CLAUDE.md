@@ -55,11 +55,16 @@ only the specific files you touched, if at all.
 
 This repository uses **Jujutsu (jj)**, not git — never run `git` commands here.
 
-It is **one jj repo with multiple workspaces** (`jj workspace list`): `default` → `prova/`,
-`prova-agents/`, and `prova-mocks/`, all sharing the one store in `prova/.jj`. Commits are shared
-storewide; only each workspace's working-copy `@` differs. **Do feature work in the `prova-agents`
-workspace.** Editing files by absolute path from the org root lands them in whichever workspace the
-path points at — stay inside one workspace to avoid cross-workspace contamination.
+It is **one jj repo with multiple workspaces** (`jj workspace list`), all sharing the one store in
+`prova/.jj`. Commits are shared storewide; only each workspace's working-copy `@` differs.
+
+**Workspace rule: one workspace per agent, never shared.** The interactive session works in the
+`default` workspace (`prova/`). The other workspaces (`prova-agents/`, `prova-mocks/`, …) exist so
+*concurrent* agents never fight over one working copy: a spawned/background agent claims its own
+(`jj workspace add ../prova-<agent>`), works there, and its commits are visible storewide the
+moment they're made. Do not treat any single side workspace as the shared place "where feature work
+goes." Editing files by absolute path lands them in whichever workspace the path points at — stay
+inside your own.
 
 ```bash
 jj status        # working-copy changes        jj log            # history
