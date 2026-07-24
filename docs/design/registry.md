@@ -214,6 +214,10 @@ to a bar.
 
 ## Roadmap
 
+**Status (2026-07-24):** designed; the executable backlog is authored — `proofs/spec/registry/`
+holds 15 open specs covering items 1–3 below (`prova --specs --list` enumerates them), plus the
+discovery-only guardrail, which already runs unflagged. Implementation not started.
+
 1. `[[registries]]` in `config.toml` + built-in `prova-rs` default; fetch/cache via the existing
    git-cache path; entry parser with unknown-key tolerance + per-entry schema skip.
 2. `prova plugins` list / search / info / add (manifest edit + immediate fetch), CLI + MCP.
