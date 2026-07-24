@@ -1627,20 +1627,42 @@ impl UserData for Matcher {
             })
         });
 
-        // Lua-pattern match on a string subject (delegates to Lua's `string.find`).
-        methods.add_method("matches", |lua, this, pattern: String| {
-            let (pass, subject) = match &this.subject {
-                Value::String(s) => {
-                    let subject = s.to_str()?.to_string();
-                    let find: mlua::Function = lua.globals().get::<Table>("string")?.get("find")?;
-                    let found: Value = find.call((subject.clone(), pattern.clone()))?;
-                    (!matches!(found, Value::Nil), subject)
-                }
-                other => (false, display(other)),
-            };
-            this.record(pass, || {
-                format!("expected {subject:?} to match pattern {pattern:?}")
-            })
+        // Polymorphic on the argument (the `contains` precedent — docs/plans/api-freeze.md §3):
+        // a STRING is a Lua pattern match on a string subject (delegates to `string.find`); a
+        // TABLE is a recursive structural SUBSET — every key in the shape must exist in the
+        // subject and recursively match, extra subject keys ignored, arrays same-index. One
+        // semantics for every surface that matches shapes; spec: proofs/spec/matching/.
+        methods.add_method("matches", |lua, this, arg: Value| match arg {
+            Value::String(pattern) => {
+                let pattern = pattern.to_str()?.to_string();
+                let (pass, subject) = match &this.subject {
+                    Value::String(s) => {
+                        let subject = s.to_str()?.to_string();
+                        let find: mlua::Function =
+                            lua.globals().get::<Table>("string")?.get("find")?;
+                        let found: Value = find.call((subject.clone(), pattern.clone()))?;
+                        (!matches!(found, Value::Nil), subject)
+                    }
+                    other => (false, display(other)),
+                };
+                this.record(pass, || {
+                    format!("expected {subject:?} to match pattern {pattern:?}")
+                })
+            }
+            Value::Table(shape) => {
+                let mismatch = match &this.subject {
+                    Value::Table(subject) => subset_mismatch(&shape, subject, &mut Vec::new()),
+                    other => Some(format!("expected a table, got {}", display(other))),
+                };
+                let pass = mismatch.is_none();
+                this.record(pass, || match mismatch {
+                    Some(detail) => format!("does not match shape — {detail}"),
+                    None => "matches the shape".to_string(),
+                })
+            }
+            _ => Err(mlua::Error::RuntimeError(
+                "matches takes a Lua pattern (string) or a shape (table)".into(),
+            )),
         });
 
         methods.add_method("has_length", |_, this, n: i64| {
@@ -1732,6 +1754,66 @@ fn values_equal(a: &Value, b: &Value) -> bool {
         (Value::Table(x), Value::Table(y)) => tables_equal(x, y),
         _ => false,
     }
+}
+
+/// The structural-subset walk behind `:matches(shape)`: every key present in `shape` must exist
+/// in `subject` and recursively match; extra subject keys are ignored; an array is just integer
+/// keys, so elements match same-index (a shape array shorter than the subject's passes, longer
+/// fails on the missing index). Scalar leaves compare with `values_equal` (int↔float coercion).
+/// Returns the FIRST mismatch as a `path: expected X, got Y` line — the table-aware diff that
+/// pinpoints `status.readyReplicas: expected 3, got 1` instead of `<table> != <table>`.
+fn subset_mismatch(shape: &Table, subject: &Table, path: &mut Vec<String>) -> Option<String> {
+    for pair in shape.clone().pairs::<Value, Value>() {
+        let Ok((key, expected)) = pair else {
+            return Some(format!("{}: unreadable shape entry", path_str(path)));
+        };
+        path.push(key_segment(&key));
+        let actual: Value = subject.get::<Value>(key).unwrap_or(Value::Nil);
+        let mismatch = match (&expected, &actual) {
+            (Value::Table(es), Value::Table(actual_t)) => subset_mismatch(es, actual_t, path),
+            _ if values_equal(&expected, &actual) => None,
+            (_, Value::Nil) => Some(format!(
+                "{}: expected {}, got nothing",
+                path_str(path),
+                display(&expected)
+            )),
+            _ => Some(format!(
+                "{}: expected {}, got {}",
+                path_str(path),
+                display(&expected),
+                display(&actual)
+            )),
+        };
+        path.pop();
+        if mismatch.is_some() {
+            return mismatch;
+        }
+    }
+    None
+}
+
+/// One path segment for the subset diff: array indices render as `[i]`, string keys as-is.
+fn key_segment(key: &Value) -> String {
+    match key {
+        Value::Integer(i) => format!("[{i}]"),
+        Value::String(s) => s.to_string_lossy().to_string(),
+        other => format!("[{}]", display(other)),
+    }
+}
+
+/// Join diff path segments: dots between named keys, indices appended (`status.conditions[1].type`).
+fn path_str(path: &[String]) -> String {
+    if path.is_empty() {
+        return "(root)".to_string();
+    }
+    let mut out = String::new();
+    for seg in path {
+        if !seg.starts_with('[') && !out.is_empty() {
+            out.push('.');
+        }
+        out.push_str(seg);
+    }
+    out
 }
 
 /// Deep table equality: same set of keys, values recursively equal. (Cyclic tables are not guarded
