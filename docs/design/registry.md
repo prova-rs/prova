@@ -182,11 +182,15 @@ one path out:
   the plugin repo at `ref`, derives the entry (manifest `[plugin]` section + `prova plugin lint`
   shape classification), writes `registry/<name>.toml`, commits. Idempotent upsert — re-dispatch
   updates the entry in place.
-- **Org events — plugins register themselves.** An org-level webhook (or a reusable workflow that
-  plugin repos call on `release: published`) forwards to the dispatch: a new `prova-*` repo in
-  the org registers on creation, a release bumps `latest`, an archived/deleted repo removes its
-  entry (the delete verb is a second dispatch that removes the file). The org's registry tracks
-  the org's plugins with no human in the loop.
+- **Org events — plugins register themselves.** Two complementary mechanisms (both landed
+  2026-07-24): a **reconcile loop** in the registry repo — scheduled, credential-free — pulls
+  the org's state and converges the registry onto it (any `prova-rs/prova-*` repo with a
+  release and a `[plugin]` manifest gets an entry at its latest release; entries whose repos
+  are deleted or archived are removed), and a **release-time dispatch hop** in each plugin repo
+  (`release: published` → `gh workflow run register.yml`) for instant registration. The hop
+  needs a cross-repo token (`REGISTRY_DISPATCH_TOKEN`, an org secret); without it the
+  reconcile loop still guarantees registration within its interval — the hop only buys
+  latency. The org's registry tracks the org's plugins with no human in the loop.
 - **Pull requests — the third-party path.** Anyone can PR an entry file into a registry they
   don't control; review of that one-file diff *is* the curation step. Same format, same
   validation, human gate instead of webhook gate.
@@ -219,9 +223,19 @@ to a bar.
 `prova plugins` list/search/info/add, per-entry tolerance, the offline/cold-cache error, the
 discovery-only guardrail, and the `{{registries}}` learn slot. One deliberate deviation from the
 Surface sketch: `add` pins the manifest but does NOT fetch — pinning must work offline, and the
-next resolution fetches through the normal path. Remaining: the MCP mirror of the verbs, and
-items 4–6 (the `prova-rs/package-registry` repo itself, registration automation, update
-ergonomics).
+next resolution fetches through the normal path.
+
+**Status (2026-07-24, later):** items 4–5 are **live** — `prova-rs/package-registry` exists and
+serves the built-in default: entries for every *released* org plugin (derived by
+`scripts/derive_entry.py`, a projection of each plugin's `[plugin]` manifest; unreleased plugins
+join on their first release), `register.yml`/`remove.yml` dispatches, the credential-free
+`reconcile.yml` convergence loop (see Automation), and the self-proof suite gating PRs and
+automation commits. The whole lifecycle is proven end-to-end by `prova-rs/prova-hello` (rendered
+from the plugin archetype): create → release v1.0 → auto-registered → `prova plugins add hello`
+→ `require("hello")` green in a consumer proof → release v1.1 → `latest` bumped → archive →
+entry removed. The release-dispatch hop is wired in prova-hello but inert until
+`REGISTRY_DISPATCH_TOKEN` (fine-grained PAT, Actions write on package-registry) is set as an
+org secret. Remaining: the MCP mirror of the verbs, and item 6 (update ergonomics).
 
 1. `[[registries]]` in `config.toml` + built-in `prova-rs` default; fetch/cache via the existing
    git-cache path; entry parser with unknown-key tolerance + per-entry schema skip.
