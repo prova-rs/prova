@@ -73,29 +73,32 @@ Named `spec`, not "pending": in PDD vocabulary a proof not yet honored *is* the 
 "pending" describes a state, `spec` names what the thing is. Semantics are xfail-strict with
 **per-test inversion**, which is what removes any after-the-fact cleanup chore or drift window.
 
-- **Where set:** opts at `test` / `group` / `flow` (`{ spec = true }` or
-  `{ spec = "reason/ticket" }`), **inherited downward**; a whole directory is spec'd in one
-  place via its `suite.lua`. `spec = false` on a node **graduates** it against an inherited
-  flag; a `spec = false` with nothing to override is a validation error (no dead markers).
+> **REVISED 2026-07-23 after first dogfooding**: `spec` is **test-level only** — no group,
+> suite, or `suite.lua` flags, and no `spec = false`. The original draft had inherited flags
+> plus graduation markers, and every awkward piece of the lifecycle (markers on finished
+> proofs, the orphan-marker error, the completion error, remedy wording that depended on where
+> the flag lived) existed solely to service inheritance. A test is either flagged as a spec or
+> it is a full proof with nothing to indicate. Per-test flags also carry per-test reasons —
+> better documentation than one blanket reason; bulk-authoring is what agents are for.
+
+- **Where set:** on a `test` or `flow` only — `{ spec = true }` or `{ spec = "reason/ticket" }`.
+  A `spec` on a group or in `suite.config` is a validation error naming the fix; `spec = false`
+  is not a thing (an unflagged test is already a full proof).
 - **Open spec** (spec'd test that fails) → distinct `spec` outcome in every reporter (TAP: the
   `# TODO` directive — exactly these semantics; JUnit: skipped + message; JSONL: outcome
-  `"spec"`). CI stays green.
-- **Spec that passes → failure**: "spec honored — graduate it." An implementation cannot land
-  without graduating its spec in the same commit — cleanup is forced at implementation time,
-  never proactive-after-the-fact. Implementation + graduation = a proof-carrying change.
-- **Completion**: when every test under a flagged node is graduated, the flag is dead and the
-  run **errors**: "spec suite complete — remove the flag and N graduation markers." One cleanup
-  commit collapses it to ordinary proofs, which hold the line thereafter.
-- **No mid-burndown drift window**: graduated tests are ordinary tests (line held immediately);
-  open specs are red by definition — no state exists where a regression can hide.
+  `"spec"`; console: reason + first error line, no traceback). CI stays green.
+- **Spec that passes → failure**: "spec honored — remove the spec flag from this test." An
+  implementation cannot land without deleting its flag in the same commit — cleanup is forced
+  at implementation time, never proactive-after-the-fact. Implementation + flag removal = a
+  proof-carrying change, and the finished proof carries no annotation.
+- **No mid-burndown drift window**: an unflagged test holds the line immediately; open specs
+  are red by definition — no state exists where a regression can hide.
 - `prova --specs` — a **selector** (like `--last-failed`): run exactly the tests currently
-  carrying a spec flag, green or red — red report as open specs, green fail demanding
-  graduation; graduated tests are excluded (they are ordinary proofs). Composes:
-  `--specs --list` enumerates the remaining surface without running; every run summary counts
-  `specs: N open, M graduated`.
-- `prova --strict-specs` — driver mode: open specs are real failures. The implementing agent's
-  inner loop is `--specs --strict-specs` (only the unimplemented surface, all red); CI runs
-  neither flag.
+  carrying a spec flag — red report as open specs, green fail demanding flag removal.
+  Composes: `--specs --list` enumerates the remaining surface without running; the run summary
+  counts `N spec open`.
+- `prova --strict-specs` — driver mode: open specs are real failures (full detail, traceback
+  included). The implementing agent's inner loop is `--specs --strict-specs`; CI runs neither.
 - This feature is **implemented first, spec'd by hand** — everything else's spec depends on it.
 
 ## 6. Journal standardization — one `received()` vocabulary

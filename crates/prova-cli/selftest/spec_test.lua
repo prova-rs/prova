@@ -1,7 +1,7 @@
---- The `spec` flag through the real binary (docs/plans/api-freeze.md §5): open specs keep CI
---- green but are visibly counted; an honored spec fails until graduated; `--specs` selects the
---- spec surface; `--strict-specs` is the implementing agent's driver mode; TAP renders open
---- specs as `# TODO`.
+--- The `spec` flag through the real binary (docs/plans/api-freeze.md §5, revised — test-level
+--- only): open specs keep CI green but are visibly counted; an honored spec fails until its
+--- flag is removed; `--specs` selects the spec surface; `--strict-specs` is the implementing
+--- agent's driver mode; TAP renders open specs as `# TODO`.
 
 local prova_bin = assert(os.getenv("PROVA_BIN"), "PROVA_BIN not set")
 
@@ -9,19 +9,15 @@ local function run(args)
   return shell.run(prova_bin .. " " .. args)
 end
 
--- One temp suite reused across cases: an open spec, an honored-but-unflagged spec is exercised
--- separately (it fails the run), a graduated test, and an ordinary test.
 local function write_suite(body)
   local dir = fs.tempdir()
   fs.write(dir .. "/spec_fixture_test.lua", body)
   return dir
 end
 
+-- One temp suite reused across cases: an open spec + an ordinary test.
 local open_suite = write_suite(
-  'prova.group("formats", { spec = "api-freeze" }, function(g)\n' ..
-  '  g:test("json round-trips", function(t) t:expect(1):equals(2) end)\n' ..
-  '  g:test("yaml parses", { spec = false }, function(t) t:expect(true):is_true() end)\n' ..
-  'end)\n' ..
+  'prova.test("json round-trips", { spec = "api-freeze" }, function(t) t:expect(1):equals(2) end)\n' ..
   'prova.test("ordinary", function(t) t:expect(1):equals(1) end)\n')
 
 prova.test("open specs keep the run green and are counted", function(t)
@@ -29,34 +25,15 @@ prova.test("open specs keep the run green and are counted", function(t)
   t:expect(r.code):equals(0)
   t:expect(r.stdout):contains("SPEC")
   t:expect(r.stdout):contains("1 spec open")
-  t:expect(r.stdout):contains("(1 graduated)")
 end)
 
-prova.test("an honored spec with its OWN flag says: remove the flag", function(t)
+prova.test("an honored spec fails demanding the flag's removal", function(t)
   local dir = write_suite(
     'prova.test("done already", { spec = "oops" }, function(t) t:expect(1):equals(1) end)\n')
   local r = run(dir)
   t:expect(r.code):equals(1)
   t:expect(r.stdout):contains("spec honored")
-  -- The flag is the test's own: removal is the one correct remedy. Suggesting spec = false
-  -- here would steer the author straight into the orphan-graduation error.
   t:expect(r.stdout):contains("remove the spec flag from this test")
-  t:expect(r.stdout:find("spec = false", 1, true)):is_falsy()
-end)
-
-prova.test("an honored spec under an INHERITED flag prefers narrowing", function(t)
-  local dir = write_suite(
-    'prova.group("g", { spec = "wip" }, function(g)\n' ..
-    '  g:test("done", function(t) t:expect(1):equals(1) end)\n' ..
-    '  g:test("open", function(t) t:expect(1):equals(2) end)\n' ..
-    'end)\n')
-  local r = run(dir)
-  t:expect(r.code):equals(1)
-  t:expect(r.stdout):contains("spec honored")
-  -- A finished proof should end up carrying no annotation: prefer moving the flag onto the
-  -- still-open tests; spec = false remains the in-place mechanism.
-  t:expect(r.stdout):contains("narrow the enclosing flag")
-  t:expect(r.stdout):contains("spec = false")
 end)
 
 prova.test("--strict-specs turns open specs into failures", function(t)
@@ -69,7 +46,7 @@ prova.test("--specs selects only the spec surface", function(t)
   local r = run("--specs " .. open_suite)
   t:expect(r.code):equals(0)
   t:expect(r.stdout):contains("1 spec open")
-  -- the graduated and ordinary tests are deselected, not run
+  -- the ordinary test is deselected, not run
   t:expect(r.stdout):contains("deselected")
   t:expect(r.stdout:find("PASS", 1, true)):is_falsy()
 end)
@@ -108,14 +85,22 @@ prova.test("--strict-specs keeps the full failure detail, traceback included", f
   t:expect(r.stdout):contains("stack traceback")
 end)
 
-prova.test("a fully-graduated flag is a completion error", function(t)
+prova.test("a group-level spec flag is refused with the fix", function(t)
   local dir = write_suite(
-    'prova.group("done", { spec = "shipped" }, function(g)\n' ..
-    '  g:test("a", { spec = false }, function(t) t:expect(1):equals(1) end)\n' ..
+    'prova.group("g", { spec = "wip" }, function(g)\n' ..
+    '  g:test("open", function(t) t:expect(1):equals(2) end)\n' ..
     'end)\n')
   local r = run(dir)
   t:expect(r.code):never():equals(0)
   local out = r.stdout .. r.stderr
-  t:expect(out):contains("spec complete")
-  t:expect(out):contains("remove the flag")
+  t:expect(out):contains("spec is test-level only")
+end)
+
+prova.test("spec = false is refused — an unflagged test is already a proof", function(t)
+  local dir = write_suite(
+    'prova.test("done", { spec = false }, function(t) t:expect(1):equals(1) end)\n')
+  local r = run(dir)
+  t:expect(r.code):never():equals(0)
+  local out = r.stdout .. r.stderr
+  t:expect(out):contains("spec = false is not a thing")
 end)

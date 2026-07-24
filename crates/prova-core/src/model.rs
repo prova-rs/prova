@@ -76,18 +76,11 @@ pub struct UnitOpts {
     /// Capabilities this unit needs (e.g. `"docker"`). If any is unavailable the unit is **skipped**
     /// (not failed), with a reason — so a suite degrades gracefully where a dependency is missing.
     pub requires: Vec<String>,
-    /// The `spec` flag: `Open` marks a proof authored ahead of its implementation (red = the
-    /// `Spec` outcome, green = a failure demanding graduation); `Graduated` (`spec = false`)
-    /// releases a unit from an enclosing flag back to an ordinary, line-holding test. Inherits
-    /// downward; nearest explicit setting wins.
-    pub spec: Option<SpecOpt>,
-}
-
-/// The parsed value of a `spec` opt: `true`/a reason string → `Open`, `false` → `Graduated`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SpecOpt {
-    Open(Option<String>),
-    Graduated,
+    /// The `spec` flag — **test-level only**: `Some(reason)` marks a proof authored ahead of its
+    /// implementation (`""` for a bare `spec = true`). Red body → the `Spec` outcome; green
+    /// body → a failure demanding the flag's removal. A test either carries the flag or it is a
+    /// full proof — there is no inheritance and no `spec = false`.
+    pub spec: Option<String>,
 }
 
 /// Result totals for a run.
@@ -100,10 +93,6 @@ pub struct Summary {
     /// failures — `is_success` ignores them (CI green) unless `--strict-specs` mapped them to
     /// `failed` before tallying.
     pub spec: usize,
-    /// Graduation markers (`spec = false`) in the collected plan — tests already implemented and
-    /// holding the line while their enclosing flag is still open. Counted at collection, before
-    /// selection, so the burndown reads the suite, not the slice that ran.
-    pub graduated: usize,
     /// Leaves excluded by the run's selection (`-k` / `--tags` / `--node`) — never executed,
     /// distinct from `skipped` (which ran into a gate). Zero when no selection is active.
     pub deselected: usize,
@@ -267,18 +256,12 @@ fn outcome_str(o: Outcome) -> &'static str {
     }
 }
 
-/// The `, N spec open (M graduated)` summary segment — present only while a spec flag is live
-/// (something open, or graduation markers still awaiting their flag's removal).
+/// The `, N spec open` summary segment — present only while specs are open.
 pub fn spec_summary_segment(summary: &Summary) -> String {
-    if summary.spec == 0 && summary.graduated == 0 {
+    if summary.spec == 0 {
         return String::new();
     }
-    let graduated = if summary.graduated > 0 {
-        format!(" ({} graduated)", summary.graduated)
-    } else {
-        String::new()
-    };
-    format!(", {} spec open{graduated}", summary.spec)
+    format!(", {} spec open", summary.spec)
 }
 
 /// Serialize an event to a stable JSON shape (the wire protocol for frontends).
@@ -313,7 +296,6 @@ pub fn event_to_json(event: &Event) -> serde_json::Value {
             "failed": summary.failed,
             "skipped": summary.skipped,
             "spec": summary.spec,
-            "graduated": summary.graduated,
             "deselected": summary.deselected,
             "durationMs": summary.duration.as_secs_f64() * 1000.0,
         }),
@@ -723,7 +705,6 @@ mod tests {
             failed: 1,
             skipped: 1,
             spec: 1,
-            graduated: 0,
             deselected: 0,
             duration: Duration::from_millis(6),
         };

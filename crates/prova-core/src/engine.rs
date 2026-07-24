@@ -42,8 +42,7 @@ use futures::stream::StreamExt;
 use mlua::{Function, Lua, Table, UserData, UserDataFields, UserDataMethods, Value};
 
 use crate::model::{
-    parse_duration, Event, NodeIx, Outcome, Params, Reporter, ResourceReq, SpecOpt, Summary,
-    UnitOpts,
+    parse_duration, Event, NodeIx, Outcome, Params, Reporter, ResourceReq, Summary, UnitOpts,
 };
 
 /// Throughput knob (never semantic). Defaults to sequential until the resource scheduler exists.
@@ -843,16 +842,19 @@ fn parse_opts(t: &mlua::Table) -> mlua::Result<UnitOpts> {
     })
 }
 
-/// The `spec` opt: `true` (open, no reason), a string (open, with the reason/ticket), or `false`
-/// (graduated out of an enclosing flag). Anything else is a helpful error, not a silent no-op.
-fn parse_spec_opt(v: &Value) -> mlua::Result<Option<SpecOpt>> {
+/// The `spec` opt: `true` (open, no reason) or a string (open, with the reason/ticket). There
+/// is deliberately no `spec = false` — a test without the flag is already a full proof — so the
+/// value is rejected with the fix, not silently accepted.
+fn parse_spec_opt(v: &Value) -> mlua::Result<Option<String>> {
     match v {
         Value::Nil => Ok(None),
-        Value::Boolean(true) => Ok(Some(SpecOpt::Open(None))),
-        Value::Boolean(false) => Ok(Some(SpecOpt::Graduated)),
-        Value::String(s) => Ok(Some(SpecOpt::Open(Some(s.to_string_lossy().to_string())))),
+        Value::Boolean(true) => Ok(Some(String::new())),
+        Value::String(s) => Ok(Some(s.to_string_lossy().to_string())),
+        Value::Boolean(false) => Err(mlua::Error::RuntimeError(
+            "spec = false is not a thing — a test without a spec flag is already a full proof; remove the entry".into(),
+        )),
         _ => Err(mlua::Error::RuntimeError(
-            "spec must be true (open), a reason string (open), or false (graduated)".into(),
+            "spec must be true or a reason string".into(),
         )),
     }
 }
@@ -2281,11 +2283,11 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
     // The typed fixture-scope constants: `Scope.Test` / `Scope.Flow` / `Scope.File` / `Scope.Suite`.
     lua.globals().set("Scope", make_scope_global(&lua)?)?;
 
-    // `suite.config{ name?, requires?, spec? }` — configure the current suite (used in a `suite.lua`
+    // `suite.config{ name?, requires? }` — configure the current suite (used in a `suite.lua`
     // setup file). `requires` gates the whole suite: it folds into the root node so every test
     // inherits it, and an unmet capability skips all the suite's files cleanly (skip, not fail).
-    // `spec` marks the whole directory as a specification set in one place — every leaf inherits the
-    // open flag until it graduates (`spec = false`) or the flag completes.
+    // `spec` is deliberately NOT accepted here: spec flags are test-level only — a suite-wide
+    // flag recreates the graduation ceremony the revised design removed (api-freeze §5).
     {
         let col = col.clone();
         let suite = lua.create_table()?;
@@ -2299,13 +2301,10 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
                 if let Some(reqs) = opts.get::<Option<Vec<String>>>("requires")? {
                     c.nodes[0].opts.requires.extend(reqs);
                 }
-                if let Some(spec) = parse_spec_opt(&opts.get::<Value>("spec")?)? {
-                    if spec == SpecOpt::Graduated {
-                        return Err(mlua::Error::RuntimeError(
-                            "suite.config spec = false makes no sense — a suite graduates by removing the flag".into(),
-                        ));
-                    }
-                    c.nodes[0].opts.spec = Some(spec);
+                if !matches!(opts.get::<Value>("spec")?, Value::Nil) {
+                    return Err(mlua::Error::RuntimeError(
+                        "spec is test-level only — flag each open test, not the suite".into(),
+                    ));
                 }
                 Ok(())
             })?,
@@ -2773,17 +2772,10 @@ struct Leaf {
     precondition_skip: Option<String>,
     /// Effective tags: the unit's own plus every enclosing group's (selection matches on these).
     tags: Vec<String>,
-    /// `Some(reason)` when this leaf sits under an open `spec` flag (nearest explicit setting
-    /// wins; reason is `""` for a bare `spec = true`). Drives the outcome inversion: red body →
-    /// `Outcome::Spec`, green body → a failure demanding graduation.
+    /// `Some(reason)` when this leaf carries its own `spec` flag (`""` for a bare `spec = true`)
+    /// — test-level only, never inherited. Drives the outcome inversion: red body →
+    /// `Outcome::Spec`, green body → a failure demanding the flag's removal.
     spec: Option<String>,
-    /// True when the open flag is the leaf's OWN (not inherited): the honored-spec remedy is
-    /// then "remove the flag from this test" — suggesting `spec = false` would steer the author
-    /// into the orphan-graduation error.
-    spec_own: bool,
-    /// True for a graduated leaf (`spec = false` under an open flag) — an ordinary test again,
-    /// counted for the burndown meter.
-    graduated: bool,
 }
 
 /// Group-level options that flow down to every contained leaf: `depends_on`, `resources`, `serial`,
@@ -2795,55 +2787,6 @@ struct Inherited {
     serial: bool,
     requires: Vec<String>,
     tags: Vec<String>,
-    /// The nearest enclosing open `spec` flag: (origin node, reason). Unlike `requires`, spec
-    /// does not accumulate — the nearest explicit setting wins, and `spec = false` clears it.
-    spec: Option<(NodeIx, String)>,
-    /// True below a `spec = false` graduation marker.
-    graduated: bool,
-}
-
-/// Spec bookkeeping across the collect walk: every open flag seen, the flags that reached at
-/// least one still-open leaf, and validation errors (orphan graduations). `build_plan` turns a
-/// flag nobody inherits into the "spec complete — remove the flag" error, and any orphan
-/// `spec = false` into a refusal, so neither can linger.
-#[derive(Default)]
-struct SpecCollect {
-    /// Every node carrying an open flag: (node index, display name).
-    origins: Vec<(NodeIx, String)>,
-    /// Origins that reached at least one open (non-graduated) leaf.
-    used: std::collections::HashSet<NodeIx>,
-    errors: Vec<String>,
-}
-
-/// Fold a node's own `spec` opt over the inherited state, recording origins and orphan errors.
-/// Returns the state its children (or, for a leaf, the leaf itself) live under.
-fn apply_spec_opt(
-    node_ix: NodeIx,
-    node_name: &str,
-    opt: &Option<SpecOpt>,
-    inherited: &Inherited,
-    ctx: &mut SpecCollect,
-) -> (Option<(NodeIx, String)>, bool) {
-    match opt {
-        None => (inherited.spec.clone(), inherited.graduated),
-        Some(SpecOpt::Open(reason)) => {
-            let display = if node_name.is_empty() {
-                "suite".to_string()
-            } else {
-                node_name.to_string()
-            };
-            ctx.origins.push((node_ix, display));
-            (Some((node_ix, reason.clone().unwrap_or_default())), false)
-        }
-        Some(SpecOpt::Graduated) => {
-            if inherited.spec.is_none() {
-                ctx.errors.push(format!(
-                    "spec = false on {node_name:?} has no enclosing spec flag to graduate from — remove the stale marker"
-                ));
-            }
-            (None, true)
-        }
-    }
 }
 
 /// The executable plan: a flat list of leaves plus the leaf-level dependency DAG.
@@ -2862,7 +2805,6 @@ fn collect_leaves(
     inherited: &Inherited,
     leaves: &mut Vec<Leaf>,
     node_leaves: &mut HashMap<NodeIx, Vec<usize>>,
-    spec_ctx: &mut SpecCollect,
 ) -> Vec<usize> {
     let node = &col.nodes[ix];
     let my_leaves = match node.kind {
@@ -2883,10 +2825,6 @@ fn collect_leaves(
                 .requires
                 .extend(node.opts.requires.iter().cloned());
             child_inherited.tags.extend(node.opts.tags.iter().cloned());
-            let (spec, graduated) =
-                apply_spec_opt(ix, &node.name, &node.opts.spec, inherited, spec_ctx);
-            child_inherited.spec = spec;
-            child_inherited.graduated = graduated;
             let mut ids = Vec::new();
             for &child in &node.children {
                 ids.extend(collect_leaves(
@@ -2896,7 +2834,6 @@ fn collect_leaves(
                     &child_inherited,
                     leaves,
                     node_leaves,
-                    spec_ctx,
                 ));
             }
             if named {
@@ -2912,7 +2849,7 @@ fn collect_leaves(
                 .map(|&c| plan_item(&col.nodes[c], ancestors))
                 .collect();
             ancestors.pop();
-            let id = push_leaf(leaves, PlanUnit::Flow { steps }, node, ix, inherited, spec_ctx);
+            let id = push_leaf(leaves, PlanUnit::Flow { steps }, node, inherited);
             vec![id]
         }
         NodeKind::Test => {
@@ -2920,9 +2857,7 @@ fn collect_leaves(
                 leaves,
                 PlanUnit::Test(plan_item(node, ancestors)),
                 node,
-                ix,
                 inherited,
-                spec_ctx,
             );
             vec![id]
         }
@@ -2931,14 +2866,7 @@ fn collect_leaves(
     my_leaves
 }
 
-fn push_leaf(
-    leaves: &mut Vec<Leaf>,
-    unit: PlanUnit,
-    node: &Node,
-    ix: NodeIx,
-    inherited: &Inherited,
-    spec_ctx: &mut SpecCollect,
-) -> usize {
+fn push_leaf(leaves: &mut Vec<Leaf>, unit: PlanUnit, node: &Node, inherited: &Inherited) -> usize {
     let mut raw_deps = inherited.deps.clone();
     raw_deps.extend(node.opts.depends_on.iter().copied());
     let mut reqs = inherited.resources.clone();
@@ -2947,15 +2875,6 @@ fn push_leaf(
     requires.extend(node.opts.requires.iter().cloned());
     let mut tags = inherited.tags.clone();
     tags.extend(node.opts.tags.iter().cloned());
-    // The leaf's effective spec state: its own flag over the inherited one. An open leaf marks
-    // its flag's origin as live (used); a flag no leaf keeps open is "complete" and refused.
-    let (spec, graduated) = apply_spec_opt(ix, &node.name, &node.opts.spec, inherited, spec_ctx);
-    let mut spec_own = false;
-    let spec = spec.map(|(origin, reason)| {
-        spec_ctx.used.insert(origin);
-        spec_own = origin == ix;
-        reason
-    });
     let id = leaves.len();
     leaves.push(Leaf {
         unit,
@@ -2966,9 +2885,8 @@ fn push_leaf(
         requires,
         precondition_skip: None,
         tags,
-        spec,
-        spec_own,
-        graduated,
+        // Test-level only, by design: the leaf's own flag, never an ancestor's.
+        spec: node.opts.spec.clone(),
     });
     id
 }
@@ -3097,9 +3015,22 @@ fn unit_name(leaf: &Leaf) -> &str {
 const SERIAL_TOKEN: &str = "__prova_serial__";
 
 fn build_plan(col: &Collector, caps: &Capabilities) -> mlua::Result<Plan> {
+    // Spec flags are test-level only (api-freeze §5, revised): a flag on a group would need the
+    // whole inheritance/graduation ceremony back. Refuse it with the fix.
+    for node in &col.nodes {
+        if matches!(node.kind, NodeKind::Group) && node.opts.spec.is_some() {
+            let name = if node.name.is_empty() {
+                "the suite".to_string()
+            } else {
+                format!("group {:?}", node.name)
+            };
+            return Err(mlua::Error::RuntimeError(format!(
+                "spec is test-level only — flag each open test, not {name}"
+            )));
+        }
+    }
     let mut leaves = Vec::new();
     let mut node_leaves = HashMap::new();
-    let mut spec_ctx = SpecCollect::default();
     collect_leaves(
         col,
         0,
@@ -3107,20 +3038,7 @@ fn build_plan(col: &Collector, caps: &Capabilities) -> mlua::Result<Plan> {
         &Inherited::default(),
         &mut leaves,
         &mut node_leaves,
-        &mut spec_ctx,
     );
-    // Spec hygiene is a refusal, not a warning: a stale graduation marker or a fully-graduated
-    // flag would otherwise linger indefinitely — the lifecycle depends on both being loud.
-    if let Some(err) = spec_ctx.errors.first() {
-        return Err(mlua::Error::RuntimeError(err.clone()));
-    }
-    for (origin, name) in &spec_ctx.origins {
-        if !spec_ctx.used.contains(origin) {
-            return Err(mlua::Error::RuntimeError(format!(
-                "spec complete: every test under {name:?} has graduated — remove the flag and its spec = false markers"
-            )));
-        }
-    }
     expand_deps(&mut leaves, &node_leaves);
     if let Some(cycle) = find_cycle(&leaves) {
         return Err(mlua::Error::RuntimeError(format!(
@@ -3542,13 +3460,10 @@ struct NodeResult {
 /// - Any work result **failed** → the leaf is an **open spec**: each failure becomes
 ///   `Outcome::Spec` (CI green) — unless `strict` (driver mode), where open specs stay failures.
 /// - No failures and ≥1 pass → the spec is **honored**: each pass becomes a *failure* demanding
-///   the flag come off, so an implementation cannot land without flipping it in the same commit.
-///   The remedy is location-aware and removal-first: a finished proof should end up carrying no
-///   annotation at all. For the leaf's OWN flag, removal is the only correct advice (`spec =
-///   false` there would orphan); under an inherited flag, prefer narrowing the flag to the
-///   still-open tests, with `spec = false` as the in-place mechanism.
+///   the flag's removal, so an implementation cannot land without deleting it in the same
+///   commit — and the finished proof carries no annotation at all.
 /// - All skipped → untouched: an unmet `requires` wins over spec (nothing was observed).
-fn apply_spec_inversion(results: &mut [NodeResult], reason: &str, own_flag: bool, strict: bool) {
+fn apply_spec_inversion(results: &mut [NodeResult], reason: &str, strict: bool) {
     let failed = results
         .iter()
         .any(|r| !r.teardown && r.outcome == Outcome::Failed);
@@ -3564,17 +3479,12 @@ fn apply_spec_inversion(results: &mut [NodeResult], reason: &str, own_flag: bool
         }
         return;
     }
-    let remedy = if own_flag {
-        "spec honored — remove the spec flag from this test"
-    } else {
-        "spec honored — narrow the enclosing flag to the still-open tests, or graduate in place (spec = false)"
-    };
     for r in results
         .iter_mut()
         .filter(|r| !r.teardown && r.outcome == Outcome::Passed)
     {
         r.outcome = Outcome::Failed;
-        r.message = Some(remedy.to_string());
+        r.message = Some("spec honored — remove the spec flag from this test".to_string());
     }
 }
 
@@ -3948,7 +3858,7 @@ async fn run_plan(
         // (or a real failure under --strict-specs), green → "graduate it". Gating sees the
         // post-inversion truth, so a dependent of an open spec still cascade-skips.
         if let Some(reason) = &leaves[i].spec {
-            apply_spec_inversion(&mut results, reason, leaves[i].spec_own, config.strict_specs);
+            apply_spec_inversion(&mut results, reason, config.strict_specs);
         }
         outcome[i] = Some(unit_outcome(&results));
         emit_finished(reporter, summary, &results);
@@ -4106,12 +4016,9 @@ fn execute_collected(
     reporter: &mut dyn Reporter,
     config: &RunConfig,
 ) -> mlua::Result<Summary> {
-    let (plan, graduated, deselected, state) = {
+    let (plan, deselected, state) = {
         let col = col.borrow();
         let plan = build_plan(&col, &config.capabilities)?;
-        // Graduation markers are counted before any narrowing: the burndown meter reads the
-        // authored suite, not the slice this invocation happened to run.
-        let graduated = plan.leaves.iter().filter(|l| l.graduated).count();
         let (plan, deselected) = apply_selection(plan, &config.selection);
         let (plan, spec_deselected) = apply_specs_filter(plan, config.specs_only);
         let deselected = deselected + spec_deselected;
@@ -4123,12 +4030,11 @@ fn execute_collected(
             update_snapshots: config.update_snapshots,
             snapshot_registry: config.snapshot_registry.clone(),
         });
-        (plan, graduated, deselected, state)
+        (plan, deselected, state)
     };
 
     let rt = new_runtime()?;
     let mut summary = Summary {
-        graduated,
         deselected,
         ..Summary::default()
     };
@@ -4779,10 +4685,9 @@ impl HeldTopology {
             load_member_files(&self.lua, &self.col, files)?;
         }
 
-        let (plan, graduated, deselected, state) = {
+        let (plan, deselected, state) = {
             let col = self.col.borrow();
             let plan = build_plan(&col, &self.config.capabilities)?;
-            let graduated = plan.leaves.iter().filter(|l| l.graduated).count();
             let (plan, deselected) = apply_selection(plan, selection);
             let (plan, spec_deselected) = apply_specs_filter(plan, self.config.specs_only);
             let deselected = deselected + spec_deselected;
@@ -4820,7 +4725,7 @@ impl HeldTopology {
                     .cache
                     .insert(id, self.value.clone());
             }
-            (plan, graduated, deselected, state)
+            (plan, deselected, state)
         };
 
         let mut config = self.config.clone();
@@ -4828,7 +4733,6 @@ impl HeldTopology {
 
         reporter.event(&Event::RunStarted);
         let mut summary = Summary {
-            graduated,
             deselected,
             ..Summary::default()
         };

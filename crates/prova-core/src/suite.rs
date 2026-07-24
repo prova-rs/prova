@@ -272,7 +272,6 @@ fn run_sequential(suites: &[Suite], reporter: &mut dyn Reporter, config: &RunCon
                 summary.failed += s.failed;
                 summary.skipped += s.skipped;
                 summary.spec += s.spec;
-                summary.graduated += s.graduated;
                 summary.deselected += s.deselected;
             }
             Err(err) => report_suite_error(reporter, &mut summary, suite, &err.to_string()),
@@ -288,7 +287,7 @@ fn run_pooled(suites: &[Suite], reporter: &mut dyn Reporter, config: &RunConfig)
     let queue: Arc<Mutex<VecDeque<Suite>>> = Arc::new(Mutex::new(suites.iter().cloned().collect()));
     let (tx, rx) = channel::<OwnedEvent>();
     // Deselected leaves emit no node events, so their count travels on a side channel.
-    let (dtx, drx) = channel::<(usize, usize)>();
+    let (dtx, drx) = channel::<usize>();
 
     let mut handles = Vec::with_capacity(workers);
     for _ in 0..workers {
@@ -304,9 +303,9 @@ fn run_pooled(suites: &[Suite], reporter: &mut dyn Reporter, config: &RunConfig)
                 let Some(suite) = next else { break };
                 match suite.run(&mut sink, &config) {
                     Ok(s) => {
-                        // Plan-derived counts (not event-derived) cross on their own channel:
-                        // `spec` re-tallies from forwarded events, these two cannot.
-                        let _ = dtx.send((s.deselected, s.graduated));
+                        // Plan-derived (not event-derived), so it crosses on its own channel:
+                        // `spec` re-tallies from forwarded events, deselection cannot.
+                        let _ = dtx.send(s.deselected);
                     }
                     Err(err) => {
                         // Surface a collection/load error as a synthetic failed node for the suite.
@@ -340,10 +339,7 @@ fn run_pooled(suites: &[Suite], reporter: &mut dyn Reporter, config: &RunConfig)
     for handle in handles {
         let _ = handle.join();
     }
-    for (deselected, graduated) in drx.iter() {
-        summary.deselected += deselected;
-        summary.graduated += graduated;
-    }
+    summary.deselected += drx.iter().sum::<usize>();
     summary
 }
 

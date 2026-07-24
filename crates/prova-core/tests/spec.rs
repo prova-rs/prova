@@ -8,24 +8,20 @@ fn testdata(name: &str) -> PathBuf {
         .join(name)
 }
 
-/// The `spec` lifecycle (docs/plans/api-freeze.md §5): an open spec (red body) is its own outcome,
-/// never a failure; a spec that passes FAILS demanding graduation; `spec = false` graduates a leaf
-/// back to ordinary; an unmet `requires` still skips. Tallies match testdata/spec.lua.
+/// The `spec` lifecycle (docs/plans/api-freeze.md §5, revised — test-level only): an open spec
+/// (red body) is its own outcome, never a failure; a spec that passes FAILS demanding the flag's
+/// removal; an unmet `requires` still skips. Tallies match testdata/spec.lua.
 #[test]
 fn spec_outcomes_tally() {
     let mut reporter = NullReporter;
     let summary = run_path(&testdata("spec.lua"), &mut reporter).expect("run spec.lua");
-    assert_eq!(
-        summary.spec, 3,
-        "open specs: assertion, raise, group-inherited"
-    );
-    assert_eq!(summary.failed, 1, "the honored spec demanding graduation");
-    assert_eq!(summary.passed, 1, "the graduated test holds the line");
+    assert_eq!(summary.spec, 2, "open specs: assertion, raise");
+    assert_eq!(summary.failed, 1, "the honored spec demanding removal");
+    assert_eq!(summary.passed, 1, "the ordinary test holds the line");
     assert_eq!(summary.skipped, 1, "requires wins over spec");
-    assert_eq!(summary.graduated, 1, "graduation markers are counted");
     assert!(
         !summary.is_success(),
-        "an honored-but-unflagged spec fails the run"
+        "an honored-but-still-flagged spec fails the run"
     );
 }
 
@@ -55,54 +51,51 @@ fn strict_specs_turns_open_specs_into_failures() {
     assert!(!summary.is_success());
 }
 
-/// `--specs` (the selector): run exactly the leaves carrying an effective spec flag — graduated
-/// leaves and ordinary tests are deselected. Green spec'd leaves still fail demanding graduation.
+/// `--specs` (the selector): run exactly the leaves carrying a spec flag — unflagged tests are
+/// deselected. Green spec'd leaves still fail demanding the flag's removal.
 #[test]
 fn specs_selector_narrows_to_the_spec_surface() {
     let mut reporter = NullReporter;
     let config = RunConfig::default().with_specs_only(true);
     let summary = run_path_with(&testdata("spec.lua"), &mut reporter, &config)
         .expect("run spec.lua specs-only");
-    // Selected: 3 open + 1 honored + 1 requires-skip. Deselected: the graduated leaf.
-    assert_eq!(summary.spec, 3);
+    // Selected: 2 open + 1 honored + 1 requires-skip. Deselected: the ordinary test.
+    assert_eq!(summary.spec, 2);
     assert_eq!(summary.failed, 1);
     assert_eq!(summary.skipped, 1);
-    assert_eq!(summary.passed, 0, "graduated/ordinary leaves are not run");
-    assert_eq!(summary.deselected, 1, "the graduated leaf is deselected");
+    assert_eq!(summary.passed, 0, "unflagged tests are not run");
+    assert_eq!(summary.deselected, 1, "the ordinary test is deselected");
 }
 
-/// A `spec = false` with no enclosing spec flag is a validation error — stale graduation markers
-/// cannot linger.
+/// `spec = false` does not exist — an unflagged test is already a full proof. Rejected with the
+/// fix, never silently accepted.
 #[test]
-fn orphan_graduation_is_an_error() {
+fn spec_false_is_an_error() {
     let mut reporter = NullReporter;
-    let err = run_path(&testdata("spec_orphan.lua"), &mut reporter)
-        .expect_err("orphan graduation must refuse to run");
+    let err = run_path(&testdata("spec_false.lua"), &mut reporter)
+        .expect_err("spec = false must refuse to load");
     let msg = err.to_string();
     assert!(
-        msg.contains("spec = false") && msg.contains("no enclosing spec flag"),
-        "names the marker and explains: {msg}"
+        msg.contains("spec = false is not a thing"),
+        "explains the model: {msg}"
     );
-    assert!(
-        msg.contains("orphan graduation"),
-        "names the offending node: {msg}"
-    );
+    assert!(msg.contains("full proof"), "names the why: {msg}");
 }
 
-/// When every leaf under a spec flag has graduated, the flag is complete — the run errors until
-/// the flag and its graduation markers are removed.
+/// Spec flags are test-level only: a group-level flag is refused with the fix (flag each open
+/// test), never silently inherited.
 #[test]
-fn completed_spec_flag_is_an_error() {
+fn group_level_spec_is_an_error() {
     let mut reporter = NullReporter;
-    let err = run_path(&testdata("spec_complete.lua"), &mut reporter)
-        .expect_err("a fully-graduated spec flag must refuse to run");
+    let err = run_path(&testdata("spec_group.lua"), &mut reporter)
+        .expect_err("a group-level spec flag must refuse to run");
     let msg = err.to_string();
     assert!(
-        msg.contains("spec complete") && msg.contains("done"),
-        "announces completion and names the flag: {msg}"
+        msg.contains("spec is test-level only"),
+        "states the rule: {msg}"
     );
     assert!(
-        msg.contains("remove the flag"),
-        "tells the author the cleanup step: {msg}"
+        msg.contains("formats"),
+        "names the offending group: {msg}"
     );
 }

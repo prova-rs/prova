@@ -23,6 +23,6 @@ pub use engine::{
 pub use layout::{RootedSystemLayout, SystemLayout, XdgSystemLayout};
 pub use model::{
     spec_summary_segment, ConsoleReporter, Event, JUnitReporter, JsonReporter, MultiReporter,
-    NullReporter, Outcome, Reporter, SpecOpt, Summary, TapReporter,
+    NullReporter, Outcome, Reporter, Summary, TapReporter,
 };
 pub use suite::{discover_files, discover_suite, discover_suites, is_test_file, run_suite, run_suites, Suite};
