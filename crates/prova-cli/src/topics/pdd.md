@@ -11,7 +11,9 @@ approach", this is what they mean:
    project` says where in this repo). Run it. **Red is correct at this stage** — a proof that
    passes before you implement proves nothing.
 4. Implement. Re-run with `prova --last-failed` until green.
-5. Commit proof + implementation together: a proof-carrying change.
+5. Commit proof + implementation together: a proof-carrying change. Pushed, CI runs the SAME
+   suite byte-identical (`uses: prova-rs/run-action@v1`) — the bar you just set holds without
+   you, no translation step, no second harness to drift.
 
 Never weaken a proof to pass it. If the bar seems wrong, renegotiate it with the human — do not
 quietly lower it.
