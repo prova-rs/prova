@@ -187,10 +187,11 @@ one path out:
   the org's state and converges the registry onto it (any `prova-rs/prova-*` repo with a
   release and a `[plugin]` manifest gets an entry at its latest release; entries whose repos
   are deleted or archived are removed), and a **release-time dispatch hop** in each plugin repo
-  (`release: published` → `gh workflow run register.yml`) for instant registration. The hop
-  needs a cross-repo token (`REGISTRY_DISPATCH_TOKEN`, an org secret); without it the
-  reconcile loop still guarantees registration within its interval — the hop only buys
-  latency. The org's registry tracks the org's plugins with no human in the loop.
+  (`release: published` → a `repository_dispatch(register)` event on the registry) for instant
+  registration. The hop rides the existing org-wide `PROVA_DISPATCH_TOKEN`: repository_dispatch
+  needs only Contents: write, so no Actions scope was added to the token. If a dispatch ever
+  fails, the reconcile loop still guarantees registration within its interval — the hop only
+  buys latency. Proven live: hello v1.3 registered seconds after `release: published`. The org's registry tracks the org's plugins with no human in the loop.
 - **Pull requests — the third-party path.** Anyone can PR an entry file into a registry they
   don't control; review of that one-file diff *is* the curation step. Same format, same
   validation, human gate instead of webhook gate.
@@ -233,9 +234,9 @@ join on their first release), `register.yml`/`remove.yml` dispatches, the creden
 automation commits. The whole lifecycle is proven end-to-end by `prova-rs/prova-hello` (rendered
 from the plugin archetype): create → release v1.0 → auto-registered → `prova plugins add hello`
 → `require("hello")` green in a consumer proof → release v1.1 → `latest` bumped → archive →
-entry removed. The release-dispatch hop is wired in prova-hello but inert until
-`REGISTRY_DISPATCH_TOKEN` (fine-grained PAT, Actions write on package-registry) is set as an
-org secret. Remaining: the MCP mirror of the verbs, and item 6 (update ergonomics).
+entry removed. The release-dispatch hop is wired in prova-hello
+and live over the org-wide `PROVA_DISPATCH_TOKEN` (via `repository_dispatch`, which needs only
+Contents: write). Remaining: the MCP mirror of the verbs, and item 6 (update ergonomics).
 
 1. `[[registries]]` in `config.toml` + built-in `prova-rs` default; fetch/cache via the existing
    git-cache path; entry parser with unknown-key tolerance + per-entry schema skip.
