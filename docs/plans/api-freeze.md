@@ -67,14 +67,35 @@ defaults shared with `prova.retry`, which remains the underlying primitive and s
 On timeout the failure renders the **last** value with the path diff. Non-function subject +
 `:eventually` = clear error.
 
-## 5. `pending` — xfail-strict + driver mode (the spec-suite mechanism)
+## 5. `spec` — proofs authored ahead of implementation
 
-- `{ pending = "reason" }` on a test/group/suite: failing → **pending** outcome (distinct in
-  every reporter; CI green). **Passing → failure** ("unexpectedly passing — remove the flag"),
-  so implementations forcibly clean their flags.
-- `prova --strict-pending` — driver mode: pending failures are real failures. The implementing
-  agent's loop runs this; CI does not.
-- `prova --pending` — enumerate all not-yet-compliant suites/tests: the burndown meter.
+Named `spec`, not "pending": in PDD vocabulary a proof not yet honored *is* the specification —
+"pending" describes a state, `spec` names what the thing is. Semantics are xfail-strict with
+**per-test inversion**, which is what removes any after-the-fact cleanup chore or drift window.
+
+- **Where set:** opts at `test` / `group` / `flow` (`{ spec = true }` or
+  `{ spec = "reason/ticket" }`), **inherited downward**; a whole directory is spec'd in one
+  place via its `suite.lua`. `spec = false` on a node **graduates** it against an inherited
+  flag; a `spec = false` with nothing to override is a validation error (no dead markers).
+- **Open spec** (spec'd test that fails) → distinct `spec` outcome in every reporter (TAP: the
+  `# TODO` directive — exactly these semantics; JUnit: skipped + message; JSONL: outcome
+  `"spec"`). CI stays green.
+- **Spec that passes → failure**: "spec honored — graduate it." An implementation cannot land
+  without graduating its spec in the same commit — cleanup is forced at implementation time,
+  never proactive-after-the-fact. Implementation + graduation = a proof-carrying change.
+- **Completion**: when every test under a flagged node is graduated, the flag is dead and the
+  run **errors**: "spec suite complete — remove the flag and N graduation markers." One cleanup
+  commit collapses it to ordinary proofs, which hold the line thereafter.
+- **No mid-burndown drift window**: graduated tests are ordinary tests (line held immediately);
+  open specs are red by definition — no state exists where a regression can hide.
+- `prova --specs` — a **selector** (like `--last-failed`): run exactly the tests currently
+  carrying a spec flag, green or red — red report as open specs, green fail demanding
+  graduation; graduated tests are excluded (they are ordinary proofs). Composes:
+  `--specs --list` enumerates the remaining surface without running; every run summary counts
+  `specs: N open, M graduated`.
+- `prova --strict-specs` — driver mode: open specs are real failures. The implementing agent's
+  inner loop is `--specs --strict-specs` (only the unimplemented surface, all red); CI runs
+  neither flag.
 - This feature is **implemented first, spec'd by hand** — everything else's spec depends on it.
 
 ## 6. Journal standardization — one `received()` vocabulary
@@ -96,17 +117,17 @@ grpc keeps `method/request/code`). Filters accept the same subset-matcher shapes
 
 ## Execution: the spec-as-proofs experiment
 
-The concept under test: **the entire remaining API is spec'd as pending proofs, then implemented
-systematically** (agent-driven, `--strict-pending` loop, one flag removed per landed feature —
-proof-carrying changes throughout).
+The concept under test: **the entire remaining API is spec'd as open-spec proofs, then
+implemented systematically** (agent-driven `--specs --strict-specs` loop, each landed feature
+graduating its spec in the same commit — proof-carrying changes throughout).
 
 Order:
-1. `pending` engine feature + its hand-written selftest (the bootstrap).
+1. The `spec` engine feature + its hand-written selftest (the bootstrap).
 2. Freeze items as spec suites, roughly one directory per capability: `proofs/spec/formats/`
    (json/yaml/toml/csv round-trips, sentinels), `proofs/spec/matching/` (subset semantics
    table — the largest and most valuable single suite, `test_each`-driven), `proofs/spec/
    eventually/`, `proofs/spec/globals/` (reserved names, write protection, exclusion),
    `proofs/spec/journals/`, then the Tier-A transports as they are designed
    (stub matchers, faults, TLS, streaming, socket, terminal).
-3. Implementation burndown against `--strict-pending`, trust-track hardening interleaved per
-   the gap assessment's sequence.
+3. Implementation burndown against `--specs --strict-specs`, trust-track hardening interleaved
+   per the gap assessment's sequence.
