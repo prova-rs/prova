@@ -25,6 +25,14 @@ The loop:
    fix the system, or renegotiate the bar with the human.
 5. Commit suite + implementation together: a proof-carrying change.
 
+**Specs — the executable backlog.** A contract you can state but are NOT implementing right now
+is still worth a proof: author it flagged `{ spec = "reason/ticket" }` (test/flow-level). Open
+specs report as their own outcome and keep CI green; the moment a spec's body passes it FAILS
+with "remove the spec flag", so implementation + flag removal land as one proof-carrying change.
+`prova --specs --list` enumerates the open surface — an empty list means burndown complete; found
+some in a repo? That is scoped work — offer to burn it down against `--specs --strict-specs`.
+`prova learn specs` carries the lifecycle.
+
 Prova complements the language's own test harness; it does not replace it. Prove the CONTRACT
 with prova (behavior a real caller observes at the boundary); prove the INTERNALS with native
 unit/integration tests (one function's logic, seams the boundary can't reach). A change often
@@ -41,6 +49,7 @@ Everything below is the crash course; depth is one call away, computed for THIS 
 | An API's shape: what to call, what comes back | `prova.help("<filter>")` in any test/eval · MCP `introspect { filter }` |
 | Which archetypes `init` can scaffold | `prova init --list` (or `prova learn init`) |
 | A live value's shape | probe it with `eval` |
+| The open-spec backlog (proofs ahead of implementation) | `prova --specs --list` · `prova learn specs` |
 
 ## Test files, in one screen
 
@@ -69,7 +78,8 @@ end)
   `flow:step(...)`); a bare `prova.test` inside either body is an error. Cross-unit gating: `depends_on = { handle }` (handles, not strings) —
   upstream failure **skips** downstream, never fails it, never passes state.
 - opts: `tags`, `requires`, `timeout = "60s"`,
-  `resources = { prova.port(N), prova.shared("db") }`, `serial = true`. `--jobs` is throughput
+  `resources = { prova.port(N), prova.shared("db") }`, `serial = true`, `spec = "reason"` (a
+  proof authored ahead of its implementation — `prova learn specs`). `--jobs` is throughput
   only — it can never change what a run means.
 - Context: `ctx:use(handle)`, `ctx:manage(resource)` (auto stop/close at scope end),
   `ctx:defer(fn)`, `ctx:tempdir()`, `t:expect(v, label?)`, `t:expect_all(fn)` (soft), `t:skip(why)`.
@@ -180,6 +190,7 @@ prova --tags '!build'       # skip a tier by tag (own or inherited from groups)
 prova --node "exact › path" # precisely the node a report named
 prova --last-failed         # exactly what was red last run — your main iteration verb
 prova --list                # discover without running (respects selection)
+prova --specs               # only spec-flagged tests — the open backlog (--strict-specs to drive)
 prova eval 'return require("postgres").container(ctx).url'   # one-shot probe, auto-teardown
 ```
 
@@ -206,7 +217,7 @@ call tools. Tools mirror the CLI one-to-one and **everything else is identical**
 
 | MCP tool | CLI equivalent |
 |---|---|
-| `run { keywords?, keyword_excludes?, tags?, tag_excludes?, nodes?, last_failed?, profile?, jobs?, topology? }` | `prova -k … --tags … --node … --last-failed --profile … --jobs …` |
+| `run { keywords?, keyword_excludes?, tags?, tag_excludes?, nodes?, last_failed?, specs?, strict_specs?, profile?, jobs?, topology? }` | `prova -k … --tags … --node … --last-failed --specs --strict-specs --profile … --jobs …` |
 | `list { same selection fields }` | `prova --list` (same flags) |
 | `eval { code, topology? }` | `prova eval '<code>'` |
 | `learn { topic? }` / `introspect { filter? }` | `prova learn [<topic>]` / `prova.help(...)` in eval |

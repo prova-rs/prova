@@ -24,6 +24,7 @@ use crate::manifest::{Manifest, PluginSource, Profile, Resolved};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Topic {
     Pdd,
+    Specs,
     Project,
     Init,
     Authoring,
@@ -41,6 +42,7 @@ pub enum Topic {
 impl Topic {
     pub const ALL: &'static [Topic] = &[
         Topic::Pdd,
+        Topic::Specs,
         Topic::Project,
         Topic::Init,
         Topic::Authoring,
@@ -69,6 +71,11 @@ impl Topic {
         ("archetypes", Topic::Init),
         ("tdd", Topic::Pdd),
         ("proof-driven-development", Topic::Pdd),
+        ("spec", Topic::Specs),
+        ("burndown", Topic::Specs),
+        ("xfail", Topic::Specs),
+        ("pending", Topic::Specs),
+        ("backlog", Topic::Specs),
         ("tests", Topic::Authoring),
         ("dsl", Topic::Authoring),
         ("matchers", Topic::Authoring),
@@ -92,6 +99,7 @@ impl Topic {
     pub fn key(self) -> &'static str {
         match self {
             Topic::Pdd => "pdd",
+            Topic::Specs => "specs",
             Topic::Project => "project",
             Topic::Init => "init",
             Topic::Authoring => "authoring",
@@ -112,6 +120,7 @@ impl Topic {
     fn source(self) -> &'static str {
         match self {
             Topic::Pdd => include_str!("topics/pdd.md"),
+            Topic::Specs => include_str!("topics/specs.md"),
             Topic::Project => include_str!("topics/project.md"),
             Topic::Init => include_str!("topics/init.md"),
             Topic::Authoring => include_str!("topics/authoring.md"),

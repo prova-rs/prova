@@ -7,6 +7,8 @@ prova --tags '!build'        # by tag, own or inherited (repeatable; !tag exclud
 prova --node "exact › path"  # precisely the node a report named
 prova --last-failed          # exactly what was red last run — YOUR MAIN ITERATION VERB
 prova --list                 # discover without running (respects selection)
+prova --specs                # only spec-flagged tests — the open backlog (`prova learn specs`)
+prova --strict-specs         # driver mode: open specs fail loud — the implementing agent's loop
 prova <file-or-dir>...       # explicit paths bypass the manifest
 ```
 

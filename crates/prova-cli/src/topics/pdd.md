@@ -16,6 +16,12 @@ approach", this is what they mean:
 Never weaken a proof to pass it. If the bar seems wrong, renegotiate it with the human — do not
 quietly lower it.
 
+**Not implementing it yet?** Author the proof anyway, flagged `{ spec = "reason/ticket" }` — a
+proof ahead of its implementation is a **spec**, the executable backlog. Open specs report
+distinctly (CI stays green); a spec that starts passing fails until its flag is deleted, so
+implementation and flag removal land as one commit. `prova learn specs` carries the lifecycle
+and the burndown loop (`--specs --strict-specs`).
+
 ## What makes an artifact a proof (not just a test)
 
 - **Executable** — returns a verdict; not prose about behavior.
@@ -51,6 +57,9 @@ implementation can, it deserves a unit test.
 | Unknown API/shape blocks you | `prova eval` / `prova.help("<name>")`, not guesswork |
 | Whole system must exist first (render, build, boot) | That IS the fixture — see `prova learn doubles` for the dependency side |
 | The bug lives in one function's logic | Unit-test it natively; keep the proof at the boundary that exposed it |
+| Contract known, implementation deferred (design doc, out-of-scope gap) | Author it NOW as a spec: `{ spec = "reason" }` — executable backlog, not a TODO comment |
+| `prova --specs --list` shows open specs in this repo | That is scoped, unclaimed work — offer to burn it down (`prova learn specs`) |
 
-Go deeper: `prova learn project` (where things live here) · `prova learn init` (scaffolding) ·
-`prova learn doubles` (mocks and containers).
+Go deeper: `prova learn specs` (proofs ahead of implementation) · `prova learn project` (where
+things live here) · `prova learn init` (scaffolding) · `prova learn doubles` (mocks and
+containers).

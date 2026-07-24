@@ -81,7 +81,8 @@ pub fn run(args: Vec<String>) -> ExitCode {
                      \n\
                      serve Prova as an MCP stdio server. Tools mirror the CLI one-to-one:\n\
                      \x20 run   {{ keywords?, keyword_excludes?, tags?, tag_excludes?, nodes?,\n\
-                     \x20         last_failed?, profile?, jobs?, topology?, package? }}\n\
+                     \x20         last_failed?, specs?, strict_specs?, profile?, jobs?,\n\
+                     \x20         topology?, package? }}\n\
                      \x20                                            ↔  prova + selection flags\n\
                      \x20 list  {{ same selection fields, package? }}  ↔  prova --list\n\
                      \x20 eval  {{ code, topology?, package? }}       ↔  prova eval '<code>'\n\
@@ -354,6 +355,10 @@ struct SelectionArgs {
     nodes: Option<Vec<String>>,
     /// Also select the nodes that failed in the previous run (CLI `--last-failed`).
     last_failed: Option<bool>,
+    /// Select ONLY spec-flagged tests — the open-spec backlog (CLI `--specs`). Composes with
+    /// `list` to enumerate the surface without running; an empty selection there means the
+    /// burndown is complete. See `learn { topic = "specs" }`.
+    specs: Option<bool>,
     /// Manifest profile to resolve for this call (CLI `--profile NAME`).
     profile: Option<String>,
     /// Target ANOTHER suite: a directory to resolve from (as a CLI run there would — walking up,
@@ -367,6 +372,10 @@ struct SelectionArgs {
 struct RunRequest {
     #[serde(flatten)]
     selection: SelectionArgs,
+    /// Driver mode for a spec burndown (CLI `--strict-specs`): open specs report as REAL
+    /// failures with full detail instead of the CI-green `spec` outcome. The implementing
+    /// agent's inner loop is `specs = true, strict_specs = true`.
+    strict_specs: Option<bool>,
     /// Run up to N suites concurrently (CLI `--jobs N`). Ignored for warm runs (one held state).
     jobs: Option<u32>,
     /// Run WARM against a topology held by a prior `up`: `t:use(<topology>)` resolves the held
@@ -689,7 +698,7 @@ impl ProvaMcpServer {
 
     #[tool(
         name = "run",
-        description = "Run the package's test suite with an optional selection (the MCP mirror of the CLI's -k/--tags/--node/--last-failed/--profile/--jobs flags). With `topology`, run WARM against a topology held by a prior `up`: t:use resolves the held live instance instead of provisioning (never provisions implicitly — an un-held topology is an error). Returns compact JSON: { passed, failed, skipped, deselected, duration_ms, failures: [{ path, message, file?, line? }] } (file/line = the failing test's declaration site, when known). The result is marked isError when any node failed, and a selection that matches NOTHING is an error (usually a typo — mirror of the CLI's default; the CLI's --allow-empty has no MCP counterpart). Also records the failed nodes so a later run with last_failed=true (or CLI --last-failed) re-runs exactly them; last_failed with no recorded state runs everything and says so in a `note` field. Pass `package` (a directory or manifest path) to target ANOTHER package anywhere on disk — the server's startup package is only the default, and a `package` resolves fresh, so a manifest you just scaffolded works without a restart."
+        description = "Run the package's test suite with an optional selection (the MCP mirror of the CLI's -k/--tags/--node/--last-failed/--specs/--strict-specs/--profile/--jobs flags). Spec burndown: specs=true selects only spec-flagged tests (proofs authored ahead of implementation); with strict_specs=true open specs fail loud — the implementing agent's inner loop (see learn { topic = \"specs\" }). With `topology`, run WARM against a topology held by a prior `up`: t:use resolves the held live instance instead of provisioning (never provisions implicitly — an un-held topology is an error). Returns compact JSON: { passed, failed, skipped, spec, deselected, duration_ms, failures: [{ path, message, file?, line? }] } (spec = open specs — red-by-definition proofs awaiting implementation) (file/line = the failing test's declaration site, when known). The result is marked isError when any node failed, and a selection that matches NOTHING is an error (usually a typo — mirror of the CLI's default; the CLI's --allow-empty has no MCP counterpart). Also records the failed nodes so a later run with last_failed=true (or CLI --last-failed) re-runs exactly them; last_failed with no recorded state runs everything and says so in a `note` field. Pass `package` (a directory or manifest path) to target ANOTHER package anywhere on disk — the server's startup package is only the default, and a `package` resolves fresh, so a manifest you just scaffolded works without a restart."
     )]
     async fn run(&self, Parameters(req): Parameters<RunRequest>) -> CallToolResult {
         let _serialized = self.run_lock.lock().await;
@@ -946,7 +955,9 @@ fn run_blocking(env: &McpEnv, req: RunRequest) -> Result<(serde_json::Value, boo
 
     let jobs = req.jobs.map(|n| (n as usize).max(1)).unwrap_or(call.jobs);
     let mut config = crate::engine_config(jobs, &call.plugins, Some(&call.home))
-        .with_capabilities(call.capabilities.clone());
+        .with_capabilities(call.capabilities.clone())
+        .with_specs_only(req.selection.specs.unwrap_or(false))
+        .with_strict_specs(req.strict_specs.unwrap_or(false));
     config.selection = selection;
 
     let mut reporter = FailureCollector::default();
@@ -972,6 +983,7 @@ fn run_blocking(env: &McpEnv, req: RunRequest) -> Result<(serde_json::Value, boo
         "passed": summary.passed,
         "failed": summary.failed,
         "skipped": summary.skipped,
+        "spec": summary.spec,
         "deselected": summary.deselected,
         "duration_ms": summary.duration.as_millis() as u64,
         "failures": failures,
@@ -994,7 +1006,8 @@ fn list_blocking(env: &McpEnv, req: SelectionArgs) -> Result<(serde_json::Value,
 
     let suites = crate::collect_suites(&call.base_dir, &call.declared, &call.proofs, true)?;
     let mut config = crate::engine_config(1, &call.plugins, Some(&call.home))
-        .with_capabilities(call.capabilities.clone());
+        .with_capabilities(call.capabilities.clone())
+        .with_specs_only(req.specs.unwrap_or(false));
     config.selection = selection;
 
     let mut nodes: Vec<serde_json::Value> = Vec::new();
@@ -1128,6 +1141,16 @@ fn warm_run_blocking(
         .get(topology)
         .map(|h| (h.tx.clone(), h.home.clone()))
         .ok_or_else(|| not_held(topology))?;
+
+    // The warm holder's engine config is fixed at `up`; per-run spec modes would silently not
+    // apply. The burndown loop is a cold loop anyway (implement → recompile → re-run).
+    if req.selection.specs.unwrap_or(false) || req.strict_specs.unwrap_or(false) {
+        return Err(
+            "specs/strict_specs are not supported on warm runs — omit `topology` to run the \
+             spec burndown cold"
+                .to_string(),
+        );
+    }
 
     let mut selection = to_selection(&req.selection);
     // `last_failed` state lives in the held topology's home — the package its `up` resolved —

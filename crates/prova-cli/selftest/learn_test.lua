@@ -63,7 +63,7 @@ prova.group("prova learn", function(g)
 
   g:test("the full taxonomy is served, one screen each", function(t)
     local listing = learn("")
-    for _, topic in ipairs({ "pdd", "project", "init", "authoring", "fixtures", "doubles",
+    for _, topic in ipairs({ "pdd", "specs", "project", "init", "authoring", "fixtures", "doubles",
                              "proxies", "drivers", "topologies", "plugins", "plugin-authoring",
                              "running", "mcp" }) do
       t:expect(listing.stdout, "listed: " .. topic):contains(topic)
@@ -78,6 +78,22 @@ prova.group("prova learn", function(g)
     local r = learn("proxies")
     t:expect(r.code):equals(0)
     t:expect(r.stdout):contains("not a shipped surface")
+  end)
+
+  g:test("specs teaches the burndown loop, and pdd routes to it", function(t)
+    -- The lifecycle an agent must know without reading a plan doc: author ahead, flagged;
+    -- enumerate; drive strict; graduation is forced.
+    local r = learn("specs")
+    t:expect(r.code):equals(0)
+    t:expect(r.stdout):contains("--specs --list")
+    t:expect(r.stdout):contains("--strict-specs")
+    t:expect(r.stdout):contains("remove the spec flag")
+    -- The practice topic routes here: sensing an unimplemented contract should lead to a spec.
+    t:expect(learn("pdd").stdout):contains("prova learn specs")
+    -- Intuitive names resolve: what other harnesses call this lands on our doctrine.
+    for _, alias in ipairs({ "burndown", "xfail", "pending", "backlog" }) do
+      t:expect(learn(alias).stdout, alias .. " → specs"):equals(r.stdout)
+    end
   end)
 
   g:test("the three-postures cross-references hold", function(t)
@@ -153,5 +169,14 @@ prova.group("prova skill routes to learn", function(g)
     -- Regression pin: the skill once said `[run] paths`; the manifest key is `proofs`.
     t:expect(r.stdout):contains("[run] proofs")
     t:expect(r.stdout):never():contains("[run] paths")
+  end)
+
+  g:test("the skill carries the spec inclination — author ahead, burn down what's open", function(t)
+    -- An agent that reads ONLY the skill (or gets it as MCP instructions) must leave knowing
+    -- the executable-backlog move and its enumeration verb.
+    local r = shell.run(prova_bin .. " skill")
+    t:expect(r.stdout):contains('spec = "reason')
+    t:expect(r.stdout):contains("--specs --list")
+    t:expect(r.stdout):contains("prova learn specs")
   end)
 end)

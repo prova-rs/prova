@@ -29,6 +29,8 @@ end)
   downstream, never fails it, never passes state.
 - opts: `tags`, `requires`, `timeout = "60s"`, `serial = true`,
   `resources = { prova.port(N), prova.shared("db") }`. Groups' `tags`/`requires` are inherited.
+  Tests and flows also take `spec = "reason"` — a proof authored ahead of its implementation
+  (`prova learn specs`); never on a group or in `suite.config`.
 - Matchers on `t:expect(v, label?)`: `equals is is_true is_falsy is_nil contains matches
   has_length is_one_of gt gte lt lte exists is_file is_dir is_empty is_fully_rendered
   matches_snapshot` — negate with `:never()`. `t:expect_all(fn)` collects soft failures;

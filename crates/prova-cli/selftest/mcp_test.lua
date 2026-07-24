@@ -207,4 +207,42 @@ prova.group("prova mcp", function(g)
     t:expect(narrow.failed):equals(0)
     t:expect(narrow.deselected):equals(2)
   end)
+
+  g:test("the spec burndown drives over MCP: selection, strict mode, the spec count", function(t)
+    -- fixtures/spec-project: one open spec + one finished proof (a package mid-burndown).
+    local spec_project = fixtures .. "/spec-project"
+    local by_id = mcp({
+      -- The CI shape: the open spec is counted, never failed — the run is green.
+      { jsonrpc = "2.0", id = 30, method = "tools/call",
+        params = { name = "run", arguments = { package = spec_project } } },
+      -- `specs` is a selector: only the spec surface runs, the finished proof is deselected.
+      { jsonrpc = "2.0", id = 31, method = "tools/call",
+        params = { name = "run", arguments = { specs = true, package = spec_project } } },
+      -- The implementing agent's inner loop: strict mode makes the open spec fail LOUD.
+      { jsonrpc = "2.0", id = 32, method = "tools/call",
+        params = { name = "run",
+                   arguments = { specs = true, strict_specs = true, package = spec_project } } },
+      -- `list { specs }` enumerates the remaining surface without running anything.
+      { jsonrpc = "2.0", id = 33, method = "tools/call",
+        params = { name = "list", arguments = { specs = true, package = spec_project } } },
+    })
+
+    local ci, ci_err = tool_json(by_id[30], "run (CI shape)")
+    t:expect(ci.spec, "open specs are counted"):equals(1)
+    t:expect(ci.failed):equals(0)
+    t:expect(ci_err, "an open spec never marks isError"):is_falsy()
+
+    local surface = tool_json(by_id[31], "run{specs}")
+    t:expect(surface.spec):equals(1)
+    t:expect(surface.deselected, "the finished proof is deselected"):equals(1)
+
+    local strict, strict_err = tool_json(by_id[32], "run{specs,strict_specs}")
+    t:expect(strict.failed, "strict mode fails the open spec"):equals(1)
+    t:expect(strict_err, "the driver loop sees isError"):is_true()
+    t:expect(strict.failures[1].path):contains("future feature")
+
+    local open = tool_json(by_id[33], "list{specs}")
+    t:expect(#open.nodes, "exactly the open surface"):equals(1)
+    t:expect(open.nodes[1].path):contains("future feature")
+  end)
 end)

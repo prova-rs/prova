@@ -225,9 +225,11 @@ function Matcher:matches_snapshot(opts) end
 ---@class prova.TestOpts : prova.UnitOpts
 ---@field timeout? string                # e.g. "30s"
 ---@field retries? integer
+---@field spec? true|string              # a proof authored AHEAD of its implementation (value = reason/ticket). Open spec (red body) reports as its own outcome, CI green; once the body passes, the run fails until this flag is deleted — implementation and flag removal land as one commit. Test/flow-level only. See `prova learn specs`.
 
 ---@class prova.FlowOpts : prova.UnitOpts
 ---@field timeout? string                # whole-flow timeout
+---@field spec? true|string              # a proof authored AHEAD of its implementation — see prova.TestOpts.spec / `prova learn specs`
 
 --- A group is the *independent* strategy: children are isolated, unordered, parallelizable.
 ---@class prova.GroupOpts : prova.UnitOpts
