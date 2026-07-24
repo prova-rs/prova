@@ -1176,6 +1176,9 @@ const SKIP_SENTINEL: &str = "__prova_skip__";
 // Matchers
 // ---------------------------------------------------------------------------------------------
 
+/// One `:eventually` poll observation, deposited by a probe-mode `Matcher`: `(passed, message)`.
+type ProbeState = Rc<RefCell<Option<(bool, String)>>>;
+
 struct Matcher {
     subject: Value,
     label: Option<String>,
@@ -1183,7 +1186,7 @@ struct Matcher {
     run: Rc<RefCell<TestRun>>,
     /// `:eventually` probe mode: when set, `record` deposits `(passed, message)` here instead of
     /// counting an assertion or raising — one poll iteration, observed by the retry loop.
-    probe: Option<Rc<RefCell<Option<(bool, String)>>>>,
+    probe: Option<ProbeState>,
 }
 
 impl Matcher {
