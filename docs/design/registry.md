@@ -134,7 +134,7 @@ for topologies:
 prova plugins                    # list all entries across configured registries
 prova plugins postgres           # search: name + description + capabilities substring match
 prova plugins info postgres      # one entry, full detail (namespaces, shapes, requires, latest)
-prova plugins add postgres       # write pinned [plugins] entry (latest) into prova.toml + fetch
+prova plugins add postgres       # write pinned [plugins] entry (latest) into prova.toml
 prova plugins add postgres@v1    # explicit ref wins over latest
 ```
 
@@ -214,9 +214,14 @@ to a bar.
 
 ## Roadmap
 
-**Status (2026-07-24):** designed; the executable backlog is authored — `proofs/spec/registry/`
-holds 15 open specs covering items 1–3 below (`prova --specs --list` enumerates them), plus the
-discovery-only guardrail, which already runs unflagged. Implementation not started.
+**Status (2026-07-24):** items 1–3 below are **implemented and graduated** — the
+`proofs/spec/registry/` suite (16 proofs) runs flag-free: `[[registries]]` + built-in merge,
+`prova plugins` list/search/info/add, per-entry tolerance, the offline/cold-cache error, the
+discovery-only guardrail, and the `{{registries}}` learn slot. One deliberate deviation from the
+Surface sketch: `add` pins the manifest but does NOT fetch — pinning must work offline, and the
+next resolution fetches through the normal path. Remaining: the MCP mirror of the verbs, and
+items 4–6 (the `prova-rs/package-registry` repo itself, registration automation, update
+ergonomics).
 
 1. `[[registries]]` in `config.toml` + built-in `prova-rs` default; fetch/cache via the existing
    git-cache path; entry parser with unknown-key tolerance + per-entry schema skip.

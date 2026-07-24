@@ -34,6 +34,10 @@ Every service namespace has the same shape, so knowing one is knowing all:
 Official plugins: postgres, mysql, redis, kafka, pulsar, rabbitmq, s3, mongodb, parallels.
 Built-ins need no declaration: `fs shell net http grpc graphql yaml sqlite docker archetect`.
 
+## Finding more — search the registries
+
+{{registries}}
+
 ## Operational knobs
 
 - Ad-hoc, no manifest edit: `-P name=source` (repeatable; local paths; layers over `[plugins]`).
@@ -44,6 +48,6 @@ Built-ins need no declaration: `fs shell net http grpc graphql yaml sqlite docke
 - A plugin's API is discoverable: `prova.help("<name>")` once its stub is synced (IDE gets it
   automatically), or probe with `prova eval`.
 
-No plugin for your dependency? Compose primitives: `docker.run{ image, env, ports, wait }` +
-`container:run(argv)` + `prova.retry`. When the boilerplate recurs, promote it:
-`prova learn plugin-authoring`.
+No plugin for your dependency (registries searched)? Compose primitives:
+`docker.run{ image, env, ports, wait }` + `container:run(argv)` + `prova.retry`. When the
+boilerplate recurs, promote it: `prova learn plugin-authoring`.

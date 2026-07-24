@@ -50,6 +50,7 @@ Everything below is the crash course; depth is one call away, computed for THIS 
 | Which archetypes `init` can scaffold | `prova init --list` (or `prova learn init`) |
 | A live value's shape | probe it with `eval` |
 | The open-spec backlog (proofs ahead of implementation) | `prova specs` · `prova learn specs` |
+| A plugin for a technology you need to prove | `prova plugins <term>` (search registries) → `prova plugins add <name>` |
 
 ## Test files, in one screen
 

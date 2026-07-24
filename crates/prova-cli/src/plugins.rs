@@ -606,7 +606,7 @@ fn module_file(
 /// bare `rev` pin is content-addressed and never re-probed; a `tag` or `branch` (or the default
 /// branch) is TTL-gated and, once stale, confirmed against the remote hash before any pull — so a
 /// floating major (`@v1`) follows its releases automatically. Pin a `rev` for reproducibility.
-fn fetch_git(
+pub(crate) fn fetch_git(
     url: &str,
     detail: &PluginDetail,
     layout: &dyn SystemLayout,

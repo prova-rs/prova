@@ -184,6 +184,7 @@ enum Slot {
     ProofPaths,
     PluginRoot,
     Plugins,
+    Registries,
     Topologies,
     Profiles,
     ContextFiles,
@@ -196,6 +197,7 @@ impl Slot {
             "proof_paths" => Some(Slot::ProofPaths),
             "plugin_root" => Some(Slot::PluginRoot),
             "plugins" => Some(Slot::Plugins),
+            "registries" => Some(Slot::Registries),
             "topologies" => Some(Slot::Topologies),
             "profiles" => Some(Slot::Profiles),
             "context_files" => Some(Slot::ContextFiles),
@@ -421,6 +423,9 @@ fn render_slot(slot: Slot, env: &RenderEnv, transport: Transport) -> String {
             },
             None => String::new(),
         },
+        // No package needed and no fetch performed: registries come from user config alone, so
+        // this renders (and stays truthful) offline and pre-init.
+        Slot::Registries => crate::registry::learn_lines(transport == Transport::Cli),
         Slot::Plugins => match &env.package {
             Some(p)
                 if !p.resolved.plugins.is_empty() || !local_plugins(p).is_empty() =>

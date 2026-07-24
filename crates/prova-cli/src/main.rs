@@ -27,6 +27,7 @@ mod learn;
 mod manifest;
 mod mcp;
 mod plugins;
+mod registry;
 mod report;
 mod runstate;
 
@@ -132,6 +133,12 @@ const VERBS: &[Verb] = &[
         name: "plugin",
         help: "  prova plugin lint <f>...  check plugin files against the namespacing grammar",
         run: plugin_subcommand,
+    },
+    Verb {
+        name: "plugins",
+        help: "  prova plugins [<query>]   search the configured plugin registries (no query lists all;\n\
+               \x20                           `info <name>` details; `add <name>[@ref]` pins into [plugins])",
+        run: registry::run,
     },
 ];
 

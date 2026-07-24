@@ -120,8 +120,7 @@ end
 
 -- ── list & search ────────────────────────────────────────────────────────────────────────────
 
-prova.test("`prova plugins` lists entries from config-listed path registries",
-  { spec = "registry.md surface" }, function(t)
+prova.test("`prova plugins` lists entries from config-listed path registries", function(t)
   local sb = t:use(sandbox)
   -- cwd is the manifest-less sandbox root on purpose: discovery must work before a package
   -- exists, exactly like `prova init --list`.
@@ -132,15 +131,14 @@ prova.test("`prova plugins` lists entries from config-listed path registries",
   t:expect(r.stdout):contains("rabbitmq")
 end)
 
-prova.test("with more than one registry configured, rows say which registry they came from",
-  { spec = "registry.md surface" }, function(t)
+prova.test("with more than one registry configured, rows say which registry they came from", function(t)
   local sb = t:use(sandbox)
   local r = plugins(sb, "")
   t:expect(r.stdout):contains("main")
   t:expect(r.stdout):contains("second")
 end)
 
-prova.test("search matches on name", { spec = "registry.md surface" }, function(t)
+prova.test("search matches on name", function(t)
   local sb = t:use(sandbox)
   local r = plugins(sb, "postgres")
   t:expect(r.code):equals(0)
@@ -148,8 +146,7 @@ prova.test("search matches on name", { spec = "registry.md surface" }, function(
   t:expect(r.stdout):never():contains("rabbitmq")
 end)
 
-prova.test("search matches on capabilities, not just name",
-  { spec = "registry.md surface" }, function(t)
+prova.test("search matches on capabilities, not just name", function(t)
   local sb = t:use(sandbox)
   -- "database" appears only in postgres's capabilities — never in a name or description.
   local r = plugins(sb, "database")
@@ -157,8 +154,7 @@ prova.test("search matches on capabilities, not just name",
   t:expect(r.stdout):never():contains("rabbitmq")
 end)
 
-prova.test("info shows the full entry: repo, recommended pin, requires, shape",
-  { spec = "registry.md surface" }, function(t)
+prova.test("info shows the full entry: repo, recommended pin, requires, shape", function(t)
   local sb = t:use(sandbox)
   local r = plugins(sb, "info postgres")
   t:expect(r.code):equals(0)
@@ -170,8 +166,7 @@ end)
 
 -- ── entry tolerance (graceful extensibility) ─────────────────────────────────────────────────
 
-prova.test("unknown keys in an entry are ignored, never fatal",
-  { spec = "registry.md entry" }, function(t)
+prova.test("unknown keys in an entry are ignored, never fatal", function(t)
   local sb = t:use(sandbox)
   -- rabbitmq's entry carries `from_the_future`; it must list like any other entry.
   local r = plugins(sb, "rabbitmq")
@@ -179,8 +174,7 @@ prova.test("unknown keys in an entry are ignored, never fatal",
   t:expect(r.stdout):contains("rabbitmq")
 end)
 
-prova.test("an entry with an unrecognized schema is skipped per-entry, with a warning",
-  { spec = "registry.md entry" }, function(t)
+prova.test("an entry with an unrecognized schema is skipped per-entry, with a warning", function(t)
   local sb = t:use(sandbox)
   local rows = plugins(sb, "")
   t:expect(rows.code):equals(0)                        -- the registry still serves
@@ -190,8 +184,7 @@ prova.test("an entry with an unrecognized schema is skipped per-entry, with a wa
   t:expect(warned.stdout):contains("futuristic")       -- the skip names the entry
 end)
 
-prova.test("an entry missing a required field is skipped with a warning, not fatal",
-  { spec = "registry.md entry" }, function(t)
+prova.test("an entry missing a required field is skipped with a warning, not fatal", function(t)
   local sb = t:use(sandbox)
   local rows = plugins(sb, "")
   t:expect(rows.code):equals(0)
@@ -202,8 +195,7 @@ end)
 
 -- ── built-in default + offline ───────────────────────────────────────────────────────────────
 
-prova.test("a user registry named after a built-in replaces it wholesale",
-  { spec = "registry.md config" }, function(t)
+prova.test("a user registry named after a built-in replaces it wholesale", function(t)
   local sb = t:use(sandbox)
   -- config.toml names `prova-rs` with a local path: listing must serve the override's entry
   -- (and succeed hermetically — nothing in the merged set can reach the network).
@@ -212,8 +204,7 @@ prova.test("a user registry named after a built-in replaces it wholesale",
   t:expect(r.stdout):contains("notreal")
 end)
 
-prova.test("the prova-rs registry is built in; offline with a cold cache it fails naming itself",
-  { spec = "registry.md config" }, function(t)
+prova.test("the prova-rs registry is built in; offline with a cold cache it fails naming itself", function(t)
   local sb = t:use(sandbox)
   -- No user config at all: the built-in default is the whole set. Offline + never fetched →
   -- a clear error naming the registry it cannot serve, not a silent empty listing.
@@ -224,8 +215,7 @@ end)
 
 -- ── add: search-to-pinned in one motion ──────────────────────────────────────────────────────
 
-prova.test("add writes a pinned [plugins] entry using the recommended pin",
-  { spec = "registry.md add" }, function(t)
+prova.test("add writes a pinned [plugins] entry using the recommended pin", function(t)
   local sb = t:use(sandbox)
   local proj = project(sb, "add-latest")
   local r = plugins(sb, "add postgres", { cwd = proj })
@@ -235,8 +225,7 @@ prova.test("add writes a pinned [plugins] entry using the recommended pin",
   t:expect(manifest):contains("v2")                    -- latest, materialized as the pin
 end)
 
-prova.test("add name@ref pins the explicit ref over latest",
-  { spec = "registry.md add" }, function(t)
+prova.test("add name@ref pins the explicit ref over latest", function(t)
   local sb = t:use(sandbox)
   local proj = project(sb, "add-ref")
   local r = plugins(sb, "add postgres@v1", { cwd = proj })
@@ -246,8 +235,7 @@ prova.test("add name@ref pins the explicit ref over latest",
   t:expect(manifest):never():contains("v2")
 end)
 
-prova.test("a name in two registries demands registry:name disambiguation",
-  { spec = "registry.md add" }, function(t)
+prova.test("a name in two registries demands registry:name disambiguation", function(t)
   local sb = t:use(sandbox)
   local proj = project(sb, "add-ambiguous")
   local ambiguous = plugins(sb, "add dupe 2>&1", { cwd = proj })
@@ -259,8 +247,7 @@ prova.test("a name in two registries demands registry:name disambiguation",
   t:expect(fs.read(proj .. "/prova.toml")):contains("https://github.com/second-org/prova-dupe")
 end)
 
-prova.test("adding an unknown name is a clear error, not a guess",
-  { spec = "registry.md add" }, function(t)
+prova.test("adding an unknown name is a clear error, not a guess", function(t)
   local sb = t:use(sandbox)
   local proj = project(sb, "add-unknown")
   local r = plugins(sb, "add nosuchplugin 2>&1", { cwd = proj })
@@ -288,8 +275,7 @@ end)
 
 -- ── the learn system announces the surface ───────────────────────────────────────────────────
 
-prova.test("`prova learn plugins` teaches the registries and the search-first move",
-  { spec = "registry.md learn" }, function(t)
+prova.test("`prova learn plugins` teaches the registries and the search-first move", function(t)
   local sb = t:use(sandbox)
   local proj = project(sb, "learn-slot")
   local r = shell.run("prova learn plugins 2>&1", { cwd = proj, env = sb.env() })
