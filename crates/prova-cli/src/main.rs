@@ -150,6 +150,8 @@ options:
       --tags a,b            select nodes tagged with any listed tag (repeatable; !tag excludes)
       --node PATH           select an exact node path (repeatable) — re-run what a report named
       --last-failed         select only the nodes that failed in the previous run
+      --specs               select only spec-flagged tests — the open spec surface (composes with --list)
+      --strict-specs        driver mode: open specs report as real failures (the implementing loop)
       --allow-empty         a selection matching no tests is OK (default: that is an error)
   -u, --update-snapshots    (re)write snapshots instead of comparing (matches_snapshot)
       --unreferenced M      snapshots no test used: ignore (default) | warn | delete (full runs only)
@@ -1268,6 +1270,8 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     let mut unreferenced = String::from("ignore"); // ignore | warn | delete
     let mut cli_config: Option<String> = None;
     let mut list = false;
+    let mut specs_only = false;
+    let mut strict_specs = false;
     let mut explicit_paths: Vec<String> = Vec::new();
     let mut profile: Option<String> = None;
     let mut manifest_path: Option<String> = None;
@@ -1396,6 +1400,8 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             "--list" => list = true,
             "--quiet" | "-q" => cli_quiet = true,
             "--last-failed" => last_failed = true,
+            "--specs" => specs_only = true,
+            "--strict-specs" => strict_specs = true,
             "--allow-empty" => allow_empty = true,
             "--update-snapshots" | "-u" => update_snapshots = true,
             "--update" | "-U" => update_force = true,
@@ -1585,6 +1591,8 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     // The plugin searcher consults the global install dir plus any manifest-declared plugins.
     let mut config = engine_config(jobs, &plugins_resolved, home.as_ref())
         .with_update_snapshots(update_snapshots)
+        .with_strict_specs(strict_specs)
+        .with_specs_only(specs_only)
         .with_capabilities(capabilities);
 
     // `--last-failed`: fold the previous run's failed node paths into the selection as exact nodes.

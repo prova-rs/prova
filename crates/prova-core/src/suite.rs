@@ -80,6 +80,7 @@ enum OwnedEvent {
         message: Option<String>,
         file: Option<String>,
         line: Option<u32>,
+        spec_reason: Option<String>,
     },
 }
 
@@ -103,6 +104,7 @@ impl Reporter for ChannelReporter {
                 message,
                 file,
                 line,
+                spec_reason,
             } => OwnedEvent::NodeFinished {
                 path: (*path).to_string(),
                 outcome: *outcome,
@@ -111,6 +113,7 @@ impl Reporter for ChannelReporter {
                 message: message.map(str::to_string),
                 file: file.map(str::to_string),
                 line: *line,
+                spec_reason: spec_reason.map(str::to_string),
             },
             Event::RunStarted | Event::RunFinished { .. } => return,
         };
@@ -259,6 +262,8 @@ fn run_sequential(suites: &[Suite], reporter: &mut dyn Reporter, config: &RunCon
                 summary.passed += s.passed;
                 summary.failed += s.failed;
                 summary.skipped += s.skipped;
+                summary.spec += s.spec;
+                summary.graduated += s.graduated;
                 summary.deselected += s.deselected;
             }
             Err(err) => report_suite_error(reporter, &mut summary, suite, &err.to_string()),
@@ -274,7 +279,7 @@ fn run_pooled(suites: &[Suite], reporter: &mut dyn Reporter, config: &RunConfig)
     let queue: Arc<Mutex<VecDeque<Suite>>> = Arc::new(Mutex::new(suites.iter().cloned().collect()));
     let (tx, rx) = channel::<OwnedEvent>();
     // Deselected leaves emit no node events, so their count travels on a side channel.
-    let (dtx, drx) = channel::<usize>();
+    let (dtx, drx) = channel::<(usize, usize)>();
 
     let mut handles = Vec::with_capacity(workers);
     for _ in 0..workers {
@@ -290,7 +295,9 @@ fn run_pooled(suites: &[Suite], reporter: &mut dyn Reporter, config: &RunConfig)
                 let Some(suite) = next else { break };
                 match suite.run(&mut sink, &config) {
                     Ok(s) => {
-                        let _ = dtx.send(s.deselected);
+                        // Plan-derived counts (not event-derived) cross on their own channel:
+                        // `spec` re-tallies from forwarded events, these two cannot.
+                        let _ = dtx.send((s.deselected, s.graduated));
                     }
                     Err(err) => {
                         // Surface a collection/load error as a synthetic failed node for the suite.
@@ -306,6 +313,7 @@ fn run_pooled(suites: &[Suite], reporter: &mut dyn Reporter, config: &RunConfig)
                             message: Some(&message),
                             file: file.as_deref(),
                             line: None,
+                            spec_reason: None,
                         });
                     }
                 }
@@ -323,7 +331,10 @@ fn run_pooled(suites: &[Suite], reporter: &mut dyn Reporter, config: &RunConfig)
     for handle in handles {
         let _ = handle.join();
     }
-    summary.deselected += drx.iter().sum::<usize>();
+    for (deselected, graduated) in drx.iter() {
+        summary.deselected += deselected;
+        summary.graduated += graduated;
+    }
     summary
 }
 
@@ -341,6 +352,7 @@ fn forward(reporter: &mut dyn Reporter, summary: &mut Summary, event: OwnedEvent
             message,
             file,
             line,
+            spec_reason,
         } => {
             summary.tally(outcome);
             reporter.event(&Event::NodeFinished {
@@ -351,6 +363,7 @@ fn forward(reporter: &mut dyn Reporter, summary: &mut Summary, event: OwnedEvent
                 message: message.as_deref(),
                 file: file.as_deref(),
                 line,
+                spec_reason: spec_reason.as_deref(),
             });
         }
     }
@@ -373,5 +386,6 @@ fn report_suite_error(
         message: Some(message),
         file: file.as_deref(),
         line: None,
+        spec_reason: None,
     });
 }

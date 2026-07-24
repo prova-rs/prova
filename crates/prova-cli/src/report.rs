@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use anstream::AutoStream;
 use anstyle::{AnsiColor, Style};
-use prova_core::{Event, Outcome, Reporter};
+use prova_core::{spec_summary_segment, Event, Outcome, Reporter};
 
 /// How to color stdout. Resolution order for the run path: `--color` flag > `PROVA_COLOR` env >
 /// manifest `color` key > `Auto`. Under `Auto`, anstream additionally honors `NO_COLOR` and
@@ -343,6 +343,28 @@ impl Reporter for GitHubReporter {
                         detail: detail.to_string(),
                     });
                 }
+                Outcome::Spec => {
+                    // An open spec is a notice, never an error — the whole point is a green CI
+                    // while the spec surface burns down.
+                    let detail = message.unwrap_or("open spec");
+                    println!(
+                        "::notice {}::{}",
+                        self.props(*file, *line, path),
+                        gha_escape_data(detail)
+                    );
+                    self.rows.push(SummaryRow {
+                        mark: "📝",
+                        path: path.to_string(),
+                        location: file.map(|f| {
+                            let f = self.rel(f);
+                            match line {
+                                Some(l) => format!("{f}:{l}"),
+                                None => f,
+                            }
+                        }),
+                        detail: detail.to_string(),
+                    });
+                }
                 Outcome::Passed => {}
             },
             Event::RunFinished { summary } => {
@@ -352,8 +374,12 @@ impl Reporter for GitHubReporter {
                 let mut md = String::new();
                 let mark = if summary.failed > 0 { "❌" } else { "✅" };
                 md.push_str(&format!(
-                    "### {mark} prova — {} passed, {} failed, {} skipped in {:.1?}\n",
-                    summary.passed, summary.failed, summary.skipped, summary.duration
+                    "### {mark} prova — {} passed, {} failed, {} skipped{} in {:.1?}\n",
+                    summary.passed,
+                    summary.failed,
+                    summary.skipped,
+                    spec_summary_segment(summary),
+                    summary.duration
                 ));
                 if !self.rows.is_empty() {
                     md.push_str("\n| | test | location | detail |\n|---|---|---|---|\n");
@@ -393,7 +419,10 @@ impl Reporter for HumanReporter {
                 message,
                 file,
                 line,
+                spec_reason,
             } => {
+                // Quiet suppresses the routine (PASS/SKIP); an open SPEC is actionable state and
+                // stays visible.
                 if matches!(outcome, Outcome::Passed | Outcome::Skipped) && self.quiet {
                     return;
                 }
@@ -439,6 +468,18 @@ impl Reporter for HumanReporter {
                             location,
                         });
                     }
+                    Outcome::Spec => {
+                        // An open spec: expected-red, so no recap entry and no rerun line — the
+                        // burndown meter (`--specs --list`, the tally) is its call to action.
+                        let why = spec_reason
+                            .filter(|r| !r.is_empty())
+                            .map(|r| format!("  {DIM}— {r}{DIM:#}"))
+                            .unwrap_or_default();
+                        let _ = writeln!(out, "{indent}{SKIP}SPEC{SKIP:#}  {leaf}{why}{line_col}");
+                        if let Some(m) = message {
+                            write_message(out, &format!("{indent}      "), m);
+                        }
+                    }
                 }
                 self.printed_any = true;
             }
@@ -469,10 +510,11 @@ impl Reporter for HumanReporter {
                 let failed_style = if summary.failed > 0 { FAIL } else { Style::new() };
                 let _ = writeln!(
                     out,
-                    "\n{PASS}{}{PASS:#} passed, {failed_style}{}{failed_style:#} failed, {} skipped{}   in {}",
+                    "\n{PASS}{}{PASS:#} passed, {failed_style}{}{failed_style:#} failed, {} skipped{}{}   in {}",
                     summary.passed,
                     summary.failed,
                     summary.skipped,
+                    spec_summary_segment(summary),
                     if summary.deselected > 0 {
                         format!(", {} deselected", summary.deselected)
                     } else {
