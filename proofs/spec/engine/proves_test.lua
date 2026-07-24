@@ -14,6 +14,7 @@
 ---   * an honored spec's failure message offers the conversion, reason carried over verbatim.
 ---   * `spec` + `proves` on one test is refused — open work keeps its context in `spec`.
 ---   * `proves` demands a non-empty string: the context IS the point; a bare flag says nothing.
+---   * `spec` demands its reason from day one, for the same reason — no bare `spec = true`.
 ---   * test-level only, like `spec`: no group/suite inheritance ceremony.
 ---   * `prova specs` still enumerates only the OPEN surface — proves-annotated tests are done.
 
@@ -115,6 +116,21 @@ prova.test("`prova specs` enumerates only the open surface — proven tests are 
   t:expect(r.code):equals(0)
   t:expect(r.stdout):contains("still open")
   t:expect(r.stdout):never():contains("finished")
+end)
+
+prova.test("spec demands its reason from day one — a bare or empty flag is refused",
+  { spec = "context from day one: a reason-less spec tells the burndown nothing" }, function(t)
+  for _, value in ipairs({ "true", '""' }) do
+    local proj = pkg(
+      'prova.test("wordless", { spec = ' .. value .. ' }, function(t)\n' ..
+      '  t:expect(1):equals(2)\n' ..
+      'end)\n')
+    local r = shell.run("prova 2>&1", { cwd = proj })
+    t:expect(r.code):never():equals(0)
+    local out = r.stdout .. r.stderr
+    t:expect(out):contains("spec")
+    t:expect(out):contains("reason")
+  end
 end)
 
 prova.test("the binary teaches the lifecycle: `prova learn specs` names proves",
