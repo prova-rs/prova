@@ -29,8 +29,8 @@ The loop:
 is still worth a proof: author it flagged `{ spec = "reason/ticket" }` (test/flow-level). Open
 specs report as their own outcome and keep CI green; the moment a spec's body passes it FAILS
 with "remove the spec flag", so implementation + flag removal land as one proof-carrying change.
-`prova --specs --list` enumerates the open surface — an empty list means burndown complete; found
-some in a repo? That is scoped work — offer to burn it down against `--specs --strict-specs`.
+`prova specs` enumerates the open surface — an empty list means burndown complete; found
+some in a repo? That is scoped work — offer to burn it down with `prova burndown`.
 `prova learn specs` carries the lifecycle.
 
 Prova complements the language's own test harness; it does not replace it. Prove the CONTRACT
@@ -49,7 +49,7 @@ Everything below is the crash course; depth is one call away, computed for THIS 
 | An API's shape: what to call, what comes back | `prova.help("<filter>")` in any test/eval · MCP `introspect { filter }` |
 | Which archetypes `init` can scaffold | `prova init --list` (or `prova learn init`) |
 | A live value's shape | probe it with `eval` |
-| The open-spec backlog (proofs ahead of implementation) | `prova --specs --list` · `prova learn specs` |
+| The open-spec backlog (proofs ahead of implementation) | `prova specs` · `prova learn specs` |
 
 ## Test files, in one screen
 
@@ -190,7 +190,8 @@ prova --tags '!build'       # skip a tier by tag (own or inherited from groups)
 prova --node "exact › path" # precisely the node a report named
 prova --last-failed         # exactly what was red last run — your main iteration verb
 prova --list                # discover without running (respects selection)
-prova --specs               # only spec-flagged tests — the open backlog (--strict-specs to drive)
+prova specs                 # list the open backlog · `prova burndown` drives it red-loud
+prova --specs               # the composable selector underneath (only spec-flagged tests)
 prova eval 'return require("postgres").container(ctx).url'   # one-shot probe, auto-teardown
 ```
 

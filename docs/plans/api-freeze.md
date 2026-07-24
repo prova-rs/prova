@@ -142,12 +142,14 @@ removed and callers migrated. Still to spec-then-implement: §2 globals
 (`proofs/spec/globals/` — reserved names, write protection, require-injection), §6 journals
 (`proofs/spec/journals/`), and the Tier-A transports as they are designed.
 
-**Spec-engine ergonomics (2026-07-24, spec'd in `proofs/spec/engine/`):** the flag combos are
+**Spec-engine ergonomics (2026-07-24, IMPLEMENTED — suite graduated):** the flag combos are
 the composable primitives but a poor entry point (`--strict-specs` is the thing you reach for
 most and the least memorable spelling). DECISION: the lifecycle gets **verbs**, matching the
 grammar where activities are subcommands and no-arg subcommands list their domain (`prova up`,
-`prova plugins`) — `prova specs` enumerates the open surface, `prova burndown` is the inner
-loop (spec-selected, open specs fail loud), subsuming `--specs --strict-specs`. `--specs`
-survives as the selector that composes with path selection. `--specs --list` now carries its
-own guardrail proof (the engine was bootstrapped "implemented first, spec'd by hand"; that gap
-is closed).
+`prova plugin`) — `prova specs` enumerates the open surface, `prova burndown` is the inner
+loop (spec-selected, open specs fail loud), subsuming `--specs --strict-specs` (+
+`--allow-empty`: an empty surface under `burndown` means COMPLETE, exit 0, not a selection
+error). `--specs` survives as the selector that composes with path selection. All of it holds
+as flag-free guardrails in `proofs/spec/engine/` — including `--specs --list` itself, which the
+bootstrap ("implemented first, spec'd by hand") had left unproven — and the learn topic, skill,
+and running/pdd topics teach the verbs.

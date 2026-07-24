@@ -173,10 +173,11 @@ prova.group("prova skill routes to learn", function(g)
 
   g:test("the skill carries the spec inclination — author ahead, burn down what's open", function(t)
     -- An agent that reads ONLY the skill (or gets it as MCP instructions) must leave knowing
-    -- the executable-backlog move and its enumeration verb.
+    -- the executable-backlog move and its verbs.
     local r = shell.run(prova_bin .. " skill")
     t:expect(r.stdout):contains('spec = "reason')
-    t:expect(r.stdout):contains("--specs --list")
+    t:expect(r.stdout):contains("prova specs")
+    t:expect(r.stdout):contains("prova burndown")
     t:expect(r.stdout):contains("prova learn specs")
   end)
 end)

@@ -2339,7 +2339,9 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
                 message = opts.get::<Option<String>>("message")?;
             }
             let deadline = Instant::now() + timeout;
-            let mut last_err: Option<String> = None;
+            // No initializer: every arm of the match below that reaches the deadline check
+            // assigns it, and rustc's definite-assignment analysis proves that.
+            let mut last_err: Option<String>;
             loop {
                 match f.call_async::<Value>(()).await {
                     Ok(v) if truthy(&v) => return Ok(v),

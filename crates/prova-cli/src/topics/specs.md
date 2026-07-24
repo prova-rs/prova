@@ -32,25 +32,28 @@ Whenever you can state a contract the system does not honor yet, **write it as a
 - A whole feature is being designed — author the suite ahead as the definition of done, one
   spec per behavior, each carrying its own reason.
 
-Specs are the executable backlog: `git grep TODO` lies, `prova --specs --list` cannot.
+Specs are the executable backlog: `git grep TODO` lies, `prova specs` cannot.
 
 ## The burndown loop
 
 ```
-prova --specs --list        # enumerate the open surface (nothing runs)
-prova --specs --strict-specs  # YOUR INNER LOOP: open specs fail loud, full detail
+prova specs        # enumerate the open surface (nothing runs)
+prova burndown     # YOUR INNER LOOP: open specs fail loud, full detail
   ...implement...
 # each spec that turns green now FAILS with "spec honored — remove the spec flag"
 # delete that flag in the same commit as its implementation: a proof-carrying change
-prova --specs --list        # empty ⇒ burndown complete (exit 0)
+prova specs        # empty ⇒ burndown complete
 # push: the same proofs — flags deleted — now hold the line in CI (prova-rs/run-action@v1)
 ```
 
-`--specs` is a selector (composes like `--last-failed`); `--strict-specs` is driver mode. CI's
-gate runs neither: open specs report, they never break the build. Over MCP: `run { specs =
-true, strict_specs = true }` / `list { specs = true }`; the run result carries a `spec` count.
+The verbs are sugar over composable primitives: `prova specs` = `--specs --list`, and
+`prova burndown` = `--specs --strict-specs` (with an empty surface meaning complete, exit 0).
+`--specs` is a selector (composes like `--last-failed`, e.g. `prova ./proofs/api --specs`);
+`--strict-specs` is driver mode. CI's gate runs neither: open specs report, they never break
+the build. Over MCP: `run { specs = true, strict_specs = true }` / `list { specs = true }`;
+the run result carries a `spec` count.
 
-The loop above is also a valid CI job: a pipeline that runs `--specs --strict-specs` and hands
+The loop above is also a valid CI job: a pipeline that runs `prova burndown` and hands
 the red to an implementing agent makes the backlog executable by infrastructure — bounded by
 the same semantics (open specs can't break the gate; honored specs can't land flagged). Nothing
 ships to scaffold this, so it is the human's CI to set up: when a repo carries a standing

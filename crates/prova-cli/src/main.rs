@@ -87,6 +87,18 @@ const VERBS: &[Verb] = &[
         run: learn::run,
     },
     Verb {
+        name: "specs",
+        help: "  prova specs               list the open spec surface — proofs authored ahead of implementation\n\
+               \x20                           (same as `--specs --list`; composes with selection)",
+        run: specs_subcommand,
+    },
+    Verb {
+        name: "burndown",
+        help: "  prova burndown [<sel>]    the implementing loop: run only spec-flagged tests, open specs fail\n\
+               \x20                           loud with full detail (same as `--specs --strict-specs`)",
+        run: burndown_subcommand,
+    },
+    Verb {
         name: "mcp",
         help: "  prova mcp                 serve an MCP stdio server whose tools mirror the CLI (run, list, eval)",
         run: mcp::run,
@@ -267,6 +279,30 @@ fn plugin_subcommand(args: Vec<String>) -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+/// `prova specs` — the no-flags spelling of `--specs --list`: enumerate the open spec surface
+/// without running anything. The flags remain the composable primitives; this is the verb an
+/// agent remembers (activities are subcommands, and the no-arg form lists its domain, like
+/// `prova up` / `prova plugin`). Extra args pass through, so selection still composes.
+fn specs_subcommand(args: Vec<String>) -> ExitCode {
+    let mut full = vec!["--specs".to_string(), "--list".to_string()];
+    full.extend(args);
+    run(full)
+}
+
+/// `prova burndown` — the implementing inner loop: `--specs --strict-specs`, so open specs fail
+/// loud with full detail and honored specs demand their flag's removal. `--allow-empty` rides
+/// along because an empty surface here means the burndown is COMPLETE — exit 0, not a
+/// selection error.
+fn burndown_subcommand(args: Vec<String>) -> ExitCode {
+    let mut full = vec![
+        "--specs".to_string(),
+        "--strict-specs".to_string(),
+        "--allow-empty".to_string(),
+    ];
+    full.extend(args);
+    run(full)
 }
 
 /// `prova eval '<code>'` — run a one-shot Lua snippet in the FULL prova environment (built-in
