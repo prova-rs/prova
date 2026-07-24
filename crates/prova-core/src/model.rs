@@ -78,9 +78,16 @@ pub struct UnitOpts {
     pub requires: Vec<String>,
     /// The `spec` flag — **test-level only**: `Some(reason)` marks a proof authored ahead of its
     /// implementation (`""` for a bare `spec = true`). Red body → the `Spec` outcome; green
-    /// body → a failure demanding the flag's removal. A test either carries the flag or it is a
-    /// full proof — there is no inheritance and no `spec = false`.
+    /// body → a failure demanding graduation (convert the flag to `proves` or remove it). A test
+    /// either carries the flag or it is a full proof — there is no inheritance and no
+    /// `spec = false`.
     pub spec: Option<String>,
+    /// The `proves` attribute — **test-level only**: graduated context. `Some(context)` carries
+    /// the why behind a finished proof (usually the converted reason of a spec that graduated,
+    /// or retrofitted onto an existing test) in the test itself, where a reviewer cannot miss
+    /// it. Runtime-inert — pass is pass, fail is fail — and mutually exclusive with `spec`:
+    /// while the work is open its context lives in the spec flag.
+    pub proves: Option<String>,
 }
 
 /// Result totals for a run.

@@ -831,6 +831,12 @@ fn parse_opts(t: &mlua::Table) -> mlua::Result<UnitOpts> {
         .get::<Option<Vec<String>>>("requires")?
         .unwrap_or_default();
     let spec = parse_spec_opt(&t.get::<Value>("spec")?)?;
+    let proves = parse_proves_opt(&t.get::<Value>("proves")?)?;
+    if spec.is_some() && proves.is_some() {
+        return Err(mlua::Error::RuntimeError(
+            "a test carries spec or proves, not both — while the work is open its context lives in the spec's reason; convert the flag to proves when the spec graduates".into(),
+        ));
+    }
     Ok(UnitOpts {
         timeout,
         tags,
@@ -839,6 +845,7 @@ fn parse_opts(t: &mlua::Table) -> mlua::Result<UnitOpts> {
         serial,
         requires,
         spec,
+        proves,
     })
 }
 
@@ -855,6 +862,21 @@ fn parse_spec_opt(v: &Value) -> mlua::Result<Option<String>> {
         )),
         _ => Err(mlua::Error::RuntimeError(
             "spec must be true or a reason string".into(),
+        )),
+    }
+}
+
+/// The `proves` opt: graduated context — the why behind a finished proof, living in the test
+/// itself. The context IS the point, so a bare `proves = true` or an empty string is refused
+/// with the fix rather than accepted as a say-nothing annotation.
+fn parse_proves_opt(v: &Value) -> mlua::Result<Option<String>> {
+    match v {
+        Value::Nil => Ok(None),
+        Value::String(s) if !s.to_string_lossy().is_empty() => {
+            Ok(Some(s.to_string_lossy().to_string()))
+        }
+        _ => Err(mlua::Error::RuntimeError(
+            "proves carries the context behind a finished proof — give it a non-empty string (the why), or remove the entry".into(),
         )),
     }
 }
@@ -2496,6 +2518,11 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
                         "spec is test-level only — flag each open test, not the suite".into(),
                     ));
                 }
+                if !matches!(opts.get::<Value>("proves")?, Value::Nil) {
+                    return Err(mlua::Error::RuntimeError(
+                        "proves is test-level only — annotate each test, not the suite".into(),
+                    ));
+                }
                 Ok(())
             })?,
         )?;
@@ -3205,17 +3232,25 @@ fn unit_name(leaf: &Leaf) -> &str {
 const SERIAL_TOKEN: &str = "__prova_serial__";
 
 fn build_plan(col: &Collector, caps: &Capabilities) -> mlua::Result<Plan> {
-    // Spec flags are test-level only (api-freeze §5, revised): a flag on a group would need the
-    // whole inheritance/graduation ceremony back. Refuse it with the fix.
+    // Spec flags and proves attributes are test-level only (api-freeze §5, revised): either on a
+    // group would need the whole inheritance/graduation ceremony back. Refuse with the fix.
     for node in &col.nodes {
-        if matches!(node.kind, NodeKind::Group) && node.opts.spec.is_some() {
-            let name = if node.name.is_empty() {
-                "the suite".to_string()
-            } else {
-                format!("group {:?}", node.name)
-            };
+        if !matches!(node.kind, NodeKind::Group) {
+            continue;
+        }
+        let name = if node.name.is_empty() {
+            "the suite".to_string()
+        } else {
+            format!("group {:?}", node.name)
+        };
+        if node.opts.spec.is_some() {
             return Err(mlua::Error::RuntimeError(format!(
                 "spec is test-level only — flag each open test, not {name}"
+            )));
+        }
+        if node.opts.proves.is_some() {
+            return Err(mlua::Error::RuntimeError(format!(
+                "proves is test-level only — annotate each test, not {name}"
             )));
         }
     }
@@ -3650,8 +3685,8 @@ struct NodeResult {
 /// - Any work result **failed** → the leaf is an **open spec**: each failure becomes
 ///   `Outcome::Spec` (CI green) — unless `strict` (driver mode), where open specs stay failures.
 /// - No failures and ≥1 pass → the spec is **honored**: each pass becomes a *failure* demanding
-///   the flag's removal, so an implementation cannot land without deleting it in the same
-///   commit — and the finished proof carries no annotation at all.
+///   graduation — convert the flag to `proves = "<context>"` (preferred: the reason lives on in
+///   the test) or remove it — so an implementation cannot land still flagged `spec`.
 /// - All skipped → untouched: an unmet `requires` wins over spec (nothing was observed).
 fn apply_spec_inversion(results: &mut [NodeResult], reason: &str, strict: bool) {
     let failed = results
@@ -3669,12 +3704,20 @@ fn apply_spec_inversion(results: &mut [NodeResult], reason: &str, strict: bool) 
         }
         return;
     }
+    // The graduation fix is copy-pasteable: the spec's reason becomes the proves context.
+    let fix = if reason.is_empty() {
+        "proves = \"<the context>\"".to_string()
+    } else {
+        format!("proves = {reason:?}")
+    };
     for r in results
         .iter_mut()
         .filter(|r| !r.teardown && r.outcome == Outcome::Passed)
     {
         r.outcome = Outcome::Failed;
-        r.message = Some("spec honored — remove the spec flag from this test".to_string());
+        r.message = Some(format!(
+            "spec honored — convert the spec flag to {fix} (keep the context) or remove it"
+        ));
     }
 }
 

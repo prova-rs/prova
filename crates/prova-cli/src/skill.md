@@ -28,7 +28,8 @@ The loop:
 **Specs — the executable backlog.** A contract you can state but are NOT implementing right now
 is still worth a proof: author it flagged `{ spec = "reason/ticket" }` (test/flow-level). Open
 specs report as their own outcome and keep CI green; the moment a spec's body passes it FAILS
-with "remove the spec flag", so implementation + flag removal land as one proof-carrying change.
+demanding graduation — convert the flag to `proves = "<context>"` (preferred: the why lives on
+in the test) or remove it — so implementation + graduation land as one proof-carrying change.
 `prova specs` enumerates the open surface — an empty list means burndown complete; found
 some in a repo? That is scoped work — offer to burn it down with `prova burndown`.
 `prova learn specs` carries the lifecycle.

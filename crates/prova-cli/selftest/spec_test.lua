@@ -27,13 +27,14 @@ prova.test("open specs keep the run green and are counted", function(t)
   t:expect(r.stdout):contains("1 spec open")
 end)
 
-prova.test("an honored spec fails demanding the flag's removal", function(t)
+prova.test("an honored spec fails demanding graduation — convert to proves, or remove", function(t)
   local dir = write_suite(
     'prova.test("done already", { spec = "oops" }, function(t) t:expect(1):equals(1) end)\n')
   local r = run(dir)
   t:expect(r.code):equals(1)
   t:expect(r.stdout):contains("spec honored")
-  t:expect(r.stdout):contains("remove the spec flag from this test")
+  -- the fix is copy-pasteable: the spec's reason carried over as the proves context
+  t:expect(r.stdout):contains('convert the spec flag to proves = "oops"')
 end)
 
 prova.test("--strict-specs turns open specs into failures", function(t)

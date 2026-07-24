@@ -87,7 +87,8 @@ prova.group("prova learn", function(g)
     t:expect(r.code):equals(0)
     t:expect(r.stdout):contains("--specs --list")
     t:expect(r.stdout):contains("--strict-specs")
-    t:expect(r.stdout):contains("remove the spec flag")
+    t:expect(r.stdout):contains("convert the spec flag")
+    t:expect(r.stdout):contains("proves")
     -- The practice topic routes here: sensing an unimplemented contract should lead to a spec.
     t:expect(learn("pdd").stdout):contains("prova learn specs")
     -- Intuitive names resolve: what other harnesses call this lands on our doctrine.

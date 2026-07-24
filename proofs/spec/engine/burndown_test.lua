@@ -61,7 +61,7 @@ prova.test("`prova burndown` is the inner loop: spec-selected, open specs fail l
   t:expect(r.code):never():equals(0)                    -- open specs are real failures here
   t:expect(r.stdout):contains("frobnicates")            -- the open spec, with its detail
   t:expect(r.stdout):contains("expected")               -- full failure detail, not a summary
-  t:expect(r.stdout):contains("remove the spec flag")   -- the honored spec demands graduation
+  t:expect(r.stdout):contains("convert the spec flag")  -- the honored spec demands graduation
   t:expect(r.stdout):never():contains("arithmetic holds")  -- unflagged tests are not selected
 end)
 

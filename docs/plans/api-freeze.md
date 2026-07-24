@@ -87,10 +87,18 @@ Named `spec`, not "pending": in PDD vocabulary a proof not yet honored *is* the 
 - **Open spec** (spec'd test that fails) → distinct `spec` outcome in every reporter (TAP: the
   `# TODO` directive — exactly these semantics; JUnit: skipped + message; JSONL: outcome
   `"spec"`; console: reason + first error line, no traceback). CI stays green.
-- **Spec that passes → failure**: "spec honored — remove the spec flag from this test." An
-  implementation cannot land without deleting its flag in the same commit — cleanup is forced
-  at implementation time, never proactive-after-the-fact. Implementation + flag removal = a
-  proof-carrying change, and the finished proof carries no annotation.
+- **Spec that passes → failure**: "spec honored — convert the spec flag to `proves = "…"`
+  (keep the context) or remove it." An implementation cannot land still flagged `spec` —
+  graduation is forced at implementation time, never proactive-after-the-fact. Implementation +
+  graduation = a proof-carrying change.
+
+> **REVISED 2026-07-24 (second dogfooding round)**: graduation keeps its context. Bare deletion
+> discarded the spec's reason — the design story — the moment it was earned. An honored spec now
+> converts to **`proves = "<context>"`** (preferred) or is removed. `proves` is runtime-inert
+> graduated context living in the test itself, where review cannot miss it (deliberately not a
+> pointer to a doc that can drift); it demands a non-empty string, excludes `spec` on the same
+> test, is test/flow-level only, and is invisible to `prova specs`. Retrofitting `proves` onto
+> existing tests is welcome. Spec'd in `proofs/spec/engine/proves_test.lua`.
 - **No mid-burndown drift window**: an unflagged test holds the line immediately; open specs
   are red by definition — no state exists where a regression can hide.
 - `prova --specs` — a **selector** (like `--last-failed`): run exactly the tests currently

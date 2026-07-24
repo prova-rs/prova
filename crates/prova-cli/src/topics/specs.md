@@ -14,13 +14,35 @@ Semantics are xfail-strict, per test:
 
 - **Open spec** (body red) → the distinct `spec` outcome: CI stays green, every reporter names
   it (TAP `# TODO`, JUnit skipped+message, JSONL `"spec"`, console reason + first error line).
-- **Spec honored** (body green) → a FAILURE: "spec honored — remove the spec flag from this
-  test." An implementation cannot land without deleting its flag in the same commit — the
-  finished proof carries no annotation, and there is no cleanup chore later.
+- **Spec honored** (body green) → a FAILURE: "spec honored — convert the spec flag to
+  `proves = "<reason>"` (keep the context) or remove it." An implementation cannot land still
+  flagged `spec`; graduation happens in the same commit as the implementation.
 - An **unflagged** test holds the line immediately. No drift window exists where a regression
   can hide.
 - `spec` is test/flow-level ONLY — on a group or in `suite.config` it is a validation error,
   and `spec = false` is not a thing (an unflagged test is already a full proof).
+
+## proves — graduated context
+
+The spec's reason carries the *why* while the proof is red; `proves` is where that context
+lives on after graduation. **Prefer converting over deleting**: change `spec = "reason"` to
+`proves = "the context worth keeping"` and the design story stays in the test itself, right
+next to the assertions it explains — read every time the test is reviewed, no reference to a
+doc that can drift or be ignored.
+
+```lua
+prova.test("json.null encodes an explicit null", { proves = "api-freeze §1: agents need a
+  spellable null distinct from absent" }, function(t)
+  t:expect(json.encode({ x = json.null })):equals('{"x":null}')
+end)
+```
+
+- `proves` is runtime-inert: the test is a full proof — pass is pass, fail is fail.
+- Its value must be a **non-empty string**: the context is the point; a bare flag says nothing.
+- `spec` and `proves` never share a test — open work keeps its context in the spec's reason.
+- Test/flow-level only, like `spec`; and invisible to `prova specs` (proven ≠ open).
+- **Retrofitting is welcome**: any existing test can gain a `proves` attribute to capture the
+  context behind it after the fact.
 
 ## When to author a spec — the inclination
 
@@ -40,8 +62,9 @@ Specs are the executable backlog: `git grep TODO` lies, `prova specs` cannot.
 prova specs        # enumerate the open surface (nothing runs)
 prova burndown     # YOUR INNER LOOP: open specs fail loud, full detail
   ...implement...
-# each spec that turns green now FAILS with "spec honored — remove the spec flag"
-# delete that flag in the same commit as its implementation: a proof-carrying change
+# each spec that turns green now FAILS with "spec honored — convert the spec flag to
+# proves = \"…\" (keep the context) or remove it"
+# graduate that flag in the same commit as its implementation: a proof-carrying change
 prova specs        # empty ⇒ burndown complete
 # push: the same proofs — flags deleted — now hold the line in CI (prova-rs/run-action@v1)
 ```

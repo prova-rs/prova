@@ -17,7 +17,8 @@
 ---   * test-level only, like `spec`: no group/suite inheritance ceremony.
 ---   * `prova specs` still enumerates only the OPEN surface — proves-annotated tests are done.
 
-local SPEC = "proves attribute: graduation keeps its context"
+local PROVES = "graduation used to force bare deletion, discarding the context the moment it "
+  .. "was earned; proves is where it lives on — in the test itself, not a doc that drifts"
 
 -- A fresh child package per call, probed through the real `prova` binary.
 local function pkg(body)
@@ -29,7 +30,7 @@ local function pkg(body)
 end
 
 prova.test("a proves-annotated test is a plain full proof — the attribute is inert",
-  { spec = SPEC }, function(t)
+  { proves = PROVES }, function(t)
   local proj = pkg(
     'prova.test("holds", { proves = "context lives here" }, function(t)\n' ..
     '  t:expect(1 + 1):equals(2)\n' ..
@@ -41,7 +42,7 @@ prova.test("a proves-annotated test is a plain full proof — the attribute is i
 end)
 
 prova.test("a proves-annotated test that fails is a real failure — no inversion",
-  { spec = SPEC }, function(t)
+  { proves = PROVES }, function(t)
   local proj = pkg(
     'prova.test("broken", { proves = "context lives here" }, function(t)\n' ..
     '  t:expect(1):equals(2)\n' ..
@@ -52,7 +53,7 @@ prova.test("a proves-annotated test that fails is a real failure — no inversio
 end)
 
 prova.test("an honored spec offers the conversion, its reason carried into the fix",
-  { spec = SPEC }, function(t)
+  { proves = PROVES }, function(t)
   local proj = pkg(
     'prova.test("done", { spec = "why this matters" }, function(t)\n' ..
     '  t:expect(true):is_true()\n' ..
@@ -63,7 +64,7 @@ prova.test("an honored spec offers the conversion, its reason carried into the f
   t:expect(r.stdout):contains('proves = "why this matters"')
 end)
 
-prova.test("spec and proves on one test are refused — not both", { spec = SPEC }, function(t)
+prova.test("spec and proves on one test are refused — not both", { proves = PROVES }, function(t)
   local proj = pkg(
     'prova.test("confused", { spec = "open", proves = "done" }, function(t)\n' ..
     '  t:expect(true):is_true()\n' ..
@@ -75,7 +76,7 @@ prova.test("spec and proves on one test are refused — not both", { spec = SPEC
 end)
 
 prova.test("proves demands its context — a bare or empty flag is refused",
-  { spec = SPEC }, function(t)
+  { proves = PROVES }, function(t)
   for _, value in ipairs({ "true", '""' }) do
     local proj = pkg(
       'prova.test("silent", { proves = ' .. value .. ' }, function(t)\n' ..
@@ -90,7 +91,7 @@ prova.test("proves demands its context — a bare or empty flag is refused",
 end)
 
 prova.test("proves is test-level only — a group-level attribute is refused",
-  { spec = SPEC }, function(t)
+  { proves = PROVES }, function(t)
   local proj = pkg(
     'prova.group("g", { proves = "context" }, function(g)\n' ..
     '  g:test("inside", function(t) t:expect(true):is_true() end)\n' ..
@@ -102,7 +103,7 @@ prova.test("proves is test-level only — a group-level attribute is refused",
 end)
 
 prova.test("`prova specs` enumerates only the open surface — proven tests are done",
-  { spec = SPEC }, function(t)
+  { proves = PROVES }, function(t)
   local proj = pkg(
     'prova.test("finished", { proves = "context lives here" }, function(t)\n' ..
     '  t:expect(true):is_true()\n' ..
@@ -117,7 +118,7 @@ prova.test("`prova specs` enumerates only the open surface — proven tests are 
 end)
 
 prova.test("the binary teaches the lifecycle: `prova learn specs` names proves",
-  { spec = SPEC }, function(t)
+  { proves = PROVES }, function(t)
   local r = shell.run("prova learn specs 2>&1")
   t:expect(r.code):equals(0)
   t:expect(r.stdout):contains("proves")
