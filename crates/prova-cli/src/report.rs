@@ -345,8 +345,12 @@ impl Reporter for GitHubReporter {
                 }
                 Outcome::Spec => {
                     // An open spec is a notice, never an error — the whole point is a green CI
-                    // while the spec surface burns down.
-                    let detail = message.unwrap_or("open spec");
+                    // while the spec surface burns down. And it is EXPECTED red: first error
+                    // line only, no traceback noise (the console reporter's rule holds in
+                    // annotations too).
+                    let detail = message
+                        .map(|m| m.lines().next().unwrap_or(m))
+                        .unwrap_or("open spec");
                     println!(
                         "::notice {}::{}",
                         self.props(*file, *line, path),
