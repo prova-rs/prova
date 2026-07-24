@@ -38,7 +38,7 @@ use std::time::{Duration, Instant};
 use home::Home;
 use manifest::{Manage, Manifest, SuiteDecl};
 use prova_core::{
-    discover_files, discover_path_with, discover_suites, run_suites, JUnitReporter, JsonReporter,
+    discover_files, discover_suite, discover_suites, run_suites, JUnitReporter, JsonReporter,
     MultiReporter, PortMode, Reporter, RunConfig, Suite, SystemLayout, TapReporter,
     XdgSystemLayout,
 };
@@ -1646,11 +1646,13 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     }
 
     if list {
-        for file in suites.iter().flat_map(|s| &s.files) {
-            match discover_path_with(file, &config) {
+        // Per-suite, never per-file: the setup (`suite.lua`) must load first so the listed
+        // collection is exactly what a run would collect (suite-level `spec`/`requires`/name).
+        for suite in &suites {
+            match discover_suite(suite, &config) {
                 Ok(node_paths) => node_paths.iter().for_each(|p| println!("{p}")),
                 Err(err) => {
-                    eprintln!("prova: {}: {err}", file.display());
+                    eprintln!("prova: {}: {err}", suite.name);
                     return ExitCode::from(2);
                 }
             }

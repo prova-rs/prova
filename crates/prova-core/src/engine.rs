@@ -4909,8 +4909,40 @@ pub fn discover_path(path: &Path) -> mlua::Result<Vec<String>> {
 pub fn discover_path_with(path: &Path, config: &RunConfig) -> mlua::Result<Vec<String>> {
     let (_lua, col) = read_and_collect(path, config)?;
     let col = col.borrow();
+    list_plan(&col, config)
+}
+
+/// Discover node paths for a whole **suite** — the setup (`suite.lua`) loads first, exactly as in
+/// `run_suite_files`. The list view must see the same collection a run would: a per-file discover
+/// skips the setup, so suite-level opts (a `spec` flag, `requires`, the suite name) silently
+/// vanish — and a member file's `spec = false` marker reads as an orphan and errors. Caught by
+/// the spec suites' own `--specs --list` (dogfooding).
+pub(crate) fn discover_suite_files(
+    name: &str,
+    setup: Option<&Path>,
+    files: &[PathBuf],
+    config: &RunConfig,
+) -> mlua::Result<Vec<String>> {
+    if setup.is_none() && files.len() == 1 {
+        return discover_path_with(&files[0], config);
+    }
+    let (lua, col) = build_lua(name.to_string(), config)?;
+    if let Some(setup) = setup {
+        let code = std::fs::read_to_string(setup).map_err(|e| {
+            mlua::Error::RuntimeError(format!("cannot read {}: {e}", setup.display()))
+        })?;
+        lua.load(&code).set_name(file_chunk_name(setup)).exec()?;
+    }
+    load_member_files(&lua, &col, files)?;
+    let col = col.borrow();
+    list_plan(&col, config)
+}
+
+/// The shared tail of discovery: build the plan (validations included), honor selection and the
+/// `--specs` filter, and return the surviving leaf paths.
+fn list_plan(col: &Collector, config: &RunConfig) -> mlua::Result<Vec<String>> {
     let (plan, _deselected) =
-        apply_selection(build_plan(&col, &config.capabilities)?, &config.selection);
+        apply_selection(build_plan(col, &config.capabilities)?, &config.selection);
     let (plan, _spec_deselected) = apply_specs_filter(plan, config.specs_only);
     Ok(plan
         .leaves

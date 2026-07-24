@@ -25,4 +25,4 @@ pub use model::{
     spec_summary_segment, ConsoleReporter, Event, JUnitReporter, JsonReporter, MultiReporter,
     NullReporter, Outcome, Reporter, SpecOpt, Summary, TapReporter,
 };
-pub use suite::{discover_files, discover_suites, run_suite, run_suites, Suite};
+pub use suite::{discover_files, discover_suite, discover_suites, run_suite, run_suites, Suite};

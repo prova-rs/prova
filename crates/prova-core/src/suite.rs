@@ -122,6 +122,12 @@ impl Reporter for ChannelReporter {
     }
 }
 
+/// Discover node paths for `suite`, loading its setup first — the `--list` view of exactly what a
+/// run of this suite would collect (same validations, same selection, same `--specs` filter).
+pub fn discover_suite(suite: &Suite, config: &RunConfig) -> mlua::Result<Vec<String>> {
+    crate::engine::discover_suite_files(&suite.name, suite.setup.as_deref(), &suite.files, config)
+}
+
 /// Recursively collect test files under `root` (`*_test.lua` / `*.test.lua`), or just `[root]` if it
 /// is itself a file. Results are sorted for deterministic discovery order.
 pub fn discover_files(root: &Path) -> std::io::Result<Vec<PathBuf>> {
