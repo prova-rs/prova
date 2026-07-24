@@ -207,26 +207,37 @@ fn load_module(lua: &Lua, path: &Path) -> mlua::Result<Value> {
     })?;
     let chunk_name = format!("@{}", path.display());
     let chunk = lua.load(&src).set_name(&chunk_name);
-    let own = private_deps(path);
-    if own.is_empty() {
-        chunk.eval::<Value>()
-    } else {
-        chunk
-            .set_environment(private_env(lua, own)?)
-            .eval::<Value>()
-    }
+    // Every plugin runs in its own environment now — falling through to the real globals, so it sees
+    // and sets exactly what it always could, plus a per-plugin `plugin` table (its own location) and,
+    // for a plugin with private dependencies, a scoped `require`.
+    chunk.set_environment(plugin_env(lua, path)?).eval::<Value>()
 }
 
-/// The environment a plugin with private dependencies runs in: everything the ordinary globals
-/// offer, except `require`, which is shadowed by a scoped one. Reads *and writes* fall through to
-/// the real globals, so a plugin sees and can set exactly what it always could — only name
-/// resolution changes.
-fn private_env(lua: &Lua, own: BTreeMap<String, PathBuf>) -> mlua::Result<mlua::Table> {
+/// The environment a plugin chunk runs in.
+///
+/// Reads *and writes* fall through to the real globals (so a plugin sees and can set exactly what it
+/// always could — only name resolution and `plugin` differ), plus two per-plugin bindings:
+///
+/// - **`plugin.dir`** — the directory the plugin's own file lives in. This is what lets a plugin
+///   locate *its own* repo's artifacts. `prova.root` is the CONSUMING package's root, so a plugin
+///   reused cross-repo (`[plugins] x = { path = "../other/..." }`) cannot anchor on it — it would
+///   resolve the consumer's `target/`, not its own. `plugin.dir` is always the plugin's real home, so
+///   `plugin.dir .. "/../../../target/debug/tool"` finds the plugin's binary wherever it is consumed.
+/// - **`require`** — shadowed by a scoped one *only* when the plugin declares private dependencies.
+fn plugin_env(lua: &Lua, path: &Path) -> mlua::Result<mlua::Table> {
     let env = lua.create_table()?;
-    // RAW set, and deliberately so: `__newindex` below forwards writes to the real globals, so a
-    // plain `set` here would install this plugin's private `require` as *everyone's* `require` —
-    // handing every consumer the plugin's private map. (Ask how I know.)
-    env.raw_set("require", scoped_require(lua, own)?)?;
+    // RAW set, deliberately: `__newindex` below forwards writes to the real globals, so a plain `set`
+    // here would install these per-plugin bindings as *everyone's* (handing every consumer this
+    // plugin's private `require`, or a stale `plugin`). (Ask how I know.)
+    let info = lua.create_table()?;
+    if let Some(dir) = path.parent() {
+        info.raw_set("dir", dir.to_string_lossy().into_owned())?;
+    }
+    env.raw_set("plugin", info)?;
+    let own = private_deps(path);
+    if !own.is_empty() {
+        env.raw_set("require", scoped_require(lua, own)?)?;
+    }
     let meta = lua.create_table()?;
     meta.set("__index", lua.globals())?;
     meta.set("__newindex", lua.globals())?;

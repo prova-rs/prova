@@ -315,3 +315,43 @@ like `http.mock`) is the natural sibling but strictly less urgent: the SUT is us
   data point: this session provisioned the same hermetic daemon the same way. That is two local-daemon
   plugins' worth of identical boilerplate — the doc's own bar for a constructor is met, if the second
   witness counts.
+
+---
+
+# Round three — 2026-07-24 (cross-repo integration: Minion consuming Aegis)
+
+Driving a genuine two-repo integration: Minion's proofs reuse the sibling **Aegis** repo's own
+`aegis` prova plugin (a hermetic Gate Authority + its CLI), declared cross-repo via
+`[plugins] aegis = { path = "../aegis/.prova/plugins/aegis" }`. This is exactly the "plugins compose
+across projects" story, exercised for real for the first time.
+
+**The cross-repo MCP flow itself was frictionless** — worth stating, since the concern was that it
+might not be. The Prova MCP was started in the Minion repo; `run` / `learn` / `introspect` all drove
+the *Aegis* package cleanly via the `package` parameter (resolved fresh, ran the other repo's suite).
+Nothing about targeting a second package by path got in the way.
+
+## 9. A plugin could not locate ITS OWN repo — **FIXED (`plugin.dir`)**
+
+The one real friction, and a sharp one. The `aegis` plugin needs to spawn `<aegis>/target/debug/aegis`.
+It resolved that as `prova.root .. "/target/debug/aegis"` — correct when Aegis runs its own suite, but
+**`prova.root` is the *consuming* package's root**, so the moment Minion consumed the plugin it
+resolved `<minion>/target/debug/aegis`, which does not exist. A plugin reused cross-repo had *no
+anchor on its own location* — only on the consumer's.
+
+The workaround was ugly (pass `bin_dir` explicitly, computed from a `prova.root .. "/../aegis"`
+sibling-layout guess — unshippable and repo-arrangement-dependent). The right fix is a primitive: a
+plugin must be able to find itself.
+
+**Fixed here.** Every plugin chunk now runs in a per-plugin environment carrying **`plugin.dir`** —
+the directory its own file lives in (`plugins.rs`, `plugin_env`). So the `aegis` plugin resolves its
+binary as `plugin.dir .. "/../../../target/debug/aegis"` and works **wherever it is consumed**, its
+own suite or another repo's. The Minion integration proof then needs *zero* configuration:
+`aegis.daemon(t)` just works. Proof: `proofs/plugins/plugin_dir_test.lua` (own dir is the plugin's
+home, distinct from `prova.root`); verified end-to-end by Minion's `gate_attach_test` running with no
+`bin_dir`.
+
+Design note: it's a *per-plugin* binding, not a global, set the same way the private-dependency
+`require` is (raw-set into the chunk env whose metatable falls through to the real globals) — so it
+cannot leak to consumers, and a plugin without private deps now still gets its own env (previously
+only plugins *with* private deps did). `plugin.dir` is the minimal primitive: the plugin's repo root,
+fixtures, or binaries are all `plugin.dir .. "/…"` from there.

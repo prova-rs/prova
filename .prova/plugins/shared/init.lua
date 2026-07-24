@@ -14,4 +14,9 @@ function M.slugify(s)
   return (s:lower():gsub("%s+", "-"))
 end
 
+-- Where this plugin's own file lives, from the per-plugin `plugin` table. A plugin uses this to find
+-- ITS OWN repo's artifacts (a built binary, a fixture) — `prova.root` is the *consuming* package's
+-- root, which is wrong the moment this plugin is reused cross-repo via `[plugins] x = { path = … }`.
+M.own_dir = plugin.dir
+
 return M
