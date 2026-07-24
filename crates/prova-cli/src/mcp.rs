@@ -935,7 +935,13 @@ fn run_blocking(env: &McpEnv, req: RunRequest) -> Result<(serde_json::Value, boo
 
     let suites = crate::collect_suites(&call.base_dir, &call.declared, &call.proofs, true)?;
     if suites.is_empty() {
-        return Err("no test files found (looked for *_test.lua / *.test.lua)".into());
+        // The same explanation the CLI gives — an agent hits this exact wall, and "no test files
+        // found" sends it hunting for a bug that is really a layout question.
+        let base = "no test files found (looked for *_test.lua / *.test.lua)".to_string();
+        return Err(match crate::stray_proof_hint(&call.base_dir, &call.proofs) {
+            Some(hint) => format!("{base}\n{hint}"),
+            None => base,
+        });
     }
 
     let jobs = req.jobs.map(|n| (n as usize).max(1)).unwrap_or(call.jobs);

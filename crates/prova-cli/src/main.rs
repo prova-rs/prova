@@ -1584,6 +1584,9 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     };
     if suites.is_empty() {
         eprintln!("prova: no test files found (looked for *_test.lua / *.test.lua)");
+        if let Some(hint) = stray_proof_hint(&base_dir, &paths) {
+            eprintln!("prova: {hint}");
+        }
         return ExitCode::from(2);
     }
 
@@ -1905,6 +1908,63 @@ fn report_annotations(outcome: &annotations::Outcome) {
 /// (`prova`/`.prova`), any hidden dir (VCS metadata, tool caches), and common build/dependency trees.
 /// A plugin's own `proofs/` lives under the `.prova/` nook, so this is what keeps a dependency's
 /// proofs out of the consuming package's run.
+/// Explain an EMPTY discovery, when the reason is visible on disk.
+///
+/// "no test files found (looked for `*_test.lua`)" reads as a lie when one is plainly sitting there —
+/// it is true only in the sense that we did not look *where it is*. Proof files are found in
+/// directories NAMED by `[run] proofs`, and several directory names are never scanned at all: the
+/// `prova/` / `.prova/` **nook** most of all, because "put prova's files in `prova/`" invites putting
+/// the proofs there too (that is exactly how this was found). So when discovery comes up empty, say
+/// where the files actually are and what would make them visible.
+///
+/// Bounded on purpose: a shallow walk that skips the heavy directories, reporting at most a few
+/// examples. A hint that costs a full-tree scan on every empty run is a hint that gets removed.
+pub(crate) fn stray_proof_hint(root: &Path, patterns: &[String]) -> Option<String> {
+    fn walk(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+        if depth == 0 || out.len() >= 3 {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+        paths.sort();
+        for path in paths {
+            if out.len() >= 3 {
+                return;
+            }
+            if path.is_dir() {
+                let Some(name) = path.file_name().and_then(|s| s.to_str()) else { continue };
+                // Skip only what is heavy or never source — NOT the nook, which is the whole point.
+                if matches!(name, "target" | "node_modules" | "vendor" | "dist" | "build" | ".git") {
+                    continue;
+                }
+                walk(&path, depth - 1, out);
+            } else if prova_core::is_test_file(&path) {
+                out.push(path);
+            }
+        }
+    }
+
+    let mut found = Vec::new();
+    walk(root, 5, &mut found);
+    if found.is_empty() {
+        return None;
+    }
+    let list = found
+        .iter()
+        .map(|p| format!("  {}", p.strip_prefix(root).unwrap_or(p).display()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some(format!(
+        "found proof file(s) that discovery does not reach:\n{list}\n\
+         proofs are discovered in directories NAMED {:?} (`[run] proofs`), anywhere below the package \
+         root — and `prova/` / `.prova/` is never scanned, because the nook holds prova's own files \
+         while your proof suites live in the open. Move them into a `{}/` directory, or add that \
+         directory's name to `[run] proofs`.",
+        patterns,
+        patterns.first().map(String::as_str).unwrap_or("proofs")
+    ))
+}
+
 fn is_skipped_dir(name: &str) -> bool {
     name.starts_with('.')
         || matches!(

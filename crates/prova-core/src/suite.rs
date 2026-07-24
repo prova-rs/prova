@@ -202,7 +202,10 @@ fn collect_suites(dir: &Path, out: &mut Vec<Suite>) -> std::io::Result<()> {
     Ok(())
 }
 
-fn is_test_file(path: &Path) -> bool {
+/// Whether a path is a proof file by name. Public so the CLI's diagnostics use the SAME rule
+/// discovery does — a second copy of the suffix list would drift, and a stale hint is worse than
+/// none.
+pub fn is_test_file(path: &Path) -> bool {
     match path.file_name().and_then(|n| n.to_str()) {
         Some(name) => name.ends_with("_test.lua") || name.ends_with(".test.lua"),
         None => false,
