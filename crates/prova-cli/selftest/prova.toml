@@ -1,0 +1,7 @@
+# The hermeticity barrier. Explicit path args keep the surrounding package environment
+# (nearest manifest walking up) — without this file the selftest would inherit the REPO
+# ROOT's .prova.toml, whose git-pinned plugins (parallels) would be fetched over the
+# network into every `cargo test` sandbox. The selftest needs no services, no network,
+# and no plugins; this manifest is where discovery stops.
+[run]
+proofs = ["."]

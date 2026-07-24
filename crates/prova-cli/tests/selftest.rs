@@ -32,7 +32,10 @@ fn prova_acceptance_tests_itself() {
 
     // Point the whole tree (this run and every inner `prova` it spawns, which inherit the env) at a
     // throwaway XDG home, so `cargo test` never writes to the developer's real `~/.cache/prova`.
-    // Safe to isolate because no fixture declares a git plugin, so nothing has to be re-fetched.
+    // Safe to isolate because nothing in the selftest's package environment declares a git plugin:
+    // selftest/prova.toml is the hermeticity barrier that keeps explicit-path package discovery
+    // from walking up to the repo root's .prova.toml (whose pinned git plugins would otherwise be
+    // fetched over the network — flaky offline, and outright broken on Windows runners).
     let sandbox = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("selftest-xdg");
     let output = Command::new(bin)
         .args(&files)
