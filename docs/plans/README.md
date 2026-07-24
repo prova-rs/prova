@@ -31,6 +31,14 @@ lands, its outcome is folded into the design docs and the plan trimmed to a `LAN
   substrate*.
 - [docker-port-binding-investigation.md](docker-port-binding-investigation.md) — investigation
   note (kept for the record; not a feature plan).
+- [run-progress-feedback.md](run-progress-feedback.md) — **open, drafted 2026-07-24.** Turn silent
+  run pauses (Docker image pulls foremost, plus seven other intrinsic waits) into understood
+  latency. A stderr-only activity side-channel (`trait Progress` in core, terminal renderer in
+  cli) — deliberately **not** an `Event` variant, so `--format json`/`tap`/MCP stay untouchable.
+  Two concerns split: plain status lines everywhere (LLM-safe) + TTY-only transient spinner/bar.
+  Phase 1 (plain threshold-gated lines, no new deps) is the whole "looks hung" fix; Phase 2 is
+  TTY enrichment. The pull's per-layer progress is *already produced and discarded* at
+  `modules.rs:3298`.
 
 ## Landed (pointer stubs; content folded into docs/design/)
 
