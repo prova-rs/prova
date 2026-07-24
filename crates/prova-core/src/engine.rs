@@ -1743,8 +1743,23 @@ impl UserData for Matcher {
                 format!("expected {} to be a directory", display(&this.subject))
             })
         });
+        // Empty means empty for whatever the subject IS: a string with no bytes, a table with no
+        // entries, or a path with no children. It read as filesystem-only, so `expect(""):is_empty()`
+        // and `expect({}):is_empty()` both FAILED — reporting `expected "" to be empty` about an
+        // empty string, which no one can act on. `has_length(0)` already worked on both, so the
+        // inconsistency was the bug, not the expectation.
         methods.add_method("is_empty", |_, this, ()| {
-            let pass = path_is_empty(&this.subject);
+            // A string is ambiguous — it may be a path OR a literal. Resolve it by what is on
+            // disk: an existing path is a filesystem check (the long-standing behaviour), anything
+            // else is its byte length. So `expect(dir):is_empty()` still asks the filesystem, and
+            // `expect(""):is_empty()` finally answers about the string.
+            let pass = match &this.subject {
+                Value::Table(t) => t.clone().pairs::<Value, Value>().next().is_none(),
+                Value::String(s) if subject_path(&this.subject).is_none_or(|p| !p.exists()) => {
+                    s.as_bytes().is_empty()
+                }
+                other => path_is_empty(other),
+            };
             this.record(pass, || {
                 format!("expected {} to be empty", display(&this.subject))
             })

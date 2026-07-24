@@ -145,7 +145,8 @@ function Matcher:exists() end
 function Matcher:is_file() end
 --- The path exists and is a directory.
 function Matcher:is_dir() end
---- Empty: a zero-length string, a table with no entries, or a directory with no children.
+--- Empty for whatever the subject is: a string with no bytes, a table with no entries, or a path
+--- with no children (a directory with no entries, a file of zero bytes).
 function Matcher:is_empty() end
 --- Assert a rendered tree (a tree/dir handle, or a path string) has no leftover template markers —
 --- no `{{`, `{%`, or `{#` in any file's contents or path segments. GitHub Actions `${{ … }}`
