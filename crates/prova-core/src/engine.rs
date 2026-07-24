@@ -1132,6 +1132,7 @@ impl UserData for Ctx {
                     label,
                     negated: false,
                     run: this.run.clone(),
+                    probe: None,
                 })
             },
         );
@@ -1180,13 +1181,32 @@ struct Matcher {
     label: Option<String>,
     negated: bool,
     run: Rc<RefCell<TestRun>>,
+    /// `:eventually` probe mode: when set, `record` deposits `(passed, message)` here instead of
+    /// counting an assertion or raising — one poll iteration, observed by the retry loop.
+    probe: Option<Rc<RefCell<Option<(bool, String)>>>>,
 }
 
 impl Matcher {
     fn record(&self, raw_pass: bool, detail: impl FnOnce() -> String) -> mlua::Result<()> {
+        let passed = raw_pass ^ self.negated;
+        if let Some(probe) = &self.probe {
+            let msg = if passed {
+                String::new()
+            } else {
+                let prefix = self
+                    .label
+                    .as_ref()
+                    .map(|l| format!("{l}: "))
+                    .unwrap_or_default();
+                let neg = if self.negated { "not: " } else { "" };
+                format!("{prefix}{neg}{}", detail())
+            };
+            *probe.borrow_mut() = Some((passed, msg));
+            return Ok(());
+        }
         let mut r = self.run.borrow_mut();
         r.assertions += 1;
-        if raw_pass ^ self.negated {
+        if passed {
             return Ok(());
         }
         let prefix = self
@@ -1204,6 +1224,104 @@ impl Matcher {
             r.failure = Some(msg.clone());
             Err(mlua::Error::RuntimeError(msg))
         }
+    }
+}
+
+/// The `:eventually` handle (docs/plans/api-freeze.md §4): returned by
+/// `t:expect(fn):eventually(opts?)`, it dispatches ANY terminal matcher — `__index` hands back an
+/// async closure that re-evaluates the function subject and re-runs that matcher (via a
+/// probe-mode `Matcher`) until it passes or the deadline lapses. Sugar over the same
+/// poll-until-truthy idea as `prova.retry`, which stays the public primitive.
+#[derive(Clone)]
+struct Eventually {
+    func: mlua::Function,
+    label: Option<String>,
+    negated: bool,
+    run: Rc<RefCell<TestRun>>,
+    timeout: Duration,
+    every: Duration,
+}
+
+impl UserData for Eventually {
+    fn add_methods<M: mlua::UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_meta_method(mlua::MetaMethod::Index, |lua, this, name: String| {
+            let ev = this.clone();
+            lua.create_async_function(move |lua, args: mlua::MultiValue| {
+                let ev = ev.clone();
+                let name = name.clone();
+                async move {
+                    // `ev:gte(3)` sugars to `f(ev, 3)`: drop the handle, keep the matcher args.
+                    let rest: mlua::MultiValue = args.into_iter().skip(1).collect();
+                    // Lua-semantics dispatch onto a probe matcher: `m[name](m, ...)`.
+                    let dispatch: mlua::Function = lua
+                        .load("return function(m, name, ...) return m[name](m, ...) end")
+                        .eval()?;
+                    let deadline = Instant::now() + ev.timeout;
+                    let mut last = format!("the probe was never evaluated (timeout {:?})", ev.timeout);
+                    loop {
+                        // Re-evaluate the subject; a raise means "not yet", exactly like prova.retry.
+                        match ev.func.call_async::<Value>(()).await {
+                            Ok(value) => {
+                                let state = Rc::new(RefCell::new(None));
+                                let probe = lua.create_userdata(Matcher {
+                                    subject: value,
+                                    label: ev.label.clone(),
+                                    negated: ev.negated,
+                                    run: ev.run.clone(),
+                                    probe: Some(state.clone()),
+                                })?;
+                                // A raise from the matcher itself (bad arguments) is a programming
+                                // error — propagate, never retry.
+                                let mut call_args = mlua::MultiValue::new();
+                                call_args.push_back(Value::UserData(probe));
+                                call_args.push_back(Value::String(lua.create_string(&name)?));
+                                for v in rest.clone() {
+                                    call_args.push_back(v);
+                                }
+                                dispatch.call_async::<()>(call_args).await?;
+                                let observed = state.borrow_mut().take();
+                                match observed {
+                                    Some((true, _)) => {
+                                        // Honored: one real assertion for the whole poll.
+                                        let real = Matcher {
+                                            subject: Value::Nil,
+                                            label: None,
+                                            negated: false,
+                                            run: ev.run.clone(),
+                                            probe: None,
+                                        };
+                                        return real.record(true, String::new);
+                                    }
+                                    Some((false, msg)) => last = msg,
+                                    // The dispatched method never recorded (e.g. `never`, which
+                                    // returns a new matcher): not a terminal matcher — refuse.
+                                    None => {
+                                        return Err(mlua::Error::RuntimeError(format!(
+                                            "eventually:{name} is not a terminal matcher — apply modifiers before :eventually()",
+                                        )));
+                                    }
+                                }
+                            }
+                            Err(err) => last = err.to_string(),
+                        }
+                        if Instant::now() >= deadline {
+                            let real = Matcher {
+                                subject: Value::Nil,
+                                label: None,
+                                negated: false,
+                                run: ev.run.clone(),
+                                probe: None,
+                            };
+                            let timeout = ev.timeout;
+                            return real.record(false, move || {
+                                format!("eventually timed out after {timeout:?} — last: {last}")
+                            });
+                        }
+                        tokio::time::sleep(ev.every).await;
+                    }
+                }
+            })
+        });
     }
 }
 
@@ -1393,6 +1511,43 @@ impl UserData for Matcher {
                 label: this.label.clone(),
                 negated: !this.negated,
                 run: this.run.clone(),
+                probe: this.probe.clone(),
+            })
+        });
+
+        // `:eventually(opts?)` — poll-until-matches (docs/plans/api-freeze.md §4). Legal only on
+        // a FUNCTION subject: the returned handle re-evaluates it (and the terminal matcher that
+        // follows) until pass or timeout. `opts = { timeout, every }`, defaults matching
+        // `prova.retry` — which remains the public primitive this sugars over.
+        methods.add_method("eventually", |lua, this, opts: Option<Table>| {
+            let Value::Function(func) = &this.subject else {
+                return Err(mlua::Error::RuntimeError(
+                    "eventually requires a function subject — wrap the probe: t:expect(function() return ... end):eventually():matches{...}"
+                        .into(),
+                ));
+            };
+            let get = |key: &str, default: Duration| -> mlua::Result<Duration> {
+                match &opts {
+                    Some(t) => match t.get::<Option<String>>(key)? {
+                        Some(s) => parse_duration(&s).ok_or_else(|| {
+                            mlua::Error::RuntimeError(format!(
+                                "eventually: cannot parse {key} {s:?} (try \"30s\", \"500ms\")"
+                            ))
+                        }),
+                        None => Ok(default),
+                    },
+                    None => Ok(default),
+                }
+            };
+            let timeout = get("timeout", Duration::from_secs(30))?;
+            let every = get("every", Duration::from_millis(500))?;
+            lua.create_userdata(Eventually {
+                func: func.clone(),
+                label: this.label.clone(),
+                negated: this.negated,
+                run: this.run.clone(),
+                timeout,
+                every,
             })
         });
 
