@@ -125,7 +125,7 @@ implemented systematically** (agent-driven `--specs --strict-specs` loop, each l
 graduating its spec in the same commit — proof-carrying changes throughout).
 
 Order:
-1. The `spec` engine feature + its hand-written selftest (the bootstrap).
+1. The `spec` engine feature + its hand-written selftest (the bootstrap). **DONE.**
 2. Freeze items as spec suites, roughly one directory per capability: `proofs/spec/formats/`
    (json/yaml/toml/csv round-trips, sentinels), `proofs/spec/matching/` (subset semantics
    table — the largest and most valuable single suite, `test_each`-driven), `proofs/spec/
@@ -134,3 +134,10 @@ Order:
    (stub matchers, faults, TLS, streaming, socket, terminal).
 3. Implementation burndown against `--specs --strict-specs`, trust-track hardening interleaved
    per the gap assessment's sequence.
+
+**Burndown status (2026-07-24):** §1 formats (`json`/`yaml.dump`/`toml`/`csv`) + utility belt,
+§3 matching (incl. the `json.null` sentinel), and §4 `:eventually` are **implemented and
+graduated** — their suites run flag-free, `prova --specs --list` is empty. `prova.parse.json` is
+removed and callers migrated. Still to spec-then-implement: §2 globals
+(`proofs/spec/globals/` — reserved names, write protection, require-injection), §6 journals
+(`proofs/spec/journals/`), and the Tier-A transports as they are designed.
