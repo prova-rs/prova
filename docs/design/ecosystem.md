@@ -54,8 +54,8 @@ first-party.
 | Registered orgs | `[sources] acme = "github:acme"` → `"acme:redis"` | a prefix → an org |
 | Registry / catalog | `redis = "^1.2"` | an index repo maps name → canonical repo + version |
 
-Build 1–3 first, 4 when a second org appears, 5 (the `prova-rs/registry` index) when the plugin count
-earns it. `prova.toml [plugins]` is the **canonical, committed, pinned** source of truth; the GitHub
+Build 1–3 first, 4 when a second org appears, 5 (the `prova-rs/package-registry` index — designed in
+[registry.md](registry.md)) when the plugin count earns it. `prova.toml [plugins]` is the **canonical, committed, pinned** source of truth; the GitHub
 Action just runs `prova` (reading it) and adds value by **caching `~/.cache/prova/plugins`** keyed on
 the manifest hash, plus an optional `plugins:` input for CI-only extras.
 
@@ -285,7 +285,8 @@ everyone's binary.
 - `prova-rs/prova` — the binary (ships bundled batteries).
 - `prova-rs/prova-<name>` — official plugins (`prova-redis`, `prova-postgres`, …): both bundled *and*
   published standalone, so they are the canonical authoring examples and are pin/override-able.
-- `prova-rs/registry` — the plugin index (name → repo → versions), when the count earns it.
+- `prova-rs/package-registry` — the plugin index (name → repo → recommended pin), one TOML entry
+  per plugin, maintained by CI — see [registry.md](registry.md).
 - `prova-rs/run-action` — the GitHub Action (manifest-canonical + plugin cache).
 - Community plugins live anywhere, referenced by shorthand or listed in the index.
 
@@ -344,6 +345,8 @@ outweigh its benefit:
    `requires.prova` compatibility gate, intra-plugin `require` by canonical namespace. **(done)** —
    see [plugin-system.md](plugin-system.md). Plugins are self-contained (no dependency resolver — see
    Non-goals).
-7. The `prova-rs/registry` index; distributions (`prova-min`/`prova-full`) + tap variants.
+7. The `prova-rs/package-registry` index — **designed** ([registry.md](registry.md): git repo of
+   per-plugin TOML entries, `[[registries]]` in user config, `prova plugins` search/add,
+   CI-driven registration); distributions (`prova-min`/`prova-full`) + tap variants.
 8. *(not planned)* Third-party native-plugin hatch — see Non-goals. The Lua+Docker surface plus
    black-box-through-app covers the space; native code stays first-party and bundled.
