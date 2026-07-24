@@ -20,7 +20,7 @@
 //! cascade-skips (transitively). Independent leaves run concurrently up to `concurrency`; an edge
 //! orders and gates regardless of the job count — so this is the substrate for safe parallelism.
 //!
-//! And **resources** (`prova.port`/`resource`/`shared`, `serial`): each leaf carries `reqs`, and a
+//! And **resources** (`prova.port`/`writes`/`reads`, `serial`): each leaf carries `reqs`, and a
 //! readers-writer `ResourceTable` gates launches so a writer excludes all holders of a token while
 //! readers overlap. Acquisition is all-or-nothing per leaf (no hold-and-wait → no deadlock);
 //! `serial` desugars to an exclusive hold on a reserved global token every other leaf reads.
@@ -497,7 +497,7 @@ struct UnitHandle {
 }
 impl UserData for UnitHandle {}
 
-/// A typed resource reference from `prova.port`/`resource`/`shared`. Preferred over magic-format
+/// A typed resource reference from `prova.port`/`writes`/`reads`. Preferred over magic-format
 /// strings (`"port:8080"`) — a constructor validates and can't be typo'd into a wrong-but-valid
 /// token. A bare string in a `resources` list is accepted too and is exclusive by default.
 #[derive(Clone)]
@@ -884,8 +884,8 @@ fn parse_proves_opt(v: &Value) -> mlua::Result<Option<String>> {
     }
 }
 
-/// A `resources` entry is a typed `ResourceRef` (exclusive or shared) or a bare string (an ad-hoc
-/// exclusive token). Anything else is a helpful error rather than a silent no-op.
+/// A `resources` entry is a typed `ResourceRef` (a writer or a reader hold) or a bare string (an
+/// ad-hoc exclusive token). Anything else is a helpful error rather than a silent no-op.
 fn parse_resource(v: Value) -> mlua::Result<ResourceReq> {
     match v {
         Value::String(s) => Ok(ResourceReq {
@@ -898,15 +898,23 @@ fn parse_resource(v: Value) -> mlua::Result<ResourceReq> {
                 token: r.token.clone(),
                 shared: r.shared,
             })
-            .map_err(|_| {
-                mlua::Error::RuntimeError(
-                    "resources entries must be strings or prova.port/resource/shared refs".into(),
-                )
-            }),
-        _ => Err(mlua::Error::RuntimeError(
-            "resources entries must be strings or prova.port/resource/shared refs".into(),
-        )),
+            .map_err(|_| mlua::Error::RuntimeError(RESOURCE_ENTRY_ERR.into())),
+        _ => Err(mlua::Error::RuntimeError(RESOURCE_ENTRY_ERR.into())),
     }
+}
+
+/// What a `resources` list accepts, said once so the two rejection paths can't drift.
+const RESOURCE_ENTRY_ERR: &str =
+    "resources entries must be strings or prova.port/writes/reads refs";
+
+/// Build a typed resource ref in `shared` mode from a bare token or an existing ref. Re-moding is
+/// deliberate: `prova.reads(prova.port(5432))` widens a port to a concurrent hold.
+fn resource_ref(lua: &Lua, v: Value, shared: bool) -> mlua::Result<mlua::AnyUserData> {
+    let req = parse_resource(v)?;
+    lua.create_userdata(ResourceRef {
+        token: req.token,
+        shared,
+    })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2399,8 +2407,10 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
         })?,
     )?;
 
-    // Typed resource constructors. `port`/`resource` are exclusive; `shared` promotes any ref (or a
-    // bare string token) to a concurrent reader.
+    // Typed resource constructors, named by the ACCESS MODE they take on a token: `writes` is an
+    // exclusive (writer) hold, `reads` a concurrent (reader) one. Both accept a bare token *or* an
+    // existing ref, so either can re-mode what the other made (`prova.reads(prova.port(5432))`).
+    // `port` is exclusive — a listener is a writer of its port — and `reads` can widen it.
     prova.set(
         "port",
         lua.create_function(|lua, number: u64| {
@@ -2411,23 +2421,24 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
         })?,
     )?;
     prova.set(
+        "writes",
+        lua.create_function(|lua, v: Value| resource_ref(lua, v, false))?,
+    )?;
+    prova.set(
+        "reads",
+        lua.create_function(|lua, v: Value| resource_ref(lua, v, true))?,
+    )?;
+    // The pre-`reads`/`writes` spellings, kept working but deliberately unadvertised: `resource` ==
+    // `writes`, `shared` == `reads`. Their stubs are `---@deprecated`, which keeps an existing suite
+    // resolving in the IDE while hiding them from `prova.help` — so nothing points a new author at
+    // them, and no one's tests break the day they upgrade.
+    prova.set(
         "resource",
-        lua.create_function(|lua, token: String| {
-            lua.create_userdata(ResourceRef {
-                token,
-                shared: false,
-            })
-        })?,
+        lua.create_function(|lua, v: Value| resource_ref(lua, v, false))?,
     )?;
     prova.set(
         "shared",
-        lua.create_function(|lua, v: Value| {
-            let req = parse_resource(v)?;
-            lua.create_userdata(ResourceRef {
-                token: req.token,
-                shared: true,
-            })
-        })?,
+        lua.create_function(|lua, v: Value| resource_ref(lua, v, true))?,
     )?;
 
     // The host port mode, readable by topology/plugin authors as `prova.ports` (`"auto"` | `"fixed"`).

@@ -80,7 +80,8 @@ end)
   `flow:step(...)`); a bare `prova.test` inside either body is an error. Cross-unit gating: `depends_on = { handle }` (handles, not strings) —
   upstream failure **skips** downstream, never fails it, never passes state.
 - opts: `tags`, `requires`, `timeout = "60s"`,
-  `resources = { prova.port(N), prova.shared("db") }`, `serial = true`, `spec = "reason"` (a
+  `resources = { prova.port(N), prova.writes("db"), prova.reads("cache") }` (say what the test does
+  to the resource: `writes` = exclusive, `reads` = concurrent), `serial = true`, `spec = "reason"` (a
   proof authored ahead of its implementation — `prova learn specs`). `--jobs` is throughput
   only — it can never change what a run means.
 - Context: `ctx:use(handle)`, `ctx:manage(resource)` (auto stop/close at scope end),

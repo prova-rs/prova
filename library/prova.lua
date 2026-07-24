@@ -173,12 +173,12 @@ function Matcher:matches_snapshot(opts) end
 ---@class prova.FixtureOpts
 ---@field autouse? boolean               # run even when no test names it
 
---- An opaque, typed resource reference from `prova.port`/`prova.resource`/`prova.shared`.
+--- An opaque, typed resource reference from `prova.writes`/`prova.reads`/`prova.port`.
 --- Prefer these constructors over magic-format strings like `"port:8080"` — the prefix in a
 --- bare string is a convention you can typo silently; a constructor cannot be.
 ---@class prova.ResourceRef
 --- What a `resources` list accepts: a typed ref, or a bare string token for ad-hoc names.
---- Bare strings are exclusive by default; wrap with `prova.shared` for a concurrent reader.
+--- Bare strings are exclusive (a writer) by default; wrap with `prova.reads` for a concurrent reader.
 ---@alias prova.Resource prova.ResourceRef|string
 
 --- A capability a unit requires to run. Missing capability → the unit is SKIPPED (with a
@@ -404,20 +404,32 @@ function prova.flow(name, opts, body) end
 ---@return prova.Group
 function prova.group(name, opts, body) end
 
----A typed **exclusive** resource for a TCP port. Preferred over `"port:8080"` — validates the
----number and can't be mistyped into an unrelated token.
+---A **writer** hold on a resource — exclusive: while this unit runs, nothing else may hold that
+---token, reader or writer. Name what the test does to the resource (`prova.writes("db")` for a
+---migration) and the scheduler derives the rest. Accepts a bare token or an existing ref.
+---@param resource prova.ResourceRef|string
+---@return prova.ResourceRef
+function prova.writes(resource) end
+
+---A **reader** hold on a resource — concurrent: readers of the same token run together, and a
+---writer waits for all of them to release before it starts. Accepts a bare token or an existing
+---ref, so `prova.reads(prova.port(5432))` widens a port to a shared hold.
+---@param resource prova.ResourceRef|string
+---@return prova.ResourceRef
+function prova.reads(resource) end
+
+---A typed **exclusive** resource for a TCP port — a listener is a writer of its port. Preferred
+---over `"port:8080"`: validates the number and can't be mistyped into an unrelated token.
 ---@param number integer
 ---@return prova.ResourceRef
 function prova.port(number) end
 
----A typed **exclusive** resource for an arbitrary named token (a DB, an account, a path).
+---@deprecated Use `prova.writes` — the pair now names the access mode on both sides.
 ---@param token string
 ---@return prova.ResourceRef
 function prova.resource(token) end
 
----Mark a resource as a **concurrent reader** (readers-writer semantics): readers run together,
----but an exclusive holder waits for all readers to release. Accepts a typed ref or a bare
----string token.
+---@deprecated Use `prova.reads` — the pair now names the access mode on both sides.
 ---@param resource prova.ResourceRef|string
 ---@return prova.ResourceRef
 function prova.shared(resource) end

@@ -49,8 +49,9 @@ impl Params {
 }
 
 /// A declared need for an external resource, with readers-writer semantics. `shared = false` is an
-/// exclusive (writer) hold; `shared = true` is a concurrent reader. The scheduler uses these to
-/// co-schedule the parallelizable set so declared resources never collide.
+/// exclusive (writer) hold — `prova.writes`; `shared = true` is a concurrent reader — `prova.reads`.
+/// The scheduler uses these to co-schedule the parallelizable set so declared resources never
+/// collide.
 #[derive(Debug, Clone)]
 pub struct ResourceReq {
     pub token: String,

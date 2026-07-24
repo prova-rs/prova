@@ -74,3 +74,44 @@ fn shared_resource_runs_concurrently() {
         "expected shared readers to overlap (interleaved spans), got {events:?}"
     );
 }
+
+/// Assert the two spans overlap (concurrent) or are disjoint (serialized), naming which was expected.
+fn assert_overlap(events: &[String], a: &str, b: &str, overlapping: bool) {
+    let (enter_a, exit_a) = interval(events, a);
+    let (enter_b, exit_b) = interval(events, b);
+    let overlaps = enter_a < exit_b && enter_b < exit_a;
+    assert_eq!(
+        overlaps, overlapping,
+        "expected {a}/{b} to {}, got {events:?}",
+        if overlapping {
+            "overlap (reader ∥ reader)"
+        } else {
+            "serialize (writer ⊥ writer)"
+        }
+    );
+}
+
+/// `reads`/`writes` are MODES over a token, so either can re-mode a ref the other made: two holders
+/// of `prova.reads(prova.port(8080))` overlap, where `resource_exclusive.lua`'s writers on that same
+/// port serialize. And `prova.writes` on a bare name serializes like the bare string it wraps.
+#[test]
+fn modes_are_independent_of_how_the_token_was_made() {
+    let (summary, events) = run("resource_remode.lua", 8);
+    assert_eq!(summary.passed, 4, "all four pass");
+
+    assert_overlap(&events, "ra", "rb", true);
+    assert_overlap(&events, "wa", "wb", false);
+}
+
+/// The retired spellings keep their successors' exact scheduling semantics, not just their arity:
+/// `prova.shared` still overlaps like `reads`, `prova.resource` still serializes like `writes`. They
+/// are hidden from `prova.help` (see `help::deprecated_entries_are_hidden_from_help`) but a suite
+/// written before the rename must keep running — that promise is what this pins.
+#[test]
+fn retired_resource_words_keep_their_semantics() {
+    let (summary, events) = run("resource_retired_words.lua", 8);
+    assert_eq!(summary.passed, 4, "all four pass");
+
+    assert_overlap(&events, "ra", "rb", true);
+    assert_overlap(&events, "wa", "wb", false);
+}

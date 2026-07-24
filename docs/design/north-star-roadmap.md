@@ -65,7 +65,7 @@ The **spine and most capabilities are done**. Twelve+ increments, each with prov
 
 - Engine: async collect→plan→execute; fixtures/scopes/teardown (async `ctx:use` + async teardown);
   flows (`prova.flow`/`f:step`, cascade-skip); dependency **DAG** (`depends_on`); readers-writer
-  **resource** scheduler (`prova.port`/`resource`/`shared`, `serial`); **multi-file suite runner**
+  **resource** scheduler (`prova.port`/`writes`/`reads`, `serial`); **multi-file suite runner**
   with per-worker Lua states (true multi-core); `requires` capability gating (skip-not-fail).
 - Assertions: full matcher surface (`equals` deep, `matches`, `is_one_of`, `gt/gte/lt/lte`,
   `has_length`, fs `exists/is_file/is_dir/is_empty`, …) + soft `expect_all`.

@@ -315,17 +315,22 @@ left open by good architecture; we are not walking through it.
   not deps. Independent leaves run concurrently up to `concurrency`; an edge orders regardless of
   job count. *(`proofs/ordering/depends_on_test.lua`: login→populate→journeys + transitive group-edge
   cascade; `dag_serial` proves a chain serializes under `concurrency = 8`.)*
-- **Resources + the concurrency scheduler**: typed constructors `prova.port(n)` /
-  `prova.resource(tok)` (exclusive) and `prova.shared(x)` (concurrent reader), plus bare-string
-  tokens (exclusive) and `{ serial = true }` (process-wide exclusive). Each leaf carries `reqs`
+- **Resources + the concurrency scheduler**: typed constructors named by access mode —
+  `prova.writes(x)` (exclusive) and `prova.reads(x)` (concurrent reader), either accepting a bare
+  token or a ref the other made — plus `prova.port(n)` and bare-string tokens (writers by default)
+  and `{ serial = true }` (process-wide exclusive). Each leaf carries `reqs`
   (own + inherited group resources); the scheduler holds a **readers-writer** `ResourceTable` and
   launches a leaf only when its deps passed **and** its reqs are acquirable (reader waits for a
   writer; writer waits for all). Acquisition is all-or-nothing per leaf, so no hold-and-wait → no
   deadlock. `serial` is desugared to an exclusive hold on a reserved global token that every other
   leaf reads (injected only when some leaf is serial). Declarations are **inert at `concurrency =
   1`** and enforced above it — so raising `--jobs` is the throughput-only, surprise-free knob the
-  design promises. *(`proofs/resources/scheduler_test.lua`; `resources` tests prove exclusive holders
-  serialize (~80ms) while shared readers overlap (~40ms) under `concurrency = 8`.)* CLI: `--jobs N`
+  design promises. The pre-mode spellings (`prova.resource` = `writes`, `prova.shared` = `reads`)
+  still work and are deliberately unadvertised: their stubs carry `---@deprecated`, which keeps an
+  existing suite resolving in an editor while `prova.help` omits them, so nothing teaches the retired
+  word. *(`proofs/resources/scheduler_test.lua`; `resources` tests prove — by event order, not
+  wall-clock — that writers serialize while readers overlap under `concurrency = 8`, that a mode
+  re-modes any ref, and that the retired words keep their successors' semantics.)* CLI: `--jobs N`
   / `-j N`.
 - **Assertions**: `t:expect(subject, label?)` → matchers `equals`/`eq` (**deep** for tables), `is`
   (**identity** — same reference / `rawequal`, for "the same object" incl. tables with function fields
@@ -339,7 +344,7 @@ left open by good architecture; we are not walking through it.
   assertions** via `t:expect_all(fn)` — collect every failure in the block and fail once with all of
   them (not just the first). Plus `t:skip`, `t:log`. *(`testdata/assertions*.lua`.)*
 - Concurrent async execution (proven) + I/O timeouts via cancellation + a readers-writer
-  **resource** scheduler (`prova.port`/`resource`/`shared`, `serial`) making `--jobs > 1` safe.
+  **resource** scheduler (`prova.port`/`writes`/`reads`, `serial`) making `--jobs > 1` safe.
   Default execution stays **sequential** (`concurrency = 1`); resource declarations are inert there.
 - **Multi-file suite runner** (`suite.rs`): `discover_files` finds `*_test.lua` / `*.test.lua`;
   `run_suite` runs them across a pool of **per-worker Lua states** (true multi-core across files) —

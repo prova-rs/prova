@@ -132,11 +132,16 @@ a filesystem path, an account). The fix is **declared resources** that gate the 
 first-class primitive here):
 
 ```lua
-prova.test("binds :8080", { resources = { "port:8080" } }, function(t) ... end)      -- exclusive
-prova.test("reads shared db", { resources = { prova.shared("db") } }, function(t) ... end) -- shared-read
+prova.test("binds :8080", { resources = { prova.port(8080) } }, function(t) ... end)       -- writer
+prova.test("reads the db", { resources = { prova.reads("db") } }, function(t) ... end)     -- reader
+prova.test("migrates the db", { resources = { prova.writes("db") } }, function(t) ... end) -- writer
 ```
 
-- A resource is exclusive by default; `prova.shared(x)` allows concurrent readers.
+- The constructors name the **access mode**, not the kind of thing: `prova.writes(x)` takes an
+  exclusive hold, `prova.reads(x)` a concurrent one, and either accepts a bare token or a ref the
+  other made (`prova.reads(prova.port(5432))`). An author knows whether their test reads or writes;
+  asking them to classify a hold as "exclusive" is asking them to do the scheduler's thinking.
+- A bare string token and `prova.port(N)` are writers by default — the safe end of the trade.
 - The scheduler is a constraint solver over resources → maximal safe parallelism with zero
   races, *without* forcing `--jobs 1`.
 - `file`/`suite`-scoped fixtures interact with this: a `file`-scoped fixture pins its file's
@@ -259,8 +264,10 @@ pytest's plugin ecosystem did, while the core stays small and correct.
 
 1. **Dependency + flow syntax** — `depends_on` handles vs. named refs; `flow:step` shape and
    whether steps can themselves be tagged/skipped individually.
-2. **Resource model surface** — string tokens (`"port:8080"`) vs. typed resource objects;
-   how `shared` vs. exclusive is expressed; interaction with `file`/`suite` fixtures.
+2. **Resource model surface** — ~~string tokens (`"port:8080"`) vs. typed resource objects; how
+   `shared` vs. exclusive is expressed~~ **Decided**: typed constructors named by access mode
+   (`prova.writes`/`prova.reads`, plus `prova.port`), bare strings still accepted as ad-hoc writers.
+   Open: interaction with `file`/`suite` fixtures.
 3. ~~Randomize-by-default~~ **Decided**: deterministic definition order + isolation by
    construction; `--shuffle[=seed]` is opt-in hardening (not yet shipped), never the default. (See api.md →
    Execution model.)

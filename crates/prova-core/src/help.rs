@@ -71,15 +71,23 @@ pub fn parse_stub(src: &str) -> Vec<HelpEntry> {
     let mut prose: Vec<String> = Vec::new();
     let mut params: Vec<(String, String)> = Vec::new();
     let mut ret: Option<String> = None;
+    // `---@deprecated` hides an entry from `prova.help` while leaving the stub in place. That split is
+    // the point of the tag here: an editor still resolves a superseded name (an existing suite gets
+    // strikethrough, not a red undefined-field), while the agent-facing surface stops advertising it
+    // — so a rename can land without either breaking suites or teaching the old word to newcomers.
+    let mut deprecated = false;
     // A class stays open across its `---@field` lines and flushes when the block ends:
-    // (name, summary, fields as (name, type, note)).
-    type OpenClass = (String, String, Vec<(String, String, Option<String>)>);
+    // (name, summary, fields as (name, type, note), deprecated).
+    type OpenClass = (String, String, Vec<(String, String, Option<String>)>, bool);
     let mut class: Option<OpenClass> = None;
 
     let flush_class =
         |class: &mut Option<OpenClass>,
          out: &mut Vec<HelpEntry>| {
-            if let Some((name, summary, fields)) = class.take() {
+            if let Some((name, summary, fields, deprecated)) = class.take() {
+                if deprecated {
+                    return;
+                }
                 let body = fields
                     .iter()
                     .map(|(n, ty, note)| match note {
@@ -103,17 +111,22 @@ pub fn parse_stub(src: &str) -> Vec<HelpEntry> {
     for line in src.lines() {
         let t = line.trim();
 
+        if t.starts_with("---@deprecated") {
+            deprecated = true;
+            continue;
+        }
         if let Some(rest) = t.strip_prefix("---@class ") {
             flush_class(&mut class, &mut out);
             let name = rest.split_whitespace().next().unwrap_or("").to_string();
-            class = Some((name, collapse(&prose), Vec::new()));
+            class = Some((name, collapse(&prose), Vec::new(), deprecated));
             prose.clear();
+            deprecated = false;
             continue;
         }
         if let Some(rest) = t.strip_prefix("---@field ") {
             if let Some((n, ty)) = rest.split_once(char::is_whitespace) {
                 let (ty, note) = split_note(ty);
-                if let Some((_, _, fields)) = class.as_mut() {
+                if let Some((_, _, fields, _)) = class.as_mut() {
                     fields.push((n.trim().to_string(), ty, note));
                 }
             }
@@ -156,7 +169,7 @@ pub fn parse_stub(src: &str) -> Vec<HelpEntry> {
                     Some(r) => format!("({args}) -> {r}"),
                     None => format!("({args})"),
                 };
-                if !name.is_empty() {
+                if !name.is_empty() && !deprecated {
                     out.push(HelpEntry {
                         name,
                         signature: sig,
@@ -167,6 +180,7 @@ pub fn parse_stub(src: &str) -> Vec<HelpEntry> {
             prose.clear();
             params.clear();
             ret = None;
+            deprecated = false;
             continue;
         }
         // Any other line ends an open block (e.g. `local ShellResult = {}` after a class).
@@ -177,6 +191,7 @@ pub fn parse_stub(src: &str) -> Vec<HelpEntry> {
             prose.clear();
             params.clear();
             ret = None;
+            deprecated = false;
         }
     }
     flush_class(&mut class, &mut out);
@@ -296,6 +311,47 @@ function ShellResult:ok() end
             .find(|e| e.name == "ShellResult:ok")
             .expect("method entry");
         assert_eq!(ok.signature, "() -> boolean");
+    }
+
+    /// A `---@deprecated` entry stays in the stub (so an editor still resolves a superseded name in
+    /// an existing suite) but is absent from `prova.help` — the agent-facing surface only advertises
+    /// the current spelling. Both halves matter: hiding it in the stub would paint red squiggles over
+    /// working tests, and listing it in help would teach the word we are retiring.
+    #[test]
+    fn deprecated_entries_are_hidden_from_help() {
+        let entries = parse_stub(
+            r#"
+--- A writer hold on a resource.
+---@param resource prova.ResourceRef|string
+---@return prova.ResourceRef
+function prova.writes(resource) end
+
+---@deprecated Use `prova.writes`.
+---@param token string
+---@return prova.ResourceRef
+function prova.resource(token) end
+"#,
+        );
+        assert!(entries.iter().any(|e| e.name == "prova.writes"));
+        assert!(
+            !entries.iter().any(|e| e.name == "prova.resource"),
+            "a deprecated stub must not surface in help, got {entries:?}"
+        );
+
+        // And on the real stubs: the retired resource words are gone from help, the new pair is in.
+        let all = core_entries();
+        for gone in ["prova.resource", "prova.shared"] {
+            assert!(
+                !all.iter().any(|e| e.name == gone),
+                "`{gone}` is deprecated and must not be advertised by help()"
+            );
+        }
+        for live in ["prova.writes", "prova.reads", "prova.port"] {
+            assert!(
+                all.iter().any(|e| e.name == live),
+                "help() must cover `{live}`"
+            );
+        }
     }
 
     /// Every documented FUNCTION carries a summary. This is prova's own stated requirement —

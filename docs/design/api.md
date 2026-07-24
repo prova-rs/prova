@@ -57,7 +57,7 @@ passes state).
 
 `tags = {...}` (select with `--tags a,b`; `!tag` excludes) · `requires = {...}` (capability
 gating, below) · `timeout = "60s"` · `depends_on = { handle, ... }` ·
-`resources = { prova.port(5432), prova.resource("db"), prova.shared("cache") }` ·
+`resources = { prova.port(5432), prova.writes("db"), prova.reads("cache") }` ·
 `serial = true` (process-wide exclusive). Group-level `tags`/`requires`/`resources`/`serial`/
 `depends_on` are inherited by everything inside.
 

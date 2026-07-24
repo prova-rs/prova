@@ -94,6 +94,15 @@ prova.test("the phantom hooks stay dead: no xunit hooks, in help() or in the run
   end
 end)
 
+-- Retired spellings: still registered so suites written against them keep running, and deliberately
+-- absent from help() so nothing advertises them (their stubs carry `---@deprecated`). This is the one
+-- sanctioned gap in reverse parity, and it is ENUMERATED — an *accidental* invisible surface must
+-- still fail the proof below. `retired_words_test.lua` proves each one still behaves as its successor.
+local retired = {
+  ["prova.resource"] = "prova.writes",
+  ["prova.shared"] = "prova.reads",
+}
+
 prova.test("every function the core globals carry is in help()", function(t)
   local entries = prova.help()
   local documented = {}
@@ -112,14 +121,39 @@ prova.test("every function the core globals carry is in help()", function(t)
   for surface_name, surface in pairs(surfaces) do
     if type(surface) == "table" then
       for key, value in pairs(surface) do
-        if type(value) == "function" and not documented[surface_name .. "." .. key] then
-          undocumented[#undocumented + 1] = surface_name .. "." .. key
+        local dotted = surface_name .. "." .. key
+        if type(value) == "function" and not documented[dotted] and not retired[dotted] then
+          undocumented[#undocumented + 1] = dotted
         end
       end
     end
   end
   table.sort(undocumented)
   t:expect(table.concat(undocumented, ", "), "registered but invisible to help()"):equals("")
+end)
+
+prova.test("the retired resource words stay callable but unadvertised", function(t)
+  -- Both halves of a soft deprecation, in one place: still there (nobody's suite breaks on upgrade),
+  -- still silent (nobody LEARNS them from prova's own surface). The exemption above is why this
+  -- proof must exist — an unenumerated hole in reverse parity would let a real regression hide here.
+  -- The retired words' *scheduling* semantics (writer ⊥ writer, reader ∥ reader) are pinned in
+  -- prova-core's `resources` tests, where span overlap is observable.
+  -- Exact names, not `prova.help(needle)`: the filter matches substrings, so "prova.resource" also
+  -- hits the `prova.ResourceRef` class — which is documentation we WANT, and would mask the check.
+  local documented = {}
+  for _, e in ipairs(prova.help()) do documented[e.name] = true end
+
+  for old, new in pairs(retired) do
+    local old_name = old:match("%.(.+)$")
+    local new_name = new:match("%.(.+)$")
+    t:expect(type(prova[old_name]), old .. " must stay callable"):equals("function")
+    t:expect(type(prova[new_name]), new .. " must exist"):equals("function")
+    t:expect(documented[old] == true, "help() must not advertise " .. old):is_false()
+    t:expect(documented[new] == true, "help() must answer for " .. new):is_true()
+    -- A ref is opaque by design (that is why it can't be typo'd) — what a proof can see from here is
+    -- that the retired constructor still yields one a `resources` list accepts.
+    t:expect(prova[old_name]("db"), old .. " must still construct a ref"):never():is_nil()
+  end
 end)
 
 prova.test("help() filters and answers the shapes that once cost probes", function(t)

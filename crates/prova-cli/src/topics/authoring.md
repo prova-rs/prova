@@ -28,7 +28,10 @@ end)
 - Cross-unit gating: `depends_on = { handle }` — handles, not strings. Upstream failure SKIPS
   downstream, never fails it, never passes state.
 - opts: `tags`, `requires`, `timeout = "60s"`, `serial = true`,
-  `resources = { prova.port(N), prova.shared("db") }`. Groups' `tags`/`requires` are inherited.
+  `resources = { prova.port(N), prova.writes("db"), prova.reads("cache") }` — name the ACCESS MODE:
+  `prova.writes(x)` is an exclusive hold, `prova.reads(x)` a concurrent one, and either accepts a
+  bare token or a ref the other made (`prova.reads(prova.port(5432))`). A bare string and
+  `prova.port` are writers by default. Groups' `tags`/`requires` are inherited.
   Tests and flows also take `spec = "reason"` — a proof authored ahead of its implementation
   (`prova learn specs`); never on a group or in `suite.config`.
 - Matchers on `t:expect(v, label?)`: `equals is is_true is_falsy is_nil contains matches
