@@ -849,19 +849,22 @@ fn parse_opts(t: &mlua::Table) -> mlua::Result<UnitOpts> {
     })
 }
 
-/// The `spec` opt: `true` (open, no reason) or a string (open, with the reason/ticket). There
-/// is deliberately no `spec = false` — a test without the flag is already a full proof — so the
-/// value is rejected with the fix, not silently accepted.
+/// The `spec` opt: a **non-empty reason string** — the why/ticket behind the still-open
+/// contract, forced from day one (a bare `spec = true` tells the burndown nothing, and the
+/// reason is what graduates into the `proves` context). There is deliberately no
+/// `spec = false` — a test without the flag is already a full proof — so every wrong shape is
+/// rejected with the fix, not silently accepted.
 fn parse_spec_opt(v: &Value) -> mlua::Result<Option<String>> {
     match v {
         Value::Nil => Ok(None),
-        Value::Boolean(true) => Ok(Some(String::new())),
-        Value::String(s) => Ok(Some(s.to_string_lossy().to_string())),
+        Value::String(s) if !s.to_string_lossy().is_empty() => {
+            Ok(Some(s.to_string_lossy().to_string()))
+        }
         Value::Boolean(false) => Err(mlua::Error::RuntimeError(
             "spec = false is not a thing — a test without a spec flag is already a full proof; remove the entry".into(),
         )),
         _ => Err(mlua::Error::RuntimeError(
-            "spec must be true or a reason string".into(),
+            "spec carries the reason a contract is still open — give it a non-empty string (the why/ticket), or remove the entry".into(),
         )),
     }
 }
@@ -2989,7 +2992,7 @@ struct Leaf {
     precondition_skip: Option<String>,
     /// Effective tags: the unit's own plus every enclosing group's (selection matches on these).
     tags: Vec<String>,
-    /// `Some(reason)` when this leaf carries its own `spec` flag (`""` for a bare `spec = true`)
+    /// `Some(reason)` when this leaf carries its own `spec` flag (always a non-empty reason)
     /// — test-level only, never inherited. Drives the outcome inversion: red body →
     /// `Outcome::Spec`, green body → a failure demanding the flag's removal.
     spec: Option<String>,
@@ -3704,12 +3707,9 @@ fn apply_spec_inversion(results: &mut [NodeResult], reason: &str, strict: bool) 
         }
         return;
     }
-    // The graduation fix is copy-pasteable: the spec's reason becomes the proves context.
-    let fix = if reason.is_empty() {
-        "proves = \"<the context>\"".to_string()
-    } else {
-        format!("proves = {reason:?}")
-    };
+    // The graduation fix is copy-pasteable: the spec's (always non-empty) reason becomes the
+    // proves context.
+    let fix = format!("proves = {reason:?}");
     for r in results
         .iter_mut()
         .filter(|r| !r.teardown && r.outcome == Outcome::Passed)

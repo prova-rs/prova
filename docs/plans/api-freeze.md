@@ -81,9 +81,10 @@ Named `spec`, not "pending": in PDD vocabulary a proof not yet honored *is* the 
 > it is a full proof with nothing to indicate. Per-test flags also carry per-test reasons —
 > better documentation than one blanket reason; bulk-authoring is what agents are for.
 
-- **Where set:** on a `test` or `flow` only — `{ spec = true }` or `{ spec = "reason/ticket" }`.
-  A `spec` on a group or in `suite.config` is a validation error naming the fix; `spec = false`
-  is not a thing (an unflagged test is already a full proof).
+- **Where set:** on a `test` or `flow` only — `{ spec = "reason/ticket" }`, the reason
+  mandatory and non-empty (context from day one). A `spec` on a group or in `suite.config` is a
+  validation error naming the fix; `spec = false` and a bare `spec = true` are not things (an
+  unflagged test is already a full proof; a reason-less spec tells the burndown nothing).
 - **Open spec** (spec'd test that fails) → distinct `spec` outcome in every reporter (TAP: the
   `# TODO` directive — exactly these semantics; JUnit: skipped + message; JSONL: outcome
   `"spec"`; console: reason + first error line, no traceback). CI stays green.
@@ -98,7 +99,10 @@ Named `spec`, not "pending": in PDD vocabulary a proof not yet honored *is* the 
 > graduated context living in the test itself, where review cannot miss it (deliberately not a
 > pointer to a doc that can drift); it demands a non-empty string, excludes `spec` on the same
 > test, is test/flow-level only, and is invisible to `prova specs`. Retrofitting `proves` onto
-> existing tests is welcome. Spec'd in `proofs/spec/engine/proves_test.lua`.
+> existing tests is welcome. And context is forced from **day one**: `spec` itself demands a
+> non-empty reason string — the bare `spec = true` of the original draft is refused, because
+> the reason is what graduates into the `proves` context. Spec'd in
+> `proofs/spec/engine/proves_test.lua`.
 - **No mid-burndown drift window**: an unflagged test holds the line immediately; open specs
   are red by definition — no state exists where a regression can hide.
 - `prova --specs` — a **selector** (like `--last-failed`): run exactly the tests currently

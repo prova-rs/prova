@@ -10,17 +10,17 @@ prova.test("open spec via assertion", { spec = "gap-1: subset matcher" }, functi
 end)
 
 -- A raise is an open spec too (calling an unimplemented API raises).
-prova.test("open spec via raise", { spec = true }, function(t)
+prova.test("open spec via raise", { spec = "gap-2: json.encode" }, function(t)
   error("json.encode is not implemented yet")
 end)
 
 -- A spec that passes demands the flag's removal — a FAILURE with the remove-it message.
-prova.test("honored spec demands flag removal", { spec = true }, function(t)
+prova.test("honored spec demands flag removal", { spec = "gap-3: already true" }, function(t)
   t:expect(1):equals(1)
 end)
 
 -- An unmet `requires` still SKIPS a spec'd test — skip wins over spec (nothing to observe).
-prova.test("spec'd but unrunnable skips", { spec = true, requires = { "definitely_not_a_real_tool_xyzzy" } }, function(t)
+prova.test("spec'd but unrunnable skips", { spec = "gap-4: needs tooling", requires = { "definitely_not_a_real_tool_xyzzy" } }, function(t)
   error("must never run")
 end)
 

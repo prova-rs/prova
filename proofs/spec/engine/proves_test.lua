@@ -119,7 +119,7 @@ prova.test("`prova specs` enumerates only the open surface — proven tests are 
 end)
 
 prova.test("spec demands its reason from day one — a bare or empty flag is refused",
-  { spec = "context from day one: a reason-less spec tells the burndown nothing" }, function(t)
+  { proves = "context from day one: a reason-less spec tells the burndown nothing" }, function(t)
   for _, value in ipairs({ "true", '""' }) do
     local proj = pkg(
       'prova.test("wordless", { spec = ' .. value .. ' }, function(t)\n' ..

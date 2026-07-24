@@ -97,6 +97,15 @@ prova.test("a group-level spec flag is refused with the fix", function(t)
   t:expect(out):contains("spec is test-level only")
 end)
 
+prova.test("a bare spec flag is refused — the reason is mandatory", function(t)
+  local dir = write_suite(
+    'prova.test("wordless", { spec = true }, function(t) t:expect(1):equals(2) end)\n')
+  local r = run(dir)
+  t:expect(r.code):never():equals(0)
+  local out = r.stdout .. r.stderr
+  t:expect(out):contains("reason")
+end)
+
 prova.test("spec = false is refused — an unflagged test is already a proof", function(t)
   local dir = write_suite(
     'prova.test("done", { spec = false }, function(t) t:expect(1):equals(1) end)\n')

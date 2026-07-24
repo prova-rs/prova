@@ -2,7 +2,8 @@
 
 A **spec** is a proof written before the behavior exists. In PDD vocabulary a proof not yet
 honored *is* the specification — so the flag is named for what the thing IS, not its state
-("pending"). Flag it at the test or flow, with the reason as the value:
+("pending"). Flag it at the test or flow, with the reason as the value — the reason is
+**mandatory** (context from day one; it graduates into the `proves` context later):
 
 ```lua
 prova.test("json.null encodes an explicit null", { spec = "api-freeze §1" }, function(t)
@@ -19,8 +20,9 @@ Semantics are xfail-strict, per test:
   flagged `spec`; graduation happens in the same commit as the implementation.
 - An **unflagged** test holds the line immediately. No drift window exists where a regression
   can hide.
-- `spec` is test/flow-level ONLY — on a group or in `suite.config` it is a validation error,
-  and `spec = false` is not a thing (an unflagged test is already a full proof).
+- `spec` is test/flow-level ONLY — on a group or in `suite.config` it is a validation error.
+  `spec = false` is not a thing (an unflagged test is already a full proof), and neither is a
+  bare `spec = true`: the reason is where the context lives while the proof is red.
 
 ## proves — graduated context
 

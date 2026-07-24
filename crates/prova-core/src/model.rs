@@ -77,7 +77,8 @@ pub struct UnitOpts {
     /// (not failed), with a reason — so a suite degrades gracefully where a dependency is missing.
     pub requires: Vec<String>,
     /// The `spec` flag — **test-level only**: `Some(reason)` marks a proof authored ahead of its
-    /// implementation (`""` for a bare `spec = true`). Red body → the `Spec` outcome; green
+    /// implementation. The reason is always a non-empty string — context is forced from day
+    /// one, and it graduates into the `proves` context. Red body → the `Spec` outcome; green
     /// body → a failure demanding graduation (convert the flag to `proves` or remove it). A test
     /// either carries the flag or it is a full proof — there is no inheritance and no
     /// `spec = false`.

@@ -225,12 +225,12 @@ function Matcher:matches_snapshot(opts) end
 ---@class prova.TestOpts : prova.UnitOpts
 ---@field timeout? string                # e.g. "30s"
 ---@field retries? integer
----@field spec? true|string              # a proof authored AHEAD of its implementation (value = reason/ticket). Open spec (red body) reports as its own outcome, CI green; once the body passes, the run fails until the flag graduates — converted to `proves` (preferred) or removed, in the same commit as the implementation. Test/flow-level only. See `prova learn specs`.
+---@field spec? string                   # a proof authored AHEAD of its implementation (value = the mandatory reason/ticket — context from day one). Open spec (red body) reports as its own outcome, CI green; once the body passes, the run fails until the flag graduates — converted to `proves` (preferred) or removed, in the same commit as the implementation. Test/flow-level only. See `prova learn specs`.
 ---@field proves? string                 # graduated context: the why behind a FINISHED proof, living in the test itself (usually a spec's reason carried over; retrofitting onto existing tests is welcome). Runtime-inert; non-empty string; never together with `spec`. See `prova learn specs`.
 
 ---@class prova.FlowOpts : prova.UnitOpts
 ---@field timeout? string                # whole-flow timeout
----@field spec? true|string              # a proof authored AHEAD of its implementation — see prova.TestOpts.spec / `prova learn specs`
+---@field spec? string                   # a proof authored AHEAD of its implementation — see prova.TestOpts.spec / `prova learn specs`
 ---@field proves? string                 # graduated context behind a finished proof — see prova.TestOpts.proves / `prova learn specs`
 
 --- A group is the *independent* strategy: children are isolated, unordered, parallelizable.
