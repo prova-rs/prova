@@ -449,11 +449,6 @@ function prova.parse.rows(s, sep) end
 ---@return table<string, string>[]
 function prova.parse.table(s, sep) end
 
----Parse JSON into a Lua value (top-level `null` → `nil`).
----@param s string
----@return any
-function prova.parse.json(s) end
-
 ---@class prova.RetryOpts
 ---@field timeout? string    # overall deadline (default "30s")
 ---@field every? string      # interval between attempts (default "500ms")

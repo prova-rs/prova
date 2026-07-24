@@ -37,7 +37,7 @@ local function mcp(messages)
   local r = shell.run(prova_bin .. " mcp < " .. req, { cwd = project, timeout = "60s" })
   local by_id = {}
   for _, line in ipairs(prova.parse.lines(r.stdout)) do
-    local ok, msg = pcall(prova.parse.json, line)
+    local ok, msg = pcall(json.decode, line)
     if ok and type(msg) == "table" and msg.id ~= nil then by_id[msg.id] = msg end
   end
   return by_id, r
@@ -76,7 +76,7 @@ local function tool_json(response, label)
   local content = response.result.content
   assert(type(content) == "table" and content[1] and content[1].type == "text",
     (label or "tool") .. ": expected one text content item")
-  return prova.parse.json(content[1].text), response.result.isError
+  return json.decode(content[1].text), response.result.isError
 end
 
 prova.group("prova mcp", function(g)

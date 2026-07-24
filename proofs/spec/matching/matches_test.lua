@@ -51,7 +51,7 @@ prova.test("an empty shape matches any table (the vacuous subset)", function(t)
   t:expect(deploy):matches{}
 end)
 
-prova.test("the json.null sentinel is matchable in authored tables", { spec = "blocked on the formats module (json.null)" }, function(t)
+prova.test("the json.null sentinel is matchable in authored tables", function(t)
   t:expect({ x = json.null }):matches{ x = json.null }
 end)
 

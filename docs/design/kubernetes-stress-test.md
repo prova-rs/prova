@@ -34,7 +34,7 @@ have to clear the parity bar first.
 ## The mapping: what the plugin looks like
 
 The plugin decomposes the way the ecosystem doc predicts — `prova-kind` (a resource plugin) and
-`prova-kubernetes` (drives the `kubectl` CLI, parses with `prova.parse.json` / `yaml.parse_all`). Both
+`prova-kubernetes` (drives the `kubectl` CLI, parses with `json.decode` / `yaml.parse_all`). Both
 are **pure Lua**. `kubectl` is already a registered capability detector (binary on PATH), so
 `requires = { "kubectl" }` gives graceful skip for free.
 
@@ -131,13 +131,12 @@ to a real seam.
 `kubectl describe`/events into the raised error string, exactly as `shell.run` does. Ugly, but it
 unblocks a v0 before Gap 2 lands.
 
-### Gap 3 — Structured encode (`yaml.dump` / `json.encode`)  **(trivial)**
+### Gap 3 — Structured encode (`yaml.dump` / `json.encode`)  **(CLOSED — api-freeze §1)**
 
-There is **no encode primitive** — `yaml`/`prova.parse.json` are decode-only. To `kubectl apply` a
-resource *built as a Lua table* you must serialize it. Two escapes exist today: write manifests as
-literal YAML strings (what most users will do anyway), or build an encoder in Lua. But a one-function
-`yaml.dump` / `json.encode` is cheap and broadly useful, and it makes the table-first authoring style
-(`k:apply(ns, { apiVersion = ..., kind = ... })`) pleasant instead of stringly-typed.
+~~There is no encode primitive.~~ The tech-first format modules landed: `json.encode`/`json.decode`
+(with the `json.null`/`json.array` fidelity sentinels), `yaml.dump`/`yaml.dump_all` round-tripping
+`parse`/`parse_all` — so the table-first authoring style (`k:apply(ns, { apiVersion = ..., kind =
+... })`) is available, and `yaml.dump_all` emits the multi-doc manifest stream directly.
 
 ### Deferred — streaming `:expect` over `shell.spawn`
 

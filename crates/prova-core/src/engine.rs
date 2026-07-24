@@ -1927,6 +1927,9 @@ fn values_equal(a: &Value, b: &Value) -> bool {
         }
         (Value::String(x), Value::String(y)) => x.to_string_lossy() == y.to_string_lossy(),
         (Value::Table(x), Value::Table(y)) => tables_equal(x, y),
+        // Sentinels (json.null) and other lightuserdata compare by identity — what makes
+        // `t:expect({ x = json.null }):matches{ x = json.null }` hold (api-freeze §3).
+        (Value::LightUserData(x), Value::LightUserData(y)) => x == y,
         _ => false,
     }
 }

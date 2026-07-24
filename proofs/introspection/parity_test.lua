@@ -25,6 +25,13 @@ local roots = {
   grpc = grpc,
   graphql = graphql,
   yaml = yaml,
+  json = json,
+  toml = toml,
+  csv = csv,
+  base64 = base64,
+  hash = hash,
+  uuid = uuid,
+  url = url,
   sqlite = sqlite,
   docker = docker,
   archetect = archetect,
@@ -97,6 +104,8 @@ prova.test("every function the core globals carry is in help()", function(t)
   -- modules enumerate nothing, and their methods are covered by the class stubs.
   local surfaces = {
     prova = prova, shell = shell, fs = fs, net = net,
+    json = json, toml = toml, csv = csv,
+    base64 = base64, hash = hash, uuid = uuid, url = url,
     workspace = require("prova.workspace"),
   }
   local undocumented = {}

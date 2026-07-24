@@ -22,11 +22,14 @@ prova.test("table: header row keys the remaining rows", function(t)
   t:expect(rows[2].name):equals("bar")
 end)
 
-prova.test("json: object, array, and null-to-nil", function(t)
-  local v = prova.parse.json('{"a": 1, "b": [true, "x"], "c": null}')
+prova.test("json moved out: parse is format-agnostic, json.decode is the parser", function(t)
+  -- The api-freeze §1 clean break: prova.parse.json is gone; the tech-first `json` module
+  -- carries the same null-to-nil decode semantics.
+  t:expect(prova.parse.json):is_nil() ---@diagnostic disable-line: undefined-field
+  local v = json.decode('{"a": 1, "b": [true, "x"], "c": null}')
   t:expect(v.a):equals(1)
   t:expect(v.b[1]):is_true()
   t:expect(v.b[2]):equals("x")
   t:expect(v.c == nil):is_true()
-  t:expect(prova.parse.json("null") == nil):is_true()
+  t:expect(json.decode("null") == nil):is_true()
 end)

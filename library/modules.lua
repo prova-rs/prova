@@ -690,6 +690,125 @@ function yaml.parse(text) end
 ---@param text string
 ---@return any[]
 function yaml.parse_all(text) end
+--- Emit one value as a YAML document. Carries the json sentinels: `json.null` emits an explicit
+--- null; `json.array{}` forces an empty sequence.
+---@param v any
+---@return string
+function yaml.dump(v) end
+--- Emit a list of values as one `---`-separated multi-document stream (the Kubernetes manifest
+--- shape) — the exact inverse of `yaml.parse_all`.
+---@param docs any[]
+---@return string
+function yaml.dump_all(docs) end
+
+------------------------------------------------------------------------------------------
+-- json / toml / csv — tech-first format modules: decode AND encode together (api-freeze §1)
+------------------------------------------------------------------------------------------
+
+---@class prova.JsonEncodeOpts
+---@field pretty? boolean    # indented output (default compact)
+
+---@class prova.json
+---@field null lightuserdata # explicit-null sentinel: emit null from encode, assert null in shapes
+json = {}
+--- Parse JSON into a Lua value. `null` decodes to `nil` — top-level or nested — so absent and
+--- null both read as nil (assert explicit null with `json.null` in a `:matches` shape instead).
+---@param s string
+---@return any
+function json.decode(s) end
+--- Encode a Lua value as JSON text (compact by default). A bare empty table encodes as an object
+--- (`{}`); wrap it in `json.array` to force `[]`; `json.null` emits an explicit null.
+---@param v any
+---@param opts? prova.JsonEncodeOpts
+---@return string
+function json.encode(v, opts) end
+--- Mark a table as an array for encoding (forces `[]` when empty). Returns the same table.
+---@param t table
+---@return table
+function json.array(t) end
+
+---@class prova.toml
+toml = {}
+--- Parse TOML text into a Lua value. Raises on invalid TOML.
+---@param s string
+---@return table
+function toml.parse(s) end
+--- Encode a table as TOML text. TOML has no null, so `json.null` is an encode error here.
+---@param v table
+---@return string
+function toml.encode(v) end
+
+---@class prova.CsvOpts
+---@field delimiter? string  # single-byte field delimiter (default ",")
+---@field headers? string[]  # encode only: column order (default: first row's keys, sorted)
+
+---@class prova.csv
+csv = {}
+--- Parse CSV text, header-aware: the first record names the columns, every remaining record
+--- becomes a map keyed by header (the `prova.parse.table` row shape; values stay strings).
+---@param s string
+---@param opts? prova.CsvOpts
+---@return table<string, string>[]
+function csv.parse(s, opts) end
+--- Encode a list of header-keyed row maps as CSV text with a header line. Quoting is automatic
+--- (RFC 4180).
+---@param rows table<string, any>[]
+---@param opts? prova.CsvOpts
+---@return string
+function csv.encode(rows, opts) end
+
+------------------------------------------------------------------------------------------
+-- base64 / hash / uuid / url — the utility belt (api-freeze §1)
+------------------------------------------------------------------------------------------
+
+---@class prova.base64
+base64 = {}
+--- Base64-encode a string (standard alphabet, padded). Binary-safe.
+---@param s string
+---@return string
+function base64.encode(s) end
+--- Decode base64 text to the original bytes. Raises on invalid input.
+---@param s string
+---@return string
+function base64.decode(s) end
+
+---@class prova.hash
+hash = {}
+--- SHA-256 digest as lowercase hex.
+---@param s string
+---@return string
+function hash.sha256(s) end
+--- HMAC-SHA-256 of `msg` keyed by `key`, as lowercase hex.
+---@param key string
+---@param msg string
+---@return string
+function hash.hmac_sha256(key, msg) end
+
+---@class prova.uuid
+uuid = {}
+--- A random (v4) RFC 4122 UUID, hyphenated lowercase.
+---@return string
+function uuid.v4() end
+
+---@class prova.UrlParts
+---@field scheme string
+---@field host? string
+---@field port? integer      # written, or the scheme's well-known default
+---@field path string
+---@field query? string
+---@field fragment? string
+
+---@class prova.url
+url = {}
+--- Parse a URL into its structured parts. Raises on an invalid URL.
+---@param s string
+---@return prova.UrlParts
+function url.parse(s) end
+--- Percent-encode a string as one URL component: everything but RFC 3986 unreserved characters
+--- is escaped (space → `%20`, not `+`).
+---@param s string
+---@return string
+function url.encode(s) end
 
 ------------------------------------------------------------------------------------------
 -- graphql (POST { query, variables } → { data, errors } over HTTP — the third transport)
