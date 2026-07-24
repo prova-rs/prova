@@ -2343,7 +2343,12 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
             loop {
                 match f.call_async::<Value>(()).await {
                     Ok(v) if truthy(&v) => return Ok(v),
-                    Ok(_) => {}
+                    // A falsy return is "not ready" — and it CLEARS any earlier error. Without this,
+                    // `last_err` is sticky: a closure that raised at second 1 and merely returned nil
+                    // thereafter reports that stale error at the deadline, describing a state that
+                    // stopped being true long ago. (Measured in the wild: it sent a caller off
+                    // "fixing" a system that was already correct.)
+                    Ok(_) => last_err = None,
                     Err(e) => last_err = Some(e.to_string()),
                 }
                 if Instant::now() >= deadline {
@@ -2352,7 +2357,14 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
                     });
                     return Err(mlua::Error::RuntimeError(match last_err {
                         Some(e) => format!("{base} (last error: {e})"),
-                        None => base,
+                        // Nothing raised, so the closure simply never returned anything truthy. Say
+                        // which of the two it was: "condition not met" alone reads as "the system
+                        // never got there", when the actual cause is often a closure that asserts and
+                        // forgets to return.
+                        None => format!(
+                            "{base} (the closure never returned a truthy value — `retry` waits for a \
+                             TRUTHY RETURN, so a closure that only asserts must end with `return true`)"
+                        ),
                     }));
                 }
                 tokio::time::sleep(every).await;

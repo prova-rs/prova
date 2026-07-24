@@ -200,3 +200,118 @@ and `[plugins]` resolve from the package root (home) (which they already do).
   write every summary.
 - **Remaining: 3** (`local_service`) — deferred until a second local-daemon plugin proves the
   boilerplate recurs, which is the doc's own bar for a new constructor.
+
+---
+
+# Round two — 2026-07-24 (the same target, a later session)
+
+Same dogfood, ~40 proofs in. Round one was about *learning* Prova; these are about **being misled by
+it** — three of the five cost debugging time on a system that was already correct, which is the most
+expensive kind of friction there is.
+
+## 5. `prova.retry` reported a stale error, and never named the real cause — **FIXED**
+
+**Cost: ~20 minutes and two unnecessary "fixes" to the target system.** A proof waited for an
+orphaned child process to exit:
+
+```lua
+prova.retry(function()
+  local r = shell.run({ "kill", "-0", tostring(pid) })
+  assert(r.code ~= 0, "process outlived its parent")   -- no return!
+end, { timeout = "15s" })
+```
+
+The closure asserts and returns nothing, so `retry` never saw a truthy value and spun to the
+deadline — on a condition that was *already met within 3 seconds*. Two things then compounded:
+
+1. **`last_err` was sticky.** It was set when the assert failed early and never cleared, so the
+   timeout reported `(last error: process outlived its parent)` — an error from twelve seconds
+   earlier, presented as the current state. That is worse than no detail: it is confidently wrong
+   detail, and it is what sent me to "fix" the system twice more. (Both fixes turned out to be
+   independently necessary, which is luck, not vindication.)
+2. **"condition not met" does not distinguish** "your system never got there" from "your closure
+   never returned anything". The second is the commonest authoring mistake in this API — LuaLS even
+   flags it (`missing-return`) — and the runtime said nothing about it.
+
+**Fixed here.** A falsy return now clears `last_err` (an error that stopped happening is not the
+current state), and a timeout with nothing raised says: *"the closure never returned a truthy value —
+`retry` waits for a TRUTHY RETURN, so a closure that only asserts must end with `return true`"*.
+Proofs: `proofs/spec/utilities/retry_test.lua`.
+
+**The general lesson, worth applying elsewhere:** when a primitive can fail for two structurally
+different reasons, saying only "it failed" makes the caller debug the wrong one. Prova is already
+excellent at this in its assertion messages; its *polling* primitives were not.
+
+## 6. `learn` told a package with three plugins that it had none — **FIXED**
+
+`prova learn project` and `learn doubles` both rendered:
+
+> **Declared plugins**: none — add them under `[plugins]` in the manifest.
+
+while `require("minion")`, `require("policy")` and `require("lib")` all worked — three local plugins
+under the declared `[run] plugin_root`. The line reads `[plugins]` (external sources) only.
+
+It is a true statement about one manifest key and a **false answer to the question being asked**.
+`learn` exists so an agent need not read the source; for a package whose entire vocabulary is local
+plugins, it actively denied that vocabulary existed. Worse in `doubles`, where the sentence lands
+directly under "Plugins declared in this package add their facets to the vocabulary" — the local
+`minion.daemon(ctx)` *is* such a facet.
+
+**Fixed here.** Both kinds are listed, because `require("<name>")` does not distinguish them:
+
+```
+**Plugins** (`require("<name>")` in any proof):
+  lib     local (.prova/plugins/lib)
+  minion  local (.prova/plugins/minion)
+  policy  local (.prova/plugins/policy)
+```
+
+## 7. The MCP surface cannot select by path, and swallows `t:log`
+
+Two parity gaps, both hit while driving Prova **only** through MCP — which is the intended agent mode.
+
+**(a) No path selection.** The CLI takes `prova <file-or-dir>...`; the MCP `run` tool takes
+`keywords` / `nodes` / `tags` / `specs` / `profile` / `jobs` but no `paths`. So "run this one proof
+file" — the most natural unit an agent works in — has no MCP expression. `-k <topic>` is not a
+substitute: keywords match the node PATH (test names), so `keywords: ["appscript"]` selected 1 of the
+4 tests in `appscript_test.lua`, which reads as a broken filter until you know why.
+**Fix:** add `paths: string[]` to the MCP `run` schema, forwarding to the same argument the CLI takes.
+
+**(b) `t:log` output is invisible.** A proof logged a computed coverage number
+(`t:log("489 Commands, 213 drivable")`) — deliberate, load-bearing diagnostic output. The MCP result
+is `{passed, failed, skipped, duration_ms, failures[]}`, so it was simply gone; I had to shell out to
+the CLI to read my own proof's output, which defeats the point of the MCP.
+**Fix:** carry per-node `logs` in the MCP result (at minimum for failures; ideally always — an agent
+asked for them by writing `t:log`).
+
+## 8. No WebSocket (or raw TCP) client — a whole class of SUT is undrivable
+
+Prova can stand up `http.mock` and `grpc.mock`, and `http.client` drives a real service. There is no
+equivalent for **WebSocket**, and localhost-WS is how a growing class of desktop integrations talk:
+this target has two of them (a browser extension bridge and an in-Photoshop UXP panel), both
+daemon-as-server / plugin-as-client.
+
+The concrete loss: a proof cannot stand in as the panel, so the full chain — Lua plugin chooses the
+bridge → daemon → extension → WS → panel → reply — is provable only in Rust unit tests, one process
+at a time. The black-box proof stops at the process boundary, which is exactly the boundary Prova
+exists to cross.
+
+**Fix (in rough order of value):** `ws.client(url)` with `:send`/`:recv`/`:close` — enough to *be* the
+peer, which is the common case for testing a bridge. `ws.mock(ctx)` (serve, and assert on a journal
+like `http.mock`) is the natural sibling but strictly less urgent: the SUT is usually the server.
+
+---
+
+## Round-two status
+
+- **5 and 6 are fixed in this workspace** (with proofs / unit tests). Both were *misleading output*
+  rather than missing capability — cheap to fix, disproportionately expensive to hit.
+- **7 is small and mechanical**, and it is the difference between the MCP being a first-class surface
+  and being a lossy subset of the CLI. An agent that has to shell out to `prova` to read its own
+  proof's log is not really driving the MCP.
+- **8 is a genuine capability gap** and the only one that needs design. It is also the one that would
+  have let this session prove its most interesting claim end-to-end instead of at a seam.
+- Round one's remaining item (**3**, `local_service`) is *still* unresolved and now has its second
+  data point: this session provisioned the same hermetic daemon the same way. That is two local-daemon
+  plugins' worth of identical boilerplate — the doc's own bar for a constructor is met, if the second
+  witness counts.

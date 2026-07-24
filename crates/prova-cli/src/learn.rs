@@ -213,6 +213,35 @@ struct PackageFacts {
     profiles: BTreeMap<String, Profile>,
 }
 
+
+/// The package's **local** plugins: the requirable subdirectories of `[run] plugin_root`.
+///
+/// These are plugins in every sense that matters to an author — `require("<name>")` resolves them —
+/// but they appear in no manifest table, so anything that reads `[plugins]` alone reports a package
+/// full of them as having none. A directory counts when it holds an `init.lua`, which is exactly what
+/// the resolver requires.
+fn local_plugins(p: &PackageFacts) -> Vec<String> {
+    local_plugins_in(&p.home_dir, p.resolved.plugin_root.as_deref())
+}
+
+/// The scan itself, split out so it is testable without a resolved manifest.
+fn local_plugins_in(home_dir: &std::path::Path, plugin_root: Option<&str>) -> Vec<String> {
+    let Some(root) = plugin_root else {
+        return Vec::new();
+    };
+    let dir = home_dir.join(root);
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.path().join("init.lua").is_file())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    names.sort();
+    names
+}
+
 /// One project-provided context doc (manifest `context`), surfaced as a `ctx:<stem>` topic.
 pub struct ContextDoc {
     /// The listing key: `ctx:<file stem>`.
@@ -393,20 +422,40 @@ fn render_slot(slot: Slot, env: &RenderEnv, transport: Transport) -> String {
             None => String::new(),
         },
         Slot::Plugins => match &env.package {
-            Some(p) if !p.resolved.plugins.is_empty() => {
-                let width = p.resolved.plugins.keys().map(String::len).max().unwrap_or(0);
-                let rows: Vec<String> = p
+            Some(p)
+                if !p.resolved.plugins.is_empty() || !local_plugins(p).is_empty() =>
+            {
+                // BOTH kinds, because `require("<name>")` does not distinguish them. Listing only
+                // the `[plugins]` table told a package with three working local plugins that it had
+                // "none" — a true statement about one manifest key, and a false answer to the
+                // question actually being asked ("what vocabulary do I have here?").
+                let local = local_plugins(p);
+                let width = p
                     .resolved
                     .plugins
+                    .keys()
+                    .chain(local.iter())
+                    .map(String::len)
+                    .max()
+                    .unwrap_or(0);
+                let root = p.resolved.plugin_root.as_deref().unwrap_or("");
+                let rows: Vec<String> = local
                     .iter()
-                    .map(|(name, src)| format!("  {name:<width$}  {}", describe_source(src)))
+                    .map(|name| format!("  {name:<width$}  local ({root}/{name})"))
+                    .chain(
+                        p.resolved
+                            .plugins
+                            .iter()
+                            .map(|(name, src)| format!("  {name:<width$}  {}", describe_source(src))),
+                    )
                     .collect();
                 format!(
-                    "**Declared plugins** (`require(\"<name>\")` in any proof):\n{}",
+                    "**Plugins** (`require(\"<name>\")` in any proof):\n{}",
                     rows.join("\n")
                 )
             }
-            Some(_) => "**Declared plugins**: none — add them under `[plugins]` in the manifest."
+            Some(_) => "**Plugins**: none — declare external ones under `[plugins]` in the \
+                        manifest, or author local ones under `[run] plugin_root`."
                 .into(),
             // The long no-package guidance renders once, on the ProofPaths slot; here one short
             // line keeps a doctrine topic readable outside a package.
@@ -641,6 +690,31 @@ pub fn run(args: Vec<String>) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    /// Local plugins are listed from `plugin_root`, because `require("<name>")` resolves them and an
+    /// author asking "what do I have here?" means both kinds. A directory without `init.lua` is not a
+    /// plugin, and neither is a stray file.
+    #[test]
+    fn local_plugins_are_found_under_the_plugin_root() {
+        let base = std::env::temp_dir().join(format!("prova-learn-{}", std::process::id()));
+        let root = base.join(".prova/plugins");
+        for name in ["minion", "policy"] {
+            std::fs::create_dir_all(root.join(name)).unwrap();
+            std::fs::write(root.join(name).join("init.lua"), "return {}").unwrap();
+        }
+        std::fs::create_dir_all(root.join("not-a-plugin")).unwrap(); // no init.lua
+        std::fs::write(root.join("README.md"), "# plugins").unwrap(); // not a directory
+
+        assert_eq!(
+            local_plugins_in(&base, Some(".prova/plugins")),
+            vec!["minion".to_string(), "policy".to_string()]
+        );
+        // No `plugin_root` declared, or one that does not exist: no plugins, no error.
+        assert!(local_plugins_in(&base, None).is_empty());
+        assert!(local_plugins_in(&base, Some("nope")).is_empty());
+        std::fs::remove_dir_all(&base).ok();
+    }
 
     /// Enumerate every `{{slot}}` occurrence across all topics.
     fn slots_in(source: &str) -> Vec<String> {
