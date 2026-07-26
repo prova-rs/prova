@@ -1,6 +1,6 @@
 //! Locating the "prova home" — the PROJECT ROOT that owns a package's manifest, and against which
 //! every relative path in the manifest (`[run] proofs`, `config`, `plugin_root`) and generated
-//! artifact (`.luarc.json`, `running/`) resolves.
+//! artifact (`.luarc.json`, the `.prova/var/` state directory — see `var`) resolves.
 //!
 //! A package keeps its manifest in one of four places; the home is the project **root** in every case:
 //!
@@ -33,8 +33,8 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq)]
 pub struct Home {
     /// The home directory — the PROJECT ROOT. The single base for every manifest-relative path
-    /// (`proofs`, `config`, `plugin_root`), for generated `.luarc.json` / `running/` state, and the
-    /// directory an editor attaches to.
+    /// (`proofs`, `config`, `plugin_root`), for the generated `.luarc.json` and the `.prova/var/`
+    /// state directory, and the directory an editor attaches to.
     pub dir: PathBuf,
     /// The manifest file. For a flat layout it sits directly in `dir`; for a nested layout it sits in
     /// `dir/prova/` or `dir/.prova/`.

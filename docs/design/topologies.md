@@ -97,11 +97,11 @@ test scope; `prova up orders` instantiates the identical object under a held env
   topology under a held File scope, prints each resource's `url`, and blocks until **SIGINT or
   SIGTERM**, then runs the existing `ctx:manage` teardown. Verified with a real Postgres container
   (endpoint on a live host port; container reaped on Ctrl-C). A running `up` **self-registers** a
-  record under `<home>/running/<name>.json` (pid + endpoints; self-gitignored) and removes it on
+  record under `<home>/.prova/var/running/<name>.json` (pid + endpoints; self-gitignored) and removes it on
   clean teardown.
 - **Detached mode** (`prova start` / `prova down` / `prova ps`) — **done**, and exactly the thin
   **supervisor over attached `prova up`** the design predicted: `start` spawns `prova up <name>` in
-  its own process group (stdio → `<home>/running/<name>.log`), waits for it to self-register, prints
+  its own process group (stdio → `<home>/.prova/var/running/<name>.log`), waits for it to self-register, prints
   the endpoints, and returns leaving it running; `down` reads the record and `SIGTERM`s the pid, so
   the *same* in-process `ctx:manage` teardown runs in the detached child; `ps` lists records (cleaning
   stale ones). **One provisioning path, one teardown path** — no resource-inventory tracking, no

@@ -140,3 +140,113 @@ fn a_deeper_manifest_is_an_independent_package() {
     );
     assert!(!out.contains("PARENT"), "parent suite must not run: {out}");
 }
+
+// ── generated state follows the home, not the manifest's own directory ────────────────────────
+//
+// The behavioural surface of `.prova/var/` is proven black-box in `proofs/layout/state_dir_test.lua`.
+// What belongs *here* is the part that is purely about home resolution: state is keyed to the project
+// ROOT, so every manifest variant and every invocation directory agree on one location. Getting this
+// wrong would give one package two state dirs — and `--last-failed` would silently forget.
+
+/// A package that always has something to record.
+fn install_failing(root: &Path, manifest_rel: &str) {
+    write(root, manifest_rel, "[run]\nproofs = [\"proofs\"]\n");
+    write(
+        root,
+        "proofs/red_test.lua",
+        "prova.test(\"red\", function(t) t:expect(1):equals(2) end)\n",
+    );
+}
+
+/// All four manifest variants put generated state at `<root>/.prova/var/` — the nook-tucked manifest
+/// included. `.prova/var/` is prova's, whether or not `.prova/` also holds the manifest.
+#[test]
+fn every_manifest_variant_records_state_at_the_root() {
+    for (tag, manifest_rel) in [
+        ("flat", "prova.toml"),
+        ("flat-hidden", ".prova.toml"),
+        ("nested", "prova/prova.toml"),
+        ("nested-hidden", ".prova/prova.toml"),
+    ] {
+        let dir = tmp(&format!("state-{tag}"));
+        install_failing(&dir, manifest_rel);
+        let (ok, out) = run(&dir);
+        assert!(!ok, "{tag}: the run must fail so there is state to record: {out}");
+
+        assert!(
+            dir.join(".prova/var/last-failed.json").is_file(),
+            "{tag}: state belongs under <root>/.prova/var/"
+        );
+        assert!(
+            dir.join(".prova/var/.gitignore").is_file(),
+            "{tag}: the state dir must ignore itself"
+        );
+        // The whole point: nothing generated in the tracked tree.
+        assert!(
+            !dir.join("last-failed.json").exists() && !dir.join(".last-failed.json").exists(),
+            "{tag}: nothing generated at the package root"
+        );
+    }
+}
+
+/// Run from the root, then from inside the nook: one home, so one state dir — and `--last-failed`
+/// reads back what the other invocation wrote. Two locations here would mean a package silently
+/// forgets its failures depending on which directory you happened to be standing in.
+#[test]
+fn state_is_shared_across_invocation_directories() {
+    let dir = tmp("state-nook-agreement");
+    install_failing(&dir, ".prova/prova.toml");
+
+    let (ok, _) = run(&dir);
+    assert!(!ok, "the root run must fail so there is state to record");
+    assert!(dir.join(".prova/var/last-failed.json").is_file());
+
+    // From inside the nook: home hoists to the parent, so no second state dir appears below it.
+    let (ok, out) = run(&dir.join(".prova"));
+    assert!(!ok, "the nook run must fail too: {out}");
+    assert!(
+        !dir.join(".prova/.prova").exists(),
+        "a run from inside the nook must not nest a second state dir: {out}"
+    );
+
+    // And the record is live for the OTHER invocation directory — one shared piece of state.
+    let out = Command::new(env!("CARGO_BIN_EXE_prova"))
+        .current_dir(dir.join(".prova"))
+        .args(["--last-failed", "--json"])
+        .output()
+        .unwrap();
+    let combined = String::from_utf8_lossy(&out.stdout).to_string()
+        + &String::from_utf8_lossy(&out.stderr);
+    assert!(
+        combined.contains("\"failed\":1") && !combined.contains("running everything"),
+        "--last-failed from the nook must select the root run's failure: {combined}"
+    );
+}
+
+/// A relative `PROVA_VAR_DIR` is refused before anything runs. It would resolve against the cwd, and
+/// prova runs from anywhere inside a package — so one setting would scatter state across directories,
+/// which is precisely the inconsistency the escape hatch exists to avoid.
+#[test]
+fn a_relative_state_root_override_is_refused() {
+    let dir = tmp("state-relative-override");
+    install_failing(&dir, "prova.toml");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_prova"))
+        .current_dir(&dir)
+        .env("PROVA_VAR_DIR", "relative/state")
+        .output()
+        .unwrap();
+    let combined = String::from_utf8_lossy(&out.stdout).to_string()
+        + &String::from_utf8_lossy(&out.stderr);
+
+    assert!(!out.status.success(), "must refuse: {combined}");
+    assert!(
+        combined.contains("PROVA_VAR_DIR") && combined.contains("absolute"),
+        "the diagnostic must name the variable and the requirement: {combined}"
+    );
+    // Refused up front — before the suite ran, so no partial state either.
+    assert!(
+        !dir.join(".prova/var").exists() && !dir.join("relative").exists(),
+        "a refused override must write nothing: {combined}"
+    );
+}

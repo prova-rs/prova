@@ -30,7 +30,7 @@ The server process owns a live engine (Lua state, plugin set, annotation-synced 
 topologies live **in the server's own scope machinery** — the same `ctx:manage` lifecycle as
 `prova up`, with the server playing the role the attached `up` process plays today. Held
 topologies live in the server's **in-memory registry only** — `prova ps` lists *detached*
-topologies (the `<home>/running/*.json` records from `prova start`); a server-held one is
+topologies (the `<home>/.prova/var/running/*.json` records from `prova start`); a server-held one is
 visible through the MCP `status {}` tool, not `ps`.
 
 ### Tool surface — the CLI parity table

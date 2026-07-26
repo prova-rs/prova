@@ -23,8 +23,8 @@ Two facts drive the whole design:
 
 **Home = the project ROOT — the directory an editor opens and where `proofs/` live — and it is the
 base for everything.** Every manifest-relative key (`proofs`, `config`, `plugin_root`) and every
-generated artifact (`.luarc.json`, `running/`) resolves against it. A package picks one of four
-manifest locations:
+generated artifact (`.luarc.json`, the `.prova/var/` state directory) resolves against it. A package
+picks one of four manifest locations:
 
 | Manifest location | Home (root) | Feel |
 |---|---|---|
@@ -75,8 +75,57 @@ myproject/
 ├── proofs/              ← visible tests (proofs = ["proofs"], the default)
 └── .prova/              ← just a nook for config + plugins the manifest points into
     ├── config.lua       #   config = ".prova/config.lua"
-    └── plugins/         #   plugin_root = ".prova/plugins"
+    ├── plugins/         #   plugin_root = ".prova/plugins"
+    └── var/             ← generated state; self-ignoring, never tracked
 ```
+
+### Generated state: `.prova/var/`
+
+**Prova writes generated state only into a directory it owns, and that directory ignores itself.** All
+variable state — the `--last-failed` record, held-topology run-state from `up`/`start`, and whatever
+gets added later — lives under `<home>/.prova/var/`, created on the first state **write** with a
+`.gitignore` of `*` inside it. A failing run therefore leaves nothing in the tracked tree to
+accidentally commit, and no ignore entry for anyone to hand-maintain.
+
+Note where the ignore file sits: **inside `var/`, not at `.prova/` level.** That is what lets `.prova/`
+keep holding *tracked* content (the manifest, `config.lua`, `plugins/`) — an ignore one level up would
+hide the very files a nested-layout package commits. Two properties follow:
+
+- **`.prova/` exists in every package; the only variable is whether it holds tracked content.** The
+  flat layouts get a `.prova/` containing only `var/`; the nested layouts get the manifest and config
+  alongside it. That is a cleaner invariant than "does `.prova/` exist at all".
+- **The self-ignore composes recursively, with no coordination.** Every package ignores its own state
+  and nobody else's, at any nesting depth, because home resolution stops at the nearest manifest. A
+  local plugin under `plugin_root` that is run standalone gets its own `var/`; a parent run never
+  creates one for it, because state is written against the *resolved* home and lazily at that. This is
+  the property an "append to the root `.gitignore`" approach cannot have: at depth it would need to
+  enumerate every nested package and maintain an entry per package.
+
+#### `PROVA_VAR_DIR` — an escape hatch, not a preference
+
+Some source trees cannot be written to at all: read-only checkouts, Nix and Bazel sandboxes. For those,
+`PROVA_VAR_DIR` relocates state wholesale. It is deliberately **env-only** — no manifest key (that is
+project shape, gets committed, and would drift into a per-project preference) and no CLI flag (that
+invites casual use). It is not advertised in the `learn` topics for the same reason.
+
+Prova's pitch is reliable, consistent runs — no "works on my machine". An environment knob is in
+tension with that, so the hatch is fenced by four rules, each of them proven in
+`proofs/layout/state_dir_test.lua`:
+
+1. **Location only, never behavior.** State here is never an input to a test outcome, so relocating it
+   cannot change a result — pinned as an equality assertion on the reported tally, with and without
+   the override. The announcement goes to stderr so `--format json`/`tap` stdout is byte-identical too.
+2. **Absolute paths only.** A relative override resolves against the current directory, and prova runs
+   from anywhere inside a package — so one setting would scatter state across directories depending on
+   where you invoked it. That is exactly the inconsistency the hatch must not introduce, so it is a
+   hard error, not a warning. Validated up front on *every* invocation, so a misconfigured hatch fails
+   the same way whether or not that command would have recorded anything.
+3. **Never invisible.** An active override announces itself on stderr. A silent relocation is how
+   unexplainable machine differences are born; if state moved, the run says so.
+4. **It names a state ROOT, not a state directory.** Each package gets a subdirectory keyed by its
+   canonical home path. Without that keying, one shared cache volume across a monorepo — or across
+   several jj workspaces sharing a store but not a working copy — would have each package's record
+   silently clobber the last, a worse failure than the churn the default fixes.
 
 The nested form (`.prova/prova.toml`) is the same picture with the manifest moved into the nook — the
 root, and `proofs/` at it, are unchanged:
