@@ -150,9 +150,22 @@ Order:
 **Burndown status (2026-07-24):** §1 formats (`json`/`yaml.dump`/`toml`/`csv`) + utility belt,
 §3 matching (incl. the `json.null` sentinel), and §4 `:eventually` are **implemented and
 graduated** — their suites run flag-free, `prova --specs --list` is empty. `prova.parse.json` is
-removed and callers migrated. Still to spec-then-implement: §2 globals
-(`proofs/spec/globals/` — reserved names, write protection, require-injection), §6 journals
-(`proofs/spec/journals/`), and the Tier-A transports as they are designed.
+removed and callers migrated.
+
+**Burndown status (2026-07-27): the remaining surface is SPEC'D — 44 open specs, staged for
+implementation burndown.** Authored as open-spec suites in one pass: §2 globals
+(`proofs/spec/globals/` — reserved-name registry, write-protected globals, require-injection +
+`[run] globals` exclusion), §6 journals (`proofs/spec/journals/` — the seq/source/matched spine on
+http.mock and grpc.mock; `prova.double` is the shipped reference), and the full Tier-A transport
+surface per mocks-proxies-drivers.md: `proofs/spec/socket/` (scheme-unified tcp+uds, framing
+strategies, mock/proxy/driver), `proofs/spec/faults/` (latency/drop/corrupt/throttle/after on the
+proxy substrate), `proofs/spec/cassettes/` (kernel record/replay engine, http.proxy first),
+`proofs/spec/terminal/` (pty driver, screen model, SIGWINCH/signals, golden frames, PATH-shadow
+mock), `proofs/spec/websocket/`, and `proofs/spec/process/` (`shell.proxy` PATH shim). Suggested
+burndown order (substrate before specialization): socket → faults → journals+globals → cassettes →
+terminal → websocket → shell.proxy. Graduation discipline per suite: convert `spec =` to
+`proves = ""`, add the new namespace to `library/*.lua` stubs + the introspection parity roots, and
+extend the reserved-name registry (§2) with each new kernel transport as it lands.
 
 **Spec-engine ergonomics (2026-07-24, IMPLEMENTED — suite graduated):** the flag combos are
 the composable primitives but a poor entry point (`--strict-specs` is the thing you reach for

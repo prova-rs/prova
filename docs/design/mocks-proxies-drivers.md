@@ -70,18 +70,26 @@ default, not a special case. Every transport advertises the same three verbs whe
 |-----------------------|-------------------|--------------------------------|-----------------------------|--------|
 | `http`                | `http.mock`       | `http.proxy`                   | `http.get/post/wait_for`    | kernel |
 | `grpc`                | `grpc.mock`       | `grpc.proxy`                   | `grpc.call`                 | plugin |
-| `socket` (uds)        | `socket.mock`     | `socket.proxy`                 | `socket.connect`            | kernel |
-| `pipe` (named pipe)   | `pipe.mock`       | `pipe.proxy`                   | `pipe.connect`              | kernel |
+| `socket` (tcp + uds)  | `socket.mock`     | `socket.proxy`                 | `socket.connect/listen`     | kernel |
+| `websocket`           | `websocket.mock`  | `websocket.proxy`              | `websocket.connect`         | kernel |
 | `process`             | —                 | `shell.proxy` (shim on PATH)   | `shell.run/spawn`           | kernel |
 | **`terminal` (pty)**  | `terminal.mock`   | `terminal.proxy`               | `terminal.spawn` → session  | kernel |
 | `postgres`/`redis`/…  | resource/container| capture/replay                 | native client               | plugin |
 
 Two consequences worth stating:
 
-1. **Transports self-declare their platform capability.** A `socket` on a Unix path *implicitly*
-   folds `requires = { "unix" }` into the leaf; its Windows peer is a `pipe` transport that implies
-   `windows`. Portable transports (`http`, `terminal`) work everywhere. Authors should not hand-write
-   the platform `requires` for a transport that already knows its own platform.
+1. **One `socket` namespace, unified by address scheme** (decision 2026-07-27, supersedes the
+   separate `pipe` transport): `tcp://host:port` and `unix:///path` — future `npipe://` on Windows —
+   are just addresses. Listen, connect, proxy, and the byte model are identical across schemes; only
+   address parsing differs. **Transports still self-declare their platform capability**: a `unix://`
+   address *implicitly* folds `requires = { "unix" }` into the leaf; portable transports (`http`,
+   `terminal`) work everywhere. Authors should not hand-write the platform `requires` for a
+   transport that already knows its own platform. And because a raw byte stream has no natural
+   "request" unit, mocks and transcripts take a **framing** strategy (`"line"`,
+   `{ length_prefixed = n }`, `{ delimiter = "…" }`, or a Lua chunker) to turn bytes into matchable
+   turns — which is also what makes the byte-level `socket.proxy` the universal wiretap: put it in
+   front of Postgres, Redis, Kafka, anything TCP, and you get transcripts and fault injection with
+   zero protocol knowledge.
 2. **Prior art we are deliberately converging on:** mountebank (multi-protocol imposters that are both
    stubs and proxies), toxiproxy (the fault vocabulary), WireMock/VCR (record-replay). What none of
    them have is the terminal transport or Prova's capability-gated cross-platform proof story — that
@@ -143,10 +151,18 @@ local psql = terminal.proxy(t, {
 })
 ```
 
-Because every transport's Proxy wants this, the cassette **format, storage convention, matching
-strategy** (how an inbound request/keystroke selects the recorded response), and **redaction** (scrub
-secrets/timestamps at record time, or replays leak and diff-thrash) live **once in the kernel**, not
-per transport.
+Because every transport's Proxy wants this, the cassette **format, storage convention, modes**
+(`record` / `replay` / `auto` / `passthrough`), **matching strategy** (how an inbound
+request/keystroke selects the recorded response — a replay miss is always LOUD), and **redaction**
+(scrub secrets/timestamps at record time, or replays leak and diff-thrash) live **once in the
+kernel**, not per transport. Each transport contributes only its **turn model** (http/grpc:
+request→response pairs; shell shim: argv+stdin→stdout+exit; socket: framed turns; terminal: timed
+frames) and its **match key**.
+
+One honest limitation, by design: VCR semantics hold on request/response transports; **full-duplex
+transports** (raw socket, websocket, terminal) replay as a **scripted conversation** — ordered,
+expectation-driven, timing-annotated. Same file format, different replay discipline. Don't promise
+VCR semantics for streams; promise the conversation model.
 
 ## Fault injection (shared vocabulary)
 
@@ -194,11 +210,24 @@ it, and every other platform replays it deterministically without a Windows box.
 - **`terminal`** over `pty` for the user-facing word (reads as intent); `pty` stays the internal
   kernel module name.
 
+## Non-goals
+
+- **Browser** — Playwright's job. **Device input** — Minion's job.
+- **Clock/time** — a real port of a system but not a transport; the black-box answers (env
+  overrides, through-app time endpoints, container clocks) are recipes, not a primitive.
+- **Filesystem doubling** (a FUSE-level fake fs) — `fs` driving plus temp-dir fixtures cover the
+  black-box story; a fake filesystem is a white-box tool.
+- **Webhooks/callbacks** are not a missing transport: "the SUT calls *me* back" is `http.mock` plus
+  waiting on `:received` — a documented recipe ("callback capture"), not a feature gap.
+
 ## Status
 
 - **Model:** settled (this doc).
-- **Next:** `terminal` transport in the kernel (pty alloc + screen model + `expect`/`wait_stable`);
-  the cassette engine; the fault vocabulary. Executable proofs pin the invariants first (red), per
-  [proof-driven-development.md](proof-driven-development.md).
+- **Spec'd (2026-07-27):** the whole Tier-A surface is an executable backlog under `proofs/spec/` —
+  `socket/` (scheme-unified addressing, framing, all three postures), `faults/`
+  (latency/drop/corrupt/throttle/after on the proxy substrate), `cassettes/` (kernel engine,
+  http.proxy first), `terminal/` (pty driver + screen model + PATH-shadow mock), `websocket/`, and
+  `process/` (`shell.proxy`, the PATH shim) — plus `globals/` and `journals/` from the api-freeze
+  plan. `prova specs` enumerates it; `prova burndown` is the implementing loop.
 - **Cleanup:** re-point or retire `examples/aspirational` against this model; sweep comments that
   still say "mocking" generically.

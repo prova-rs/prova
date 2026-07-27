@@ -48,7 +48,8 @@ prova.test("a manifest requiring a newer prova is refused up front",
 
   t:expect(r.code, "exits non-zero"):never():equals(0)
   t:expect(r.stdout, "names the required version"):contains("99.0.0")
-  t:expect(r.stdout, "names the version in hand"):contains("0.11")
+  local in_hand = shell.run("prova --version").stdout:match("(%d+%.%d+%.%d+)")
+  t:expect(r.stdout, "names the version in hand"):contains(in_hand)
   t:expect(r.stdout, "no proof was attempted"):never():contains("the sandbox proof runs")
 end)
 
