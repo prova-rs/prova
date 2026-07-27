@@ -9,7 +9,7 @@
 ---   * `websocket` joins the reserved-name registry alongside `socket` and `terminal`.
 
 prova.test("mock + driver round-trip — a message turn, stubbed and answered",
-  { spec = "tier-a/websocket: mock/driver — not built" }, function(t)
+  { proves = "tier-a/websocket: message turns, natively framed — no framing strategy to choose" }, function(t)
   local m = websocket.mock(t)
   m:on("ping"):reply("pong")
   t:expect(m.url:sub(1, 5)):equals("ws://")     -- endpoint symmetry, ws scheme
@@ -20,7 +20,7 @@ prova.test("mock + driver round-trip — a message turn, stubbed and answered",
 end)
 
 prova.test("full duplex — the server pushes unprompted on connect",
-  { spec = "tier-a/websocket: server push — not built" }, function(t)
+  { proves = "tier-a/websocket: full duplex — the scripted-conversation model, not VCR" }, function(t)
   local m = websocket.mock(t)
   m:on_connect(function(conn) conn:send("welcome") end)
 
@@ -29,7 +29,7 @@ prova.test("full duplex — the server pushes unprompted on connect",
 end)
 
 prova.test("the journal speaks the §6 spine from day one",
-  { spec = "tier-a/websocket: journal — not built" }, function(t)
+  { proves = "tier-a/websocket: the §6 spine from day one — no retrofit" }, function(t)
   local m = websocket.mock(t)
   m:on("hello"):reply("hi")
 

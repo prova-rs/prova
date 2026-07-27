@@ -223,11 +223,18 @@ it, and every other platform replays it deterministically without a Windows box.
 ## Status
 
 - **Model:** settled (this doc).
-- **Spec'd (2026-07-27):** the whole Tier-A surface is an executable backlog under `proofs/spec/` —
-  `socket/` (scheme-unified addressing, framing, all three postures), `faults/`
-  (latency/drop/corrupt/throttle/after on the proxy substrate), `cassettes/` (kernel engine,
-  http.proxy first), `terminal/` (pty driver + screen model + PATH-shadow mock), `websocket/`, and
-  `process/` (`shell.proxy`, the PATH shim) — plus `globals/` and `journals/` from the api-freeze
-  plan. `prova specs` enumerates it; `prova burndown` is the implementing loop.
+- **SHIPPED (2026-07-27):** the whole Tier-A surface is implemented and guarded by flag-free
+  proofs under `proofs/spec/` — `socket` (scheme-unified tcp+uds, framing, all three postures,
+  direction-tagged transcripts), the fault vocabulary (latency/drop/corrupt/throttle/after on the
+  proxy substrate; http.proxy speaks latency/drop/after and points at socket.proxy for byte-level
+  faults), cassettes (modes passthrough/record/replay/auto on `http.proxy` — sugar over the mock
+  dial; loud 502 replay miss; record-time redaction), `terminal` (portable-pty driver, vt100
+  screen model, golden frames via the snapshot protocol, PATH-shadow mock), `websocket`
+  (full-duplex, on_connect push), and `shell.proxy` (the journaling PATH shim). Every journal
+  speaks the §6 seq/source/matched spine; every new namespace is in the §2 reserved registry and
+  the `library/modules.lua` stubs.
+- **Still open:** ConPTY (Windows) twins for terminal/shell.proxy behind a Windows runner +
+  `must_run`; cassette specialization for grpc/socket/terminal turns; TLS (and eventual MITM
+  taps) on socket.
 - **Cleanup:** re-point or retire `examples/aspirational` against this model; sweep comments that
   still say "mocking" generically.

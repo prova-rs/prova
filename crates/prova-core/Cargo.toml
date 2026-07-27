@@ -46,6 +46,10 @@ vt100 = "0.15"
 # `terminal` signal delivery (term:signal("INT") → kill(pid, SIGINT)); already in the graph
 # transitively via portable-pty/tokio — a declaration, not new weight.
 libc = "0.2"
+# The `websocket` kernel transport: full-duplex message turns over the http upgrade path.
+# ws:// only (matching http's no-TLS stance); the protocol frames messages natively, so unlike
+# raw `socket` there is no framing strategy to choose.
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake"] }
 # The `http` module. v1 is HTTP-only (no TLS) to stay light — covers localhost service
 # boot-and-probe; an https feature can layer rustls on later. Feature-gated so builds can opt out.
 reqwest = { version = "0.12", optional = true, default-features = false }

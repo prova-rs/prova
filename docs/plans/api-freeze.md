@@ -169,6 +169,16 @@ Order:
 graduated** — their suites run flag-free, `prova --specs --list` is empty. `prova.parse.json` is
 removed and callers migrated.
 
+**Burndown status (2026-07-27, evening): BURNED DOWN AND GRADUATED.** The 42 staged specs below
+were implemented and graduated the same day, in seven proof-carrying commits (journals → globals →
+socket+faults+cassettes → terminal → websocket+shell.proxy → stubs/parity). All suites run
+flag-free as guardrails; `prova specs` lists only the 2 pre-existing manifest specs. New kernel
+surface: `socket` (scheme-unified L4 triad + framing), the fault vocabulary
+(latency/drop/corrupt/throttle/after on proxies), `http.proxy` (modes over the mock dial;
+mode=auto added; replay miss now 502), `terminal` (pty driver + screen model + golden frames +
+PATH-shadow mock), `websocket`, `shell.proxy` (journaling PATH shim), the §2 injection contract,
+and the §6 journal spine everywhere. The original staging note follows for the record.
+
 **Burndown status (2026-07-27): the remaining surface is SPEC'D — 44 open specs, staged for
 implementation burndown.** Authored as open-spec suites in one pass: §2 globals
 (`proofs/spec/globals/` — reserved-name registry, write-protected globals, require-injection +

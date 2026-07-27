@@ -845,3 +845,300 @@ graphql = {}
 ---@param opts prova.GraphqlClientOpts
 ---@return prova.GraphqlClient
 function graphql.client(opts) end
+
+-- ---------------------------------------------------------------------------------------------
+-- http.proxy — the interpose posture as its own verb (mocks-proxies-drivers.md)
+-- ---------------------------------------------------------------------------------------------
+
+---@class prova.HttpProxyOpts
+---@field upstream? string   # the real dependency's base url (needed by passthrough/record/auto)
+---@field cassette? string   # the recording file (needed by record/replay/auto)
+---@field mode? string       # "passthrough" (default) | "record" | "replay" | "auto"
+---@field redact? string[]   # extra headers scrubbed at record time (defaults already cover auth)
+
+--- Interpose on a real HTTP dependency: forward traffic, record it into a cassette, or replay a
+--- cassette with the upstream gone ("a proxy in record mode manufactures a mock"). Sugar over
+--- `http.mock`'s dial — same object back, so stubs/journal/faults all apply. `mode = "auto"`
+--- records when the cassette file is absent and replays when present; a replay miss is a loud
+--- 502 naming the cassette. Close (or scope exit) is the cassette flush point.
+---@param ctx any            # the test or fixture context (`t` / `ctx`)
+---@param opts prova.HttpProxyOpts
+---@return prova.MockServer
+function http.proxy(ctx, opts) end
+
+-- ---------------------------------------------------------------------------------------------
+-- socket — the L4 kernel transport: the full triad over tcp:// and unix:// (one namespace,
+-- unified by address scheme; framing turns bytes into matchable turns)
+-- ---------------------------------------------------------------------------------------------
+
+---@alias prova.SocketFraming string|{ length_prefixed?: integer, delimiter?: string }
+
+---@class prova.SocketConn
+local SocketConn = {}
+--- Write one turn (framed) or raw bytes (no framing). Async.
+---@param data string
+function SocketConn:send(data) end
+--- Framed: read one whole turn — `recv(opts?)`. Raw: read exactly n bytes — `recv(n, opts?)`.
+--- Errors loud on timeout (default 10s) or a closed connection; never hangs.
+---@param n_or_opts? integer|{ timeout?: string }
+---@param opts? { timeout?: string }
+---@return string
+function SocketConn:recv(n_or_opts, opts) end
+--- Close the connection.
+function SocketConn:close() end
+
+---@class prova.SocketListener
+---@field addr string        # the resolved address ("tcp://127.0.0.1:<port>" / "unix://…")
+local SocketListener = {}
+--- Accept one connection (async, timeout'd — default 10s).
+---@param opts? { timeout?: string }
+---@return prova.SocketConn
+function SocketListener:accept(opts) end
+--- Stop listening (what `ctx:manage` calls; a unix socket path is reaped).
+function SocketListener:stop() end
+
+---@class prova.SocketStub
+local SocketStub = {}
+--- Answer this turn with `data` (framed onto the wire).
+---@param data string
+function SocketStub:reply(data) end
+
+---@class prova.SocketMock
+---@field addr string        # endpoint symmetry: the same string a driver's connect takes
+local SocketMock = {}
+--- Stub one framed turn (exact bytes). First matching stub wins; an unmatched turn is journaled
+--- (§6: matched=false, source="unmatched") and the connection closes LOUD.
+---@param turn string
+---@return prova.SocketStub
+function SocketMock:on(turn) end
+--- The §6 journal: `{ seq, data, matched, source }[]`, filterable by subset table or predicate.
+---@param filter? table|fun(entry: table): boolean
+---@return table[]
+function SocketMock:received(filter) end
+--- Stop the mock (what `ctx:manage` calls).
+function SocketMock:stop() end
+
+---@class prova.SocketProxy
+---@field addr string        # dial this instead of the upstream — the wiretap is transparent
+local SocketProxy = {}
+--- The direction-tagged transcript: `{ seq, dir ("up"|"down"), data }[]` — framed: turns; raw: chunks.
+---@return table[]
+function SocketProxy:transcript() end
+--- Continuous latency on every turn/chunk, both directions ("2s", "300ms").
+---@param duration string
+function SocketProxy:latency(duration) end
+--- Sever every live connection and refuse new ones. Loud, immediate.
+function SocketProxy:drop() end
+--- Corrupt bytes in flight (length preserved, contents not).
+function SocketProxy:corrupt() end
+--- Rate-limit the stream ("8kbps", "1mbps").
+---@param rate string
+function SocketProxy:throttle(rate) end
+--- Put a fuse on any fault: `p:after("500ms"):drop()` — healthy first, injured later.
+---@param delay string
+---@return prova.SocketProxy   # a scheduled handle speaking drop/latency/corrupt/throttle
+function SocketProxy:after(delay) end
+--- Stop the proxy (what `ctx:manage` calls).
+function SocketProxy:stop() end
+
+---@class prova.socket
+socket = {}
+--- Listen (originate, server side): bind `tcp://host:port` (`:0` = ephemeral, resolved into
+--- `.addr`) or `unix:///path`, accept raw or framed connections. Torn down with the scope.
+---@param ctx any
+---@param opts { addr?: string, framing?: prova.SocketFraming }
+---@return prova.SocketListener
+function socket.listen(ctx, opts) end
+--- Connect (originate): dial a `tcp://`/`unix://` address. Async.
+---@param addr string
+---@param opts? { framing?: prova.SocketFraming }
+---@return prova.SocketConn
+function socket.connect(addr, opts) end
+--- Terminate: a mock that answers framed turns synthetically. Framing is REQUIRED — matching
+--- needs turns; raw exchanges are scripted with `socket.listen`/`accept` instead.
+---@param ctx any
+---@param opts { addr?: string, framing: prova.SocketFraming }
+---@return prova.SocketMock
+function socket.mock(ctx, opts) end
+--- Interpose: the universal wiretap. Put it in front of ANY tcp/unix dependency for transcripts
+--- and fault injection (latency/drop/corrupt/throttle/after) with zero protocol knowledge.
+---@param ctx any
+---@param opts { upstream: string, addr?: string, framing?: prova.SocketFraming }
+---@return prova.SocketProxy
+function socket.proxy(ctx, opts) end
+
+-- ---------------------------------------------------------------------------------------------
+-- terminal — the pty transport: drive TUIs/CLIs, observe a real screen
+-- ---------------------------------------------------------------------------------------------
+
+---@class prova.Screen
+---@field rows integer
+---@field cols integer
+local Screen = {}
+--- The rendered frame text.
+---@return string
+function Screen:text() end
+--- One rendered line (0-based — screen geometry is coordinates, not Lua arrays).
+---@param n integer
+---@return string
+function Screen:line(n) end
+--- Whether the rendered frame contains `s`.
+---@param s string
+---@return boolean
+function Screen:contains(s) end
+--- One styled cell (0-based row, col): `{ char, fg, bg, bold }` with named ANSI colors ("red").
+---@param row integer
+---@param col integer
+---@return { char: string, fg: string, bg: string, bold: boolean }
+function Screen:cell(row, col) end
+--- The snapshot protocol: what `t:expect(screen):matches_snapshot(name)` compares (the frame text).
+---@return string
+function Screen:snapshot_text() end
+
+---@class prova.Term
+local Term = {}
+--- Write bytes to the pty (include "\r" to press enter).
+---@param data string
+function Term:send(data) end
+--- Block until the output transcript contains `pattern` (plain bytes), with a timeout (default
+--- 10s) — observe-until-match, never a sleep. The failure carries the current screen.
+---@param pattern string
+---@param opts? { timeout?: string }
+function Term:expect(pattern, opts) end
+--- Settle the frame: returns once output has been quiet for a beat (or at EOF). The anti-sleep.
+---@param opts? { timeout?: string }
+function Term:wait_stable(opts) end
+--- A frozen frame of the screen — plain data, safe to assert on.
+---@return prova.Screen
+function Term:screen() end
+--- Resize the pty (a real SIGWINCH the program observes — `stty size` reports the new numbers).
+---@param cols integer
+---@param rows integer
+function Term:resize(cols, rows) end
+--- Deliver a POSIX signal to the child ("INT", "TERM", …) — prove clean Ctrl-C handling.
+---@param name string
+function Term:signal(name) end
+--- Reap the child and report `{ code }` (polls; default timeout 30s).
+---@param opts? { timeout?: string }
+---@return { code: integer }
+function Term:wait(opts) end
+--- Kill the child and close the pty (what `ctx:manage` calls).
+function Term:stop() end
+
+---@class prova.TerminalMockStep
+local TerminalMockStep = {}
+--- Complete the pair: when stdin contains the expected bytes, answer with `reply`.
+---@param reply string
+function TerminalMockStep:send(reply) end
+
+---@class prova.TerminalMock
+---@field env table<string,string>   # PATH-prefixed env — hand to whatever spawns the SUT
+---@field path string                # the shim's absolute path
+local TerminalMock = {}
+--- Script one expectation: `fake:expect("password:"):send("hunter2\n")`.
+---@param pattern string
+---@return prova.TerminalMockStep
+function TerminalMock:expect(pattern) end
+--- Remove the shim (what `ctx:manage` calls).
+function TerminalMock:stop() end
+
+---@class prova.terminal
+terminal = {}
+--- Spawn a program on a real pty (openpty/ConPTY behind one API) and drive it interactively.
+---@param ctx any
+---@param opts { cmd: string[], cols?: integer, rows?: integer, cwd?: string, env?: table<string,string> }
+---@return prova.Term
+function terminal.spawn(ctx, opts) end
+--- Shadow an interactive CLI on PATH with a scripted responder — the SUT shells out to `ssh`
+--- (or an installer), and you script the other side.
+---@param ctx any
+---@param opts { as: string }
+---@return prova.TerminalMock
+function terminal.mock(ctx, opts) end
+
+-- ---------------------------------------------------------------------------------------------
+-- websocket — full-duplex message turns over the http upgrade path (ws:// only)
+-- ---------------------------------------------------------------------------------------------
+
+---@class prova.WsConn
+local WsConn = {}
+--- Send one message turn. Async.
+---@param data string
+function WsConn:send(data) end
+--- Receive the next message turn (async, timeout'd — default 10s; loud on close).
+---@param opts? { timeout?: string }
+---@return string
+function WsConn:recv(opts) end
+--- Close the connection (the ws close handshake).
+function WsConn:close() end
+
+---@class prova.WsStub
+local WsStub = {}
+--- Answer this message turn.
+---@param data string
+function WsStub:reply(data) end
+
+---@class prova.WsMock
+---@field url string   # "ws://127.0.0.1:<port>"
+local WsMock = {}
+--- Stub one message turn (exact text). Unmatched turns are journaled (§6), never guessed at.
+---@param turn string
+---@return prova.WsStub
+function WsMock:on(turn) end
+--- Full duplex: run this when a client connects — `conn:send(…)` pushes unprompted.
+---@param handler fun(conn: prova.WsConn)
+function WsMock:on_connect(handler) end
+--- The §6 journal: `{ seq, data, matched, source }[]`, filterable by subset table or predicate.
+---@param filter? table|fun(entry: table): boolean
+---@return table[]
+function WsMock:received(filter) end
+--- Stop the mock (what `ctx:manage` calls).
+function WsMock:stop() end
+
+---@class prova.websocket
+websocket = {}
+--- Connect (originate): dial a `ws://` url. Async.
+---@param url string
+---@return prova.WsConn
+function websocket.connect(url) end
+--- Terminate (and push): a real ws server in this process, stubbed and asserted on.
+---@param ctx any
+---@param opts? table
+---@return prova.WsMock
+function websocket.mock(ctx, opts) end
+
+-- ---------------------------------------------------------------------------------------------
+-- shell.proxy — the process transport's interpose posture: the journaling PATH shim
+-- ---------------------------------------------------------------------------------------------
+
+---@class prova.ShellShimStub
+local ShellShimStub = {}
+--- Answer matching invocations synthetically: `{ stdout?, code? }` (code defaults to 0).
+---@param reply { stdout?: string, code?: integer }
+function ShellShimStub:reply(reply) end
+
+---@class prova.ShellShim
+---@field env table<string,string>   # PATH-prefixed env — hand to whatever spawns the SUT
+---@field path string                # the shim's absolute path
+local ShellShim = {}
+--- Stub invocations whose argv starts with this prefix: `{ argv = { "status" } }` answers
+--- `git status` (and `git status --short`). Stubs always win over the upstream.
+---@param match { argv: string[] }
+---@return prova.ShellShimStub
+function ShellShim:on(match) end
+--- The §6 journal, one entry per invocation: `{ seq, argv, stdin, matched, source }` where
+--- source is "stub" | "target" (forwarded) | "unmatched". Filter by subset table or predicate.
+---@param filter? table|fun(entry: table): boolean
+---@return table[]
+function ShellShim:received(filter) end
+--- Remove the shim and its journal (what `ctx:manage` calls).
+function ShellShim:stop() end
+
+--- Shadow a command NAME on PATH and interpose on every invocation the SUT makes: pass through
+--- to `upstream` and journal (spy), stub selected argv prefixes (stubs always win), or — with no
+--- upstream — terminate synthetically, where an unstubbed call fails LOUD (exit 127). Shadow the
+--- name the SUT execs, never a shell builtin (`sh` answers those itself, PATH unconsulted).
+---@param ctx any
+---@param opts { as: string, upstream?: string }
+---@return prova.ShellShim
+function shell.proxy(ctx, opts) end

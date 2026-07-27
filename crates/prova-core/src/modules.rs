@@ -52,8 +52,10 @@ mod format_names {
     pub const ENCODE_ALL: &str = "encode_all";
 }
 
+mod shellproxy;
 mod socket;
 mod terminal;
+mod websocket;
 
 /// The §6 journal-filter contract, shared by every mock's `received(filter?)`: `nil` keeps
 /// everything, a **table** is the same structural-subset match as `:on`/`:matches` (fields the
@@ -87,6 +89,7 @@ pub(crate) fn install(lua: &Lua, progress: &Arc<dyn Progress>) -> mlua::Result<(
     lua.globals().set("net", make_net(lua)?)?;
     lua.globals().set("socket", socket::make(lua)?)?;
     lua.globals().set("terminal", terminal::make(lua)?)?;
+    lua.globals().set("websocket", websocket::make(lua)?)?;
     // `prova.parse.*` — the exec-CLI output-parsing toolkit (lines / rows / table), added to
     // the `prova` global built earlier in build_lua. Broadly useful, so it lives at the root.
     {
@@ -895,6 +898,8 @@ impl UserData for Process {
 
 fn make_shell(lua: &Lua, progress: &Arc<dyn Progress>) -> mlua::Result<Table> {
     let shell = lua.create_table()?;
+    // The process transport's interpose posture: the journaling PATH shim (proofs/spec/process).
+    shell.set("proxy", shellproxy::proxy_fn(lua)?)?;
     shell.set(
         "run",
         {

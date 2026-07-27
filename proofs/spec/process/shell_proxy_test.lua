@@ -11,11 +11,13 @@
 --- spawns the SUT (shell.run here; docker/terminal later).
 
 prova.test("passthrough is a spy — traffic flows to the upstream and the argv is journaled",
-  { requires = { "unix" }, spec = "tier-a/shell.proxy: passthrough+journal — not built" },
+  { requires = { "unix" }, proves = "tier-a/shell.proxy: the spy — traffic flows, the turn is journaled" },
   function(t)
-  local shim = shell.proxy(t, { as = "echo", upstream = "/bin/echo" })
+  -- Shadow a NON-builtin name: `sh` answers builtins (echo, printf, …) itself without consulting
+  -- PATH, so no shim can ever interpose on those — shadow the name the SUT execs, not a builtin.
+  local shim = shell.proxy(t, { as = "banner", upstream = "/bin/echo" })
 
-  local r = shell.run("echo hi there", { env = shim.env })
+  local r = shell.run("banner hi there", { env = shim.env })
   t:expect(r.code):equals(0)
   t:expect(r.stdout):contains("hi there")        -- the real binary answered
 
@@ -28,7 +30,7 @@ prova.test("passthrough is a spy — traffic flows to the upstream and the argv 
 end)
 
 prova.test("a stub overrides the upstream for matching invocations — stubs always win",
-  { requires = { "unix" }, spec = "tier-a/shell.proxy: stub override — not built" }, function(t)
+  { requires = { "unix" }, proves = "tier-a/shell.proxy: stubs always win; the rest forwards" }, function(t)
   local shim = shell.proxy(t, { as = "git", upstream = "/bin/echo" })
   shim:on{ argv = { "status" } }:reply{ stdout = "clean\n", code = 0 }
 
@@ -42,7 +44,7 @@ prova.test("a stub overrides the upstream for matching invocations — stubs alw
 end)
 
 prova.test("no upstream = terminate posture — an unstubbed invocation fails loud",
-  { requires = { "unix" }, spec = "tier-a/shell.proxy: loud unstubbed — not built" }, function(t)
+  { requires = { "unix" }, proves = "tier-a/shell.proxy: no upstream = terminate — unstubbed is loud, like prova.double" }, function(t)
   local shim = shell.proxy(t, { as = "deployctl" })          -- synthetic only
   shim:on{ argv = { "plan" } }:reply{ stdout = "0 changes\n", code = 0 }
 
@@ -55,7 +57,7 @@ prova.test("no upstream = terminate posture — an unstubbed invocation fails lo
 end)
 
 prova.test("stdin is part of the turn — journaled and matchable",
-  { requires = { "unix" }, spec = "tier-a/shell.proxy: stdin capture — not built" }, function(t)
+  { requires = { "unix" }, proves = "tier-a/shell.proxy: stdin is part of the turn — the process cassette shape" }, function(t)
   local shim = shell.proxy(t, { as = "wc", upstream = "/usr/bin/wc" })
 
   local r = shell.run("printf 'a b c' | wc -w", { env = shim.env })

@@ -121,6 +121,7 @@ prova.test("every function the core globals carry is in help()", function(t)
     prova = prova, shell = shell, fs = fs, net = net,
     json = json, yaml = yaml, toml = toml, csv = csv,
     base64 = base64, hash = hash, uuid = uuid, url = url,
+    socket = socket, terminal = terminal, websocket = websocket,
     workspace = require("prova.workspace"),
   }
   local undocumented = {}
