@@ -53,7 +53,7 @@ fn a_registered_plugin_topology_is_listed() {
         &dir,
         ".prova.toml",
         "[run]\n\
-         paths = [\"proofs\"]\n\
+         proofs = [\"proofs\"]\n\
          plugin_root = \".prova/plugins\"\n\
          \n\
          [topologies]\n\
