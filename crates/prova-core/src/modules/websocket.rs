@@ -24,6 +24,7 @@ pub(crate) fn make(lua: &Lua) -> mlua::Result<Table> {
     let t = lua.create_table()?;
     t.set("connect", connect_fn(lua)?)?;
     t.set("mock", mock_fn(lua)?)?;
+    t.set("proxy", proxy_fn(lua)?)?;
     Ok(t)
 }
 
@@ -342,6 +343,184 @@ fn mock_fn(lua: &Lua) -> mlua::Result<Function> {
             _ => {
                 return Err(err(
                     "websocket.mock(ctx): pass the test or fixture context (`t` / `ctx`)",
+                ))
+            }
+        }
+        Ok(ud)
+    })
+}
+
+// ── the proxy: interpose (wiretap + faults) ────────────────────────────────────────────────────
+
+struct WsTurnRec {
+    dir: &'static str,
+    data: Vec<u8>,
+}
+
+#[derive(Default)]
+struct WsProxyState {
+    transcript: Vec<WsTurnRec>,
+    latency: Option<Duration>,
+    dropped: bool,
+}
+
+struct WsProxyUd {
+    url: String,
+    state: Rc<RefCell<WsProxyState>>,
+    shutdown: RefCell<Option<tokio::sync::oneshot::Sender<()>>>,
+}
+
+impl UserData for WsProxyUd {
+    fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
+        fields.add_field_method_get("url", |_, this| Ok(this.url.clone()));
+    }
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("transcript", |lua, this, ()| {
+            let out = lua.create_table()?;
+            let s = this.state.borrow();
+            for (i, rec) in s.transcript.iter().enumerate() {
+                let t = lua.create_table()?;
+                t.set("seq", i + 1)?;
+                t.set("dir", rec.dir)?;
+                t.set("data", lua.create_string(&rec.data)?)?;
+                out.set(i + 1, t)?;
+            }
+            Ok(out)
+        });
+        // The fault vocabulary rides the substrate — the ws proxy speaks the same verbs as socket.
+        methods.add_method("latency", |_, this, d: String| {
+            this.state.borrow_mut().latency =
+                Some(parse_duration(&d).ok_or_else(|| err(format!("bad duration {d:?}")))?);
+            Ok(())
+        });
+        methods.add_method("drop", |_, this, ()| {
+            this.state.borrow_mut().dropped = true;
+            Ok(())
+        });
+        methods.add_method("stop", |_, this, ()| {
+            if let Some(tx) = this.shutdown.borrow_mut().take() {
+                let _ = tx.send(());
+            }
+            Ok(())
+        });
+        methods.add_method("close", |_, this, ()| {
+            if let Some(tx) = this.shutdown.borrow_mut().take() {
+                let _ = tx.send(());
+            }
+            Ok(())
+        });
+    }
+}
+
+/// One direction of an interposed ws connection: forward each message turn, recording it and
+/// applying the current faults (latency before delivery; drop severs).
+type BoxSink = Box<dyn futures::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin>;
+
+async fn ws_pump(
+    mut src: futures::stream::SplitStream<
+        impl futures::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
+    >,
+    sink: Rc<RefCell<Option<BoxSink>>>,
+    dir: &'static str,
+    state: Rc<RefCell<WsProxyState>>,
+) {
+    while let Some(Ok(m)) = src.next().await {
+        let Some(bytes) = msg_bytes(&m) else {
+            if matches!(m, Message::Close(_)) {
+                break;
+            }
+            continue;
+        };
+        let (latency, dropped) = {
+            let s = state.borrow();
+            (s.latency, s.dropped)
+        };
+        if dropped {
+            break;
+        }
+        if let Some(l) = latency {
+            tokio::time::sleep(l).await;
+        }
+        state.borrow_mut().transcript.push(WsTurnRec {
+            dir,
+            data: bytes.clone(),
+        });
+        let Some(mut sk) = sink.borrow_mut().take() else { break };
+        let text = String::from_utf8_lossy(&bytes).to_string();
+        let sent = sk.send(Message::Text(text)).await;
+        *sink.borrow_mut() = Some(sk);
+        if sent.is_err() {
+            break;
+        }
+    }
+}
+
+type DynSink = Rc<RefCell<Option<BoxSink>>>;
+
+fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
+    lua.create_function(|lua, (ctx, opts): (Value, Table)| {
+        let upstream = opts
+            .get::<Option<String>>("upstream")?
+            .ok_or_else(|| err("websocket.proxy(ctx, { upstream = … }): upstream is required"))?;
+        if !upstream.starts_with("ws://") {
+            return Err(err(format!(
+                "websocket.proxy: upstream must be ws:// (no TLS in v1), got {upstream:?}"
+            )));
+        }
+
+        let std_listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .map_err(|e| err(format!("websocket.proxy: bind: {e}")))?;
+        std_listener
+            .set_nonblocking(true)
+            .map_err(|e| err(format!("websocket.proxy: set_nonblocking: {e}")))?;
+        let port = std_listener
+            .local_addr()
+            .map_err(|e| err(format!("websocket.proxy: local_addr: {e}")))?
+            .port();
+        let listener = tokio::net::TcpListener::from_std(std_listener)
+            .map_err(|e| err(format!("websocket.proxy: from_std: {e}")))?;
+
+        let state: Rc<RefCell<WsProxyState>> = Rc::default();
+        let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
+        let accept_state = state.clone();
+
+        tokio::task::spawn_local(async move {
+            loop {
+                tokio::select! {
+                    _ = &mut rx => break,
+                    accepted = listener.accept() => {
+                        let Ok((stream, _peer)) = accepted else { break };
+                        let state = accept_state.clone();
+                        let upstream = upstream.clone();
+                        tokio::task::spawn_local(async move {
+                            let Ok(client) = tokio_tungstenite::accept_async(stream).await else { return };
+                            let Ok((up, _)) = tokio_tungstenite::connect_async(&upstream).await else { return };
+                            let (client_sink, client_stream) = client.split();
+                            let (up_sink, up_stream) = up.split();
+                            let client_sink: DynSink = Rc::new(RefCell::new(Some(Box::new(client_sink))));
+                            let up_sink: DynSink = Rc::new(RefCell::new(Some(Box::new(up_sink))));
+                            // up: client → upstream · down: upstream → client
+                            let a = ws_pump(client_stream, up_sink, "up", state.clone());
+                            let b = ws_pump(up_stream, client_sink, "down", state);
+                            tokio::join!(a, b);
+                        });
+                    }
+                }
+            }
+        });
+
+        let ud = lua.create_userdata(WsProxyUd {
+            url: format!("ws://127.0.0.1:{port}"),
+            state,
+            shutdown: RefCell::new(Some(tx)),
+        })?;
+        match ctx {
+            Value::UserData(c) => {
+                let _: Value = c.call_method("manage", &ud)?;
+            }
+            _ => {
+                return Err(err(
+                    "websocket.proxy(ctx): pass the test or fixture context (`t` / `ctx`)",
                 ))
             }
         }

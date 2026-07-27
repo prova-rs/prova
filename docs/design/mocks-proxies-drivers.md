@@ -230,11 +230,24 @@ it, and every other platform replays it deterministically without a Windows box.
   faults), cassettes (modes passthrough/record/replay/auto on `http.proxy` — sugar over the mock
   dial; loud 502 replay miss; record-time redaction), `terminal` (portable-pty driver, vt100
   screen model, golden frames via the snapshot protocol, PATH-shadow mock), `websocket`
-  (full-duplex, on_connect push), and `shell.proxy` (the journaling PATH shim). Every journal
-  speaks the §6 seq/source/matched spine; every new namespace is in the §2 reserved registry and
-  the `library/modules.lua` stubs.
+  (full-duplex, on_connect push, and `websocket.proxy` — the last cell in the matrix), and
+  `shell.proxy` (the journaling PATH shim). Every journal speaks the §6 seq/source/matched spine;
+  every new namespace is in the §2 reserved registry and the `library/modules.lua` stubs.
+- **Cassettes, generalized (2026-07-27):** record/replay now spans every transport whose turn is
+  request→response — `http.proxy` (the first), `grpc.proxy` (self-describing: the cassette carries
+  the reflected descriptors, so replay needs no proto and no upstream; a miss is a loud
+  `Unavailable`), `socket.proxy` (framed-turn VCR; a shared byte-turn cassette format), and
+  `shell.proxy` (record a real CLI once — argv+stdin → stdout+exit — and replay credential-free).
+  Full-duplex transports (raw socket, websocket, terminal) keep the scripted-conversation caveat:
+  no VCR cassette, by design.
+- **Resource tapping (2026-07-27):** `prova.containerized` grew a `tap` option — `X.container(ctx,
+  { tap = true })` interposes a `socket.proxy` between the SUT and the real container, routing
+  `res.url` through it and exposing `res.tap`, so any containerized dependency gets transcripts and
+  fault injection with zero protocol knowledge. The recipe author declares the wire `framing` once;
+  turn-level taps follow for free.
 - **Still open:** ConPTY (Windows) twins for terminal/shell.proxy behind a Windows runner +
-  `must_run`; cassette specialization for grpc/socket/terminal turns; TLS (and eventual MITM
-  taps) on socket.
+  `must_run` (see `docs/plans/windows-lane-via-parallels.md` — a local Parallels guest is the
+  planned first vantage); cassette turns for the full-duplex transports (the scripted-conversation
+  format); TLS (and eventual MITM taps) on socket.
 - **Cleanup:** re-point or retire `examples/aspirational` against this model; sweep comments that
   still say "mocking" generically.

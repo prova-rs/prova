@@ -5,7 +5,7 @@
 --- scripted-conversation model, staged separately once the conversation format is designed.
 
 prova.test("interpose + transcript — the ws wiretap records direction-tagged message turns",
-  { spec = "tier-a/websocket.proxy: interpose + transcript — not built" }, function(t)
+  { proves = "tier-a/websocket.proxy: the ws wiretap records direction-tagged message turns" }, function(t)
   local m = websocket.mock(t)
   m:on("ping"):reply("pong")
 
@@ -24,7 +24,7 @@ prova.test("interpose + transcript — the ws wiretap records direction-tagged m
 end)
 
 prova.test("the fault vocabulary rides the substrate — latency on the ws proxy",
-  { spec = "tier-a/websocket.proxy: fault verbs — not built" }, function(t)
+  { proves = "tier-a/websocket.proxy: one fault vocabulary across transports — latency on the ws proxy" }, function(t)
   local m = websocket.mock(t)
   m:on("ping"):reply("pong")
 

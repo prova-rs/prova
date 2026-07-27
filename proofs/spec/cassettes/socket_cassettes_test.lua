@@ -18,7 +18,7 @@ local function upstream(t)
 end
 
 prova.test("record mode captures framed turns; close is the flush point",
-  { spec = "tier-a/socket-cassettes: record mode — not built" }, function(t)
+  { proves = "tier-a/socket-cassettes: record captures framed turns; close is the flush point" }, function(t)
   local srv = upstream(t)
   local cas = t:tempdir() .. "/turns.cassette"
 
@@ -32,7 +32,7 @@ prova.test("record mode captures framed turns; close is the flush point",
 end)
 
 prova.test("a proxy in record mode manufactures a mock — replay with the upstream GONE",
-  { spec = "tier-a/socket-cassettes: replay mode — not built" }, function(t)
+  { proves = "tier-a/socket-cassettes: a proxy in record mode manufactures a mock — replay with upstream gone" }, function(t)
   local srv = upstream(t)
   local cas = t:tempdir() .. "/replay.cassette"
 
@@ -50,7 +50,7 @@ prova.test("a proxy in record mode manufactures a mock — replay with the upstr
 end)
 
 prova.test("auto mode: record when the cassette is absent, replay when it is present",
-  { spec = "tier-a/socket-cassettes: auto mode — not built" }, function(t)
+  { proves = "tier-a/socket-cassettes: auto = record when absent, replay when present" }, function(t)
   local srv = upstream(t)
   local cas = t:tempdir() .. "/auto.cassette"
 
@@ -69,7 +69,7 @@ prova.test("auto mode: record when the cassette is absent, replay when it is pre
 end)
 
 prova.test("a replay miss severs the connection loud — never invented bytes",
-  { spec = "tier-a/socket-cassettes: loud replay miss — not built" }, function(t)
+  { proves = "tier-a/socket-cassettes: a replay miss severs loud — never invented bytes" }, function(t)
   local srv = upstream(t)
   local cas = t:tempdir() .. "/miss.cassette"
 

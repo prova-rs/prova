@@ -52,6 +52,7 @@ mod format_names {
     pub const ENCODE_ALL: &str = "encode_all";
 }
 
+mod cassette;
 mod shellproxy;
 mod socket;
 mod terminal;
@@ -780,6 +781,28 @@ function prova.containerized(spec)
       -- into it; a native client just uses `url` and ignores the extra arg.
       res.client = ctx:manage(prova.retry(function() return spec.client(url, opts, container) end,
         { timeout = timeout, message = name .. " did not become ready in time" }))
+    end
+
+    -- The tap (docs/design/mocks-proxies-drivers.md): interpose a `socket.proxy` between the SUT
+    -- and the REAL container, so any resource gets transcripts and the fault vocabulary with zero
+    -- protocol knowledge — the payoff the L4 wiretap was built for. Readiness already probed the
+    -- real container port above; the tap is added after, so it never makes a dead resource look
+    -- alive. `tap = true` uses the recipe's declared `framing` (turn-level transcripts); a table
+    -- overrides it (`tap = { framing = … }`); no framing = raw chunk-level.
+    if opts.tap then
+      local framing = spec.framing
+      if type(opts.tap) == "table" and opts.tap.framing ~= nil then framing = opts.tap.framing end
+      local tap = socket.proxy(ctx, {
+        upstream = "tcp://127.0.0.1:" .. hp,
+        framing = framing,
+      })
+      -- Route the SUT through the proxy: swap the real host:port authority for the tap's. Works
+      -- for a tcp:// url and for a scheme'd one (redis://, amqp://) alike — it is authority
+      -- substitution, not a scheme rewrite.
+      local tap_hp = tap.addr:match("tcp://127%.0%.0%.1:(%d+)")
+      res.url = res.url:gsub("127%.0%.0%.1:" .. hp, "127.0.0.1:" .. tap_hp)
+      res.host, res.port = "127.0.0.1", tonumber(tap_hp)
+      res.tap = tap
     end
     return res
   end
@@ -4784,7 +4807,7 @@ mod grpc {
     use prost_types::FileDescriptorProto;
     use tonic::codec::{Codec, DecodeBuf, Decoder, EncodeBuf, Encoder};
     use tonic::codegen::http::uri::PathAndQuery;
-    use tonic::transport::Channel;
+    pub(super) use tonic::transport::Channel;
     use tonic::{Request, Status};
 
     use crate::model::parse_duration;
@@ -4837,6 +4860,8 @@ mod grpc {
         // server, so there is nobody to learn from.
         #[cfg(feature = "grpc-mock")]
         grpc.set("mock", super::grpc_mock::mock_fn(lua)?)?;
+        #[cfg(feature = "grpc-mock")]
+        grpc.set("proxy", super::grpc_mock::proxy_fn(lua)?)?;
         Ok(grpc)
     }
 
@@ -4890,7 +4915,7 @@ mod grpc {
         }
     }
 
-    async fn connect_channel(addr: &str) -> mlua::Result<Channel> {
+    pub(super) async fn connect_channel(addr: &str) -> mlua::Result<Channel> {
         // Accept "host:port" or a full "http://host:port"; plaintext only in v1.
         let uri = if addr.contains("://") {
             addr.to_string()
@@ -4902,6 +4927,28 @@ mod grpc {
             .connect()
             .await
             .map_err(|e| err(format!("grpc: could not connect to {addr}: {e}")))
+    }
+
+    /// Serialize a pool back to the encoded `FileDescriptorSet` bytes reflection serves — how a
+    /// `grpc.proxy` in record mode captures the schema it learned from the upstream into a
+    /// self-describing cassette (proofs/spec/cassettes/grpc). The bytes round-trip through the same
+    /// tonic-reflection builder the mock's protox bytes do, so the prost-types versions agree.
+    pub(super) fn pool_to_fds_bytes(pool: &DescriptorPool) -> Vec<u8> {
+        let set = prost_types::FileDescriptorSet {
+            file: pool.file_descriptor_protos().cloned().collect(),
+        };
+        set.encode_to_vec()
+    }
+
+    /// Build a pool from encoded `FileDescriptorSet` bytes (a cassette's stored schema) — the
+    /// inverse of `pool_to_fds_bytes`, for a `grpc.proxy` replaying with no upstream to reflect.
+    pub(super) fn pool_from_fds_bytes(bytes: &[u8]) -> mlua::Result<DescriptorPool> {
+        let set = prost_types::FileDescriptorSet::decode(bytes)
+            .map_err(|e| err(format!("grpc: decoding cassette schema: {e}")))?;
+        let mut pool = DescriptorPool::new();
+        pool.add_file_descriptor_protos(set.file)
+            .map_err(|e| err(format!("grpc: building pool from cassette: {e}")))?;
+        Ok(pool)
     }
 
     /// Turn a Lua request table into a wire-ready `DynamicMessage` for `method`'s input type.
@@ -4964,7 +5011,7 @@ mod grpc {
         })
     }
 
-    async fn invoke(
+    pub(super) async fn invoke(
         channel: &Channel,
         pool: &DescriptorPool,
         method: &str,
@@ -5058,7 +5105,7 @@ mod grpc {
     /// not its transitive imports — grpcurl chases the missing imports with `file_by_filename`
     /// follow-ups, and so do we. Files are then added to the pool in dependency order, since a
     /// dependent added before its import fails pool construction.
-    async fn build_pool(channel: &Channel) -> mlua::Result<DescriptorPool> {
+    pub(super) async fn build_pool(channel: &Channel) -> mlua::Result<DescriptorPool> {
         let (services, rv) = list_services_negotiated(channel).await?;
         let mut files: HashMap<String, FileDescriptorProto> = HashMap::new();
         let decode_into = |raw: Vec<Vec<u8>>,
@@ -5340,7 +5387,8 @@ mod grpc_mock {
         Value,
     };
     use prost_reflect::{
-        DescriptorPool, DeserializeOptions, DynamicMessage, MethodDescriptor, SerializeOptions,
+        DescriptorPool, DeserializeOptions, DynamicMessage, MessageDescriptor, MethodDescriptor,
+        SerializeOptions,
     };
     use tonic::codegen::Service as _;
     use tonic::{Code, Request as TonicRequest, Response as TonicResponse, Status};
@@ -5410,6 +5458,47 @@ mod grpc_mock {
         /// legitimately answered with.
         handler_errors: Vec<String>,
         allow_handler_errors: bool,
+        /// Set on a `grpc.proxy` (proofs/spec/cassettes/grpc): the interpose behavior that replaces
+        /// the stub path in `answer`. `None` for an ordinary mock.
+        proxy: Option<Proxy>,
+    }
+
+    /// A grpc.proxy's interpose behavior — record forwards to a real upstream and captures pairs;
+    /// replay answers from the cassette. A proxy is the mock's dial, exactly as http.proxy is.
+    enum Proxy {
+        Record {
+            channel: super::grpc::Channel,
+            pool: DescriptorPool,
+            turns: Vec<GrpcTurn>,
+            cassette: String,
+            /// The schema learned from the upstream, stored in the cassette so replay is
+            /// self-describing (needs no proto and no upstream).
+            fds_bytes: Vec<u8>,
+        },
+        Replay {
+            turns: Vec<GrpcTurn>,
+            consumed: Vec<bool>,
+        },
+    }
+
+    /// One recorded unary call: method + request select the response (or the error code).
+    #[derive(Clone, serde::Serialize, serde::Deserialize)]
+    struct GrpcTurn {
+        method: String,
+        request: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        response: Option<serde_json::Value>,
+        code: String,
+    }
+
+    /// The on-disk grpc cassette: the schema (so replay needs no proto/upstream) plus the turns.
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct GrpcCassette {
+        version: u32,
+        kind: String,
+        /// The encoded `FileDescriptorSet`, base64'd — the self-describing part.
+        fds: String,
+        turns: Vec<GrpcTurn>,
     }
 
     type Shared = Rc<RefCell<MockState>>;
@@ -5482,7 +5571,16 @@ mod grpc_mock {
             .unwrap_or(false);
         // `network` — opt into a host-gateway vantage, binding all interfaces. Same contract as
         // http.mock: true → host.docker.internal, a string overrides the host name.
-        let network_host: Option<String> = match opts.get::<Option<Value>>("network")? {
+        let network_host = parse_network(opts)?;
+        let state: Shared = Rc::new(RefCell::new(MockState {
+            allow_handler_errors,
+            ..Default::default()
+        }));
+        serve(lua, pool, fds_bytes, state, network_host)
+    }
+
+    fn parse_network(opts: &Table) -> mlua::Result<Option<String>> {
+        Ok(match opts.get::<Option<Value>>("network")? {
             Some(Value::Boolean(true)) => Some("host.docker.internal".to_string()),
             Some(Value::String(name)) => Some(name.to_string_lossy().to_string()),
             Some(Value::Boolean(false)) | None | Some(Value::Nil) => None,
@@ -5492,8 +5590,18 @@ mod grpc_mock {
                     other.type_name()
                 )))
             }
-        };
+        })
+    }
 
+    /// Stand up reflection, bind, and spawn the accept loop over a prepared (pool, fds, state) —
+    /// shared by `grpc.mock` (Lua stubs) and `grpc.proxy` (native forward/replay in the state).
+    fn serve(
+        lua: &Lua,
+        pool: DescriptorPool,
+        fds_bytes: Vec<u8>,
+        state: Shared,
+        network_host: Option<String>,
+    ) -> mlua::Result<GrpcMock> {
         let reflect_v1 = tonic_reflection::server::Builder::configure()
             .register_encoded_file_descriptor_set(&fds_bytes)
             .build_v1()
@@ -5524,10 +5632,6 @@ mod grpc_mock {
         let listener = tokio::net::TcpListener::from_std(std_listener)
             .map_err(|e| err(format!("grpc.mock: from_std: {e}")))?;
 
-        let state: Shared = Rc::new(RefCell::new(MockState {
-            allow_handler_errors,
-            ..Default::default()
-        }));
         let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
 
         let accept_state = state.clone();
@@ -5719,6 +5823,11 @@ mod grpc_mock {
     ) -> Result<TonicResponse<DynamicMessage>, Status> {
         let req_json = message_to_json(&request)
             .map_err(|e| Status::internal(format!("grpc.mock: decoding request: {e}")))?;
+
+        // A grpc.proxy replaces the stub path with native forward (record) or cassette (replay).
+        if state.borrow().proxy.is_some() {
+            return proxy_answer(&state, &method, &output, request, &req_json).await;
+        }
 
         let matched_idx = match find_match(&lua, &state, &method) {
             Ok(i) => i,
@@ -6041,26 +6150,298 @@ mod grpc_mock {
             });
 
             // Raises on a reply-handler error, exactly as the http facet does — see there for why
-            // this rides `ctx:manage` teardown rather than inventing a reporting path.
-            methods.add_method("stop", |_, this, ()| {
-                if let Some(tx) = this.shutdown.borrow_mut().take() {
-                    let _ = tx.send(());
+            // this rides `ctx:manage` teardown rather than inventing a reporting path. A proxy in
+            // record mode flushes its cassette here — the close/scope-exit flush point.
+            methods.add_method("stop", |_, this, ()| grpc_stop(this));
+            methods.add_method("close", |_, this, ()| grpc_stop(this));
+        }
+    }
+
+    fn grpc_stop(this: &GrpcMock) -> mlua::Result<()> {
+        if let Some(tx) = this.shutdown.borrow_mut().take() {
+            let _ = tx.send(());
+            flush_grpc_cassette(&this.state)?;
+        }
+        let errs = {
+            let mut s = this.state.borrow_mut();
+            if s.allow_handler_errors {
+                s.handler_errors.clear();
+                Vec::new()
+            } else {
+                std::mem::take(&mut s.handler_errors)
+            }
+        };
+        if !errs.is_empty() {
+            return Err(super::mock::handler_error_report("grpc.mock", &errs));
+        }
+        Ok(())
+    }
+
+    /// Write a record-mode proxy's cassette: the schema learned from the upstream (self-describing)
+    /// plus the captured turns.
+    fn flush_grpc_cassette(state: &Shared) -> mlua::Result<()> {
+        use base64::Engine;
+        let s = state.borrow();
+        let Some(Proxy::Record {
+            turns,
+            cassette,
+            fds_bytes,
+            ..
+        }) = &s.proxy
+        else {
+            return Ok(());
+        };
+        if cassette.is_empty() {
+            return Ok(()); // a passthrough proxy: forward, record nothing
+        }
+        let cas = GrpcCassette {
+            version: 1,
+            kind: "grpc".to_string(),
+            fds: base64::engine::general_purpose::STANDARD.encode(fds_bytes),
+            turns: turns.clone(),
+        };
+        let text = serde_json::to_string_pretty(&cas)
+            .map_err(|e| err(format!("grpc.proxy: encoding cassette: {e}")))?;
+        std::fs::write(cassette, text)
+            .map_err(|e| err(format!("grpc.proxy: writing cassette {cassette:?}: {e}")))
+    }
+
+    /// The proxy's answer path — record forwards to the upstream and captures the pair; replay
+    /// answers from the cassette (a miss is a loud `Unavailable`). Nothing here touches Lua, so the
+    /// borrow discipline is simpler than the stub path's.
+    async fn proxy_answer(
+        state: &Shared,
+        method: &str,
+        output: &MessageDescriptor,
+        request: DynamicMessage,
+        req_json: &serde_json::Value,
+    ) -> Result<TonicResponse<DynamicMessage>, Status> {
+        // Record: pull the channel + pool out (clones), forward, capture. The RefCell is not held
+        // across the await — the forward can be slow and must not block the mock.
+        let record_ctx = {
+            let s = state.borrow();
+            match &s.proxy {
+                Some(Proxy::Record { channel, pool, .. }) => Some((channel.clone(), pool.clone())),
+                _ => None,
+            }
+        };
+        if let Some((channel, pool)) = record_ctx {
+            return match super::grpc::invoke(&channel, &pool, method, request, None).await {
+                Ok(resp) => {
+                    let resp_json = message_to_json(&resp)
+                        .map_err(|e| Status::internal(format!("grpc.proxy: encoding reply: {e}")))?;
+                    push_turn(state, method, req_json.clone(), Some(resp_json), "Ok");
+                    record(state, method, req_json, "Ok", true, None);
+                    Ok(TonicResponse::new(resp))
                 }
-                let errs = {
-                    let mut s = this.state.borrow_mut();
-                    if s.allow_handler_errors {
-                        s.handler_errors.clear();
-                        Vec::new()
-                    } else {
-                        std::mem::take(&mut s.handler_errors)
+                Err(status) => {
+                    let code = format!("{:?}", status.code());
+                    push_turn(state, method, req_json.clone(), None, &code);
+                    record(state, method, req_json, &code, true, None);
+                    Err(status)
+                }
+            };
+        }
+
+        // Replay: match method + request against the cassette, consume-once.
+        let hit = {
+            let mut s = state.borrow_mut();
+            if let Some(Proxy::Replay { turns, consumed }) = &mut s.proxy {
+                let mut found = None;
+                for i in 0..turns.len() {
+                    if !consumed[i] && turns[i].method == method && &turns[i].request == req_json {
+                        consumed[i] = true;
+                        found = Some(turns[i].clone());
+                        break;
                     }
-                };
-                if !errs.is_empty() {
-                    return Err(super::mock::handler_error_report("grpc.mock", &errs));
                 }
-                Ok(())
+                found
+            } else {
+                None
+            }
+        };
+        match hit {
+            Some(turn) => {
+                let code = parse_code(&turn.code)
+                    .unwrap_or(Code::Internal);
+                if code != Code::Ok {
+                    record(state, method, req_json, &turn.code, true, None);
+                    return Err(Status::new(code, "grpc.proxy: replayed error"));
+                }
+                let resp_json = turn.response.unwrap_or(serde_json::Value::Null);
+                let msg = json_to_message(output, &resp_json).map_err(|e| {
+                    Status::internal(format!("grpc.proxy: rebuilding reply from cassette: {e}"))
+                })?;
+                record(state, method, req_json, "Ok", true, None);
+                Ok(TonicResponse::new(msg))
+            }
+            None => {
+                // A miss is the recording infrastructure failing the call, not the service — the
+                // Unavailable analog of http's 502, naming the cassette so it can be re-recorded.
+                record(state, method, req_json, "Unavailable", false, None);
+                Err(Status::unavailable(format!(
+                    "grpc.proxy: cassette has no recorded call for {method:?} with this request — \
+                     re-record if the system under test legitimately changed"
+                )))
+            }
+        }
+    }
+
+    fn push_turn(
+        state: &Shared,
+        method: &str,
+        request: serde_json::Value,
+        response: Option<serde_json::Value>,
+        code: &str,
+    ) {
+        let mut s = state.borrow_mut();
+        if let Some(Proxy::Record { turns, .. }) = &mut s.proxy {
+            turns.push(GrpcTurn {
+                method: method.to_string(),
+                request,
+                response,
+                code: code.to_string(),
             });
         }
+    }
+
+    /// Reverse of `message_to_json`: build a `DynamicMessage` of `desc` from recorded JSON.
+    fn json_to_message(
+        desc: &MessageDescriptor,
+        json: &serde_json::Value,
+    ) -> Result<DynamicMessage, String> {
+        let text = json.to_string();
+        let mut de = serde_json::Deserializer::from_str(&text);
+        DynamicMessage::deserialize_with_options(desc.clone(), &mut de, &deserialize_opts())
+            .map_err(|e| e.to_string())
+    }
+
+    pub(crate) fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
+        // Async, unlike grpc.mock: a record proxy must dial the upstream and reflect its schema,
+        // which is exactly the async work grpc.client does at construction.
+        lua.create_async_function(|lua, (ctx, opts): (Value, Table)| async move {
+            let server = start_proxy(&lua, &opts).await?;
+            let ud = lua.create_userdata(server)?;
+            match ctx {
+                Value::UserData(c) => {
+                    let _: Value = c.call_method("manage", &ud)?;
+                }
+                _ => {
+                    return Err(err(
+                        "grpc.proxy(ctx, opts): pass the test or fixture context (`t` / `ctx`)",
+                    ))
+                }
+            }
+            Ok(ud)
+        })
+    }
+
+    /// Build a proxy: record fetches the upstream schema by reflection and captures pairs; replay
+    /// serves the cassette's stored schema and answers from its turns. `auto` picks by the
+    /// cassette's presence, exactly as http.proxy does.
+    async fn start_proxy(lua: &Lua, opts: &Table) -> mlua::Result<GrpcMock> {
+        let upstream = opts.get::<Option<String>>("upstream")?;
+        let cassette = opts.get::<Option<String>>("cassette")?;
+        let mode_str = opts
+            .get::<Option<String>>("mode")?
+            .unwrap_or_else(|| "passthrough".to_string());
+        let network_host = parse_network(opts)?;
+
+        let mode = match mode_str.as_str() {
+            "passthrough" | "record" => "record", // passthrough forwards; it just doesn't flush
+            "replay" => "replay",
+            "auto" => {
+                let cas = cassette
+                    .as_ref()
+                    .ok_or_else(|| err("grpc.proxy: mode \"auto\" needs a `cassette`"))?;
+                if std::path::Path::new(cas).exists() {
+                    "replay"
+                } else {
+                    "record"
+                }
+            }
+            other => {
+                return Err(err(format!(
+                    "grpc.proxy: mode must be passthrough|record|replay|auto, got {other:?}"
+                )))
+            }
+        };
+        let recording = mode == "record" && mode_str != "passthrough";
+        if recording && cassette.is_none() {
+            return Err(err(format!("grpc.proxy: mode {mode_str:?} needs a `cassette`")));
+        }
+
+        let (pool, fds_bytes, proxy) = if mode == "replay" {
+            use base64::Engine;
+            let path = cassette
+                .clone()
+                .ok_or_else(|| err("grpc.proxy: replay needs a `cassette`"))?;
+            let text = std::fs::read_to_string(&path)
+                .map_err(|e| err(format!("grpc.proxy: reading cassette {path:?}: {e}")))?;
+            let cas: GrpcCassette = serde_json::from_str(&text)
+                .map_err(|e| err(format!("grpc.proxy: parsing cassette {path:?}: {e}")))?;
+            let fds_bytes = base64::engine::general_purpose::STANDARD
+                .decode(&cas.fds)
+                .map_err(|e| err(format!("grpc.proxy: decoding cassette schema: {e}")))?;
+            let pool = super::grpc::pool_from_fds_bytes(&fds_bytes)?;
+            let n = cas.turns.len();
+            (
+                pool,
+                fds_bytes,
+                Proxy::Replay {
+                    turns: cas.turns,
+                    consumed: vec![false; n],
+                },
+            )
+        } else {
+            let up = upstream
+                .clone()
+                .ok_or_else(|| err(format!("grpc.proxy: mode {mode_str:?} needs `upstream`")))?;
+            // Dial + reflect, exactly as grpc.client does at construction.
+            let channel = super::grpc::connect_channel(&up).await?;
+            let pool = super::grpc::build_pool(&channel).await?;
+            let fds_bytes = super::grpc::pool_to_fds_bytes(&pool);
+            (
+                pool.clone(),
+                fds_bytes.clone(),
+                Proxy::Record {
+                    channel,
+                    pool,
+                    turns: Vec::new(),
+                    cassette: cassette.clone().unwrap_or_default(),
+                    fds_bytes,
+                },
+            )
+        };
+
+        // A passthrough proxy forwards but never flushes — model it as Record with no cassette by
+        // leaving `cassette` empty (flush is a no-op on an empty path check below).
+        let proxy = if !recording {
+            match proxy {
+                Proxy::Record {
+                    channel,
+                    pool,
+                    turns,
+                    fds_bytes,
+                    ..
+                } => Proxy::Record {
+                    channel,
+                    pool,
+                    turns,
+                    cassette: String::new(),
+                    fds_bytes,
+                },
+                other => other,
+            }
+        } else {
+            proxy
+        };
+
+        let state: Shared = Rc::new(RefCell::new(MockState {
+            proxy: Some(proxy),
+            ..Default::default()
+        }));
+        serve(lua, pool, fds_bytes, state, network_host)
     }
 
     impl UserData for StubHandle {

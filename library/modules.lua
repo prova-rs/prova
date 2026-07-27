@@ -675,6 +675,22 @@ function GrpcMock:stop() end
 ---@return prova.GrpcMock
 function grpc.mock(ctx, opts) end
 
+---@class prova.GrpcProxyOpts
+---@field upstream? string   # the real gRPC server (host:port), needed by passthrough/record/auto
+---@field cassette? string   # the recording file, needed by record/replay/auto
+---@field mode? string       # "passthrough" (default) | "record" | "replay" | "auto"
+
+--- Interpose on a real gRPC dependency (docs/design/mocks-proxies-drivers.md). Record captures the
+--- upstream's schema (learned by reflection) AND each unary call into a cassette, so a replay proxy
+--- needs no `.proto` and no upstream — the cassette is self-describing. The match key is the full
+--- method plus the request message; a replay miss is a loud `Unavailable` naming the cassette.
+--- Same object as `grpc.mock` — its `:received()` journal and `:on` stubs apply. Close (or scope
+--- exit) is the flush point. Returns a mock (dial the SUT's gRPC client at `.host`/`.port`).
+---@param ctx prova.Context|prova.TestContext
+---@param opts prova.GrpcProxyOpts
+---@return prova.GrpcMock
+function grpc.proxy(ctx, opts) end
+
 ------------------------------------------------------------------------------------------
 -- yaml (parse YAML text to Lua values — k8s manifests, CI configs, compose files)
 ------------------------------------------------------------------------------------------
@@ -938,8 +954,10 @@ function SocketProxy:throttle(rate) end
 ---@param delay string
 ---@return prova.SocketProxy   # a scheduled handle speaking drop/latency/corrupt/throttle
 function SocketProxy:after(delay) end
---- Stop the proxy (what `ctx:manage` calls).
+--- Stop the proxy (what `ctx:manage` calls). In a record cassette mode, the flush point.
 function SocketProxy:stop() end
+--- Alias for `:stop()` — the proxy grammar's spelling; in record mode it flushes the cassette.
+function SocketProxy:close() end
 
 ---@class prova.socket
 socket = {}
@@ -962,8 +980,13 @@ function socket.connect(addr, opts) end
 function socket.mock(ctx, opts) end
 --- Interpose: the universal wiretap. Put it in front of ANY tcp/unix dependency for transcripts
 --- and fault injection (latency/drop/corrupt/throttle/after) with zero protocol knowledge.
+---
+--- With a `cassette` + `mode` it becomes a framed-turn recorder: `record` captures request→response
+--- turns (flushed on `:close()`), `replay` answers from the cassette with the upstream gone,
+--- `auto` records when the file is absent and replays when present. A replay miss severs the
+--- connection loud. Cassettes require `framing` (a raw byte stream has no turn to key on).
 ---@param ctx any
----@param opts { upstream: string, addr?: string, framing?: prova.SocketFraming }
+---@param opts { upstream?: string, addr?: string, framing?: prova.SocketFraming, cassette?: string, mode?: string }
 ---@return prova.SocketProxy
 function socket.proxy(ctx, opts) end
 
@@ -1138,7 +1161,33 @@ function ShellShim:stop() end
 --- to `upstream` and journal (spy), stub selected argv prefixes (stubs always win), or — with no
 --- upstream — terminate synthetically, where an unstubbed call fails LOUD (exit 127). Shadow the
 --- name the SUT execs, never a shell builtin (`sh` answers those itself, PATH unconsulted).
+---
+--- With a `cassette` + `mode` it records a real CLI once and replays it forever: `record` captures
+--- argv+stdin → stdout+exit (flushed at `:stop()`, into a file OUTSIDE the shim dir), `replay`
+--- answers from the recording with no upstream and no real binary, `auto` records-then-replays.
+--- A replay miss exits non-zero and is journaled as a miss.
 ---@param ctx any
----@param opts { as: string, upstream?: string }
+---@param opts { as: string, upstream?: string, cassette?: string, mode?: string }
 ---@return prova.ShellShim
 function shell.proxy(ctx, opts) end
+
+---@class prova.WsProxy
+---@field url string   # "ws://127.0.0.1:<port>" — dial this instead of the upstream
+local WsProxy = {}
+--- The direction-tagged message transcript: `{ seq, dir ("up"|"down"), data }[]`.
+---@return table[]
+function WsProxy:transcript() end
+--- Continuous latency on every message turn, both directions ("2s").
+---@param duration string
+function WsProxy:latency(duration) end
+--- Sever the connection.
+function WsProxy:drop() end
+--- Stop the proxy (what `ctx:manage` calls).
+function WsProxy:stop() end
+
+--- Interpose on a real ws dependency: forward message turns, record a direction-tagged transcript,
+--- and apply the fault vocabulary (the last cell in the transport matrix).
+---@param ctx any
+---@param opts { upstream: string }
+---@return prova.WsProxy
+function websocket.proxy(ctx, opts) end

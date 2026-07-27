@@ -16,10 +16,13 @@
 local redis = prova.containerized{
   name = "redis-tap-spec", image = "redis", tag = "7-alpine", port = 6379,
   url = function(hp) return "tcp://127.0.0.1:" .. hp end,
+  -- The recipe author declares the wire framing once; `tap = true` then yields turn-level
+  -- transcripts for free (RESP is \r\n-delimited).
+  framing = { delimiter = "\r\n" },
 }
 
 prova.test("tap = true interposes the wiretap — same url shape, transcripts for free",
-  { spec = "tier-a/tap: containerized tap option — not built" }, function(t)
+  { proves = "tier-a/tap: tap=true interposes the wiretap — same url shape, transcripts for free" }, function(t)
   local res = redis.container(t, { tap = true })
 
   local c = socket.connect(res.url, { framing = { delimiter = "\r\n" } })
@@ -34,7 +37,7 @@ prova.test("tap = true interposes the wiretap — same url shape, transcripts fo
 end)
 
 prova.test("a tapped resource takes faults — resilience proofs against the real dependency",
-  { spec = "tier-a/tap: faults through the tap — not built" }, function(t)
+  { proves = "tier-a/tap: faults through the tap — resilience proofs against the real dependency" }, function(t)
   local res = redis.container(t, { tap = true })
 
   local c = socket.connect(res.url, { framing = { delimiter = "\r\n" } })

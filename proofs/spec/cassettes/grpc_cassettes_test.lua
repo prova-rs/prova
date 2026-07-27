@@ -36,7 +36,7 @@ local function ping_upstream(t)
 end
 
 prova.test("record mode captures calls while traffic flows; close is the flush point",
-  { spec = "tier-a/grpc-cassettes: record mode — not built" }, function(t)
+  { proves = "tier-a/grpc-cassettes: record captures calls while traffic flows; close is the flush point" }, function(t)
   local up = ping_upstream(t)
   local cas = t:tempdir() .. "/poke.cassette"
 
@@ -49,7 +49,7 @@ prova.test("record mode captures calls while traffic flows; close is the flush p
 end)
 
 prova.test("replay needs no upstream and no proto — the cassette carries the descriptors",
-  { spec = "tier-a/grpc-cassettes: self-describing replay — not built" }, function(t)
+  { proves = "tier-a/grpc-cassettes: the cassette carries the descriptors — replay needs no proto/upstream" }, function(t)
   local up = ping_upstream(t)
   local cas = t:tempdir() .. "/schema.cassette"
 
@@ -64,7 +64,7 @@ prova.test("replay needs no upstream and no proto — the cassette carries the d
 end)
 
 prova.test("the match key is method + request message — a different payload is a loud miss",
-  { spec = "tier-a/grpc-cassettes: structural match key + loud miss — not built" }, function(t)
+  { proves = "tier-a/grpc-cassettes: match key is method+request; a miss is Unavailable naming the cassette" }, function(t)
   local up = ping_upstream(t)
   local cas = t:tempdir() .. "/miss.cassette"
 
@@ -83,7 +83,7 @@ prova.test("the match key is method + request message — a different payload is
 end)
 
 prova.test("passthrough is the plain dial — forward, record nothing",
-  { spec = "tier-a/grpc-cassettes: passthrough mode — not built" }, function(t)
+  { proves = "tier-a/grpc-cassettes: passthrough is the plain dial — forward, record nothing" }, function(t)
   local up = ping_upstream(t)
   local cas = t:tempdir() .. "/untouched.cassette"
 

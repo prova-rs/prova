@@ -11,7 +11,7 @@
 ---     shim's own directory — `stop` removes the shim, never the recording.
 
 prova.test("record mode captures invocations; stop is the flush point",
-  { requires = { "unix" }, spec = "tier-a/shell-cassettes: record mode — not built" }, function(t)
+  { requires = { "unix" }, proves = "tier-a/shell-cassettes: record captures invocations; stop is the flush point" }, function(t)
   local cas = t:tempdir() .. "/banner.cassette"
   local shim = shell.proxy(t, { as = "banner", upstream = "/bin/echo", cassette = cas, mode = "record" })
 
@@ -23,7 +23,7 @@ prova.test("record mode captures invocations; stop is the flush point",
 end)
 
 prova.test("replay answers from the recording — no upstream, no real binary consulted",
-  { requires = { "unix" }, spec = "tier-a/shell-cassettes: replay mode — not built" }, function(t)
+  { requires = { "unix" }, proves = "tier-a/shell-cassettes: replay answers from the recording — no upstream, no real binary" }, function(t)
   local cas = t:tempdir() .. "/replay.cassette"
   local rec = shell.proxy(t, { as = "banner", upstream = "/bin/echo", cassette = cas, mode = "record" })
   shell.run("banner release v1", { env = rec.env })
@@ -36,7 +36,7 @@ prova.test("replay answers from the recording — no upstream, no real binary co
 end)
 
 prova.test("a replay miss is loud — an unrecorded invocation exits non-zero naming the cassette",
-  { requires = { "unix" }, spec = "tier-a/shell-cassettes: loud replay miss — not built" }, function(t)
+  { requires = { "unix" }, proves = "tier-a/shell-cassettes: an unrecorded invocation exits non-zero, journaled as a miss" }, function(t)
   local cas = t:tempdir() .. "/miss.cassette"
   local rec = shell.proxy(t, { as = "banner", upstream = "/bin/echo", cassette = cas, mode = "record" })
   shell.run("banner recorded", { env = rec.env })

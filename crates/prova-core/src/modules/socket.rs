@@ -706,6 +706,9 @@ struct TurnRec {
 struct ProxyState {
     transcript: Vec<TurnRec>,
     faults: Faults,
+    /// Set in record mode: each (request-turn → response-turn) pair is appended here and flushed
+    /// to the cassette on close. Absent otherwise.
+    recorder: Option<Rc<super::cassette::Recorder>>,
 }
 
 struct ProxyUd {
@@ -714,6 +717,83 @@ struct ProxyUd {
     /// `true` = sever every live pump and refuse new conns. A watch so pumps die mid-await.
     dropped: Rc<tokio::sync::watch::Sender<bool>>,
     shutdown: RefCell<Option<tokio::sync::oneshot::Sender<()>>>,
+}
+
+/// The cassette posture of a proxy (docs/design/mocks-proxies-drivers.md). `Passthrough` is the
+/// plain bidirectional wiretap (the fault/full-duplex path); the other three drive the
+/// request/response turn loop, because a cassette IS the VCR discipline.
+#[derive(Clone, PartialEq)]
+enum Mode {
+    Passthrough,
+    Record,
+    Replay,
+}
+
+/// One interposed connection in a cassette mode: a synchronous request→response turn loop, which
+/// is what makes the recording coherent (a bidirectional pump has no turn pairing). Record forwards
+/// to the upstream and captures each pair; replay answers from the player and needs no upstream —
+/// a miss closes the connection LOUD (the recv on the client side then errors).
+async fn turn_loop(
+    client: Stream,
+    upstream: Option<String>,
+    framing: Framing,
+    state: Rc<RefCell<ProxyState>>,
+    player: Option<Rc<RefCell<super::cassette::Player>>>,
+) {
+    let mut client = client;
+    let mut cbuf = Vec::new();
+    // Record mode holds one live upstream connection for the conversation.
+    let mut up: Option<(Stream, Vec<u8>)> = match &upstream {
+        Some(addr) => match dial(addr).await {
+            Ok(s) => Some((s, Vec::new())),
+            Err(_) => return,
+        },
+        None => None,
+    };
+    loop {
+        let req = match read_frame(&mut client, &mut cbuf, &framing).await {
+            Ok(Some(r)) => r,
+            _ => break, // client EOF ends the conversation
+        };
+        state.borrow_mut().transcript.push(TurnRec {
+            dir: "up",
+            data: req.clone(),
+        });
+        let resp: Option<Vec<u8>> = if let Some((up_stream, ubuf)) = up.as_mut() {
+            // Record: forward the request, read one response turn, capture the pair.
+            if up_stream.write_all(&framing.encode(&req)).await.is_err() {
+                break;
+            }
+            match read_frame(up_stream, ubuf, &framing).await {
+                Ok(Some(r)) => {
+                    if let Some(rec) = &state.borrow().recorder {
+                        rec.record(
+                            super::cassette::encode_bytes(&req),
+                            super::cassette::encode_bytes(&r),
+                            None,
+                        );
+                    }
+                    Some(r)
+                }
+                _ => None,
+            }
+        } else if let Some(p) = &player {
+            // Replay: answer from the cassette; a miss is None → break, closing the connection.
+            p.borrow_mut()
+                .answer(&super::cassette::encode_bytes(&req))
+                .map(|turn| super::cassette::decode_bytes(&turn.response))
+        } else {
+            None
+        };
+        let Some(resp) = resp else { break };
+        state.borrow_mut().transcript.push(TurnRec {
+            dir: "down",
+            data: resp.clone(),
+        });
+        if client.write_all(&framing.encode(&resp)).await.is_err() {
+            break;
+        }
+    }
 }
 
 fn parse_rate(s: &str) -> mlua::Result<f64> {
@@ -956,10 +1036,12 @@ impl UserData for ProxyUd {
             })
         });
 
+        // In a record mode, close is the cassette flush point — same as http.proxy.
         methods.add_method("stop", |_, this, ()| {
             let _ = this.dropped.send(true);
             if let Some(tx) = this.shutdown.borrow_mut().take() {
                 let _ = tx.send(());
+                flush_recorder(&this.state)?;
             }
             Ok(())
         });
@@ -967,25 +1049,95 @@ impl UserData for ProxyUd {
             let _ = this.dropped.send(true);
             if let Some(tx) = this.shutdown.borrow_mut().take() {
                 let _ = tx.send(());
+                flush_recorder(&this.state)?;
             }
             Ok(())
         });
     }
 }
 
+fn flush_recorder(state: &Rc<RefCell<ProxyState>>) -> mlua::Result<()> {
+    let rec = state.borrow().recorder.clone();
+    if let Some(rec) = rec {
+        rec.flush()
+            .map_err(|e| err(format!("socket.proxy: writing cassette: {e}")))?;
+    }
+    Ok(())
+}
+
 fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
     lua.create_function(|lua, (ctx, opts): (Value, Table)| {
-        let upstream = opts
-            .get::<Option<String>>("upstream")?
-            .ok_or_else(|| err("socket.proxy(ctx, { upstream = … }): upstream is required"))?;
-        parse_addr(&upstream)?; // fail at the call site, not on first connect
+        let upstream = opts.get::<Option<String>>("upstream")?;
         let framing = Framing::parse(opts.get::<Option<Value>>("framing")?)?;
+        let cassette = opts.get::<Option<String>>("cassette")?;
+        let mode_str = opts
+            .get::<Option<String>>("mode")?
+            .unwrap_or_else(|| "passthrough".to_string());
+
+        // Resolve the mode. `auto` collapses to record/replay by the cassette's presence, exactly
+        // as http.proxy does, so downstream sees only the three real behaviors.
+        let mode = match mode_str.as_str() {
+            "passthrough" => Mode::Passthrough,
+            "record" => Mode::Record,
+            "replay" => Mode::Replay,
+            "auto" => {
+                let cas = cassette.as_ref().ok_or_else(|| {
+                    err("socket.proxy: mode \"auto\" needs a `cassette` — nothing to key on")
+                })?;
+                if std::path::Path::new(cas).exists() {
+                    Mode::Replay
+                } else {
+                    Mode::Record
+                }
+            }
+            other => {
+                return Err(err(format!(
+                    "socket.proxy: mode must be passthrough|record|replay|auto, got {other:?}"
+                )))
+            }
+        };
+
+        // Cassettes require framing (matching needs turns) and a cassette path; replay needs no
+        // upstream, every other mode does.
+        if mode != Mode::Passthrough && framing.is_raw() {
+            return Err(err(
+                "socket.proxy: a cassette needs framing — a raw byte stream has no turn to key on",
+            ));
+        }
+        let cassette = if mode == Mode::Passthrough {
+            None
+        } else {
+            Some(cassette.ok_or_else(|| {
+                err(format!("socket.proxy: mode {mode_str:?} needs a `cassette`"))
+            })?)
+        };
+        if mode != Mode::Replay {
+            let up = upstream
+                .as_ref()
+                .ok_or_else(|| err(format!("socket.proxy: mode {mode_str:?} needs `upstream`")))?;
+            parse_addr(up)?; // fail at the call site, not on first connect
+        }
+
         let addr_s = opts
             .get::<Option<String>>("addr")?
             .unwrap_or_else(|| "tcp://127.0.0.1:0".to_string());
         let (acceptor, addr) = Acceptor::bind(&parse_addr(&addr_s)?)?;
 
-        let state: Rc<RefCell<ProxyState>> = Rc::default();
+        let mut init = ProxyState::default();
+        let player = if mode == Mode::Replay {
+            let p = super::cassette::Player::load(cassette.as_ref().unwrap())
+                .map_err(|e| err(format!("socket.proxy: {e}")))?;
+            Some(Rc::new(RefCell::new(p)))
+        } else {
+            None
+        };
+        if mode == Mode::Record {
+            init.recorder = Some(Rc::new(super::cassette::Recorder::new(
+                cassette.clone().unwrap(),
+                "socket",
+            )));
+        }
+        let state: Rc<RefCell<ProxyState>> = Rc::new(RefCell::new(init));
         let (drop_tx, drop_rx) = tokio::sync::watch::channel(false);
         let drop_tx = Rc::new(drop_tx);
         let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
@@ -1006,15 +1158,26 @@ fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
                         let framing = f.clone();
                         let upstream = upstream.clone();
                         let drop_rx = accept_drop.clone();
+                        let mode = mode.clone();
+                        let player = player.clone();
                         tokio::task::spawn_local(async move {
-                            let Ok(up) = dial(&upstream).await else { return };
-                            let (cr, cw) = tokio::io::split(client);
-                            let (ur, uw) = tokio::io::split(up);
-                            let a = pump(cr, uw, "up", framing.clone(), state.clone(), drop_rx.clone());
-                            let b = pump(ur, cw, "down", framing, state, drop_rx);
-                            // Both directions run to completion; either side closing ends its pump,
-                            // and the halves drop here, closing the other side.
-                            tokio::join!(a, b);
+                            if mode == Mode::Passthrough {
+                                // The plain wiretap: bidirectional pump (full-duplex + faults).
+                                let Some(up_addr) = upstream else { return };
+                                let Ok(up) = dial(&up_addr).await else { return };
+                                let (cr, cw) = tokio::io::split(client);
+                                let (ur, uw) = tokio::io::split(up);
+                                let a = pump(cr, uw, "up", framing.clone(), state.clone(), drop_rx.clone());
+                                let b = pump(ur, cw, "down", framing, state, drop_rx);
+                                tokio::join!(a, b);
+                            } else {
+                                // A cassette mode: the request/response turn loop. Replay answers
+                                // from the player and must NOT dial — an `upstream` may still be
+                                // present (auto mode passes one), so drop it here, or a replay
+                                // would try to reach a dependency that is gone.
+                                let up = if mode == Mode::Replay { None } else { upstream };
+                                turn_loop(client, up, framing, state, player).await;
+                            }
                         });
                     }
                 }

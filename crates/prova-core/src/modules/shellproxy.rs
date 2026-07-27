@@ -31,12 +31,25 @@ struct Stub {
     code: i64,
 }
 
+/// A turn recovered from a cassette, rendered into the replay shim as a `case` arm.
+struct ReplayTurn {
+    argv_joined: String,
+    stdout: Vec<u8>,
+    code: i64,
+}
+
 struct ShimState {
     dir: std::path::PathBuf,
     shim: std::path::PathBuf,
     spool: std::path::PathBuf,
     upstream: Option<String>,
     stubs: Vec<Stub>,
+    /// The cassette path (record or replay mode); flushed at stop in record mode.
+    cassette: Option<String>,
+    /// Set in record mode — the shim tees upstream stdout+exit into the spool for the flush.
+    recording: bool,
+    /// Set in replay mode — the recorded turns, rendered as `case` arms (no upstream consulted).
+    replay: Vec<ReplayTurn>,
 }
 
 struct ShimUd {
@@ -81,14 +94,37 @@ fn write_shim(state: &ShimState) -> mlua::Result<()> {
             code = stub.code
         ));
     }
-    match &state.upstream {
-        Some(up) => script.push_str(&format!(
+    // Replay arms: an exact-argv match answers from the recording, no upstream consulted. Exact
+    // (not prefix) because a cassette records a specific invocation, not a stub family.
+    for turn in &state.replay {
+        script.push_str(&format!(
+            "case \"$joined\" in {k})\n  printf 'replay' > \"$rec/source\"\n  \
+             printf '%s' {out}\n  exit {code} ;;\nesac\n",
+            k = sh_quote(&turn.argv_joined),
+            out = sh_quote(&String::from_utf8_lossy(&turn.stdout)),
+            code = turn.code
+        ));
+    }
+    // The tail: forward-and-maybe-record, or (no upstream) fail LOUD — an unstubbed/unrecorded
+    // call with nowhere to go is the most interesting thing a double can tell you.
+    match (&state.upstream, state.recording) {
+        (Some(up), true) => script.push_str(&format!(
+            // Record: buffer the real command's stdout+exit into the spool (the flush reads them),
+            // then replay them to the caller so the invocation looks untouched.
+            "printf 'target' > \"$rec/source\"\n\
+             {cmd} \"$@\" < \"$rec/stdin\" > \"$rec/stdout\" 2>&1\n\
+             echo $? > \"$rec/code\"\n\
+             cat \"$rec/stdout\"\n\
+             exit $(cat \"$rec/code\")\n",
+            cmd = sh_quote(up)
+        )),
+        (Some(up), false) => script.push_str(&format!(
             "printf 'target' > \"$rec/source\"\nexec {} \"$@\" < \"$rec/stdin\"\n",
             sh_quote(up)
         )),
-        None => script.push_str(
+        (None, _) => script.push_str(
             "printf 'unmatched' > \"$rec/source\"\n\
-             echo \"prova shell.proxy: no stub matched and no upstream to forward to\" >&2\n\
+             echo \"prova shell.proxy: no stub, recording, or upstream matched this call\" >&2\n\
              exit 127\n",
         ),
     }
@@ -176,7 +212,9 @@ impl UserData for ShimUd {
                 }
                 t.set("argv", argv_t)?;
                 t.set("stdin", lua.create_string(&stdin_raw)?)?;
-                t.set("matched", source == "stub")?;
+                // `matched` = the shim had an answer for this call: a stub, or a cassette hit.
+                // Only a genuine miss (source=unmatched) is matched=false.
+                t.set("matched", source == "stub" || source == "replay")?;
                 t.set("source", source)?;
                 entries.push(t);
             }
@@ -192,11 +230,69 @@ impl UserData for ShimUd {
         });
 
         methods.add_method("stop", |_, this, ()| {
+            // Record mode: the flush point. Read every spooled invocation's argv+stdin key and the
+            // upstream's stdout+exit the shim buffered, and write the cassette — OUTSIDE the shim
+            // dir, so removing the shim never eats the recording.
+            flush_cassette(&this.state)?;
             let dir = this.state.borrow().dir.clone();
             let _ = std::fs::remove_dir_all(dir);
             Ok(())
         });
     }
+}
+
+/// The key a turn is matched by: the NUL-joined argv plus the stdin, so two invocations that
+/// differ only in what was piped in are distinct turns. Kept identical between record and replay.
+fn turn_key(argv_raw: &[u8], stdin_raw: &[u8]) -> String {
+    let joined = argv_raw
+        .split(|b| *b == 0)
+        .filter(|p| !p.is_empty())
+        .map(|p| String::from_utf8_lossy(p))
+        .collect::<Vec<_>>()
+        .join("\u{0}");
+    format!(
+        "{joined}\u{1}{}",
+        super::cassette::encode_bytes(stdin_raw)
+    )
+}
+
+fn flush_cassette(state: &Rc<RefCell<ShimState>>) -> mlua::Result<()> {
+    let (cassette, recording, spool) = {
+        let s = state.borrow();
+        (s.cassette.clone(), s.recording, s.spool.clone())
+    };
+    let (Some(path), true) = (cassette, recording) else {
+        return Ok(());
+    };
+    let recorder = super::cassette::Recorder::new(path, "shell");
+    let count: usize = std::fs::read_to_string(spool.join(".seq"))
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0);
+    for i in 1..=count {
+        let rec = spool.join(i.to_string());
+        // Only forwarded (source=target) invocations are recorded — a stub answering itself back
+        // into a cassette is not a recording of a real dependency.
+        let source = std::fs::read_to_string(rec.join("source")).unwrap_or_default();
+        if source != "target" {
+            continue;
+        }
+        let argv_raw = std::fs::read(rec.join("argv")).unwrap_or_default();
+        let stdin_raw = std::fs::read(rec.join("stdin")).unwrap_or_default();
+        let stdout = std::fs::read(rec.join("stdout")).unwrap_or_default();
+        let code: i64 = std::fs::read_to_string(rec.join("code"))
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(0);
+        recorder.record(
+            turn_key(&argv_raw, &stdin_raw),
+            super::cassette::encode_bytes(&stdout),
+            Some(code),
+        );
+    }
+    recorder
+        .flush()
+        .map_err(|e| err(format!("shell.proxy: writing cassette: {e}")))
 }
 
 pub(crate) fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
@@ -208,6 +304,10 @@ pub(crate) fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
             return Err(err("shell.proxy: `as` is a command NAME, not a path"));
         }
         let upstream = opts.get::<Option<String>>("upstream")?;
+        let cassette = opts.get::<Option<String>>("cassette")?;
+        let mode_str = opts
+            .get::<Option<String>>("mode")?
+            .unwrap_or_else(|| "passthrough".to_string());
 
         let dir = std::env::temp_dir().join(format!(
             "prova-shell-proxy-{}-{}",
@@ -217,12 +317,54 @@ pub(crate) fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
         let spool = dir.join("journal");
         std::fs::create_dir_all(&spool)
             .map_err(|e| err(format!("shell.proxy: mkdir {}: {e}", spool.display())))?;
+
+        // Resolve the mode. `auto` collapses to record/replay by the cassette's presence.
+        let mode = match mode_str.as_str() {
+            "passthrough" => "passthrough",
+            "record" => "record",
+            "replay" => "replay",
+            "auto" => {
+                let cas = cassette.as_ref().ok_or_else(|| {
+                    err("shell.proxy: mode \"auto\" needs a `cassette`")
+                })?;
+                if std::path::Path::new(cas).exists() {
+                    "replay"
+                } else {
+                    "record"
+                }
+            }
+            other => {
+                return Err(err(format!(
+                    "shell.proxy: mode must be passthrough|record|replay|auto, got {other:?}"
+                )))
+            }
+        };
+        if mode != "passthrough" && cassette.is_none() {
+            return Err(err(format!("shell.proxy: mode {mode_str:?} needs a `cassette`")));
+        }
+        if mode == "record" && upstream.is_none() {
+            return Err(err("shell.proxy: recording needs an `upstream` to record"));
+        }
+
+        // Replay mode: load the cassette into `case` arms now; the shim consults no upstream.
+        let replay = if mode == "replay" {
+            let player = super::cassette::Player::load(cassette.as_ref().unwrap())
+                .map_err(|e| err(format!("shell.proxy: {e}")))?;
+            player_turns(player)
+        } else {
+            Vec::new()
+        };
+
         let state = Rc::new(RefCell::new(ShimState {
             shim: dir.join(&name),
             dir: dir.clone(),
             spool,
-            upstream,
+            // In replay mode the shim must NOT forward, so drop any upstream that was passed.
+            upstream: if mode == "replay" { None } else { upstream },
             stubs: Vec::new(),
+            cassette,
+            recording: mode == "record",
+            replay,
         }));
         write_shim(&state.borrow())?;
 
@@ -247,4 +389,28 @@ pub(crate) fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
         }
         Ok(ud)
     })
+}
+
+/// Turn a loaded cassette into replay `case` arms. The key stored at record time is
+/// `argv-joined \u{1} stdin`; the shim only matches on argv, so recover the argv half for the
+/// arm (stdin discrimination beyond argv is a v1 gap, noted in the module docs).
+fn player_turns(mut player: super::cassette::Player) -> Vec<ReplayTurn> {
+    let mut out = Vec::new();
+    // Drain by asking for every stored key. The player consumes-once; enumerate its turns via the
+    // public answer() over the keys it holds.
+    for key in player.keys() {
+        if let Some(turn) = player.answer(&key) {
+            let argv_joined = key
+                .split('\u{1}')
+                .next()
+                .unwrap_or("")
+                .replace('\u{0}', " ");
+            out.push(ReplayTurn {
+                argv_joined,
+                stdout: super::cassette::decode_bytes(&turn.response),
+                code: turn.code.unwrap_or(0),
+            });
+        }
+    }
+    out
 }
