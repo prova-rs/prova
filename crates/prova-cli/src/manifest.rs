@@ -427,6 +427,73 @@ impl Resolved {
     pub const DEFAULT_PROOFS: &'static [&'static str] = &["proofs"];
 }
 
+/// Manifest keys that have been retired, and what replaced them.
+///
+/// A removal is a **tombstone, not a deletion**. Dropping a key and letting the generic
+/// "unknown field" fire sends every stale manifest, example and blog post to a search engine;
+/// an entry here answers in place. The cost is one line per removal, paid once.
+///
+/// Scoped implicitly, and correctly: an entry only fires where the key is genuinely unknown, so
+/// `paths` is a tombstone in `[run]` while remaining a live key in `[suites.*]` — where it means
+/// something different (literal paths, not directory-name patterns) and is not going anywhere.
+///
+/// Entries age out a major or two after removal, once [`suggest`] can carry the stragglers.
+const RETIRED_KEYS: &[(&str, &str, &str)] = &[
+    // (retired key, replacement, version it was removed in)
+    ("paths", "proofs", "0.12"),
+];
+
+/// Levenshtein distance, iterative two-row. Small enough not to warrant a dependency.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0usize; b.len() + 1];
+    for (i, ca) in a.iter().enumerate() {
+        cur[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let sub = prev[j] + usize::from(ca != cb);
+            cur[j + 1] = sub.min(prev[j + 1] + 1).min(cur[j] + 1);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
+}
+
+/// The closest known key to `field`, if one is close enough to be worth naming.
+///
+/// No future version adds a key one edit away from an existing one, so proximity is proof of a
+/// typo regardless of what the manifest declares — which is why this needs no version context.
+/// The threshold scales with length so short keys do not match everything.
+fn suggest<'a>(field: &str, candidates: impl Iterator<Item = &'a str>) -> Option<&'a str> {
+    let limit = (field.chars().count() / 3).clamp(1, 3);
+    candidates
+        .map(|c| (edit_distance(field, c), c))
+        .filter(|(d, _)| *d <= limit)
+        .min_by_key(|(d, _)| *d)
+        .map(|(_, c)| c)
+}
+
+/// Turn serde's "unknown field" into something that says what to do about it.
+///
+/// Reads the rendered error rather than hooking deserialization, which keeps this to one function
+/// at one call site. That does couple it to serde's phrasing — so both behaviours it produces are
+/// held by proofs in `proofs/manifest/`, and a phrasing change fails there rather than silently
+/// dropping back to the generic message.
+fn diagnose_unknown_key(err: &str) -> Option<String> {
+    let field = err.split("unknown field `").nth(1)?.split('`').next()?;
+
+    if let Some((_, replacement, removed_in)) = RETIRED_KEYS.iter().find(|(k, ..)| *k == field) {
+        return Some(format!(
+            "`{field}` was removed in prova {removed_in} — use `{replacement}` instead"
+        ));
+    }
+
+    let expected = err.split("expected one of ").nth(1)?;
+    let known = expected.split('`').skip(1).step_by(2);
+    let best = suggest(field, known)?;
+    Some(format!("unknown key `{field}` — did you mean `{best}`?"))
+}
+
 /// The version this binary reports, for the `[requires] prova` gate.
 fn running_version() -> semver::Version {
     semver::Version::parse(env!("CARGO_PKG_VERSION"))
@@ -505,7 +572,13 @@ fn check_version_gate(text: &str) -> Result<(), String> {
 impl Manifest {
     pub fn parse(text: &str) -> Result<Manifest, String> {
         check_version_gate(text)?;
-        toml::from_str(text).map_err(|e| format!("invalid prova.toml: {e}"))
+        toml::from_str(text).map_err(|e| {
+            let raw = e.to_string();
+            match diagnose_unknown_key(&raw) {
+                Some(hint) => format!("invalid prova.toml: {hint}\n\n{raw}"),
+                None => format!("invalid prova.toml: {raw}"),
+            }
+        })
     }
 
     /// Overlay a profile on the base `[run]` profile. `None` uses the base as-is; `Some(name)` takes

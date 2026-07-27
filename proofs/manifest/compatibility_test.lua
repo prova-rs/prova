@@ -106,7 +106,7 @@ prova.test("[run.env] still accepts anything",
 end)
 
 prova.test("a near-miss key is reported as the typo it is",
-  { spec = "compatibility: did-you-mean, independent of any version declaration" }, function(t)
+  { proves = "compatibility: proximity to a known key is proof of a typo regardless of any version declaration, so this needs no version context — it is the cheapest error message in the system" }, function(t)
   -- No future version will add a key one edit away from an existing one, so proximity is proof
   -- of typo regardless of what the manifest declares. This is the cheapest error message in the
   -- system and it turns the worst failure — a key that quietly does nothing — into the best.
@@ -120,7 +120,7 @@ end)
 -- ── removals leave tombstones ────────────────────────────────────────────────────────────────
 
 prova.test("the retired `paths` key reports its replacement",
-  { spec = "compatibility: a removal is a tombstone, not a deletion" }, function(t)
+  { proves = "compatibility: a removal is a tombstone, not a deletion — the retired key keeps an entry naming its replacement, so stale manifests self-correct instead of getting a bare unknown-field error" }, function(t)
   -- `paths` is being dropped pre-release, so nothing is owed to it — which makes it the right
   -- key to establish the pattern on, while the cost is zero. A generic "unknown key" would send
   -- every stale manifest, example and blog post to a search engine; a tombstone answers in

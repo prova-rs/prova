@@ -116,6 +116,21 @@ jobs:
         shell: bash
         run: cargo test
 
+      # The other half of the gate. v0.12.0 shipped a manifest-parsing change whose only
+      # black-box coverage lived here, and `cargo test` alone would have published it unproven —
+      # the proofs are what say the binary still behaves as documented, not just that the crates
+      # compile and their units pass.
+      - name: Proofs (release gate)
+        shell: bash
+        run: |
+          cargo build -p prova-cli
+          # On PATH, not just invoked: proofs shell out to `prova` to drive the CLI as a user
+          # meets it, so the binary under proof has to be the one they resolve. Without this the
+          # runner would exercise the fresh build while those proofs tested whatever else was
+          # installed — or nothing, on a clean runner.
+          export PATH="$PWD/target/debug:$PATH"
+          prova
+
       - name: Create Draft Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
