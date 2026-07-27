@@ -198,6 +198,28 @@ prova --specs               # the composable selector underneath (only spec-flag
 prova eval 'return require("postgres").container(ctx).url'   # one-shot probe, auto-teardown
 ```
 
+**Wiring CI: guarantee, don't degrade.** A test's `requires = { "docker" }` SKIPS when the
+capability is absent — right on a laptop, wrong on a merge gate, where a box that lost its Docker
+daemon then reports a green "0 failed" having proven nothing. A typo'd capability name skips just
+as quietly. Name what the environment promises in the manifest and an unmet one fails the run up
+front, before any test executes:
+
+```toml
+[run]
+must_run = ["node"]                    # true everywhere; a run without it proves nothing
+
+[profiles.ci]
+must_run = ["docker", "dotnet >= 9"]   # CI promises these — unmet is a broken box, not a skip
+```
+
+Guarantees are **unioned** with `[run]`'s and can never be subtracted, so `prova --profile ci`
+demands both sets. Same expression grammar as `requires`, same probes. Related, same hazard: a
+selection matching nothing exits non-zero rather than reporting `0 passed`.
+
+**Declare the prova a suite needs** with `[requires] prova = ">= 0.13"`, and an older binary says
+so up front instead of failing mid-run on a missing feature. Write `>=` — the value is a semver
+range, so a bare `0.13` means `^0.13`, which on 0.x refuses 0.14 and later.
+
 `eval` runs in the full environment **with a real `ctx`** — `ctx:manage`/`ctx:defer`/`ctx:tempdir`
 all work, and everything the snippet provisions is torn down when it returns (success or error).
 Probing a live container's URL, spawning-and-poking a process, dress-rehearsing a fixture: all
