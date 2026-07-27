@@ -53,6 +53,7 @@ mod format_names {
 }
 
 mod socket;
+mod terminal;
 
 /// The §6 journal-filter contract, shared by every mock's `received(filter?)`: `nil` keeps
 /// everything, a **table** is the same structural-subset match as `:on`/`:matches` (fields the
@@ -85,6 +86,7 @@ pub(crate) fn install(lua: &Lua, progress: &Arc<dyn Progress>) -> mlua::Result<(
     lua.globals().set("fs", make_fs(lua)?)?;
     lua.globals().set("net", make_net(lua)?)?;
     lua.globals().set("socket", socket::make(lua)?)?;
+    lua.globals().set("terminal", terminal::make(lua)?)?;
     // `prova.parse.*` — the exec-CLI output-parsing toolkit (lines / rows / table), added to
     // the `prova` global built earlier in build_lua. Broadly useful, so it lives at the root.
     {

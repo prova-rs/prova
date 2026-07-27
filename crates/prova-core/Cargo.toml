@@ -38,6 +38,14 @@ percent-encoding = "2"
 # Home-directory discovery for the XDG SystemLayout (config/cache/data dirs). Light, no transitive
 # weight; only used to locate `~` — the XDG_* env vars and path joins are done by hand.
 dirs = "5"
+# The `terminal` kernel transport (mocks-proxies-drivers.md): pty allocation behind one API —
+# openpty on unix, ConPTY on Windows — and a VT-sequence screen model as the observation layer.
+# ConPTY emits the same VT sequences openpty does, so the screen model is byte-for-byte OS-agnostic.
+portable-pty = "0.9"
+vt100 = "0.15"
+# `terminal` signal delivery (term:signal("INT") → kill(pid, SIGINT)); already in the graph
+# transitively via portable-pty/tokio — a declaration, not new weight.
+libc = "0.2"
 # The `http` module. v1 is HTTP-only (no TLS) to stay light — covers localhost service
 # boot-and-probe; an https feature can layer rustls on later. Feature-gated so builds can opt out.
 reqwest = { version = "0.12", optional = true, default-features = false }

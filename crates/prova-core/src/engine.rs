@@ -1415,6 +1415,16 @@ fn serialize_snapshot_subject(subject: &Value, level: Option<&str>) -> Result<St
             })?;
             serialize_path(Path::new(&path), level)
         }
+        // The snapshot protocol: a userdata exposing `snapshot_text()` snapshots as that text —
+        // how a terminal `Screen` becomes a golden frame without the engine knowing its type.
+        Value::UserData(ud) => {
+            use mlua::ObjectLike;
+            ud.call_method::<String>("snapshot_text", ()).map_err(|_| {
+                "matches_snapshot: userdata subject must expose snapshot_text() \
+                 (a terminal Screen does)"
+                    .to_string()
+            })
+        }
         other => Err(format!(
             "matches_snapshot expects a string or a filesystem path-handle subject, got {}",
             other.type_name()

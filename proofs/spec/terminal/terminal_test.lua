@@ -21,14 +21,14 @@
 -- ── the driver: spawn / send / expect ────────────────────────────────────────────────────────
 
 prova.test("spawn + send + expect — the interactive round-trip, no sleeps",
-  { requires = { "unix" }, spec = "tier-a/terminal: spawn/send/expect — not built" }, function(t)
+  { requires = { "unix" }, proves = "tier-a/terminal: the interactive round-trip — expect observes, never sleeps" }, function(t)
   local term = terminal.spawn(t, { cmd = { "cat" }, cols = 80, rows = 24 })
   term:send("hello\r")
   term:expect("hello")                        -- pty echo; blocks until match, with a timeout
 end)
 
 prova.test("the screen model observes styled cells, not just bytes",
-  { requires = { "unix" }, spec = "tier-a/terminal: screen model — not built" }, function(t)
+  { requires = { "unix" }, proves = "tier-a/terminal: the observation layer is a screen — styled cells, not bytes" }, function(t)
   local term = terminal.spawn(t, {
     cmd = { "sh", "-c", [[printf '\033[31mRED\033[0m plain']] },
     cols = 80, rows = 24,
@@ -43,7 +43,7 @@ prova.test("the screen model observes styled cells, not just bytes",
 end)
 
 prova.test("resize is a real SIGWINCH — the program observes the new geometry",
-  { requires = { "unix" }, spec = "tier-a/terminal: resize/SIGWINCH — not built" }, function(t)
+  { requires = { "unix" }, proves = "tier-a/terminal: resize is a real SIGWINCH the program observes" }, function(t)
   local term = terminal.spawn(t, { cmd = { "sh" }, cols = 80, rows = 24 })
   term:send("stty size\r")
   term:expect("24 80")
@@ -54,24 +54,25 @@ prova.test("resize is a real SIGWINCH — the program observes the new geometry"
 end)
 
 prova.test("signal delivery — prove clean Ctrl-C handling, not just teardown",
-  { requires = { "unix" }, spec = "tier-a/terminal: signal — not built" }, function(t)
+  { requires = { "unix" }, proves = "tier-a/terminal: signals prove clean Ctrl-C handling, not just teardown" }, function(t)
   local term = terminal.spawn(t, {
-    cmd = { "sh", "-c", 'trap "echo CAUGHT" INT; while :; do sleep 1; done' },
+    cmd = { "sh", "-c", 'trap "echo CAUGHT" INT; echo READY; while :; do sleep 1; done' },
     cols = 80, rows = 24,
   })
+  term:expect("READY")            -- the trap is registered — signaling earlier would be a race
   term:signal("INT")
   term:expect("CAUGHT")
 end)
 
 prova.test("wait reaps the child and reports its exit code",
-  { requires = { "unix" }, spec = "tier-a/terminal: wait/exit — not built" }, function(t)
+  { requires = { "unix" }, proves = "tier-a/terminal: wait reaps and reports the exit code" }, function(t)
   local term = terminal.spawn(t, { cmd = { "sh", "-c", "exit 3" }, cols = 80, rows = 24 })
   t:expect(term:wait().code):equals(3)
 end)
 
 prova.test("golden frames — a screen matches its committed snapshot",
   { requires = { "unix" },
-    spec = "tier-a/terminal: matches_snapshot + snapshot store — not built" }, function(t)
+    proves = "tier-a/terminal: golden frames ride the standard snapshot flow" }, function(t)
   local term = terminal.spawn(t, {
     cmd = { "sh", "-c", [[printf 'STABLE FRAME']] },
     cols = 80, rows = 24,
@@ -86,7 +87,7 @@ end)
 -- ── the mock: shadow an interactive CLI on PATH ──────────────────────────────────────────────
 
 prova.test("terminal.mock shadows a CLI on PATH with a scripted responder",
-  { requires = { "unix" }, spec = "tier-a/terminal: mock/PATH shadow — not built" }, function(t)
+  { requires = { "unix" }, proves = "tier-a/terminal: the PATH-shadow mock scripts the other side of an interactive CLI" }, function(t)
   local fake = terminal.mock(t, { as = "greeter" })
   fake:expect("hello"):send("world\n")        -- the script: consume SUT output, answer it
 
