@@ -31,7 +31,7 @@ lands, its outcome is folded into the design docs and the plan trimmed to a `LAN
   substrate*.
 - [docker-port-binding-investigation.md](docker-port-binding-investigation.md) — investigation
   note (kept for the record; not a feature plan).
-- [run-progress-feedback.md](run-progress-feedback.md) — **open, drafted 2026-07-24.** Turn silent
+- [run-progress-feedback.md](run-progress-feedback.md) — **Phase 1 landed 2026-07-27; Phase 2 open.** Turn silent
   run pauses (Docker image pulls foremost, plus seven other intrinsic waits) into understood
   latency. A stderr-only activity side-channel (`trait Progress` in core, terminal renderer in
   cli) — deliberately **not** an `Event` variant, so `--format json`/`tap`/MCP stay untouchable.

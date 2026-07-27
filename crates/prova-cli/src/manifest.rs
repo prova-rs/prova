@@ -8,6 +8,7 @@
 //! jobs   = 4                    # concurrency (throughput only)
 //! format = "console"           # "console" | "json" | "tap"
 //! color  = "auto"               # "auto" | "always" | "never" (console format only)
+//! progress = "auto"             # "auto" | "always" | "never" — stderr activity during pauses
 //! quiet  = false                # true → only failures, the recap, and the summary
 //! github = "auto"               # "auto" | "on" | "off" — GHA annotations + step summary
 //! junit  = "target/prova.xml"   # also write a JUnit XML report here (home-relative)
@@ -342,6 +343,10 @@ pub struct Profile {
     pub format: Option<String>,
     /// Console color mode: `"auto"` (default) | `"always"` | `"never"`. CLI `--color` wins.
     pub color: Option<String>,
+    /// Activity reporting during blocking pauses (image pulls, readiness polls): `"auto"`
+    /// (default) | `"always"` | `"never"`. stderr only — it can never affect `--format json`
+    /// or `tap`, which is why it is safe to leave on. CLI `--progress` and `PROVA_PROGRESS` win.
+    pub progress: Option<String>,
     /// Only print failures, the recap, and the summary. CLI `--quiet` wins (it can only enable).
     pub quiet: Option<bool>,
     /// GitHub Actions sink: `"auto"` (default; on exactly when `GITHUB_ACTIONS=true`) | `"on"` |
@@ -390,6 +395,7 @@ pub struct Resolved {
     pub jobs: Option<usize>,
     pub format: Option<String>,
     pub color: Option<String>,
+    pub progress: Option<String>,
     pub quiet: Option<bool>,
     pub github: Option<String>,
     pub junit: Option<String>,
@@ -538,6 +544,9 @@ impl Manifest {
         let color = overlay
             .and_then(|p| p.color.clone())
             .or_else(|| base.color.clone());
+        let progress = overlay
+            .and_then(|p| p.progress.clone())
+            .or_else(|| base.progress.clone());
         let quiet = overlay.and_then(|p| p.quiet).or(base.quiet);
         let github = overlay
             .and_then(|p| p.github.clone())
@@ -581,6 +590,7 @@ impl Manifest {
             jobs,
             format,
             color,
+            progress,
             quiet,
             github,
             junit,
@@ -639,6 +649,7 @@ proofs = ["tests/smoke"]
                 jobs: Some(4),
                 format: Some("console".into()),
                 color: None,
+                progress: None,
                 quiet: None,
                 github: None,
                 junit: None,

@@ -169,7 +169,20 @@ Mirror the existing `--color` / `PROVA_COLOR` and `--gha` / `PROVA_GHA` triples 
 
 ## Phasing
 
-**Phase 1 — safe, high-impact, no new deps, no cursor tricks.** Introduce `trait Progress` +
+**Phase 1 — LANDED 2026-07-27.** `prova_core::progress` (`trait Progress`, `Activity` scope guard,
+`NullProgress` default on `RunConfig`) + `prova-cli`'s threshold-gated stderr renderer. The docker
+pull stream that was drained and discarded is now rendered (`prova: pulling postgres:16-alpine…` /
+`— done in 2.0s, 3 layers`); `shell.run`, `docker.build` and container readiness are bracketed.
+`--progress` / `PROVA_PROGRESS` / `[run] progress` select auto|always|never, and `--quiet` implies
+never unless the flag is explicit. Held by `proofs/progress/activity_test.lua`, whose load-bearing
+assertion is that stdout stays valid JSONL under `--format json` while stderr narrates.
+
+*Still open from the Phase 1 list:* the archetype render + first-time git clone (#6) and the plugin
+git fetch (#7, which still prints after the fetch rather than before) live in `prova-cli`/
+`prova-archetect`, outside the `RunConfig` sink's reach — they need the sink threaded through the
+CLI's own resolution path, which is a separate seam from the engine's.
+
+The original plan, for the record: Introduce `trait Progress` +
 `Arc` on `RunConfig`; the cli renderer emits **plain, threshold-gated stderr lines**:
 
 - Render the already-available pull stream at `modules.rs:3298` (announce on start; completion

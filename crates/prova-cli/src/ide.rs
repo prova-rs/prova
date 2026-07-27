@@ -116,7 +116,14 @@ pub fn wire(home: &Home, manage: Manage, layout: &dyn SystemLayout) -> Result<()
         println!("prova: wrote .luarc.json — open this project in your editor for completion");
         // The pointer holds absolute, machine-local paths, so it is not shareable and should not be
         // committed. prova won't edit the user's .gitignore — it says so once, here.
-        println!("prova: note — .luarc.json holds machine-local paths; add it to .gitignore");
+        //
+        // ...unless the ignore file already covers it, which is the common case now: both init
+        // archetypes ship a `.gitignore` with `/.luarc.json` in it. Telling someone to do a thing
+        // that is already done is the kind of small wrongness that makes a tool feel careless, and
+        // on a fresh `prova init` it was the only inaccurate line in the output.
+        if !luarc_already_ignored(&home.dir) {
+            println!("prova: note — .luarc.json holds machine-local paths; add it to .gitignore");
+        }
     } else if outcome.luarc_updated {
         println!("prova: merged prova's annotation entries into .luarc.json");
     }
@@ -143,4 +150,96 @@ fn print_help() {
          --manage auto    same, but a file prova cannot parse (JSONC) gets a hint, not an error\n\
          --manage never   install stubs only; never touch .luarc.json"
     );
+}
+
+/// Whether the package's `.gitignore` already ignores `.luarc.json`, so the advisory note can stay
+/// quiet. Deliberately shallow: it reads the ignore file at the package root and looks for the
+/// entry, rather than evaluating gitignore semantics (negations, nested ignore files, the global
+/// core.excludesFile). Getting this wrong in the permissive direction costs one redundant line of
+/// advice; getting it wrong in the strict direction would mean suppressing a note someone needed.
+/// So a miss must fall through to printing, and every branch here does.
+fn luarc_already_ignored(root: &std::path::Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(root.join(".gitignore")) else {
+        return false;
+    };
+    text.lines().any(|line| {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with('!') {
+            return false;
+        }
+        // The spellings that actually cover the root pointer. `.luarc.json` (unanchored, matches at
+        // any depth) and `/.luarc.json` (anchored) are what the archetypes and hand-written ignore
+        // files use; a bare `*.json` would too, but treating a broad glob as intent to ignore this
+        // specific file is a guess, and the cost of guessing wrong is silence where advice was due.
+        matches!(line, ".luarc.json" | "/.luarc.json" | "./.luarc.json")
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::luarc_already_ignored;
+
+    fn at(body: Option<&str>) -> tempdir::Dir {
+        let d = tempdir::Dir::new();
+        if let Some(b) = body {
+            std::fs::write(d.path().join(".gitignore"), b).unwrap();
+        }
+        d
+    }
+
+    #[test]
+    fn no_gitignore_means_the_note_is_still_useful() {
+        assert!(!luarc_already_ignored(at(None).path()));
+    }
+
+    #[test]
+    fn the_anchored_and_unanchored_spellings_both_count() {
+        assert!(luarc_already_ignored(at(Some("/.luarc.json\n")).path()));
+        assert!(luarc_already_ignored(at(Some(".DS_Store\n.luarc.json\n")).path()));
+    }
+
+    // A comment mentioning the file is not an ignore rule — the archetypes' own .gitignore has
+    // exactly this shape (a comment paragraph above the entry), so a naive `contains` would have
+    // reported ignored for a file that merely talks about it.
+    #[test]
+    fn a_comment_mentioning_it_does_not_count() {
+        assert!(!luarc_already_ignored(
+            at(Some("# .luarc.json is machine-local\n")).path()
+        ));
+    }
+
+    // A negation re-includes it; suppressing the note there would be exactly backwards.
+    #[test]
+    fn a_negation_does_not_count() {
+        assert!(!luarc_already_ignored(at(Some("!.luarc.json\n")).path()));
+    }
+
+    /// A throwaway directory, removed on drop.
+    mod tempdir {
+        use std::path::{Path, PathBuf};
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        static N: AtomicU32 = AtomicU32::new(0);
+
+        pub struct Dir(PathBuf);
+        impl Dir {
+            pub fn new() -> Dir {
+                let p = std::env::temp_dir().join(format!(
+                    "prova-ide-{}-{}",
+                    std::process::id(),
+                    N.fetch_add(1, Ordering::Relaxed)
+                ));
+                std::fs::create_dir_all(&p).unwrap();
+                Dir(p)
+            }
+            pub fn path(&self) -> &Path {
+                &self.0
+            }
+        }
+        impl Drop for Dir {
+            fn drop(&mut self) {
+                std::fs::remove_dir_all(&self.0).ok();
+            }
+        }
+    }
 }

@@ -21,8 +21,8 @@ Four layouts; the **home** is the project ROOT in every case:
 | `.prova/prova.toml` | the dir **above** `.prova/` | nested hidden |
 
 Every manifest-relative path (`proofs`, `config`, `plugin_root`) and generated artifact
-(`.luarc.json`, `running/`) resolves against the home, never against the manifest's own
-directory. Discovery walks **up** from the working directory and the **nearest manifest wins**,
+(`.luarc.json`, the `.prova/var/` state directory) resolves against the home, never against the
+manifest's own directory. Discovery walks **up** from the working directory and the **nearest manifest wins**,
 so `prova` runs correctly from anywhere inside the package — including from inside the nook (a
 bare `prova.toml` found in a directory named `prova`/`.prova` roots at the parent). Two manifest
 variants in one directory is an error ("keep exactly one"). A nested manifest deeper in the tree
@@ -47,6 +47,7 @@ Where a CLI flag or environment variable exists for the same knob, precedence is
 | `jobs` | `1` | Concurrent **suites** (`-j/--jobs` wins). Throughput only — it can never change what a run means. |
 | `format` | `console` | `"console"` \| `"json"` (JSONL event stream) \| `"tap"`. `--format`/`--json` win. Never auto-switched when piped. |
 | `color` | `auto` | `"auto"` \| `"always"` \| `"never"` — console color. `--color` > `PROVA_COLOR` > this key; `auto` additionally honors `NO_COLOR`/`CLICOLOR_FORCE` and never styles a non-terminal. |
+| `progress` | `auto` | `"auto"` \| `"always"` \| `"never"` — activity narration during blocking pauses (image pulls, readiness polls, captured commands). **stderr only**, so it can never affect `--format json`/`tap`; that is why it is safe on by default. `--progress` > `PROVA_PROGRESS` > this key, and `--quiet` implies `never` unless `--progress` is explicit. |
 | `quiet` | `false` | Only failures (with their header chain), the recap, and the tally. `-q/--quiet` can only *enable*. |
 | `github` | `auto` | The GitHub Actions sink: `::error file=,line=` PR annotations + a `$GITHUB_STEP_SUMMARY` table, composing with any `format`. `"auto"` turns on exactly when `GITHUB_ACTIONS=true`. `--gha` > `PROVA_GHA` > this key. |
 | `junit` | *none* | Also write a JUnit XML report to this home-relative path (suite named after the package; file/line/timestamp/assertions attributes). `--junit PATH` wins. |

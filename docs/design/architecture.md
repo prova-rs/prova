@@ -234,7 +234,7 @@ left open by good architecture; we are not walking through it.
   params bind Lua int/float/bool/string/nil. Needs no docker — the fast in-process database. Feature
   `sqlite` (default on). *(`tests/sqlite.rs`.)* (Server databases — postgres/mysql — are external
   docker-exec plugins; only sqlite is embedded.)
-- **`yaml` module** — `yaml.parse(text)` (single document) and `yaml.parse_all(text)` (multi-document
+- **`yaml` module** — `yaml.decode(text)` (single document) and `yaml.decode_all(text)` (multi-document
   `---` stream, as in k8s manifests) → Lua values, the counterpart to `http`'s `:json()`. General
   black-box machinery for a cloud-oriented, polyglot world (k8s/CI/compose are all YAML). serde_yaml_ng,
   feature-gated `yaml` (default on). *(`testdata/yaml.lua`.)*

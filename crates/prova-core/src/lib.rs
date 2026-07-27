@@ -11,6 +11,7 @@ pub mod layout;
 pub mod model;
 mod modules;
 mod plugins;
+pub mod progress;
 mod suite;
 
 pub use engine::{
@@ -21,6 +22,7 @@ pub use engine::{
     TopologyRegistration,
 };
 pub use layout::{RootedSystemLayout, SystemLayout, XdgSystemLayout};
+pub use progress::{Activity, Kind as ActivityKind, NullProgress, Progress};
 pub use model::{
     spec_summary_segment, ConsoleReporter, Event, JUnitReporter, JsonReporter, MultiReporter,
     NullReporter, Outcome, Reporter, Summary, TapReporter,

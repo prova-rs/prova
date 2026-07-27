@@ -28,8 +28,10 @@ mod manifest;
 mod mcp;
 mod plugins;
 mod registry;
+mod progress;
 mod report;
 mod runstate;
+mod var;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -207,6 +209,16 @@ fn value_flag(
 }
 
 fn main() -> ExitCode {
+    // The state-root escape hatch is validated for EVERY invocation, before any dispatch — a
+    // misconfigured `PROVA_VAR_DIR` must fail identically whether or not this particular command
+    // would have recorded anything (see `var`). An active override then announces itself on stderr,
+    // so relocated state can never be an invisible machine difference.
+    if let Err(diagnostic) = var::check_env() {
+        eprintln!("prova: {diagnostic}");
+        return ExitCode::from(2);
+    }
+    var::announce();
+
     // Subcommands dispatch through the verb table; everything else is the run path.
     let mut raw = std::env::args().skip(1).peekable();
     if let Some(first) = raw.peek() {
@@ -435,7 +447,7 @@ fn eval_subcommand(args: Vec<String>) -> ExitCode {
     if let Err(code) = layer_cli_plugins(&cli_plugins, &layout, &sources, &mut plugins_resolved) {
         return code;
     }
-    let config = engine_config(1, &plugins_resolved, home.as_ref());
+    let config = engine_config(1, &plugins_resolved, home.as_ref(), prova_core::progress::null());
 
     match prova_core::eval_snippet(&code, &config) {
         Ok(value) => {
@@ -718,7 +730,7 @@ fn up_from_git(name: Option<&str>, url: &str, fixed: bool) -> ExitCode {
         }
     }
 
-    let config = engine_config(1, &src.plugins, None)
+    let config = engine_config(1, &src.plugins, None, prova_core::progress::null())
         .with_ports(if fixed {
             PortMode::Fixed
         } else {
@@ -866,7 +878,8 @@ fn build_topology_run(
     // Build the engine config with the declared plugins (so the topology's `require(...)` resolves).
     // `--fixed` pins ports for external reachability; the default is random (like tests), so several
     // topologies can be inhabited at once without colliding.
-    let mut config = engine_config(1, &run.plugins, Some(&home)).with_ports(if fixed {
+    let mut config = engine_config(1, &run.plugins, Some(&home), progress::sink(progress::Mode::Auto))
+        .with_ports(if fixed {
         PortMode::Fixed
     } else {
         PortMode::Auto
@@ -1305,6 +1318,7 @@ fn parse_topology_args(
 fn run(cli_args: Vec<String>) -> ExitCode {
     let mut cli_format: Option<Format> = None;
     let mut cli_color: Option<report::ColorMode> = None;
+    let mut cli_progress: Option<progress::Mode> = None;
     let mut cli_quiet = false;
     let mut cli_junit: Option<String> = None;
     let mut cli_gha: Option<report::GhaMode> = None;
@@ -1387,6 +1401,19 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                 "tap" => cli_format = Some(Format::Tap),
                 other => {
                     eprintln!("prova: unknown format {other:?} (expected console|json|tap)");
+                    return ExitCode::from(2);
+                }
+            }
+            continue;
+        }
+        // `--progress auto|always|never`: report what a long pause IS (pulling, waiting) on
+        // stderr. Separate from `--color` because it is a different stream and a different concern:
+        // color styles stdout, progress narrates stderr, and neither can corrupt a machine format.
+        if let Some(v) = value_flag(&arg, &mut args, &["--progress"]) {
+            match progress::Mode::parse(&v) {
+                Ok(mode) => cli_progress = Some(mode),
+                Err(e) => {
+                    eprintln!("prova: {e}");
                     return ExitCode::from(2);
                 }
             }
@@ -1511,6 +1538,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         jobs,
         format,
         manifest_color,
+        manifest_progress,
         manifest_quiet,
         manifest_gha,
         manifest_junit,
@@ -1541,6 +1569,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                     r.jobs,
                     r.format,
                     r.color,
+                    r.progress,
                     r.quiet,
                     r.github,
                     r.junit,
@@ -1558,10 +1587,11 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                 explicit_paths,
                 cli_jobs.unwrap_or(1),
                 cli_format.unwrap_or(Format::Console),
-                None,
-                None,
-                None,
-                None,
+                None, // color
+                None, // progress
+                None, // quiet
+                None, // github
+                None, // junit
                 BTreeMap::new(),
                 plugins::ResolvedPlugins::default(),
                 BTreeMap::new(),
@@ -1598,6 +1628,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                 r.jobs,
                 r.format,
                 r.color,
+                r.progress,
                 r.quiet,
                 r.github,
                 r.junit,
@@ -1633,9 +1664,36 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         return ExitCode::from(2);
     }
 
+    // Progress resolution mirrors color's ladder: CLI flag > `PROVA_PROGRESS` > manifest > auto.
+    // A bad env value is a hard error rather than a silent fallback — a typo'd `PROVA_PROGRESS=nevr`
+    // that quietly leaves activity ON is the sort of thing someone debugs for ten minutes.
+    let progress_mode = match cli_progress {
+        Some(m) => m,
+        None => match std::env::var("PROVA_PROGRESS") {
+            Ok(v) if !v.trim().is_empty() => match progress::Mode::parse(&v) {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("prova: {e} (from PROVA_PROGRESS)");
+                    return ExitCode::from(2);
+                }
+            },
+            _ => manifest_progress.unwrap_or(progress::Mode::Auto),
+        },
+    };
+    // `--quiet` silences the reporter's stdout chatter; it silences activity too, because someone
+    // asking for quiet means it. `--progress always` is the way back if you want narration without
+    // the tree.
+    let quiet_for_progress = cli_quiet || manifest_quiet.unwrap_or(false);
+    let progress_mode = if quiet_for_progress && cli_progress.is_none() {
+        progress::Mode::Never
+    } else {
+        progress_mode
+    };
+    let progress_sink = progress::sink(progress_mode);
+
     // The standalone `prova` binary ships the archetect plugin, so `archetect.render{...}` works.
     // The plugin searcher consults the global install dir plus any manifest-declared plugins.
-    let mut config = engine_config(jobs, &plugins_resolved, home.as_ref())
+    let mut config = engine_config(jobs, &plugins_resolved, home.as_ref(), std::sync::Arc::clone(&progress_sink))
         .with_update_snapshots(update_snapshots)
         .with_strict_specs(strict_specs)
         .with_specs_only(specs_only)
@@ -1887,6 +1945,8 @@ struct ManifestRun {
     /// Manifest `color`/`quiet`/`github` (pre-parsed) — the CLI flags and `PROVA_COLOR`/
     /// `PROVA_GHA` env vars override them at the wiring site.
     color: Option<report::ColorMode>,
+    /// Manifest `progress` (pre-parsed) — `--progress` / `PROVA_PROGRESS` override it.
+    progress: Option<progress::Mode>,
     quiet: Option<bool>,
     github: Option<report::GhaMode>,
     /// Manifest `junit` (home-relative path) — `--junit` wins.
@@ -2204,12 +2264,17 @@ fn engine_config(
     jobs: usize,
     plugins_resolved: &plugins::ResolvedPlugins,
     home: Option<&Home>,
+    progress: std::sync::Arc<dyn prova_core::Progress>,
 ) -> RunConfig {
     // The ambient plugin dir is declared in the manifest (`[run] plugin_root`) — nothing global,
     // nothing from the environment, nothing from the cwd. Discovery locates `prova.toml`; from there
     // the file names everything, so a reader (or an agent) can audit what a `require` could possibly
     // resolve without knowing a single convention baked into this binary.
-    let mut config = RunConfig::new(jobs).with_module(prova_archetect::install);
+    let mut config = RunConfig::new(jobs)
+        .with_module(prova_archetect::install)
+        // Activity reporting rides RunConfig, not the reporter: it is stderr-only and ephemeral,
+        // while the reporter carries durable results to stdout (see prova_core::progress).
+        .with_progress(progress);
     if let Some(root) = &plugins_resolved.search_root {
         config = config.with_plugin_root(root.clone());
     }
@@ -2386,7 +2451,7 @@ fn resolve_from_manifest(
     let capabilities = if companion.is_file() {
         match prova_core::load_project_config(
             &companion,
-            &engine_config(1, &plugins_resolved, Some(home)),
+            &engine_config(1, &plugins_resolved, Some(home), prova_core::progress::null()),
         ) {
             Ok(caps) => caps,
             // An error, never a warning: a companion that failed to load would leave every
@@ -2463,6 +2528,16 @@ fn resolve_from_manifest(
             }
         },
     };
+    let progress = match resolved.progress.as_deref() {
+        None => None,
+        Some(s) => match progress::Mode::parse(s) {
+            Ok(mode) => Some(mode),
+            Err(e) => {
+                eprintln!("prova: {e} (in manifest)");
+                return Err(ExitCode::from(2));
+            }
+        },
+    };
     let github = match resolved.github.as_deref() {
         None => None,
         Some(s) => match report::GhaMode::parse(s) {
@@ -2478,6 +2553,7 @@ fn resolve_from_manifest(
         jobs,
         format,
         color,
+        progress,
         quiet: resolved.quiet,
         github,
         junit: resolved.junit,
@@ -2615,11 +2691,19 @@ impl Reporter for FailureRecorder {
     }
 }
 
-/// Where `--last-failed` state lives: a small JSON list of node paths in the prova home. Runs
-/// without a manifest home have nowhere durable to record, so the feature quietly no-ops there.
+/// Where `--last-failed` state lives: a small JSON list of node paths in the package's state
+/// directory (`var`). Runs without a manifest home have nowhere durable to record, so the feature
+/// quietly no-ops there.
+///
+/// READ path — resolves without creating anything, so `--last-failed` on a package that has never
+/// recorded a failure leaves no directory behind.
 fn last_failed_file(home: &Option<home::Home>) -> Option<std::path::PathBuf> {
-    home.as_ref().map(|h| h.dir.join(".last-failed.json"))
+    home.as_ref().map(|h| var::path(h).join(LAST_FAILED))
 }
+
+/// The record's basename. No leading dot: it already sits in a hidden, self-ignoring directory, and
+/// a second layer of hiding only makes it harder to inspect while debugging.
+const LAST_FAILED: &str = "last-failed.json";
 
 fn load_last_failed(home: &Option<home::Home>) -> Option<Vec<String>> {
     let path = last_failed_file(home)?;
@@ -2628,15 +2712,23 @@ fn load_last_failed(home: &Option<home::Home>) -> Option<Vec<String>> {
 }
 
 fn store_last_failed(home: &Option<home::Home>, failed: &[String]) {
-    let Some(path) = last_failed_file(home) else {
+    let Some(home) = home.as_ref() else {
         return;
     };
     if failed.is_empty() {
-        let _ = std::fs::remove_file(path);
+        // Nothing failed: drop the record but leave the directory. Recreating it on every red run
+        // would churn the `.gitignore` write for no gain.
+        if let Some(path) = last_failed_file(&Some(home.clone())) {
+            let _ = std::fs::remove_file(path);
+        }
         return;
     }
+    // WRITE path — this is the call that materializes `var/` and its self-ignoring `.gitignore`.
+    let Ok(dir) = var::dir(home) else {
+        return;
+    };
     if let Ok(text) = serde_json::to_string_pretty(failed) {
-        let _ = std::fs::write(path, text);
+        let _ = std::fs::write(dir.join(LAST_FAILED), text);
     }
 }
 

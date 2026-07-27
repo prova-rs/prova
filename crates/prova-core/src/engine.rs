@@ -216,6 +216,11 @@ pub struct RunConfig {
     /// `--specs` (the selector): narrow the run to leaves carrying an effective spec flag —
     /// graduated leaves and ordinary tests are deselected. Composes with `--list`.
     pub specs_only: bool,
+    /// Where activity during a blocking pause is reported (see [`crate::progress`]). Deliberately
+    /// here rather than on the reporter: activity is stderr-only and ephemeral, while the reporter
+    /// carries durable results to stdout. Defaults to a silent sink, so a library consumer or a test
+    /// pays nothing.
+    progress: std::sync::Arc<dyn crate::progress::Progress>,
 }
 
 impl Default for RunConfig {
@@ -236,6 +241,7 @@ impl Default for RunConfig {
             capabilities: Capabilities::default(),
             strict_specs: false,
             specs_only: false,
+            progress: std::sync::Arc::new(crate::progress::NullProgress),
         }
     }
 }
@@ -268,6 +274,19 @@ impl RunConfig {
     pub fn with_capabilities(mut self, caps: Capabilities) -> Self {
         self.capabilities = caps;
         self
+    }
+
+    /// Install the sink that reports activity during blocking pauses (see [`crate::progress`]).
+    /// Without this a run is silent through a pull or a readiness poll, which is the default for
+    /// library consumers and every test — only the CLI installs a real renderer.
+    pub fn with_progress(mut self, progress: std::sync::Arc<dyn crate::progress::Progress>) -> Self {
+        self.progress = progress;
+        self
+    }
+
+    /// The activity sink, for the module layer to bracket its blocking regions with.
+    pub(crate) fn progress(&self) -> &std::sync::Arc<dyn crate::progress::Progress> {
+        &self.progress
     }
 
     /// Set the host port binding strategy (`Auto` for tests, `Fixed` for an inhabited topology stood
@@ -2544,7 +2563,7 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
     }
 
     // First-party capability modules (`shell`, `fs`) as their own injected globals.
-    crate::modules::install(&lua)?;
+    crate::modules::install(&lua, config.progress())?;
 
     // Host-provided plugin modules (e.g. `archetect`), installed into every Lua state.
     for install in &config.modules {
