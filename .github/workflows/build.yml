@@ -63,13 +63,16 @@ jobs:
       #
       # Open specs report as the `spec` outcome and keep this green by design — that is the point
       # of the flag. A spec whose body starts passing fails here, demanding graduation.
+      #
+      # `cargo xtask proofs` builds prova-cli and runs the suite through `target/debug/prova`, so the
+      # binary under proof is the one this commit produces — no install, and no dependence on the
+      # Test step above having happened to leave a binary behind. It is the same command developers
+      # run, so this gate cannot drift from the local loop.
+      #
+      # It replaced an `export PATH="$PWD/target/debug"` prelude. Nested runs now resolve through
+      # `prova.bin` — the runtime hands each run its own executable — so the inner prova is the outer
+      # one by construction rather than by arranging the environment correctly.
       - name: Proofs (prova, proven by prova)
         if: runner.os == 'Linux'
         shell: bash
-        run: |
-          # On PATH, not just invoked: proofs shell out to `prova` to drive the CLI as a user
-          # meets it, so the binary under proof has to be the one they resolve. Without this the
-          # runner would exercise the fresh build while those proofs tested whatever else was
-          # installed — or nothing, on a clean runner.
-          export PATH="$PWD/target/debug:$PATH"
-          prova
+        run: cargo xtask proofs

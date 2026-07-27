@@ -40,12 +40,29 @@ cargo xtask run -- init --list      # == cargo run -p prova-cli -- init --list
 cargo xtask test                    # whole workspace (some integration tests need a Docker daemon)
 cargo xtask test-crate prova-core   # a single crate
 
+# Proofs — prova, proven by prova. Builds prova-cli, then runs the suite through
+# target/debug/prova, so the binary under proof is THIS tree's. Same command CI runs.
+cargo xtask proofs                  # the whole suite
+cargo xtask proofs -- --last-failed # the inner loop
+cargo xtask proofs --release        # prove the release profile
+
 # Check / lint / build / GC
 cargo xtask check                   # cargo check --workspace --all-targets
 cargo xtask clippy                  # clippy with -D warnings
 cargo xtask build                   # release build
 cargo xtask sweep                   # drop stale target/ artifacts (auto-installs cargo-sweep)
 ```
+
+**Never prove through an installed `prova`.** `~/.cargo/bin/prova` is one file shared by every
+workspace on the machine, so a bare `prova` proves whatever was installed last — possibly another
+agent's build, with no sign in the output. Use `cargo xtask proofs`, which rebuilds and runs
+`target/debug/prova`. `cargo xtask install` is for putting prova on your PATH for interactive use,
+not a step in the test loop.
+
+Inside a proof, drive prova recursively through `prova.bin` (the runtime injects its own executable),
+never a bare `prova`. `proofs/hermeticity/binary_identity_test.lua` fails the suite if one reappears.
+Consumer repos are the opposite and correctly so: an archetype or plugin proves a *released* prova via
+`prova-rs/run-action` at a pinned version, because what they must test is what users get.
 
 **Formatting:** this tree is **not** blanket-`rustfmt`-clean — a repo-wide `cargo fmt` churns
 unrelated files, so there is deliberately no `xtask fmt`. Match the surrounding style by hand; format

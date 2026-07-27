@@ -41,6 +41,30 @@ enum Commands {
         args: Vec<String>,
     },
 
+    /// Prove this tree's binary: build it, then run the proof suite through it
+    ///
+    /// The coupling is the whole point. `prova` on PATH is an INSTALLED binary — one
+    /// `~/.cargo/bin/prova` shared by every checkout on the machine — so proving through it proves
+    /// whatever was installed last, which may be another workspace's build. `cargo run` rebuilds on
+    /// every invocation and hands the suite `target/<profile>/prova`, so the binary under proof is
+    /// this tree's, always, with no install step and nothing to remember. Nested runs follow for
+    /// free: the runtime injects its own path as `prova.bin`, so neither this command nor CI needs
+    /// to manipulate PATH.
+    ///
+    /// Consumers do the opposite, correctly: an archetype or plugin repo proves a RELEASED prova
+    /// via `prova-rs/run-action` at a pinned version, because what it must test is what users get.
+    /// Ambient resolution is right there and wrong here, where "the binary under proof" means "the
+    /// one this tree just produced."
+    Proofs {
+        /// Build and prove with the release profile
+        #[arg(long)]
+        release: bool,
+
+        /// Arguments passed through to prova (e.g. `cargo xtask proofs -- --last-failed`)
+        #[arg(trailing_var_arg = true)]
+        args: Vec<String>,
+    },
+
     /// Run all tests across the workspace
     Test,
 
@@ -78,6 +102,17 @@ fn main() -> Result<()> {
 
         Commands::Run { args } => {
             let mut cmd_args = vec!["run", "--package", BIN_PACKAGE, "--"];
+            cmd_args.extend(args.iter().map(|s| s.as_str()));
+            cargo(&cmd_args)?;
+        }
+
+        // No sweep: this is the inner loop, and `cargo run` already rebuilds what changed.
+        Commands::Proofs { release, args } => {
+            let mut cmd_args = vec!["run", "--package", BIN_PACKAGE];
+            if release {
+                cmd_args.push("--release");
+            }
+            cmd_args.push("--");
             cmd_args.extend(args.iter().map(|s| s.as_str()));
             cargo(&cmd_args)?;
         }
