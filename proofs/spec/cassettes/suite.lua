@@ -1,4 +1,4 @@
--- The cassette engine (docs/design/mocks-proxies-drivers.md): record/replay as a KERNEL
--- facility — modes, matching, redaction live once; each transport contributes only its turn
--- model and match key. http.proxy is the first specialization. Tier A, spec-first.
+-- The cassette engine (docs/design/mocks-proxies-drivers.md): record/replay modes, loud
+-- replay miss, record-time redaction — http.proxy is the first specialization, sugar over
+-- the mock's dial. IMPLEMENTED and graduated; flag-free guardrails.
 suite.config{ name = "spec-cassettes" }

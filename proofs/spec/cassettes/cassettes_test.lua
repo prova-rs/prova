@@ -27,7 +27,7 @@ local function upstream(t)
 end
 
 prova.test("record mode captures traffic and flushes the cassette on close",
-  { spec = "tier-a/cassettes: record mode — not built" }, function(t)
+  { proves = "tier-a/cassettes: record captures while traffic flows; close is the flush point" }, function(t)
   local up = upstream(t)
   local cas = t:tempdir() .. "/greet.cassette"
 
@@ -39,7 +39,7 @@ prova.test("record mode captures traffic and flushes the cassette on close",
 end)
 
 prova.test("a proxy in record mode manufactures a mock — replay works with the upstream GONE",
-  { spec = "tier-a/cassettes: replay mode — not built" }, function(t)
+  { proves = "tier-a/cassettes: a proxy in record mode manufactures a mock — reality pinned forever" }, function(t)
   local up = upstream(t)
   local cas = t:tempdir() .. "/greet.cassette"
 
@@ -55,7 +55,7 @@ prova.test("a proxy in record mode manufactures a mock — replay works with the
 end)
 
 prova.test("auto mode: record when the cassette is absent, replay when it is present",
-  { spec = "tier-a/cassettes: auto mode — not built" }, function(t)
+  { proves = "tier-a/cassettes: auto = record when absent, replay when present" }, function(t)
   local up = upstream(t)
   local cas = t:tempdir() .. "/auto.cassette"
 
@@ -70,7 +70,7 @@ prova.test("auto mode: record when the cassette is absent, replay when it is pre
 end)
 
 prova.test("a replay miss is loud — an unrecorded request is an error, never a guess",
-  { spec = "tier-a/cassettes: loud replay miss — not built" }, function(t)
+  { proves = "tier-a/cassettes: a replay miss is a 5xx naming the cassette, never a guess" }, function(t)
   local up = upstream(t)
   local cas = t:tempdir() .. "/miss.cassette"
 
@@ -85,7 +85,7 @@ prova.test("a replay miss is loud — an unrecorded request is an error, never a
 end)
 
 prova.test("redaction happens at record time — the secret never touches disk",
-  { spec = "tier-a/cassettes: redaction — not built" }, function(t)
+  { proves = "tier-a/cassettes: redaction happens at record time — the secret never touches disk" }, function(t)
   local up = upstream(t)
   local cas = t:tempdir() .. "/redacted.cassette"
 
@@ -101,7 +101,7 @@ prova.test("redaction happens at record time — the secret never touches disk",
 end)
 
 prova.test("passthrough mode ignores the cassette entirely — flow, record nothing",
-  { spec = "tier-a/cassettes: passthrough mode — not built" }, function(t)
+  { proves = "tier-a/cassettes: passthrough ignores the cassette — flow, record nothing" }, function(t)
   local up = upstream(t)
   local cas = t:tempdir() .. "/untouched.cassette"
 

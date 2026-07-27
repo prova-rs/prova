@@ -18,7 +18,7 @@ local function echo_upstream(t)
 end
 
 prova.test("latency delays the stream — a tight recv timeout now trips",
-  { spec = "tier-a/faults: latency — not built" }, function(t)
+  { proves = "tier-a/faults: latency is continuous and observable, never a clock read" }, function(t)
   local srv = echo_upstream(t)
   local p = socket.proxy(t, { upstream = srv.addr, framing = "line" })
   local c = socket.connect(p.addr, { framing = "line" })
@@ -33,7 +33,7 @@ prova.test("latency delays the stream — a tight recv timeout now trips",
 end)
 
 prova.test("drop severs live connections — recv fails loud, not hangs",
-  { spec = "tier-a/faults: drop — not built" }, function(t)
+  { proves = "tier-a/faults: drop severs loud — a fault is an error, not a hang" }, function(t)
   local srv = echo_upstream(t)
   local p = socket.proxy(t, { upstream = srv.addr, framing = "line" })
   local c = socket.connect(p.addr, { framing = "line" })
@@ -50,7 +50,7 @@ prova.test("drop severs live connections — recv fails loud, not hangs",
 end)
 
 prova.test("after() puts a fuse on any fault — healthy first, injured later",
-  { spec = "tier-a/faults: after() scheduling — not built" }, function(t)
+  { proves = "tier-a/faults: after() is the fuse — resilience proofs need healthy-then-injured" }, function(t)
   local srv = echo_upstream(t)
   local p = socket.proxy(t, { upstream = srv.addr, framing = "line" })
   local c = socket.connect(p.addr, { framing = "line" })
@@ -70,7 +70,7 @@ prova.test("after() puts a fuse on any fault — healthy first, injured later",
 end)
 
 prova.test("corrupt alters bytes in flight — what arrives is not what was sent",
-  { spec = "tier-a/faults: corrupt — not built" }, function(t)
+  { proves = "tier-a/faults: corrupt alters bytes in flight, length preserved" }, function(t)
   local srv = socket.listen(t, { addr = "tcp://127.0.0.1:0" })
   local p = socket.proxy(t, { upstream = srv.addr })     -- raw, no framing
   p:corrupt()
@@ -86,7 +86,7 @@ prova.test("corrupt alters bytes in flight — what arrives is not what was sent
 end)
 
 prova.test("throttle rate-limits the stream — bulk transfer misses a tight deadline",
-  { spec = "tier-a/faults: throttle — not built" }, function(t)
+  { proves = "tier-a/faults: throttle rate-limits the stream, observable via deadlines" }, function(t)
   local srv = socket.mock(t, { framing = { length_prefixed = 4 } })
   local bulk = string.rep("x", 64 * 1024)
   srv:on("GET"):reply(bulk)
@@ -104,7 +104,7 @@ prova.test("throttle rate-limits the stream — bulk transfer misses a tight dea
 end)
 
 prova.test("the vocabulary is transport-generic — http.proxy speaks the same verbs",
-  { spec = "tier-a/faults: verbs on http.proxy — not built" }, function(t)
+  { proves = "tier-a/faults: one vocabulary across transports — http.proxy speaks the same verbs" }, function(t)
   local m = http.mock(t)
   m:on{ path = "/ok" }:reply{ status = 200 }
 

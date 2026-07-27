@@ -124,7 +124,9 @@ prova.test("replay does not invent an answer it never recorded", function(t)
 
   local replay = http.mock(t, { replay = cassette })
   t:expect(http.get(replay.url .. "/known").body):equals("yes")
-  t:expect(http.get(replay.url .. "/never-recorded").status):equals(404)
+  -- A replay miss is a 502, not a 404: the recording INFRASTRUCTURE failed the request, and a
+  -- 404 reads like a plausible real answer an SUT might handle gracefully (proofs/spec/cassettes).
+  t:expect(http.get(replay.url .. "/never-recorded").status):equals(502)
 end)
 
 prova.test("replay distinguishes query strings", function(t)

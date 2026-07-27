@@ -20,7 +20,7 @@
 -- ── originate: the low-level driver (listen + connect, raw bytes) ────────────────────────────
 
 prova.test("raw byte round-trip — connect, send bytes, accept, recv exact bytes",
-  { spec = "tier-a/socket: listen/connect driver — not built" }, function(t)
+  { proves = "tier-a/socket: the originate posture — raw bytes, exact counts, no ceremony" }, function(t)
   local srv = socket.listen(t, { addr = "tcp://127.0.0.1:0" })   -- :0 = ephemeral, addr resolves
   local c = socket.connect(srv.addr)
 
@@ -35,7 +35,7 @@ end)
 -- ── terminate: socket.mock with framing ──────────────────────────────────────────────────────
 
 prova.test("socket.mock answers framed turns — line framing over tcp",
-  { spec = "tier-a/socket: mock posture + line framing — not built" }, function(t)
+  { proves = "tier-a/socket: terminate posture — framing turns bytes into matchable turns" }, function(t)
   local srv = socket.mock(t, { addr = "tcp://127.0.0.1:0", framing = "line" })
   srv:on("PING"):reply("PONG")
 
@@ -45,7 +45,7 @@ prova.test("socket.mock answers framed turns — line framing over tcp",
 end)
 
 prova.test("the same API over unix:// — schemes unify the transport family",
-  { requires = { "unix" }, spec = "tier-a/socket: unix:// scheme — not built" }, function(t)
+  { requires = { "unix" }, proves = "tier-a/socket: one namespace unified by address scheme, not transport family" }, function(t)
   local addr = "unix://" .. t:tempdir() .. "/app.sock"
   local srv = socket.mock(t, { addr = addr, framing = "line" })
   srv:on("PING"):reply("PONG")
@@ -57,7 +57,7 @@ prova.test("the same API over unix:// — schemes unify the transport family",
 end)
 
 prova.test("length-prefixed framing — a 4-byte big-endian header delimits turns",
-  { spec = "tier-a/socket: length_prefixed framing — not built" }, function(t)
+  { proves = "tier-a/socket: length-prefixed framing — the header is the framing layer's business" }, function(t)
   local srv = socket.mock(t, { framing = { length_prefixed = 4 } })
   srv:on("hello"):reply("world")
 
@@ -67,7 +67,7 @@ prova.test("length-prefixed framing — a 4-byte big-endian header delimits turn
 end)
 
 prova.test("delimiter framing — any byte sequence can bound a turn",
-  { spec = "tier-a/socket: delimiter framing — not built" }, function(t)
+  { proves = "tier-a/socket: delimiter framing — any byte sequence can bound a turn" }, function(t)
   local srv = socket.mock(t, { framing = { delimiter = "\0" } })
   srv:on("who"):reply("prova")
 
@@ -77,7 +77,7 @@ prova.test("delimiter framing — any byte sequence can bound a turn",
 end)
 
 prova.test("an unmatched turn is journaled loud — the §6 spine from day one",
-  { spec = "tier-a/socket: mock journal — not built" }, function(t)
+  { proves = "tier-a/socket: the §6 spine from day one — unmatched turns are journaled loud" }, function(t)
   local srv = socket.mock(t, { framing = "line" })
   srv:on("KNOWN"):reply("OK")
 
@@ -92,7 +92,7 @@ end)
 -- ── interpose: socket.proxy, the wiretap ─────────────────────────────────────────────────────
 
 prova.test("socket.proxy interposes and records a direction-tagged transcript",
-  { spec = "tier-a/socket: proxy posture + transcript — not built" }, function(t)
+  { proves = "tier-a/socket: the interpose posture — the wiretap records direction-tagged turns" }, function(t)
   local srv = socket.mock(t, { framing = "line" })
   srv:on("PING"):reply("PONG")
 

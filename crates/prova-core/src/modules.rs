@@ -52,6 +52,8 @@ mod format_names {
     pub const ENCODE_ALL: &str = "encode_all";
 }
 
+mod socket;
+
 /// The §6 journal-filter contract, shared by every mock's `received(filter?)`: `nil` keeps
 /// everything, a **table** is the same structural-subset match as `:on`/`:matches` (fields the
 /// filter names must match; everything else unconstrained — so `{ matched = false }` or
@@ -82,6 +84,7 @@ pub(crate) fn install(lua: &Lua, progress: &Arc<dyn Progress>) -> mlua::Result<(
     lua.globals().set("shell", make_shell(lua, progress)?)?;
     lua.globals().set("fs", make_fs(lua)?)?;
     lua.globals().set("net", make_net(lua)?)?;
+    lua.globals().set("socket", socket::make(lua)?)?;
     // `prova.parse.*` — the exec-CLI output-parsing toolkit (lines / rows / table), added to
     // the `prova` global built earlier in build_lua. Broadly useful, so it lives at the root.
     {
@@ -1328,6 +1331,8 @@ mod http {
         // then assert on. `client` attaches to a real one, `mock` provisions a fake one.
         #[cfg(feature = "mock")]
         http.set("mock", super::mock::mock_fn(lua)?)?;
+        #[cfg(feature = "mock")]
+        http.set("proxy", super::mock::proxy_fn(lua)?)?;
         Ok(http)
     }
 
@@ -1916,6 +1921,11 @@ mod mock {
         handler_errors: Vec<String>,
         /// Opt out of strictness, for a test whose subject *is* the error path.
         allow_handler_errors: bool,
+        /// The `latency` fault verb (continuous, distinct from a reply's one-shot `delay`) — the
+        /// http face of the shared proxy vocabulary. Applied to every request while set.
+        latency: Option<std::time::Duration>,
+        /// The `drop` fault verb: sever — new requests are refused with an immediate 502.
+        dropped: bool,
     }
 
     /// `Rc`/`RefCell` rather than `Arc`/`Mutex` on purpose: every task that touches this is
@@ -2100,6 +2110,27 @@ mod mock {
     ) -> Result<Response<Full<Bytes>>, std::convert::Infallible> {
         let rd = read_request(req).await;
 
+        // The fault dial, consulted before any answer is composed (see the socket proxy for the
+        // vocabulary): `latency` delays every request; `drop` refuses them outright.
+        let (latency, dropped) = {
+            let s = state.borrow();
+            (s.latency, s.dropped)
+        };
+        if dropped {
+            return Ok(respond(
+                &state,
+                rd,
+                Vec::new(),
+                ReplySpec::plain(502, "prova http.mock: dropped (fault injection)"),
+                false,
+                "unmatched",
+                None,
+            ));
+        }
+        if let Some(l) = latency {
+            tokio::time::sleep(l).await;
+        }
+
         // Resolve the match and clone the reply out before doing anything that can re-enter Lua: a
         // handler may legitimately call `m:on{…}` or `m:received()`, which borrows this same
         // RefCell. Holding a borrow across an await into Lua would panic at runtime.
@@ -2182,11 +2213,13 @@ mod mock {
                 // would let the SUT change behavior without the suite noticing — the exact failure
                 // a cassette exists to catch.
                 None => {
+                    // 502, not 404: a miss is the *recording infrastructure* failing the request,
+                    // and a 404 reads like a plausible real answer an SUT might handle gracefully.
                     let msg = format!(
                         "prova http.mock: cassette has no unconsumed entry for {key} — re-record it \
                          if the system under test legitimately changed"
                     );
-                    (ReplySpec::plain(404, &msg), "replay", Some(msg))
+                    (ReplySpec::plain(502, &msg), "replay", Some(msg))
                 }
             };
         }
@@ -2650,7 +2683,177 @@ mod mock {
                 }
                 Ok(())
             });
+            // `close` is `stop` — the proxy grammar says close (a proxy is a connection-shaped
+            // thing), the resource grammar says stop; both flush the cassette on the way out.
+            methods.add_method("close", |_, this, ()| {
+                if let Some(tx) = this.shutdown.borrow_mut().take() {
+                    let _ = tx.send(());
+                    write_cassette(&this.state)?;
+                }
+                let errs = take_handler_errors(&this.state);
+                if !errs.is_empty() {
+                    return Err(handler_error_report("http.mock", &errs));
+                }
+                Ok(())
+            });
+
+            // The fault vocabulary's http face (proofs/spec/faults). `latency`/`drop`/`after` are
+            // native here; `corrupt`/`throttle` are byte-level conditions — interpose a
+            // `socket.proxy` in front for those, and the error says so instead of half-faking it.
+            methods.add_method("latency", |_, this, d: String| {
+                let dur = parse_duration(&d).ok_or_else(|| {
+                    mlua::Error::RuntimeError(format!("latency: bad duration {d:?}"))
+                })?;
+                this.state.borrow_mut().latency = Some(dur);
+                Ok(())
+            });
+            methods.add_method("drop", |_, this, ()| {
+                this.state.borrow_mut().dropped = true;
+                Ok(())
+            });
+            methods.add_method("after", |lua, this, d: String| {
+                let delay = parse_duration(&d).ok_or_else(|| {
+                    mlua::Error::RuntimeError(format!("after: bad duration {d:?}"))
+                })?;
+                lua.create_userdata(HttpFuse {
+                    delay,
+                    state: this.state.clone(),
+                })
+            });
+            methods.add_method("corrupt", |_, _this, ()| {
+                Err::<(), _>(mlua::Error::RuntimeError(
+                    "corrupt is a byte-level fault — interpose `socket.proxy` in front of this \
+                     endpoint for wire corruption; http.proxy speaks latency/drop/after"
+                        .into(),
+                ))
+            });
+            methods.add_method("throttle", |_, _this, _r: String| {
+                Err::<(), _>(mlua::Error::RuntimeError(
+                    "throttle is a byte-level fault — interpose `socket.proxy` in front of this \
+                     endpoint for rate limits; http.proxy speaks latency/drop/after"
+                        .into(),
+                ))
+            });
         }
+    }
+
+    /// A scheduled http fault (`p:after("100ms"):drop()`), mirroring the socket proxy's fuse.
+    struct HttpFuse {
+        delay: std::time::Duration,
+        state: Shared,
+    }
+
+    impl UserData for HttpFuse {
+        fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+            methods.add_method("drop", |_, this, ()| {
+                let delay = this.delay;
+                let state = this.state.clone();
+                tokio::task::spawn_local(async move {
+                    tokio::time::sleep(delay).await;
+                    state.borrow_mut().dropped = true;
+                });
+                Ok(())
+            });
+            methods.add_method("latency", |_, this, d: String| {
+                let dur = parse_duration(&d).ok_or_else(|| {
+                    mlua::Error::RuntimeError(format!("latency: bad duration {d:?}"))
+                })?;
+                let delay = this.delay;
+                let state = this.state.clone();
+                tokio::task::spawn_local(async move {
+                    tokio::time::sleep(delay).await;
+                    state.borrow_mut().latency = Some(dur);
+                });
+                Ok(())
+            });
+        }
+    }
+
+    /// `http.proxy(ctx, { upstream?, cassette?, mode?, redact? })` — the interpose posture as its
+    /// own verb (docs/design/mocks-proxies-drivers.md), implemented as sugar over the mock's dial:
+    /// a proxy IS a mock whose unmatched requests forward (or replay). Modes:
+    ///   passthrough (default) — forward, record nothing
+    ///   record  — forward AND capture the cassette (flushed on close/scope exit)
+    ///   replay  — answer from the cassette, upstream not needed (or consulted)
+    ///   auto    — record when the cassette file is absent, replay when present
+    pub(crate) fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
+        lua.create_function(|lua, (ctx, opts): (Value, Table)| {
+            let upstream = opts.get::<Option<String>>("upstream")?;
+            let cassette = opts.get::<Option<String>>("cassette")?;
+            let mode = opts
+                .get::<Option<String>>("mode")?
+                .unwrap_or_else(|| "passthrough".to_string());
+            let redact = opts.get::<Option<Value>>("redact")?;
+
+            let translated = lua.create_table()?;
+            let need_upstream = |what: &str| {
+                mlua::Error::RuntimeError(format!(
+                    "http.proxy: mode {what:?} needs `upstream` — there is nothing to forward to"
+                ))
+            };
+            let need_cassette = |what: &str| {
+                mlua::Error::RuntimeError(format!(
+                    "http.proxy: mode {what:?} needs `cassette` — there is nothing to record into \
+                     or replay from"
+                ))
+            };
+            match mode.as_str() {
+                "passthrough" => {
+                    let up = upstream.ok_or_else(|| need_upstream("passthrough"))?;
+                    translated.set("passthrough", up)?;
+                }
+                "record" => {
+                    let up = upstream.ok_or_else(|| need_upstream("record"))?;
+                    let cas = cassette.ok_or_else(|| need_cassette("record"))?;
+                    translated.set("passthrough", up)?;
+                    translated.set("record", cas)?;
+                }
+                "replay" => {
+                    let cas = cassette.ok_or_else(|| need_cassette("replay"))?;
+                    translated.set("replay", cas)?;
+                }
+                "auto" => {
+                    let cas = cassette.ok_or_else(|| need_cassette("auto"))?;
+                    if std::path::Path::new(&cas).exists() {
+                        translated.set("replay", cas)?;
+                    } else {
+                        let up = upstream.ok_or_else(|| need_upstream("auto (recording)"))?;
+                        translated.set("passthrough", up)?;
+                        translated.set("record", cas)?;
+                    }
+                }
+                other => {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "http.proxy: mode must be passthrough|record|replay|auto, got {other:?}"
+                    )))
+                }
+            }
+            if let Some(r) = redact {
+                translated.set("redact", r)?;
+            }
+
+            let server = start(lua, Some(&translated))?;
+            let ud = lua.create_userdata(server)?;
+            match ctx {
+                Value::UserData(c) => {
+                    let _: Value = c.call_method("manage", &ud)?;
+                }
+                Value::Nil => {
+                    return Err(mlua::Error::RuntimeError(
+                        "http.proxy(ctx): pass the test or fixture context (`t` / `ctx`) so the \
+                         proxy is torn down with the scope"
+                            .into(),
+                    ))
+                }
+                other => {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "http.proxy(ctx): expected the test or fixture context, got a {}",
+                        other.type_name()
+                    )))
+                }
+            }
+            Ok(ud)
+        })
     }
 
     /// Drain the handler errors — so an explicit `m:stop()` followed by scope teardown reports once,
