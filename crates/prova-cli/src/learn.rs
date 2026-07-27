@@ -181,6 +181,7 @@ pub enum Transport {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Slot {
     InitCatalog,
+    Agent,
     ProofPaths,
     PluginRoot,
     Plugins,
@@ -194,6 +195,7 @@ impl Slot {
     fn parse(name: &str) -> Option<Slot> {
         match name {
             "init_catalog" => Some(Slot::InitCatalog),
+            "agent" => Some(Slot::Agent),
             "proof_paths" => Some(Slot::ProofPaths),
             "plugin_root" => Some(Slot::PluginRoot),
             "plugins" => Some(Slot::Plugins),
@@ -211,8 +213,13 @@ impl Slot {
 struct PackageFacts {
     manifest_name: String,
     home_dir: std::path::PathBuf,
+    /// The directory the manifest lives in — the `.prova/` nook, or the root when the manifest is
+    /// flat. Where a `CONTEXT.md` is looked for (a sibling of `prova.toml`).
+    nook_dir: std::path::PathBuf,
     resolved: Resolved,
     profiles: BTreeMap<String, Profile>,
+    /// `[agent] spec_first` (default on) — drives the `{{agent}}` nudge in the project topic.
+    spec_first: bool,
 }
 
 
@@ -300,8 +307,14 @@ impl RenderEnv {
                         .display()
                         .to_string(),
                     home_dir: home.dir.clone(),
+                    nook_dir: home
+                        .manifest
+                        .parent()
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_else(|| home.dir.clone()),
                     resolved,
                     profiles: m.profiles,
+                    spec_first: m.agent.spec_first(),
                 })
             });
         match load {
@@ -501,24 +514,50 @@ fn render_slot(slot: Slot, env: &RenderEnv, transport: Transport) -> String {
             None => "(no package in reach — declared topologies unknown)".into(),
         },
         Slot::ContextFiles => match &env.package {
-            Some(_) => {
+            Some(p) => {
+                let mut out = String::new();
+                // `<nook>/CONTEXT.md` — a zero-config project brief, inlined verbatim. Drop the file
+                // and it rides `prova learn project`; no manifest entry needed. This is the project's
+                // own words to an agent orienting here (team conventions, gotchas, where to start).
+                if let Ok(md) = std::fs::read_to_string(p.nook_dir.join("CONTEXT.md")) {
+                    let md = md.trim_end();
+                    if !md.is_empty() {
+                        out.push_str("## Project context (`CONTEXT.md`)\n\n");
+                        out.push_str(md);
+                        out.push_str("\n\n");
+                    }
+                }
+                // The declared `context = [...]` docs, as `ctx:<stem>` pointers (read on demand).
                 let docs = env.context_docs();
                 if docs.is_empty() {
-                    "**Project context**: none — a top-level `context = [\"docs/agent.md\"]` in \
-                     prova.toml surfaces team docs here as `ctx:<stem>` topics."
-                        .into()
+                    if out.is_empty() {
+                        out.push_str(
+                            "**Project context**: none — drop a `.prova/CONTEXT.md` (inlined here), \
+                             or declare `context = [\"docs/agent.md\"]` for `ctx:<stem>` topics.",
+                        );
+                    }
                 } else {
-                    let rows: Vec<String> = docs
-                        .iter()
-                        .map(|d| format!("  {}  {}", d.key, d.hook()))
-                        .collect();
-                    format!(
+                    let rows: Vec<String> =
+                        docs.iter().map(|d| format!("  {}  {}", d.key, d.hook())).collect();
+                    out.push_str(&format!(
                         "**Project context** (read with `prova learn ctx:<stem>`):\n{}",
                         rows.join("\n")
-                    )
+                    ));
                 }
+                out.trim_end().to_string()
             }
             None => String::new(),
+        },
+        Slot::Agent => match &env.package {
+            // The spec-first nudge — on by default (`[agent] spec_first = false` silences it). Kept to
+            // an inclination, not a rule: prefer authoring behaviour as `spec`-flagged proofs over a
+            // prose design doc, and burn the backlog down. When off, the slot is empty.
+            Some(p) if p.spec_first => "**Spec-first here.** Prefer capturing new behaviour as a \
+                `spec`-flagged proof (the proof *is* the spec — no prose doc to drift) over a design \
+                doc: `prova specs` lists the open backlog, `prova burndown` implements it, graduate \
+                `spec = \"…\"` to `proves = \"…\"` when green. (`[agent] spec_first = false` to silence.)"
+                .into(),
+            _ => String::new(),
         },
         Slot::Profiles => match &env.package {
             Some(p) if !p.profiles.is_empty() => {
@@ -782,6 +821,37 @@ mod tests {
         }
         assert_eq!(Topic::resolve("mocks"), Some(Topic::Doubles));
         assert_eq!(Topic::resolve("no-such-topic"), None);
+    }
+
+    /// The `[agent] spec_first` nudge (default on, opt-out) and the zero-config `CONTEXT.md` inline —
+    /// the configurable-skill seed: `learn project` content is a function of project config + state.
+    #[test]
+    fn agent_nudge_and_context_md_render_in_project() {
+        let base = std::env::temp_dir().join(format!("prova-agent-{}", std::process::id()));
+        let nook = base.join(".prova");
+        std::fs::create_dir_all(nook.join("proofs").parent().unwrap()).unwrap();
+        std::fs::create_dir_all(&nook).unwrap();
+        let manifest = |extra: &str| format!("[run]\nproofs = [\"proofs\"]\n{extra}");
+
+        // Default: spec_first on → the nudge renders.
+        std::fs::write(nook.join("prova.toml"), manifest("")).unwrap();
+        let env = RenderEnv::at(&base);
+        assert!(
+            render_slot(Slot::Agent, &env, Transport::Cli).contains("Spec-first"),
+            "spec_first defaults on"
+        );
+
+        // Opt out → the slot is empty (silent, not a message).
+        std::fs::write(nook.join("prova.toml"), manifest("[agent]\nspec_first = false\n")).unwrap();
+        assert_eq!(render_slot(Slot::Agent, &RenderEnv::at(&base), Transport::Cli), "");
+
+        // A `.prova/CONTEXT.md` is inlined verbatim into the context slot.
+        std::fs::write(nook.join("prova.toml"), manifest("")).unwrap();
+        std::fs::write(nook.join("CONTEXT.md"), "# Orient\n\nStart at proofs/.").unwrap();
+        let ctx = render_slot(Slot::ContextFiles, &RenderEnv::at(&base), Transport::Cli);
+        assert!(ctx.contains("CONTEXT.md") && ctx.contains("Start at proofs/."), "inlined: {ctx}");
+
+        std::fs::remove_dir_all(&base).ok();
     }
 
     /// Every topic renders without a package (the degradation path) and stays one-screen-ish.

@@ -87,6 +87,27 @@ pub struct Manifest {
     /// declared-but-missing file is reported loudly by `learn`, never silently absent.
     #[serde(default)]
     pub context: Vec<String>,
+    /// How prova nudges the AGENT working in this package (`prova learn project`). A property of the
+    /// package, not a profile — the same guidance regardless of which run profile is selected.
+    #[serde(default)]
+    pub agent: AgentSection,
+}
+
+/// `[agent]` — knobs on the guidance `prova learn` gives an agent. The seed of a configurable skill:
+/// what an agent is nudged toward is a property of the project, on by default, opt-out per-package.
+#[derive(Debug, Deserialize, Clone, Default, PartialEq)]
+pub struct AgentSection {
+    /// Whether `prova learn project` nudges spec-first PDD (author behaviour as `spec`-flagged
+    /// proofs, burn them down). Default **on** — set `spec_first = false` to silence it for a package
+    /// that isn't run that way. Not overbearing: it is a one-line inclination in `learn`, never a gate.
+    pub spec_first: Option<bool>,
+}
+
+impl AgentSection {
+    /// Whether to surface the spec-first nudge — default on.
+    pub fn spec_first(&self) -> bool {
+        self.spec_first.unwrap_or(true)
+    }
 }
 
 /// Git-source update policy (`[updates]`). Governs the shared cache's freshness gate for `[plugins]`

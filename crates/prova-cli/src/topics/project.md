@@ -8,6 +8,8 @@ anchor repo paths on them, never on cwd.
 
 ## This package
 
+{{agent}}
+
 {{proof_paths}}
 
 {{plugin_root}}
@@ -37,7 +39,9 @@ anchor repo paths on them, never on cwd.
 | `[sources]` | alias → base (`github:acme`) so plugins can say `"acme:prova-redis@v1"` |
 | `[topologies]` | name → a plugin's factory, so `prova up <name>` and proofs address the same environment |
 | `[luals] / [updates]` | IDE stub management · git-source freshness policy |
+| `[agent] spec_first` | nudge the agent toward spec-first PDD in `learn project` (default on; `= false` to silence) |
 | `context = ["docs/agent.md"]` (top-level) | team docs served as `ctx:<stem>` topics by `prova learn` — the project's own doctrine on this rail |
+| `.prova/CONTEXT.md` (a file, not a key) | a zero-config project brief, inlined into `learn project` — drop the file, no manifest entry |
 
 ## Where new things go
 
