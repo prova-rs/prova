@@ -1992,7 +1992,7 @@ fn values_equal(a: &Value, b: &Value) -> bool {
 /// fails on the missing index). Scalar leaves compare with `values_equal` (int↔float coercion).
 /// Returns the FIRST mismatch as a `path: expected X, got Y` line — the table-aware diff that
 /// pinpoints `status.readyReplicas: expected 3, got 1` instead of `<table> != <table>`.
-fn subset_mismatch(shape: &Table, subject: &Table, path: &mut Vec<String>) -> Option<String> {
+pub(crate) fn subset_mismatch(shape: &Table, subject: &Table, path: &mut Vec<String>) -> Option<String> {
     for pair in shape.clone().pairs::<Value, Value>() {
         let Ok((key, expected)) = pair else {
             return Some(format!("{}: unreadable shape entry", path_str(path)));

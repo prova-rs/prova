@@ -52,6 +52,30 @@ mod format_names {
     pub const ENCODE_ALL: &str = "encode_all";
 }
 
+/// The §6 journal-filter contract, shared by every mock's `received(filter?)`: `nil` keeps
+/// everything, a **table** is the same structural-subset match as `:on`/`:matches` (fields the
+/// filter names must match; everything else unconstrained — so `{ matched = false }` or
+/// `{ path = "/x" }` both work), a **function** is an arbitrary predicate over the entry.
+/// Filtering happens over the *exposed* entry table, so `seq`/`source`/`matched` are as
+/// filterable as the transport-native fields.
+fn journal_keep(lua: &Lua, filter: &Option<Value>, entry: &Table) -> mlua::Result<bool> {
+    let _ = lua;
+    match filter {
+        None | Some(Value::Nil) => Ok(true),
+        Some(Value::Table(shape)) => {
+            Ok(crate::engine::subset_mismatch(shape, entry, &mut Vec::new()).is_none())
+        }
+        Some(Value::Function(f)) => {
+            let r: Value = f.call(entry.clone())?;
+            Ok(!matches!(r, Value::Nil | Value::Boolean(false)))
+        }
+        Some(other) => Err(mlua::Error::RuntimeError(format!(
+            "received: filter must be a table (subset match) or a function (predicate), got {}",
+            other.type_name()
+        ))),
+    }
+}
+
 /// Install the built-in module globals (`shell`, `fs`, `docker`, and — with the `http` feature —
 /// `http`) into `lua`.
 pub(crate) fn install(lua: &Lua, progress: &Arc<dyn Progress>) -> mlua::Result<()> {
@@ -2466,8 +2490,9 @@ mod mock {
         Ok(t)
     }
 
-    fn recorded_to_lua(lua: &Lua, r: &Recorded) -> mlua::Result<Table> {
+    fn recorded_to_lua(lua: &Lua, r: &Recorded, seq: usize) -> mlua::Result<Table> {
         let t = req_to_lua(lua, &r.req, &r.params)?;
+        t.set("seq", seq)?; // §6: monotonic per mock, 1-based — ordering falls out of the journal
         t.set("status", r.status)?;
         t.set("matched", r.matched)?;
         t.set("source", r.source)?;
@@ -2581,31 +2606,25 @@ mod mock {
 
             // m:received(filter?) → the journal, as plain Lua tables. Deliberately *data*, not a
             // `verify(count, pattern)` DSL: `t:expect` already asserts, and the matchers were never
-            // stringly-typed. A new matcher only if the journal proves to need one.
-            methods.add_method("received", |lua, this, filter: Option<Table>| {
-                let (want_method, want_path) = match &filter {
-                    Some(f) => (
-                        f.get::<Option<String>>("method")?,
-                        f.get::<Option<String>>("path")?,
-                    ),
-                    None => (None, None),
+            // stringly-typed. Filters are the §6 contract (see `journal_keep`): table = subset
+            // match over the exposed entry, function = predicate. Entries are materialized before
+            // filtering so a predicate that re-enters the mock can't hit a live borrow.
+            methods.add_method("received", |lua, this, filter: Option<Value>| {
+                let entries: Vec<Table> = {
+                    let s = this.state.borrow();
+                    s.journal
+                        .iter()
+                        .enumerate()
+                        .map(|(i, r)| recorded_to_lua(lua, r, i + 1))
+                        .collect::<mlua::Result<_>>()?
                 };
                 let out = lua.create_table()?;
-                let s = this.state.borrow();
                 let mut n = 0;
-                for r in s.journal.iter() {
-                    if let Some(m) = &want_method {
-                        if !r.req.method.eq_ignore_ascii_case(m) {
-                            continue;
-                        }
+                for entry in entries {
+                    if super::journal_keep(lua, &filter, &entry)? {
+                        n += 1;
+                        out.set(n, entry)?;
                     }
-                    if let Some(p) = &want_path {
-                        if &r.req.path != p {
-                            continue;
-                        }
-                    }
-                    n += 1;
-                    out.set(n, recorded_to_lua(lua, r)?)?;
                 }
                 Ok(out)
             });
@@ -5167,6 +5186,9 @@ mod grpc_mock {
         request: serde_json::Value,
         code: String,
         matched: bool,
+        /// §6: who composed the answer — "stub" | "unmatched" (grpc has no passthrough dial yet;
+        /// the vocabulary is shared with the http facet and prova.double).
+        source: &'static str,
         error: Option<String>,
     }
 
@@ -5623,6 +5645,7 @@ mod grpc_mock {
             request: request.clone(),
             code: code.to_string(),
             matched,
+            source: if matched { "stub" } else { "unmatched" },
             error,
         });
     }
@@ -5667,12 +5690,14 @@ mod grpc_mock {
         Ok(t)
     }
 
-    fn recorded_to_lua(lua: &Lua, r: &Recorded) -> mlua::Result<Table> {
+    fn recorded_to_lua(lua: &Lua, r: &Recorded, seq: usize) -> mlua::Result<Table> {
         let t = lua.create_table()?;
+        t.set("seq", seq)?; // §6: monotonic per mock, 1-based
         t.set("method", r.method.clone())?;
         t.set("request", lua.to_value(&r.request)?)?;
         t.set("code", r.code.clone())?;
         t.set("matched", r.matched)?;
+        t.set("source", r.source)?;
         if let Some(e) = &r.error {
             t.set("error", e.clone())?;
         }
@@ -5784,22 +5809,23 @@ mod grpc_mock {
                 })
             });
 
-            methods.add_method("received", |lua, this, filter: Option<Table>| {
-                let want_method = match &filter {
-                    Some(f) => f.get::<Option<String>>("method")?,
-                    None => None,
+            // The §6 filter contract, same as the http facet — see `journal_keep`.
+            methods.add_method("received", |lua, this, filter: Option<Value>| {
+                let entries: Vec<Table> = {
+                    let s = this.state.borrow();
+                    s.journal
+                        .iter()
+                        .enumerate()
+                        .map(|(i, r)| recorded_to_lua(lua, r, i + 1))
+                        .collect::<mlua::Result<_>>()?
                 };
                 let out = lua.create_table()?;
-                let s = this.state.borrow();
                 let mut n = 0;
-                for r in s.journal.iter() {
-                    if let Some(m) = &want_method {
-                        if &r.method != m {
-                            continue;
-                        }
+                for entry in entries {
+                    if super::journal_keep(lua, &filter, &entry)? {
+                        n += 1;
+                        out.set(n, entry)?;
                     }
-                    n += 1;
-                    out.set(n, recorded_to_lua(lua, r)?)?;
                 }
                 Ok(out)
             });

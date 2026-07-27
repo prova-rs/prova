@@ -17,7 +17,7 @@
 -- ── http.mock ────────────────────────────────────────────────────────────────────────────────
 
 prova.test("http.mock journal entries carry seq/source/matched over the http-native fields",
-  { spec = "api-freeze §6: journal spine on http.mock — not built" }, function(t)
+  { proves = "api-freeze §6: one journal spine — seq/source/matched over the transport-native fields" }, function(t)
   local m = http.mock(t)
   m:on{ method = "GET", path = "/a" }:reply{ status = 200 }
 
@@ -35,7 +35,7 @@ prova.test("http.mock journal entries carry seq/source/matched over the http-nat
 end)
 
 prova.test("an unmatched http request is journaled too — matched=false, source=unmatched",
-  { spec = "api-freeze §6: unmatched entries journaled — not built" }, function(t)
+  { proves = "api-freeze §6: an unmatched call is the most interesting thing a journal records" }, function(t)
   local m = http.mock(t)
   m:on{ path = "/known" }:reply{ status = 200 }
 
@@ -49,7 +49,7 @@ prova.test("an unmatched http request is journaled too — matched=false, source
 end)
 
 prova.test("received() filters accept a predicate function, exactly like :on",
-  { spec = "api-freeze §6: predicate filters — not built" }, function(t)
+  { proves = "api-freeze §6: filters are the :on shapes — subset tables and predicates" }, function(t)
   local m = http.mock(t)
   m:on{ path = "/n" }:reply{ status = 200 }
   http.get(m.url .. "/n")
@@ -63,7 +63,7 @@ end)
 -- ── grpc.mock ────────────────────────────────────────────────────────────────────────────────
 
 prova.test("grpc.mock journal entries carry the same spine over the grpc-native fields",
-  { spec = "api-freeze §6: journal spine on grpc.mock — not built" }, function(t)
+  { proves = "api-freeze §6: the same spine on grpc.mock — vocabulary shared, not per-transport" }, function(t)
   local dir = t:tempdir()
   fs.write(dir .. "/ping.proto", [[
 syntax = "proto3";
