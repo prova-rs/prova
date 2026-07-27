@@ -119,6 +119,18 @@ fn resolve(
     named: &BTreeMap<String, PathBuf>,
     namespaces: &BTreeMap<String, PathBuf>,
 ) -> mlua::Result<Value> {
+    // 0. Bundled namespace tables (api-freeze §2): `require("fs")` returns THE namespace — the
+    //    same table injection serves — whether or not the name is globally injected. This is what
+    //    makes `[run] globals.exclude` an injection knob, never a capability knob.
+    if let Ok(reg) = lua.named_registry_value::<mlua::Table>("prova.namespaces") {
+        let v: Value = reg.get(name)?;
+        if !v.is_nil() {
+            return Ok(Value::Function(
+                lua.create_function(move |_, ()| Ok(v.clone()))?,
+            ));
+        }
+    }
+
     // 1. Bundled first-party modules.
     if let Some((_, src)) = BUNDLED.iter().find(|(n, _)| *n == name) {
         return Ok(Value::Function(bundled_loader(lua, name, src)?));

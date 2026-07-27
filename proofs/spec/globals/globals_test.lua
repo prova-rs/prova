@@ -29,7 +29,7 @@ end
 -- ── 1. the reserved-name registry ────────────────────────────────────────────────────────────
 
 prova.test("a [plugins] entry bearing a reserved name is a manifest validation error",
-  { spec = "api-freeze §2: reserved-name registry — not built" }, function(t)
+  { proves = "api-freeze §2: a reserved name is a validation error, never a silent shadow" }, function(t)
   local proj = child(t, "reserved-plugin",
     '[run]\nproofs = ["proofs"]\n\n[plugins]\nfs = "./fsplug"\n',
     'prova.test("never runs", function(t) t:expect(true):is_true() end)\n')
@@ -43,7 +43,7 @@ prova.test("a [plugins] entry bearing a reserved name is a manifest validation e
 end)
 
 prova.test("a plugin-root file bearing a reserved name is a manifest validation error",
-  { spec = "api-freeze §2: reserved-name registry — not built" }, function(t)
+  { proves = "api-freeze §2: a reserved name is a validation error, never a silent shadow" }, function(t)
   local proj = child(t, "reserved-root",
     '[run]\nproofs = ["proofs"]\nplugin_root = "plugins"\n',
     'prova.test("never runs", function(t) t:expect(true):is_true() end)\n')
@@ -59,7 +59,7 @@ end)
 -- ── 2. write-protected globals ───────────────────────────────────────────────────────────────
 
 prova.test("assignment to a reserved global raises with guidance; local shadowing stays legal",
-  { spec = "api-freeze §2: write-protected globals — not built" }, function(t)
+  { proves = "api-freeze §2: assignment raises with the two outs; local shadowing stays lexical and legal" }, function(t)
   local proj = child(t, "write-protect", '[run]\nproofs = ["proofs"]\n', [[
 prova.test("assignment raises, and the error teaches the two outs", function(t)
   local ok, err = pcall(function() fs = {} end)
@@ -80,14 +80,14 @@ end)
 -- ── 3. injection over require ────────────────────────────────────────────────────────────────
 
 prova.test("every bundled namespace is require-able by name — injection is sugar over it",
-  { spec = "api-freeze §2: bundled require tier — not built" }, function(t)
+  { proves = "api-freeze §2: require returns THE namespace — injection is sugar over the searcher" }, function(t)
   local m = require("fs")
   t:expect(type(m.write)):equals("function")
   t:expect(m == fs):is_true()                 -- THE namespace, not a copy
 end)
 
 prova.test("[run] globals exclude removes a name from injection; require still reaches it",
-  { spec = "api-freeze §2: configurable injection — not built" }, function(t)
+  { proves = "api-freeze §2: exclusion is an injection knob, never a capability loss" }, function(t)
   local proj = child(t, "exclude",
     '[run]\nproofs = ["proofs"]\nglobals = { exclude = ["fs"] }\n', [[
 prova.test("the excluded name is not injected, but is require-able under any local name", function(t)

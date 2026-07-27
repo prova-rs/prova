@@ -14,6 +14,24 @@ mod plugins;
 pub mod progress;
 mod suite;
 
+/// The reserved-name registry (api-freeze §2): every bundled namespace name, including kernel
+/// transports that are designed but not yet shipped — reserving ahead of the implementation is
+/// the point, so no plugin claims `socket` the release before prova does. A `[plugins]` entry or
+/// plugin-root file bearing one of these is a manifest validation error; assignment to one from
+/// test code raises. `prova` and `Scope` are core authoring globals — reserved like the rest but
+/// never excludable from injection.
+pub const RESERVED_NAMESPACES: &[&str] = &[
+    "prova", "Scope", "shell", "fs", "net", "http", "docker", "sqlite", "grpc", "graphql",
+    "json", "yaml", "toml", "csv", "base64", "hash", "uuid", "url", "socket", "terminal",
+    "websocket",
+];
+
+/// The names a manifest may exclude from global injection: the reserved set minus the core
+/// authoring globals a test cannot function without.
+pub fn excludable_namespace(name: &str) -> bool {
+    name != "prova" && name != "Scope" && RESERVED_NAMESPACES.contains(&name)
+}
+
 pub use engine::{
     discover_path, discover_path_with, docker_runs_linux_containers, eval_snippet, hold_topology,
     inspect_plugin, is_builtin_capability, list_topologies, load_project_config, run_path,

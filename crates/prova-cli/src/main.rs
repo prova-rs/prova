@@ -1547,6 +1547,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         sources,
         manage,
         capabilities,
+        globals_exclude,
     ) = if !explicit_paths.is_empty() {
         match &home {
             // The named paths belong to a package: borrow its environment (plugins, capabilities,
@@ -1578,6 +1579,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                     r.sources,
                     Manage::Never,
                     r.capabilities,
+                    r.globals_exclude,
                 ),
                 Err(code) => return code,
             },
@@ -1599,6 +1601,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                 // No manifest, so there is no companion — built-in capabilities still work;
                 // registered ones are simply absent.
                 prova_core::Capabilities::default(),
+                Vec::new(),
             ),
         }
     } else {
@@ -1637,6 +1640,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                 r.sources,
                 r.manage,
                 r.capabilities,
+                r.globals_exclude,
             ),
             Err(code) => return code,
         }
@@ -1697,7 +1701,8 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         .with_update_snapshots(update_snapshots)
         .with_strict_specs(strict_specs)
         .with_specs_only(specs_only)
-        .with_capabilities(capabilities);
+        .with_capabilities(capabilities)
+        .with_globals_exclude(globals_exclude);
 
     // `--last-failed`: fold the previous run's failed node paths into the selection as exact nodes.
     if last_failed {
@@ -1962,6 +1967,8 @@ struct ManifestRun {
     /// `requires` resolution sees the same vocabulary the `must_run` precondition just checked. Per
     /// resolve, so the warm MCP's packages don't share.
     capabilities: prova_core::Capabilities,
+    /// `[run] globals.exclude` (api-freeze §2) — bundled namespaces withheld from injection.
+    globals_exclude: Vec<String>,
 }
 
 /// If a linted plugin ships no LuaCATS stub (`library/<canonical>.lua`), return an advisory message.
@@ -2437,6 +2444,35 @@ fn resolve_from_manifest(
     // manifest names, so the file answers "where can a plugin come from?" on its own.
     plugins_resolved.search_root = resolved.plugin_root.as_ref().map(|r| home.dir.join(r));
 
+    // The other half of the reserved-name registry (api-freeze §2): a plugin-ROOT file bearing a
+    // bundled namespace name would shadow it for every `require` — the same silent collision the
+    // `[plugins]` check refuses, so it is the same manifest validation error. Checked here, where
+    // the root is known, before anything runs.
+    if let Some(root) = &plugins_resolved.search_root {
+        if let Ok(entries) = std::fs::read_dir(root) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = if path.is_dir() {
+                    path.file_name().and_then(|s| s.to_str()).map(String::from)
+                } else if path.extension().and_then(|e| e.to_str()) == Some("lua") {
+                    path.file_stem().and_then(|s| s.to_str()).map(String::from)
+                } else {
+                    None
+                };
+                if let Some(name) = name {
+                    if prova_core::RESERVED_NAMESPACES.contains(&name.as_str()) {
+                        eprintln!(
+                            "prova: plugin root {}: `{name}` is a reserved prova namespace — a \
+                             plugin cannot shadow a bundled global; rename it",
+                            root.display()
+                        );
+                        return Err(ExitCode::from(2));
+                    }
+                }
+            }
+        }
+    }
+
     // The optional `prova.lua` companion — loaded with the manifest, and BEFORE the `must_run`
     // precondition below. That order is the whole reason this is a package-level companion rather
     // than something in `suite.lua`: a capability registered at suite-load time would not exist yet
@@ -2563,6 +2599,7 @@ fn resolve_from_manifest(
         manage,
         topologies: resolved.topologies,
         capabilities,
+        globals_exclude: resolved.globals_exclude,
     })
 }
 

@@ -363,6 +363,10 @@ pub struct Profile {
     /// through an out-of-band CI input. On a name conflict the profile's entry wins.
     #[serde(default)]
     pub plugins: BTreeMap<String, PluginSource>,
+    /// `[run] globals` — injection knobs for the bundled namespaces (api-freeze §2). `exclude`
+    /// removes names from ambient injection; the team then does `local fs = require("fs")` (any
+    /// local name) where wanted. Excluding is an injection choice, never a capability loss.
+    pub globals: Option<GlobalsSection>,
     /// Capabilities this context **guarantees** — checked as a precondition, before anything runs.
     ///
     /// The other half of `requires`, and the reason they are two things: a test's `requires` is a
@@ -379,6 +383,14 @@ pub struct Profile {
     /// `must_run = ["kind"]` needs no new detector.
     #[serde(default)]
     pub must_run: Vec<String>,
+}
+
+/// `[run] globals` — the closed shape of the globals-injection knobs (api-freeze §2).
+#[derive(Debug, Deserialize, Default, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct GlobalsSection {
+    #[serde(default)]
+    pub exclude: Vec<String>,
 }
 
 /// A fully-resolved run configuration (base `[run]` with an optional profile overlaid).
@@ -412,6 +424,9 @@ pub struct Resolved {
     pub luals: Luals,
     /// Git-source update policy (`[updates]`), applied to every run.
     pub updates: UpdatesSection,
+    /// Bundled namespace names excluded from global injection (`[run] globals.exclude`); the
+    /// profile's section replaces the base's when present. Validated against the reserved registry.
+    pub globals_exclude: Vec<String>,
     /// Capabilities this run guarantees — the union of `[run] must_run` and the selected profile's.
     /// A guarantee is **additive**: a profile promises *more* than the package baseline, never less,
     /// because a context that could retract a guarantee would let the strictest bar be silenced by
@@ -656,6 +671,36 @@ impl Manifest {
             }
         }
 
+        // The reserved-name registry (api-freeze §2): a plugin bearing a bundled namespace name is
+        // a validation error, never a silent shadow — in either direction, so the check runs on the
+        // MERGED set (a profile cannot smuggle one in either).
+        for name in plugins.keys() {
+            if prova_core::RESERVED_NAMESPACES.contains(&name.as_str()) {
+                return Err(format!(
+                    "[plugins] {name}: `{name}` is a reserved prova namespace — a plugin cannot \
+                     shadow a bundled global; pick another name"
+                ));
+            }
+        }
+
+        // `[run] globals.exclude` — the profile's section replaces the base's when present (same
+        // rule as `proofs`), and every entry must be an excludable reserved name: excluding a
+        // non-namespace is a typo, and excluding `prova`/`Scope` is a run that cannot author tests.
+        let globals_exclude = overlay
+            .and_then(|p| p.globals.clone())
+            .or_else(|| base.globals.clone())
+            .map(|g| g.exclude)
+            .unwrap_or_default();
+        for name in &globals_exclude {
+            if !prova_core::excludable_namespace(name) {
+                return Err(format!(
+                    "[run] globals.exclude: `{name}` is not an excludable prova namespace \
+                     (core globals `prova`/`Scope` cannot be excluded; other names must be \
+                     bundled namespaces)"
+                ));
+            }
+        }
+
         Ok(Resolved {
             proofs,
             plugin_root,
@@ -674,6 +719,7 @@ impl Manifest {
             topologies: self.topologies.clone(),
             luals: self.luals.clone(),
             updates: self.updates.clone(),
+            globals_exclude,
             must_run,
             context: self.context.clone(),
         })
@@ -733,6 +779,7 @@ proofs = ["tests/smoke"]
                 topologies: BTreeMap::new(),
                 luals: Luals::default(),
                 updates: UpdatesSection::default(),
+                globals_exclude: Vec::new(),
                 must_run: Vec::new(),
                 context: Vec::new(),
             }

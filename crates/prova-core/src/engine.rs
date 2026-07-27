@@ -221,6 +221,9 @@ pub struct RunConfig {
     /// carries durable results to stdout. Defaults to a silent sink, so a library consumer or a test
     /// pays nothing.
     progress: std::sync::Arc<dyn crate::progress::Progress>,
+    /// `[run] globals = { exclude = [...] }` (api-freeze §2): bundled namespace names removed from
+    /// global injection. Excluded names stay `require`-able; they are simply not ambient.
+    globals_exclude: Vec<String>,
 }
 
 impl Default for RunConfig {
@@ -242,6 +245,7 @@ impl Default for RunConfig {
             strict_specs: false,
             specs_only: false,
             progress: std::sync::Arc::new(crate::progress::NullProgress),
+            globals_exclude: Vec::new(),
         }
     }
 }
@@ -287,6 +291,13 @@ impl RunConfig {
     /// The activity sink, for the module layer to bracket its blocking regions with.
     pub(crate) fn progress(&self) -> &std::sync::Arc<dyn crate::progress::Progress> {
         &self.progress
+    }
+
+    /// Bundled namespace names to withhold from global injection (`[run] globals.exclude`,
+    /// api-freeze §2). The CLI validates the names; the engine just honors the list.
+    pub fn with_globals_exclude(mut self, exclude: Vec<String>) -> Self {
+        self.globals_exclude = exclude;
+        self
     }
 
     /// Set the host port binding strategy (`Auto` for tests, `Fixed` for an inhabited topology stood
@@ -2584,6 +2595,48 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
         &config.named_plugins,
         &config.plugin_namespaces,
     )?;
+
+    // The §2 injection contract, installed LAST so none of prova's own setup writes pass through
+    // the gate. The reserved namespaces are moved out of raw `_G` into a registry table and served
+    // back through `__index` — that is what makes `__newindex` fire on assignment at all (a raw
+    // key would bypass it), and what lets `[run] globals.exclude` withhold a name from injection
+    // while `require("<name>")` (the searcher's registry tier) still reaches it.
+    {
+        let all = lua.create_table()?; // every present namespace — what `require` resolves
+        let injected = lua.create_table()?; // minus excludes — what ambient reads see
+        for name in crate::RESERVED_NAMESPACES {
+            let v: Value = lua.globals().raw_get(*name)?;
+            if v.is_nil() {
+                continue; // designed-but-unshipped transports reserve the name, nothing to serve
+            }
+            all.set(*name, v.clone())?;
+            if !config.globals_exclude.iter().any(|e| e == name) {
+                injected.set(*name, v)?;
+            }
+            lua.globals().raw_set(*name, Value::Nil)?;
+        }
+        lua.set_named_registry_value("prova.namespaces", all)?;
+
+        let mt = lua.create_table()?;
+        mt.set("__index", injected)?;
+        mt.set(
+            "__newindex",
+            lua.create_function(|_, (t, k, v): (Table, Value, Value)| {
+                if let Value::String(s) = &k {
+                    let name = s.to_string_lossy();
+                    if crate::RESERVED_NAMESPACES.contains(&name.as_ref()) {
+                        return Err(mlua::Error::RuntimeError(format!(
+                            "cannot assign to '{name}' — it is a prova namespace; use a local, \
+                             or exclude it in [run] globals"
+                        )));
+                    }
+                }
+                t.raw_set(k, v)?;
+                Ok(())
+            })?,
+        )?;
+        lua.globals().set_metatable(Some(mt))?;
+    }
 
     Ok((lua, col))
 }
