@@ -2,7 +2,7 @@
 # capstone with `cd examples/service-grpc-postgres && prova` (needs docker + cargo). Pin a released
 # tag (`@v1.0.0`) in production; `@main` tracks the latest for a demo.
 [run]
-paths = ["."]
+proofs = ["."]
 
 [plugins]
 postgres = "prova-rs/prova-postgres@main"

@@ -303,6 +303,7 @@ pub struct TopologyDecl {
 /// An explicitly-declared suite: its `paths` are discovered into one suite (sharing an optional
 /// `setup` `suite.lua`). Requires/env belong in the setup file (`suite.config`) / `[run.env]`.
 #[derive(Debug, Deserialize, Default, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct SuiteDecl {
     #[serde(default)]
     pub paths: Vec<String>,
@@ -310,7 +311,13 @@ pub struct SuiteDecl {
 }
 
 /// One run profile. Every field is optional so a profile can override just what it needs.
+///
+/// `deny_unknown_fields`: this is a closed struct, not an open map. Ignoring a key here buys no
+/// forward compatibility worth having — new keys arrive with a new binary, and `[requires] prova`
+/// is how a manifest says it needs one — while costing a silently-dropped setting. That is the
+/// trade prova refuses everywhere else (`must_run`, empty-selection-is-exit-2).
 #[derive(Debug, Deserialize, Default, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct Profile {
     /// Directory-NAME patterns marking proof locations. Prova runs the `*_test.lua` in every directory
     /// matching one of these anywhere below the package root — a pattern is a basename (glob
@@ -579,9 +586,11 @@ proofs = ["tests/smoke"]
         let m = Manifest::parse(
             "[run]\nproofs = [\"proofs\"]\ncontext = [\"docs/agent.md\", \"~/team/conventions.md\"]\n",
         );
-        // `context` belongs at the TOP level, not inside [run].
-        assert!(m.is_ok());
-        assert!(m.unwrap().resolve(None).unwrap().context.is_empty());
+        // `context` belongs at the TOP level, not inside [run]. Misplacing it used to be silently
+        // ignored — the agent docs simply never loaded, with nothing said. [run] is a closed
+        // struct now, so the mistake is reported instead of absorbed.
+        let err = m.expect_err("context inside [run] is a misplacement, not a silent no-op");
+        assert!(err.contains("context"), "the error names the misplaced key: {err}");
 
         let m = Manifest::parse("context = [\"docs/agent.md\"]\n[run]\nproofs = [\"proofs\"]\n")
             .unwrap();
@@ -711,7 +720,7 @@ redis = "acme:prova-redis@v1"
     #[test]
     fn topologies_parse_as_plugin_factory_references() {
         let m = Manifest::parse(
-            "[run]\npaths = [\"proofs\"]\n\n\
+            "[run]\nproofs = [\"proofs\"]\n\n\
              [topologies]\n\
              vm = { plugin = \"parallels\", factory = \"topologies.linux_vm\" }\n",
         )
@@ -760,7 +769,7 @@ proofs = ["proofs/smoke"]
             Some(".prova/plugins")
         );
         // No `plugin_root` anywhere means nothing is scanned — no built-in fallback.
-        let bare = Manifest::parse("[run]\npaths = [\"proofs\"]\n").unwrap();
+        let bare = Manifest::parse("[run]\nproofs = [\"proofs\"]\n").unwrap();
         assert!(bare.resolve(None).unwrap().plugin_root.is_none());
     }
 

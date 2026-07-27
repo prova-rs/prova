@@ -81,7 +81,7 @@ end)
 -- ── strictness, and the escape hatch that makes it affordable ────────────────────────────────
 
 prova.test("an unknown key inside [run] is an error",
-  { spec = "compatibility: closed tables reject, open tables accept" }, function(t)
+  { proves = "compatibility: [run] is a closed struct — ignoring a key here buys no forward compatibility worth having and costs a silently-dropped setting" }, function(t)
   -- [run] is a closed struct, not an open map. Ignoring a key here buys no forward
   -- compatibility worth having and costs a silent typo — the exact trade prova refuses
   -- everywhere else.
@@ -129,25 +129,44 @@ prova.test("the retired `paths` key reports its replacement",
 
   t:expect(r.code, "exits non-zero"):never():equals(0)
   t:expect(r.stdout, "names the dead key"):contains("paths")
-  t:expect(r.stdout, "names the replacement"):contains("proofs")
+  -- Not just "unknown field `paths`, expected one of `proofs`, ..." — serde's generic message
+  -- already contains both words by accident, and satisfied a weaker version of this proof. A
+  -- tombstone has to SAY it was retired and what replaced it.
+  t:expect(r.stdout, "says the key was retired"):matches("removed[^\n]*0%.%d+")
+  t:expect(r.stdout, "points at the replacement by name"):matches("use `?proofs`?")
 end)
 
 -- ── one vocabulary across every table ────────────────────────────────────────────────────────
 
-prova.test("[suites.*] accepts `proofs`, like every other table",
-  { spec = "compatibility: `paths` cannot die while one table still requires it" }, function(t)
-  -- Today a suite takes `paths` and silently ignores `proofs` — so a project consolidating on
-  -- the new spelling loses an entire declared suite with no warning and a green result. Same
-  -- defect class as a skip reporting green, and the reason `paths` cannot be removed from
-  -- [run] until this lands.
+prova.test("a suite's `paths` are literal paths, not directory-name patterns",
+  { proves = "compatibility: `paths` and `proofs` name genuinely different things, which is why both survive — a suite addresses locations, [run] matches directory names at any depth" }, function(t)
+  -- The reason the vocabulary is NOT unified. `[run] proofs = ["deep"]` finds `nested/deep`
+  -- anywhere below the root, because it matches directory NAMES. A suite's `paths` resolve as
+  -- written, so the same bare name is simply missing. Renaming one to the other would collapse
+  -- two distinct concepts into one word and lose the distinction that makes each precise.
   local pkg = t:use(package_with)
-  local dir = pkg('[run]\nproofs = ["proofs"]\n\n[suites.extra]\nproofs = ["more"]\n')
-  shell.run({ "mkdir", "-p", dir .. "/more" }, { check = true })
-  fs.write(dir .. "/more/b_test.lua",
+  local dir = pkg('[run]\nproofs = ["proofs"]\n\n[suites.extra]\npaths = ["nested/deep"]\n')
+  shell.run({ "mkdir", "-p", dir .. "/nested/deep" }, { check = true })
+  fs.write(dir .. "/nested/deep/b_test.lua",
     'prova.test("the declared suite runs", function(t) t:expect(1):equals(1) end)\n')
 
   local r = shell.run("prova 2>&1", { cwd = dir })
-
-  t:expect(r.code, "runs"):equals(0)
+  t:expect(r.code, "the literal path resolves"):equals(0)
   t:expect(r.stdout, "the declared suite was discovered"):contains("the declared suite runs")
+end)
+
+prova.test("`proofs` inside a suite is rejected, not ignored",
+  { proves = "compatibility: writing `proofs` in a suite is a category error that used to cost the entire declared suite, silently, with a green result" }, function(t)
+  -- The actual defect, once the rename idea is off the table. Writing `proofs` here is a
+  -- category error, and today it costs an entire declared suite: the key is dropped, the suite
+  -- never runs, and the result is green. Strictness turns a vanished suite into a sentence.
+  local pkg = t:use(package_with)
+  local dir = pkg('[run]\nproofs = ["proofs"]\n\n[suites.extra]\nproofs = ["nested/deep"]\n')
+  shell.run({ "mkdir", "-p", dir .. "/nested/deep" }, { check = true })
+  fs.write(dir .. "/nested/deep/b_test.lua",
+    'prova.test("the declared suite runs", function(t) t:expect(1):equals(1) end)\n')
+
+  local r = shell.run("prova 2>&1", { cwd = dir })
+  t:expect(r.code, "exits non-zero rather than dropping the suite"):never():equals(0)
+  t:expect(r.stdout, "names the offending key"):contains("proofs")
 end)

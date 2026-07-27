@@ -7,7 +7,7 @@
 #   prova start orders    stand it up detached; then `prova ps` and `prova down orders`
 # Pin released tags (`@v0.2.1`) in production; `@main` tracks latest for a demo.
 [run]
-paths = ["."]
+proofs = ["."]
 
 [plugins]
 postgres = "prova-rs/prova-postgres@main"

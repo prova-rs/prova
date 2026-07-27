@@ -3,7 +3,7 @@
 # the command line bypass the manifest entirely.
 
 [run]                       # the default profile (`prova` with no --profile)
-paths  = ["tests"]          # files/dirs to discover (*_test.lua / *.test.lua)
+proofs = ["proofs"]         # directory NAMES to discover, at any depth (*_test.lua / *.test.lua)
 jobs   = 4                  # concurrency — throughput only, never changes meaning
 format = "console"          # "console" (human) | "json" (JSONL event protocol)
 
@@ -19,11 +19,11 @@ CI = "true"
 
 # A fast subset for the inner loop: `prova --profile smoke`.
 [profiles.smoke]
-paths = ["tests/smoke"]
+proofs = ["smoke"]
 
 # An environment-testing profile pointing at a live dev cluster instead of ephemeral containers:
 # the same suite, different target — set via env the tests read. `prova --profile dev`.
 [profiles.dev]
-paths = ["tests/acceptance"]
+proofs = ["acceptance"]
 [profiles.dev.env]
 TARGET_BASE_URL = "https://orders.dev.example.com"
