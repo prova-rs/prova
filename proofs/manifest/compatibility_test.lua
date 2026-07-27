@@ -1,8 +1,8 @@
 --- The manifest compatibility contract — how prova.toml survives prova getting better.
 ---
---- Nothing here is implemented yet; every test is an open spec. They were written together
---- because they are one mechanism, and picking them off individually would produce a version
---- gate nobody can read, or strictness with no escape hatch.
+--- Written as one file because these are one mechanism: picking them off individually produces a
+--- version gate nobody can read, or strictness with no escape hatch. Authored as specs ahead of
+--- the implementation; the graduated ones carry `proves`, and `prova specs` names what is left.
 ---
 --- The shape, decided before 1.0 while there is still nothing to honor:
 ---
@@ -39,7 +39,7 @@ end)
 -- ── the version gate ─────────────────────────────────────────────────────────────────────────
 
 prova.test("a manifest requiring a newer prova is refused up front",
-  { spec = "compatibility: the floor half of [requires] prova" }, function(t)
+  { proves = "compatibility: [requires] prova is a floor — it turns a mid-run `nil value` crash on an out-of-date binary into a precondition naming both versions" }, function(t)
   -- The failure this prevents is the one that actually happened: a suite authored against an
   -- unreleased binary crashed mid-run in CI with `attempt to call a nil value (field 'writes')`,
   -- which says nothing about the real cause. A precondition naming both versions does.
@@ -64,7 +64,7 @@ prova.test("a manifest requiring this prova or older runs normally",
 end)
 
 prova.test("the version gate is readable even when the rest of the manifest is not",
-  { spec = "compatibility: two-phase read — the gate must survive an unreadable file" }, function(t)
+  { proves = "compatibility: the gate is read from generic TOML before the schema is applied, so a manifest written for a newer prova is diagnosed as out-of-date rather than as an unknown key" }, function(t)
   -- The bootstrap problem. A binary too old to understand a manifest must still be able to say
   -- so. That means phase one parses generic TOML and reads ONLY requires.prova; strict schema
   -- validation happens afterwards, once the version is known to be acceptable. Get this

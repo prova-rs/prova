@@ -52,6 +52,12 @@ use serde::Deserialize;
 /// grouping that doesn't match the directory tree (a directory's `suite.lua` is the zero-config path).
 #[derive(Debug, Deserialize, Default)]
 pub struct Manifest {
+    /// The version gate. Read twice on purpose: once generically before the schema is applied
+    /// (see [`check_version_gate`]), and once here so its own shape is validated — otherwise
+    /// `[requires] prvoa = "0.12"` would be invisible to both passes and the gate would silently
+    /// never fire.
+    #[serde(default)]
+    pub requires: RequiresSection,
     #[serde(default)]
     pub run: Profile,
     #[serde(default)]
@@ -421,8 +427,84 @@ impl Resolved {
     pub const DEFAULT_PROOFS: &'static [&'static str] = &["proofs"];
 }
 
+/// `[requires]` — what this package needs from the tooling that reads it.
+///
+/// Deliberately its own table rather than a key under `[run]`: it is a property of the package,
+/// not of a run profile, and a profile could otherwise weaken it. Mirrors archetect's
+/// `requires.archetect`, since the two tools are siblings and the problem is identical.
+#[derive(Debug, Deserialize, Default, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RequiresSection {
+    /// Minimum prova version. A floor, not a pin — see [`check_version_gate`].
+    pub prova: Option<String>,
+}
+
+/// The version this binary reports, for the `[requires] prova` gate.
+fn running_version() -> semver::Version {
+    semver::Version::parse(env!("CARGO_PKG_VERSION"))
+        .expect("CARGO_PKG_VERSION is always valid semver")
+}
+
+/// The lowest version a requirement admits. `"0.12"` and `">= 0.12"` both floor at 0.12.0.
+fn minimum_of(req: &semver::VersionReq) -> semver::Version {
+    req.comparators
+        .iter()
+        .map(|c| semver::Version {
+            major: c.major,
+            minor: c.minor.unwrap_or(0),
+            patch: c.patch.unwrap_or(0),
+            pre: c.pre.clone(),
+            build: semver::BuildMetadata::EMPTY,
+        })
+        .max()
+        .unwrap_or_else(|| semver::Version::new(0, 0, 0))
+}
+
+/// Phase one of the manifest read: the `[requires] prova` gate, and nothing else.
+///
+/// This runs against a generic `toml::Value`, not the typed schema, and that ordering is the whole
+/// point. `[run]` and friends are strict now, so a manifest written for a newer prova will fail
+/// schema validation on keys this binary has never heard of — and "unknown field `foo`" is exactly
+/// the wrong thing to say to someone whose real problem is an out-of-date binary. Reading the gate
+/// first means the diagnosis comes before the symptom.
+///
+/// Two rules keep this honest as prova changes: `[requires]` must never change shape, and the
+/// version must stay something every future binary can still parse. The gate's own syntax cannot
+/// evolve, because the binary that needs to read it is by definition the old one.
+///
+/// The comparison is a **floor, never a wall**. Archetect separates majors — a 2.x archetype
+/// refuses a 3.x binary — because its scripting substrate was replaced twice and the artifacts
+/// genuinely do not run. Prova has one substrate and intends newer binaries to keep running older
+/// suites, so a wall would do nothing but break every 0.x suite the day 1.0 ships.
+fn check_version_gate(text: &str) -> Result<(), String> {
+    // A syntax error is phase two's to report, with its line and column intact.
+    let Ok(value) = text.parse::<toml::Value>() else {
+        return Ok(());
+    };
+    let Some(declared) = value.get("requires").and_then(|r| r.get("prova")) else {
+        return Ok(());
+    };
+
+    let declared = declared.as_str().ok_or_else(|| {
+        "[requires] prova must be a version string, e.g. prova = \"0.12\"".to_string()
+    })?;
+    let req = semver::VersionReq::parse(declared).map_err(|e| {
+        format!("[requires] prova: `{declared}` is not a version requirement ({e})")
+    })?;
+
+    let (running, needed) = (running_version(), minimum_of(&req));
+    if running < needed {
+        return Err(format!(
+            "this suite requires prova {declared}, and this is prova {running}.\n\
+             prova: upgrade to {needed} or newer — https://github.com/prova-rs/prova/releases"
+        ));
+    }
+    Ok(())
+}
+
 impl Manifest {
     pub fn parse(text: &str) -> Result<Manifest, String> {
+        check_version_gate(text)?;
         toml::from_str(text).map_err(|e| format!("invalid prova.toml: {e}"))
     }
 
