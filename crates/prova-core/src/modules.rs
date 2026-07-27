@@ -2043,8 +2043,11 @@ mod mock {
                 .unwrap_or(false);
             let replay_path = o.get::<Option<String>>("replay")?;
             if let Some(t) = o.get::<Option<Table>>("redact")? {
+                // Stored VERBATIM: `redact_into` compares header names case-insensitively already,
+                // and the same list doubles as literal strings scrubbed from the serialized
+                // cassette (cross-transport floor) — where case must be preserved.
                 for h in t.sequence_values::<String>() {
-                    init.redact.push(h?.to_ascii_lowercase());
+                    init.redact.push(h?);
                 }
             }
             // Invalid states, rejected at the call site rather than surfacing as a confusing 404 or
@@ -2624,6 +2627,9 @@ mod mock {
             // The grammar's fields, same as any resource: wire `m.url` into the SUT exactly the way
             // you wire a database's.
             fields.add_field_method_get("url", |_, this| Ok(this.url.clone()));
+            // The universal driver-target alias (cohesion): every addressable mock exposes
+            // `.endpoint` = the exact string its driver consumes, one name across transports.
+            fields.add_field_method_get("endpoint", |_, this| Ok(this.url.clone()));
             fields.add_field_method_get("host", |_, this| Ok(this.host.clone()));
             fields.add_field_method_get("port", |_, this| Ok(this.port));
             // `.network` — the vantage a containerized/VM'd SUT wires in, present only when
@@ -2919,6 +2925,9 @@ mod mock {
         };
         let text = serde_json::to_string_pretty(&cassette)
             .map_err(|e| mlua::Error::RuntimeError(format!("http.mock: encoding cassette: {e}")))?;
+        // The literal-string floor on top of by-header-name redaction: a secret named in `redact`
+        // never survives into the file even if it rode in a query param or body, not a header.
+        let text = super::cassette::scrub(text, &s.redact);
         std::fs::write(&path, text).map_err(|e| {
             mlua::Error::RuntimeError(format!("http.mock: writing cassette {path:?}: {e}"))
         })
@@ -5461,6 +5470,8 @@ mod grpc_mock {
         /// Set on a `grpc.proxy` (proofs/spec/cassettes/grpc): the interpose behavior that replaces
         /// the stub path in `answer`. `None` for an ordinary mock.
         proxy: Option<Proxy>,
+        /// The fault dial (cohesion) — only a proxy sets these; a plain mock leaves them default.
+        faults: GrpcFaults,
     }
 
     /// A grpc.proxy's interpose behavior — record forwards to a real upstream and captures pairs;
@@ -5474,11 +5485,21 @@ mod grpc_mock {
             /// The schema learned from the upstream, stored in the cassette so replay is
             /// self-describing (needs no proto and no upstream).
             fds_bytes: Vec<u8>,
+            /// Literal strings scrubbed from the serialized cassette at flush time.
+            redact: Vec<String>,
         },
         Replay {
             turns: Vec<GrpcTurn>,
             consumed: Vec<bool>,
         },
+    }
+
+    /// The fault dial on a grpc.proxy (cohesion — the shared vocabulary). `latency`/`drop`/`after`
+    /// are transport-generic; the L7 byte faults (corrupt/throttle) stay socket-only by design.
+    #[derive(Default)]
+    struct GrpcFaults {
+        latency: Option<Duration>,
+        dropped: bool,
     }
 
     /// One recorded unary call: method + request select the response (or the error code).
@@ -5826,6 +5847,17 @@ mod grpc_mock {
 
         // A grpc.proxy replaces the stub path with native forward (record) or cassette (replay).
         if state.borrow().proxy.is_some() {
+            // The fault dial, consulted before any answer (cohesion, mirrors the socket/http proxy).
+            let (latency, dropped) = {
+                let s = state.borrow();
+                (s.faults.latency, s.faults.dropped)
+            };
+            if dropped {
+                return Err(Status::unavailable("grpc.proxy: dropped (fault injection)"));
+            }
+            if let Some(l) = latency {
+                tokio::time::sleep(l).await;
+            }
             return proxy_answer(&state, &method, &output, request, &req_json).await;
         }
 
@@ -6098,6 +6130,10 @@ mod grpc_mock {
             fields.add_field_method_get("url", |_, this| Ok(this.url.clone()));
             fields.add_field_method_get("host", |_, this| Ok(this.host.clone()));
             fields.add_field_method_get("port", |_, this| Ok(this.port));
+            // The universal driver-target alias — what grpc.client(...) takes: "host:port".
+            fields.add_field_method_get("endpoint", |_, this| {
+                Ok(format!("{}:{}", this.host, this.port))
+            });
             fields.add_field_method_get("network", |lua, this| {
                 let Some(host) = &this.network_host else {
                     return Ok(Value::Nil);
@@ -6154,6 +6190,58 @@ mod grpc_mock {
             // record mode flushes its cassette here — the close/scope-exit flush point.
             methods.add_method("stop", |_, this, ()| grpc_stop(this));
             methods.add_method("close", |_, this, ()| grpc_stop(this));
+
+            // The fault vocabulary (cohesion) — meaningful on a grpc.proxy; latency/drop/after are
+            // transport-generic. corrupt/throttle are byte-level and stay socket-only by design.
+            methods.add_method("latency", |_, this, d: String| {
+                let dur = parse_duration(&d)
+                    .ok_or_else(|| err(format!("grpc.proxy latency: bad duration {d:?}")))?;
+                this.state.borrow_mut().faults.latency = Some(dur);
+                Ok(())
+            });
+            methods.add_method("drop", |_, this, ()| {
+                this.state.borrow_mut().faults.dropped = true;
+                Ok(())
+            });
+            methods.add_method("after", |lua, this, d: String| {
+                let delay = parse_duration(&d)
+                    .ok_or_else(|| err(format!("grpc.proxy after: bad duration {d:?}")))?;
+                lua.create_userdata(GrpcFuse {
+                    delay,
+                    state: this.state.clone(),
+                })
+            });
+        }
+    }
+
+    /// A scheduled grpc fault (`p:after("100ms"):drop()`), mirroring the socket/http proxy fuses.
+    struct GrpcFuse {
+        delay: Duration,
+        state: Shared,
+    }
+
+    impl UserData for GrpcFuse {
+        fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+            methods.add_method("drop", |_, this, ()| {
+                let delay = this.delay;
+                let state = this.state.clone();
+                tokio::task::spawn_local(async move {
+                    tokio::time::sleep(delay).await;
+                    state.borrow_mut().faults.dropped = true;
+                });
+                Ok(())
+            });
+            methods.add_method("latency", |_, this, d: String| {
+                let dur = parse_duration(&d)
+                    .ok_or_else(|| err(format!("grpc.proxy latency: bad duration {d:?}")))?;
+                let delay = this.delay;
+                let state = this.state.clone();
+                tokio::task::spawn_local(async move {
+                    tokio::time::sleep(delay).await;
+                    state.borrow_mut().faults.latency = Some(dur);
+                });
+                Ok(())
+            });
         }
     }
 
@@ -6186,6 +6274,7 @@ mod grpc_mock {
             turns,
             cassette,
             fds_bytes,
+            redact,
             ..
         }) = &s.proxy
         else {
@@ -6202,6 +6291,8 @@ mod grpc_mock {
         };
         let text = serde_json::to_string_pretty(&cas)
             .map_err(|e| err(format!("grpc.proxy: encoding cassette: {e}")))?;
+        // Cross-transport redaction floor: scrub literal secrets before the file hits disk.
+        let text = super::cassette::scrub(text, redact);
         std::fs::write(cassette, text)
             .map_err(|e| err(format!("grpc.proxy: writing cassette {cassette:?}: {e}")))
     }
@@ -6410,6 +6501,7 @@ mod grpc_mock {
                     turns: Vec::new(),
                     cassette: cassette.clone().unwrap_or_default(),
                     fds_bytes,
+                    redact: opts.get::<Option<Vec<String>>>("redact")?.unwrap_or_default(),
                 },
             )
         };
@@ -6423,6 +6515,7 @@ mod grpc_mock {
                     pool,
                     turns,
                     fds_bytes,
+                    redact,
                     ..
                 } => Proxy::Record {
                     channel,
@@ -6430,6 +6523,7 @@ mod grpc_mock {
                     turns,
                     cassette: String::new(),
                     fds_bytes,
+                    redact,
                 },
                 other => other,
             }

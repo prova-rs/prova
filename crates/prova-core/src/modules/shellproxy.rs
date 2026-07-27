@@ -50,6 +50,8 @@ struct ShimState {
     recording: bool,
     /// Set in replay mode — the recorded turns, rendered as `case` arms (no upstream consulted).
     replay: Vec<ReplayTurn>,
+    /// Literal strings scrubbed from the cassette at flush time (record-time redaction).
+    redact: Vec<String>,
 }
 
 struct ShimUd {
@@ -229,16 +231,20 @@ impl UserData for ShimUd {
             Ok(out)
         });
 
-        methods.add_method("stop", |_, this, ()| {
-            // Record mode: the flush point. Read every spooled invocation's argv+stdin key and the
-            // upstream's stdout+exit the shim buffered, and write the cassette — OUTSIDE the shim
-            // dir, so removing the shim never eats the recording.
-            flush_cassette(&this.state)?;
-            let dir = this.state.borrow().dir.clone();
-            let _ = std::fs::remove_dir_all(dir);
-            Ok(())
-        });
+        methods.add_method("stop", |_, this, ()| shim_stop(this));
+        // `:close()` — the proxy grammar's teardown verb (cohesion), identical to `:stop()`.
+        methods.add_method("close", |_, this, ()| shim_stop(this));
     }
+}
+
+fn shim_stop(this: &ShimUd) -> mlua::Result<()> {
+    // Record mode: the flush point. Read every spooled invocation's argv+stdin key and the
+    // upstream's stdout+exit the shim buffered, and write the cassette — OUTSIDE the shim dir, so
+    // removing the shim never eats the recording.
+    flush_cassette(&this.state)?;
+    let dir = this.state.borrow().dir.clone();
+    let _ = std::fs::remove_dir_all(dir);
+    Ok(())
 }
 
 /// The key a turn is matched by: the NUL-joined argv plus the stdin, so two invocations that
@@ -257,14 +263,19 @@ fn turn_key(argv_raw: &[u8], stdin_raw: &[u8]) -> String {
 }
 
 fn flush_cassette(state: &Rc<RefCell<ShimState>>) -> mlua::Result<()> {
-    let (cassette, recording, spool) = {
+    let (cassette, recording, spool, redact) = {
         let s = state.borrow();
-        (s.cassette.clone(), s.recording, s.spool.clone())
+        (
+            s.cassette.clone(),
+            s.recording,
+            s.spool.clone(),
+            s.redact.clone(),
+        )
     };
     let (Some(path), true) = (cassette, recording) else {
         return Ok(());
     };
-    let recorder = super::cassette::Recorder::new(path, "shell");
+    let recorder = super::cassette::Recorder::new(path, "shell").with_redactions(redact);
     let count: usize = std::fs::read_to_string(spool.join(".seq"))
         .ok()
         .and_then(|s| s.trim().parse().ok())
@@ -305,6 +316,7 @@ pub(crate) fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
         }
         let upstream = opts.get::<Option<String>>("upstream")?;
         let cassette = opts.get::<Option<String>>("cassette")?;
+        let redact = opts.get::<Option<Vec<String>>>("redact")?.unwrap_or_default();
         let mode_str = opts
             .get::<Option<String>>("mode")?
             .unwrap_or_else(|| "passthrough".to_string());
@@ -365,6 +377,7 @@ pub(crate) fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
             cassette,
             recording: mode == "record",
             replay,
+            redact,
         }));
         write_shim(&state.borrow())?;
 

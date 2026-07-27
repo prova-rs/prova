@@ -15,7 +15,7 @@
 -- ── 1. grpc.proxy speaks the fault vocabulary ──────────────────────────────────────────────────
 
 prova.test("grpc.proxy injects latency — a resilience verb against a gRPC dependency",
-  { spec = "closing/cohesion: grpc.proxy faults — not built" }, function(t)
+  { proves = "closing/cohesion: grpc.proxy speaks the fault vocabulary — latency, a resilience verb" }, function(t)
   local dir = t:tempdir()
   fs.write(dir .. "/p.proto", [[
 syntax = "proto3";
@@ -40,7 +40,7 @@ end)
 -- ── 2. a universal .endpoint ────────────────────────────────────────────────────────────────────
 
 prova.test(".endpoint is the driver-target string on every addressable mock",
-  { spec = "closing/cohesion: universal .endpoint — not built" }, function(t)
+  { proves = "closing/cohesion: .endpoint is the one driver-target name across .url/.addr transports" }, function(t)
   local hm = http.mock(t)
   t:expect(hm.endpoint):equals(hm.url)                        -- http: the url
 
@@ -64,7 +64,7 @@ end)
 -- ── 3. :close() everywhere ──────────────────────────────────────────────────────────────────────
 
 prova.test("every proxy tears down with :close() — the connection-shaped verb",
-  { requires = { "unix" }, spec = "closing/cohesion: :close() everywhere — not built" }, function(t)
+  { requires = { "unix" }, proves = "closing/cohesion: :close() tears down every proxy — the connection-shaped verb" }, function(t)
   -- shell.proxy was the odd one out (only :stop()). :close() must work identically.
   local shim = shell.proxy(t, { as = "noop", upstream = "/bin/echo" })
   shell.run("noop hi", { env = shim.env })

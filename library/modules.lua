@@ -312,6 +312,7 @@ function MockStub:reply(reply) end
 --- database's, and it is torn down with the scope that owns it.
 ---@class prova.MockServer
 ---@field url string       # "http://127.0.0.1:<port>"
+---@field endpoint string  # the driver-target alias == url
 ---@field host string      # "127.0.0.1"
 ---@field port integer     # the bound port (random, so parallel tests don't collide)
 ---@field network? { url: string, host: string, port: integer }  # cross-substrate vantage; present only with `network`
@@ -637,6 +638,7 @@ function GrpcMockStub:reply(reply) end
 ---@field url string       # "http://127.0.0.1:<port>"
 ---@field host string      # "127.0.0.1"
 ---@field port integer     # the bound port (random, so parallel tests don't collide)
+---@field endpoint string  # the driver-target alias == "host:port" (what grpc.client takes)
 ---@field network? { url: string, host: string, port: integer }  # cross-substrate vantage; present only with `network`
 local GrpcMock = {}
 
@@ -652,8 +654,21 @@ function GrpcMock:on(match) end
 ---@return prova.GrpcMockCall[]
 function GrpcMock:received(filter) end
 
---- Stop serving. Idempotent — the owning scope calls this too.
+--- Stop serving. Idempotent — the owning scope calls this too. In a `grpc.proxy` record mode,
+--- the cassette flush point.
 function GrpcMock:stop() end
+--- Alias for `:stop()` — the proxy grammar's teardown verb.
+function GrpcMock:close() end
+--- (grpc.proxy) Continuous latency on every call, both directions ("2s"). The transport-generic
+--- fault verb; byte-level corrupt/throttle stay socket-only.
+---@param duration string
+function GrpcMock:latency(duration) end
+--- (grpc.proxy) Sever — subsequent calls fail with `Unavailable`.
+function GrpcMock:drop() end
+--- (grpc.proxy) Schedule a fault: `p:after("100ms"):drop()` — healthy first, injured later.
+---@param delay string
+---@return prova.GrpcMock   # a scheduled handle speaking drop/latency
+function GrpcMock:after(delay) end
 
 ---@class prova.GrpcMockOpts
 ---@field proto string|string[]         # `.proto` path(s), compiled at runtime (pure Rust; no protoc)
@@ -679,6 +694,7 @@ function grpc.mock(ctx, opts) end
 ---@field upstream? string   # the real gRPC server (host:port), needed by passthrough/record/auto
 ---@field cassette? string   # the recording file, needed by record/replay/auto
 ---@field mode? string       # "passthrough" (default) | "record" | "replay" | "auto"
+---@field redact? string[]   # literal strings scrubbed from the cassette at record time
 
 --- Interpose on a real gRPC dependency (docs/design/mocks-proxies-drivers.md). Record captures the
 --- upstream's schema (learned by reflection) AND each unary call into a cassette, so a replay proxy
@@ -921,6 +937,7 @@ function SocketStub:reply(data) end
 
 ---@class prova.SocketMock
 ---@field addr string        # endpoint symmetry: the same string a driver's connect takes
+---@field endpoint string    # the driver-target alias == addr
 local SocketMock = {}
 --- Stub one framed turn (exact bytes). First matching stub wins; an unmatched turn is journaled
 --- (§6: matched=false, source="unmatched") and the connection closes LOUD.
@@ -986,7 +1003,7 @@ function socket.mock(ctx, opts) end
 --- `auto` records when the file is absent and replays when present. A replay miss severs the
 --- connection loud. Cassettes require `framing` (a raw byte stream has no turn to key on).
 ---@param ctx any
----@param opts { upstream?: string, addr?: string, framing?: prova.SocketFraming, cassette?: string, mode?: string }
+---@param opts { upstream?: string, addr?: string, framing?: prova.SocketFraming, cassette?: string, mode?: string, redact?: string[] }
 ---@return prova.SocketProxy
 function socket.proxy(ctx, opts) end
 
@@ -1079,6 +1096,27 @@ function terminal.spawn(ctx, opts) end
 ---@return prova.TerminalMock
 function terminal.mock(ctx, opts) end
 
+---@class prova.TerminalProxy
+---@field env table<string,string>   # PATH-prefixed env — hand to whatever spawns the SUT
+---@field path string                # the shim's absolute path
+local TerminalProxy = {}
+--- Stop the proxy (what `ctx:manage` calls). In record mode, flushes the cassette (outside the
+--- shim dir) — the close/scope-exit flush point.
+function TerminalProxy:stop() end
+--- Alias for `:stop()` — the proxy grammar's teardown verb.
+function TerminalProxy:close() end
+
+--- Interpose on an interactive CLI the SUT shells out to (the last cell in the transport matrix):
+--- shadow a command NAME on PATH, forward to the REAL program on the pty the SUT already allocated,
+--- and record the session — or replay a recorded one with no real program. The terminal cassette is
+--- the full-duplex, asciinema-shaped kind: the raw terminal stream with VT sequences intact, so a
+--- session recorded once (a ConPTY session on Windows) replays deterministically on every platform.
+--- Modes: passthrough (default) | record | replay | auto.
+---@param ctx any
+---@param opts { as: string, upstream?: string, cassette?: string, mode?: string }
+---@return prova.TerminalProxy
+function terminal.proxy(ctx, opts) end
+
 -- ---------------------------------------------------------------------------------------------
 -- websocket — full-duplex message turns over the http upgrade path (ws:// only)
 -- ---------------------------------------------------------------------------------------------
@@ -1103,6 +1141,7 @@ function WsStub:reply(data) end
 
 ---@class prova.WsMock
 ---@field url string   # "ws://127.0.0.1:<port>"
+---@field endpoint string  # the driver-target alias == url
 local WsMock = {}
 --- Stub one message turn (exact text). Unmatched turns are journaled (§6), never guessed at.
 ---@param turn string
@@ -1154,8 +1193,10 @@ function ShellShim:on(match) end
 ---@param filter? table|fun(entry: table): boolean
 ---@return table[]
 function ShellShim:received(filter) end
---- Remove the shim and its journal (what `ctx:manage` calls).
+--- Remove the shim and its journal (what `ctx:manage` calls). In record mode, the cassette flush point.
 function ShellShim:stop() end
+--- Alias for `:stop()` — the proxy grammar's teardown verb.
+function ShellShim:close() end
 
 --- Shadow a command NAME on PATH and interpose on every invocation the SUT makes: pass through
 --- to `upstream` and journal (spy), stub selected argv prefixes (stubs always win), or — with no
@@ -1167,7 +1208,7 @@ function ShellShim:stop() end
 --- answers from the recording with no upstream and no real binary, `auto` records-then-replays.
 --- A replay miss exits non-zero and is journaled as a miss.
 ---@param ctx any
----@param opts { as: string, upstream?: string, cassette?: string, mode?: string }
+---@param opts { as: string, upstream?: string, cassette?: string, mode?: string, redact?: string[] }
 ---@return prova.ShellShim
 function shell.proxy(ctx, opts) end
 

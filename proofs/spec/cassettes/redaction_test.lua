@@ -13,7 +13,7 @@
 -- ── grpc ─────────────────────────────────────────────────────────────────────────────────────
 
 prova.test("a grpc cassette redacts a named secret from the recorded request",
-  { spec = "closing/redaction: grpc cassette — not built" }, function(t)
+  { proves = "closing/redaction: a grpc cassette scrubs named secrets from the recorded request" }, function(t)
   local dir = t:tempdir()
   fs.write(dir .. "/echo.proto", [[
 syntax = "proto3";
@@ -38,7 +38,7 @@ end)
 -- ── socket ───────────────────────────────────────────────────────────────────────────────────
 
 prova.test("a socket cassette redacts a secret from a recorded turn",
-  { spec = "closing/redaction: socket cassette — not built" }, function(t)
+  { proves = "closing/redaction: a socket cassette scrubs a secret from a recorded turn" }, function(t)
   local srv = socket.mock(t, { framing = "line" })
   srv:on("AUTH sk-live-xyz"):reply("OK")
 
@@ -58,7 +58,7 @@ end)
 -- ── shell ────────────────────────────────────────────────────────────────────────────────────
 
 prova.test("a shell cassette redacts a secret captured in stdout",
-  { requires = { "unix" }, spec = "closing/redaction: shell cassette — not built" }, function(t)
+  { requires = { "unix" }, proves = "closing/redaction: a shell cassette scrubs a secret captured in stdout" }, function(t)
   local cli = t:tempdir() .. "/tokened"
   fs.write(cli, "#!/bin/sh\nprintf 'token=sk-live-shh\\n'\n")
   shell.run({ "chmod", "+x", cli }, { check = true })
@@ -77,7 +77,7 @@ end)
 -- ── the floor holds everywhere the http convenience already did ────────────────────────────────
 
 prova.test("http keeps its by-header-name redaction AND honors literal `redact` strings",
-  { spec = "closing/redaction: http literal strings — not built" }, function(t)
+  { proves = "closing/redaction: http honors literal redact strings on top of by-header-name" }, function(t)
   local up = http.mock(t)
   up:on{ path = "/x" }:reply{ status = 200, json = { echoed = true } }
 

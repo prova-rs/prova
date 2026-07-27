@@ -31,11 +31,29 @@ pub(crate) struct Cassette {
     pub turns: Vec<Turn>,
 }
 
+/// The sentinel a redacted secret becomes on disk — shared with the http facet's spelling.
+pub(crate) const REDACTION: &str = "REDACTED";
+
+/// Scrub literal secrets from a serialized cassette before it is written — the cross-transport
+/// redaction floor (docs/design/mocks-proxies-drivers.md). Recording real traffic writes real
+/// traffic to a file someone will commit, so `redact = { "secret" }` guarantees the string never
+/// hits disk, whatever the cassette format. Longest-first so a secret that contains another does
+/// not leave a partial behind.
+pub(crate) fn scrub(mut text: String, redactions: &[String]) -> String {
+    let mut ordered: Vec<&String> = redactions.iter().filter(|s| !s.is_empty()).collect();
+    ordered.sort_by_key(|s| std::cmp::Reverse(s.len()));
+    for secret in ordered {
+        text = text.replace(secret.as_str(), REDACTION);
+    }
+    text
+}
+
 /// Record side: append turns as they are observed, flush once at close.
 pub(crate) struct Recorder {
     path: String,
     kind: &'static str,
     turns: RefCell<Vec<Turn>>,
+    redact: Vec<String>,
 }
 
 impl Recorder {
@@ -44,7 +62,13 @@ impl Recorder {
             path,
             kind,
             turns: RefCell::new(Vec::new()),
+            redact: Vec::new(),
         }
+    }
+    /// Literal strings scrubbed from the serialized cassette at flush time (record-time redaction).
+    pub fn with_redactions(mut self, redact: Vec<String>) -> Recorder {
+        self.redact = redact;
+        self
     }
     pub fn record(&self, key: String, response: String, code: Option<i64>) {
         self.turns.borrow_mut().push(Turn {
@@ -63,7 +87,7 @@ impl Recorder {
         };
         let text = serde_json::to_string_pretty(&cas)
             .map_err(|e| std::io::Error::other(format!("encoding cassette: {e}")))?;
-        std::fs::write(&self.path, text)
+        std::fs::write(&self.path, scrub(text, &self.redact))
     }
 }
 

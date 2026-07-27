@@ -185,6 +185,7 @@ impl UserData for ServerConnUd {
 impl UserData for MockUd {
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
         fields.add_field_method_get("url", |_, this| Ok(this.url.clone()));
+        fields.add_field_method_get("endpoint", |_, this| Ok(this.url.clone()));
     }
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("on", |lua, this, turn: mlua::String| {
@@ -373,6 +374,7 @@ struct WsProxyUd {
 impl UserData for WsProxyUd {
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
         fields.add_field_method_get("url", |_, this| Ok(this.url.clone()));
+        fields.add_field_method_get("endpoint", |_, this| Ok(this.url.clone()));
     }
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("transcript", |lua, this, ()| {

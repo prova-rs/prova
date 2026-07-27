@@ -38,6 +38,7 @@ pub(crate) fn make(lua: &Lua) -> mlua::Result<Table> {
     let t = lua.create_table()?;
     t.set("spawn", spawn_fn(lua)?)?;
     t.set("mock", mock_fn(lua)?)?;
+    t.set("proxy", proxy_fn(lua)?)?;
     Ok(t)
 }
 
@@ -583,6 +584,188 @@ fn mock_fn(lua: &Lua) -> mlua::Result<Function> {
             env: env_key,
         })?;
         manage("terminal.mock", &ctx, &ud)?;
+        Ok(ud)
+    })
+}
+
+// ── terminal.proxy: interpose on an interactive CLI (record/replay the session) ────────────────
+
+/// The terminal cassette — the full-duplex, asciinema-shaped kind (docs/design/
+/// mocks-proxies-drivers.md): the raw terminal output stream, VT sequences intact, so replay
+/// reproduces a styled interactive session byte-for-byte. This is what makes the cross-platform
+/// story work — a ConPTY session recorded once replays on every platform. v1 captures the output
+/// frames; input-timed matching is the deeper form that rides the same file.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct TermCassette {
+    version: u32,
+    kind: String,
+    /// The recorded output, byte-lossless (base64 when not valid UTF-8).
+    frames: String,
+}
+
+struct TermProxyState {
+    dir: std::path::PathBuf,
+    shim: std::path::PathBuf,
+    /// Where the record shim spools the real program's output; wrapped into the cassette at close.
+    raw: std::path::PathBuf,
+    cassette: Option<String>,
+    recording: bool,
+}
+
+struct TermProxyUd {
+    state: Rc<RefCell<TermProxyState>>,
+    env: mlua::RegistryKey,
+}
+
+fn write_term_shim(state: &TermProxyState, upstream: Option<&str>, replay_frames: Option<&std::path::Path>) -> mlua::Result<()> {
+    let q = |s: &str| sh_quote(s.as_bytes());
+    let script = if let Some(frames) = replay_frames {
+        // Replay: reproduce the recorded output on the inherited pty. The real program never runs.
+        format!("#!/bin/sh\ncat {}\n", q(&frames.to_string_lossy()))
+    } else if let Some(up) = upstream {
+        if state.recording {
+            // Record: run the real program (inheriting the SUT's pty), spool its combined output,
+            // then replay it to the pty so the invocation looks untouched. `:close()` wraps the
+            // spool into the cassette.
+            format!(
+                "#!/bin/sh\n{cmd} \"$@\" > {raw} 2>&1\ncode=$?\ncat {raw}\nexit $code\n",
+                cmd = q(up),
+                raw = q(&state.raw.to_string_lossy())
+            )
+        } else {
+            // Passthrough: forward, record nothing.
+            format!("#!/bin/sh\nexec {} \"$@\"\n", q(up))
+        }
+    } else {
+        return Err(err("terminal.proxy: no upstream and no replay frames (internal)"));
+    };
+    std::fs::write(&state.shim, script)
+        .map_err(|e| err(format!("terminal.proxy: writing shim: {e}")))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&state.shim, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| err(format!("terminal.proxy: chmod shim: {e}")))?;
+    }
+    Ok(())
+}
+
+impl UserData for TermProxyUd {
+    fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
+        fields.add_field_method_get("env", |lua, this| lua.registry_value::<Table>(&this.env));
+        fields.add_field_method_get("path", |_, this| {
+            Ok(this.state.borrow().shim.to_string_lossy().to_string())
+        });
+    }
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("stop", |_, this, ()| term_proxy_stop(this));
+        methods.add_method("close", |_, this, ()| term_proxy_stop(this));
+    }
+}
+
+fn term_proxy_stop(this: &TermProxyUd) -> mlua::Result<()> {
+    // Record mode: the flush point. Wrap the spooled raw output into the cassette (outside the
+    // shim dir), then remove the shim dir.
+    let (cassette, recording, raw, dir) = {
+        let s = this.state.borrow();
+        (s.cassette.clone(), s.recording, s.raw.clone(), s.dir.clone())
+    };
+    if recording {
+        if let Some(path) = cassette {
+            let bytes = std::fs::read(&raw).unwrap_or_default();
+            let cas = TermCassette {
+                version: 1,
+                kind: "terminal".to_string(),
+                frames: super::cassette::encode_bytes(&bytes),
+            };
+            let text = serde_json::to_string_pretty(&cas)
+                .map_err(|e| err(format!("terminal.proxy: encoding cassette: {e}")))?;
+            std::fs::write(&path, text)
+                .map_err(|e| err(format!("terminal.proxy: writing cassette {path:?}: {e}")))?;
+        }
+    }
+    let _ = std::fs::remove_dir_all(dir);
+    Ok(())
+}
+
+fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
+    lua.create_function(|lua, (ctx, opts): (Value, Table)| {
+        let name = opts
+            .get::<Option<String>>("as")?
+            .ok_or_else(|| err("terminal.proxy(ctx, { as = \"name\" }): `as` is required"))?;
+        if name.contains('/') || name.contains('\\') {
+            return Err(err("terminal.proxy: `as` is a command NAME, not a path"));
+        }
+        let upstream = opts.get::<Option<String>>("upstream")?;
+        let cassette = opts.get::<Option<String>>("cassette")?;
+        let mode_str = opts
+            .get::<Option<String>>("mode")?
+            .unwrap_or_else(|| "passthrough".to_string());
+
+        let mode = match mode_str.as_str() {
+            "passthrough" | "record" | "replay" => mode_str.as_str(),
+            "auto" => {
+                let cas = cassette
+                    .as_ref()
+                    .ok_or_else(|| err("terminal.proxy: mode \"auto\" needs a `cassette`"))?;
+                if std::path::Path::new(cas).exists() {
+                    "replay"
+                } else {
+                    "record"
+                }
+            }
+            other => {
+                return Err(err(format!(
+                    "terminal.proxy: mode must be passthrough|record|replay|auto, got {other:?}"
+                )))
+            }
+        };
+        if mode != "passthrough" && cassette.is_none() {
+            return Err(err(format!("terminal.proxy: mode {mode_str:?} needs a `cassette`")));
+        }
+        if mode == "record" && upstream.is_none() {
+            return Err(err("terminal.proxy: recording needs an `upstream`"));
+        }
+
+        let dir = std::env::temp_dir().join(format!(
+            "prova-term-proxy-{}-{}",
+            std::process::id(),
+            &name
+        ));
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| err(format!("terminal.proxy: mkdir {}: {e}", dir.display())))?;
+        let state = TermProxyState {
+            shim: dir.join(&name),
+            raw: dir.join("raw"),
+            dir: dir.clone(),
+            cassette: cassette.clone(),
+            recording: mode == "record",
+        };
+
+        // Replay: decode the cassette's frames to a file the shim `cat`s; no upstream consulted.
+        if mode == "replay" {
+            let text = std::fs::read_to_string(cassette.as_ref().unwrap())
+                .map_err(|e| err(format!("terminal.proxy: reading cassette: {e}")))?;
+            let cas: TermCassette = serde_json::from_str(&text)
+                .map_err(|e| err(format!("terminal.proxy: parsing cassette: {e}")))?;
+            let frames_path = dir.join("frames");
+            std::fs::write(&frames_path, super::cassette::decode_bytes(&cas.frames))
+                .map_err(|e| err(format!("terminal.proxy: staging replay frames: {e}")))?;
+            write_term_shim(&state, None, Some(&frames_path))?;
+        } else {
+            write_term_shim(&state, upstream.as_deref(), None)?;
+        }
+
+        let env = lua.create_table()?;
+        let current = std::env::var("PATH").unwrap_or_default();
+        env.set("PATH", format!("{}:{current}", dir.display()))?;
+        let env_key = lua.create_registry_value(env)?;
+
+        let ud = lua.create_userdata(TermProxyUd {
+            state: Rc::new(RefCell::new(state)),
+            env: env_key,
+        })?;
+        manage("terminal.proxy", &ctx, &ud)?;
         Ok(ud)
     })
 }

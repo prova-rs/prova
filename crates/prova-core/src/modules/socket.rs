@@ -449,6 +449,7 @@ struct ListenerUd {
 impl UserData for ListenerUd {
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
         fields.add_field_method_get("addr", |_, this| Ok(this.addr.clone()));
+        fields.add_field_method_get("endpoint", |_, this| Ok(this.addr.clone()));
     }
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_async_method("accept", |_, this, opts: Option<Table>| async move {
@@ -550,6 +551,7 @@ impl UserData for MockStub {
 impl UserData for MockUd {
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
         fields.add_field_method_get("addr", |_, this| Ok(this.addr.clone()));
+        fields.add_field_method_get("endpoint", |_, this| Ok(this.addr.clone()));
     }
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("on", |lua, this, turn: mlua::String| {
@@ -997,6 +999,7 @@ impl UserData for FuseUd {
 impl UserData for ProxyUd {
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
         fields.add_field_method_get("addr", |_, this| Ok(this.addr.clone()));
+        fields.add_field_method_get("endpoint", |_, this| Ok(this.addr.clone()));
     }
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("transcript", |lua, this, ()| {
@@ -1132,10 +1135,13 @@ fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
             None
         };
         if mode == Mode::Record {
-            init.recorder = Some(Rc::new(super::cassette::Recorder::new(
-                cassette.clone().unwrap(),
-                "socket",
-            )));
+            let redact = opts
+                .get::<Option<Vec<String>>>("redact")?
+                .unwrap_or_default();
+            init.recorder = Some(Rc::new(
+                super::cassette::Recorder::new(cassette.clone().unwrap(), "socket")
+                    .with_redactions(redact),
+            ));
         }
         let state: Rc<RefCell<ProxyState>> = Rc::new(RefCell::new(init));
         let (drop_tx, drop_rx) = tokio::sync::watch::channel(false);

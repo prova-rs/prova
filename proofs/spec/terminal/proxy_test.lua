@@ -27,7 +27,7 @@ local function fake_cli(t, body)
 end
 
 prova.test("record forwards to the real CLI on a pty and flushes a cassette on close",
-  { requires = { "unix" }, spec = "closing/terminal.proxy: record mode — not built" }, function(t)
+  { requires = { "unix" }, proves = "closing/terminal.proxy: record forwards to the real CLI on a pty; close flushes the cassette" }, function(t)
   local cli = fake_cli(t, "printf 'WELCOME v1\\n'\n")
   local cas = t:tempdir() .. "/session.cast"
 
@@ -40,7 +40,7 @@ prova.test("record forwards to the real CLI on a pty and flushes a cassette on c
 end)
 
 prova.test("replay reproduces the recorded session — the real CLI never runs",
-  { requires = { "unix" }, spec = "closing/terminal.proxy: replay mode — not built" }, function(t)
+  { requires = { "unix" }, proves = "closing/terminal.proxy: replay reproduces the session — the real CLI never runs" }, function(t)
   local cli = fake_cli(t, "printf 'WELCOME v1\\n'\n")
   local cas = t:tempdir() .. "/session.cast"
 
@@ -57,19 +57,22 @@ prova.test("replay reproduces the recorded session — the real CLI never runs",
 end)
 
 prova.test("a terminal cassette recorded here replays here — the cross-platform mechanism",
-  { requires = { "unix" }, spec = "closing/terminal.proxy: cross-platform replay — not built" },
+  { requires = { "unix" }, proves = "closing/terminal.proxy: a portable cassette replays VT sequences intact — the cross-platform mechanism" },
   function(t)
   -- The unix half of the ConPTY story: record produces a portable cassette a DIFFERENT platform
   -- replays. Here both are unix; the Windows twin is a windows-gated `requires` on a runner.
-  local cli = fake_cli(t, "printf '\\033[32mOK\\033[0m done\\n'\n")   -- styled output
+  -- Green "OK" then plain "done": the raw stream carries VT sequences, the SCREEN renders text.
+  local cli = fake_cli(t, "printf '\\033[32mOK\\033[0m done\\n'\n")
   local cas = t:tempdir() .. "/styled.cast"
 
   local rec = terminal.proxy(t, { as = "styler", upstream = cli, cassette = cas, mode = "record" })
-  terminal.spawn(t, { cmd = { "sh", "-c", "styler" }, env = rec.env }):expect("OK done")
+  terminal.spawn(t, { cmd = { "sh", "-c", "styler" }, env = rec.env }):expect("done")
   rec:close()
 
   local rep = terminal.proxy(t, { as = "styler", cassette = cas, mode = "replay" })
   local term = terminal.spawn(t, { cmd = { "sh", "-c", "styler" }, env = rep.env })
-  term:wait_stable()
-  t:expect(term:screen():contains("OK done")):is_true()   -- VT sequences replay intact
+  term:expect("done")                                     -- block until observed, then read the frame
+  local s = term:screen()
+  t:expect(s:contains("OK done")):is_true()               -- VT sequences replayed and rendered
+  t:expect(s:cell(0, 0).fg):equals("green")               -- the color survived record→replay
 end)
