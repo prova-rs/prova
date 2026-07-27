@@ -247,6 +247,9 @@ fn plugin_subcommand(args: Vec<String>) -> ExitCode {
                 let path = Path::new(file);
                 let ns = plugins::namespace_for_file(path);
                 let mut config = RunConfig::new(1).with_module(prova_archetect::install);
+                if let Some(bin) = prova_bin() {
+                    config = config.with_prova_bin(bin);
+                }
                 if let Some((canonical, dir)) = &ns {
                     config = config.with_plugin_namespace(canonical.clone(), dir.clone());
                 }
@@ -2263,6 +2266,19 @@ fn collect_suites(
     Ok(suites)
 }
 
+/// This binary's own path, for `RunConfig::with_prova_bin` — surfaced to authors as `prova.bin`.
+///
+/// `current_exe` is already how this CLI re-invokes itself (`prova start` spawns `prova up`), so the
+/// same answer serves both and a suite driving prova recursively reaches the build that is running
+/// it rather than whatever `PATH` resolves.
+///
+/// On the vanishingly rare failure this yields `None`, leaving `prova.bin` unset. That is deliberate:
+/// guessing `"prova"` would reintroduce ambient resolution as a silent default, which is the exact
+/// failure this exists to remove. A proof then fails on a nil, naming the problem.
+fn prova_bin() -> Option<std::path::PathBuf> {
+    std::env::current_exe().ok()
+}
+
 /// Build the engine `RunConfig` every verb shares: the bundled archetect module, the global plugin
 /// install root, and each resolved named plugin/namespace (so `require(...)` resolves identically
 /// in `run`, `up`/`watch`, and `eval`). Callers layer verb-specific knobs (ports, snapshots,
@@ -2289,6 +2305,12 @@ fn engine_config(
     // repo artifacts. Absent when there is no manifest.
     if let Some(h) = home {
         config = config.with_project(h.dir.clone());
+    }
+    // Surface the running binary (`prova.bin`) so a suite that drives prova recursively names the
+    // build under test. Unlike `prova.root` this is available with or without a manifest — it
+    // describes the process, not the package.
+    if let Some(bin) = prova_bin() {
+        config = config.with_prova_bin(bin);
     }
     for (name, path) in &plugins_resolved.named {
         config = config.with_named_plugin(name.clone(), path.clone());

@@ -35,7 +35,7 @@ end)
 local function run(sb, args, env)
   local merged = { PROVA_PROGRESS = "" }
   for k, v in pairs(env or {}) do merged[k] = v end
-  return shell.run("prova " .. (args or ""), { cwd = sb, env = merged })
+  return shell.run(prova.bin .. " " .. (args or ""), { cwd = sb, env = merged })
 end
 
 -- ── the guarantee ────────────────────────────────────────────────────────────────────────────
@@ -126,7 +126,7 @@ prova.test("instant", function(t)
   t:expect(r.code):equals(0)
 end)
 ]])
-  local r = shell.run("prova --progress always", {
+  local r = shell.run(prova.bin .. " --progress always", {
     cwd = sb .. "/fast",
     env = { PROVA_PROGRESS = "" },
   })

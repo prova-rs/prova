@@ -14,7 +14,7 @@
 --- That distinction is worth keeping, because "tests failed" and "your runner is broken" want
 --- different responses from whoever is paged.
 
-local prova_bin = assert(os.getenv("PROVA_BIN"), "PROVA_BIN not set")
+local prova_bin = assert(prova.bin, "prova.bin not injected by the runtime")
 
 -- A capability that cannot exist on any machine: the PATH-probe fallback will never find it.
 local ABSENT = "prova-definitely-not-a-real-tool-xyz"

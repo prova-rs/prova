@@ -36,7 +36,7 @@ prova.test("a [plugins] entry bearing a reserved name is a manifest validation e
   shell.run("mkdir -p " .. proj .. "/fsplug", { check = true })
   fs.write(proj .. "/fsplug/init.lua", "return {}\n")
 
-  local r = shell.run("prova 2>&1", { cwd = proj })
+  local r = shell.run(prova.bin .. " 2>&1", { cwd = proj })
   t:expect(r.code):never():equals(0)          -- validation error, not a silent shadow
   t:expect(r.stdout):contains("fs")
   t:expect(r.stdout):contains("reserved")     -- the diagnosis names the mechanism
@@ -50,7 +50,7 @@ prova.test("a plugin-root file bearing a reserved name is a manifest validation 
   shell.run("mkdir -p " .. proj .. "/plugins", { check = true })
   fs.write(proj .. "/plugins/http.lua", "return {}\n")
 
-  local r = shell.run("prova 2>&1", { cwd = proj })
+  local r = shell.run(prova.bin .. " 2>&1", { cwd = proj })
   t:expect(r.code):never():equals(0)
   t:expect(r.stdout):contains("http")
   t:expect(r.stdout):contains("reserved")
@@ -73,7 +73,7 @@ prova.test("local shadowing is lexical, visible, deliberate — and untouched", 
   t:expect(fs.marker):is_true()
 end)
 ]])
-  local r = shell.run("prova 2>&1", { cwd = proj })
+  local r = shell.run(prova.bin .. " 2>&1", { cwd = proj })
   t:expect(r.code):equals(0)
 end)
 
@@ -96,6 +96,6 @@ prova.test("the excluded name is not injected, but is require-able under any loc
   t:expect(type(files.write)):equals("function")
 end)
 ]])
-  local r = shell.run("prova 2>&1", { cwd = proj })
+  local r = shell.run(prova.bin .. " 2>&1", { cwd = proj })
   t:expect(r.code):equals(0)
 end)

@@ -37,9 +37,12 @@ fn prova_acceptance_tests_itself() {
     // from walking up to the repo root's .prova.toml (whose pinned git plugins would otherwise be
     // fetched over the network — flaky offline, and outright broken on Windows runners).
     let sandbox = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("selftest-xdg");
+    // No `PROVA_BIN` here: the suites read `prova.bin`, which the runtime derives from the running
+    // process. Passing the same path a second way was redundant the moment that existed, and worse
+    // than redundant — an env var is dropped by any `shell.run{ env = ... }` that replaces the
+    // environment, while `prova.bin` is recomputed correctly by every nested run.
     let output = Command::new(bin)
         .args(&files)
-        .env("PROVA_BIN", bin)
         .env("PROVA_FIXTURES", &fixtures)
         .env("XDG_CACHE_HOME", sandbox.join("cache"))
         .env("XDG_DATA_HOME", sandbox.join("data"))

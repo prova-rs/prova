@@ -36,7 +36,7 @@ prova.test("a proves-annotated test is a plain full proof — the attribute is i
     'prova.test("holds", { proves = "context lives here" }, function(t)\n' ..
     '  t:expect(1 + 1):equals(2)\n' ..
     'end)\n')
-  local r = shell.run("prova 2>&1", { cwd = proj })
+  local r = shell.run(prova.bin .. " 2>&1", { cwd = proj })
   t:expect(r.code):equals(0)
   t:expect(r.stdout):contains("1 passed")
   t:expect(r.stdout):never():contains("spec open")      -- proves is not the spec outcome
@@ -48,7 +48,7 @@ prova.test("a proves-annotated test that fails is a real failure — no inversio
     'prova.test("broken", { proves = "context lives here" }, function(t)\n' ..
     '  t:expect(1):equals(2)\n' ..
     'end)\n')
-  local r = shell.run("prova 2>&1", { cwd = proj })
+  local r = shell.run(prova.bin .. " 2>&1", { cwd = proj })
   t:expect(r.code):never():equals(0)
   t:expect(r.stdout):contains("1 failed")
 end)
@@ -59,7 +59,7 @@ prova.test("an honored spec offers the conversion, its reason carried into the f
     'prova.test("done", { spec = "why this matters" }, function(t)\n' ..
     '  t:expect(true):is_true()\n' ..
     'end)\n')
-  local r = shell.run("prova 2>&1", { cwd = proj })
+  local r = shell.run(prova.bin .. " 2>&1", { cwd = proj })
   t:expect(r.code):never():equals(0)                    -- graduation is still mandatory
   t:expect(r.stdout):contains("spec honored")
   t:expect(r.stdout):contains('proves = "why this matters"')
@@ -70,7 +70,7 @@ prova.test("spec and proves on one test are refused — not both", { proves = PR
     'prova.test("confused", { spec = "open", proves = "done" }, function(t)\n' ..
     '  t:expect(true):is_true()\n' ..
     'end)\n')
-  local r = shell.run("prova 2>&1", { cwd = proj })
+  local r = shell.run(prova.bin .. " 2>&1", { cwd = proj })
   t:expect(r.code):never():equals(0)
   local out = r.stdout .. r.stderr
   t:expect(out):contains("not both")
@@ -83,7 +83,7 @@ prova.test("proves demands its context — a bare or empty flag is refused",
       'prova.test("silent", { proves = ' .. value .. ' }, function(t)\n' ..
       '  t:expect(true):is_true()\n' ..
       'end)\n')
-    local r = shell.run("prova 2>&1", { cwd = proj })
+    local r = shell.run(prova.bin .. " 2>&1", { cwd = proj })
     t:expect(r.code):never():equals(0)
     local out = r.stdout .. r.stderr
     t:expect(out):contains("proves")
@@ -97,7 +97,7 @@ prova.test("proves is test-level only — a group-level attribute is refused",
     'prova.group("g", { proves = "context" }, function(g)\n' ..
     '  g:test("inside", function(t) t:expect(true):is_true() end)\n' ..
     'end)\n')
-  local r = shell.run("prova 2>&1", { cwd = proj })
+  local r = shell.run(prova.bin .. " 2>&1", { cwd = proj })
   t:expect(r.code):never():equals(0)
   local out = r.stdout .. r.stderr
   t:expect(out):contains("proves is test-level only")
@@ -112,7 +112,7 @@ prova.test("`prova specs` enumerates only the open surface — proven tests are 
     'prova.test("still open", { spec = "not built yet" }, function(t)\n' ..
     '  t:expect(1):equals(2)\n' ..
     'end)\n')
-  local r = shell.run("prova specs 2>&1", { cwd = proj })
+  local r = shell.run(prova.bin .. " specs 2>&1", { cwd = proj })
   t:expect(r.code):equals(0)
   t:expect(r.stdout):contains("still open")
   t:expect(r.stdout):never():contains("finished")
@@ -125,7 +125,7 @@ prova.test("spec demands its reason from day one — a bare or empty flag is ref
       'prova.test("wordless", { spec = ' .. value .. ' }, function(t)\n' ..
       '  t:expect(1):equals(2)\n' ..
       'end)\n')
-    local r = shell.run("prova 2>&1", { cwd = proj })
+    local r = shell.run(prova.bin .. " 2>&1", { cwd = proj })
     t:expect(r.code):never():equals(0)
     local out = r.stdout .. r.stderr
     t:expect(out):contains("spec")
@@ -135,7 +135,7 @@ end)
 
 prova.test("the binary teaches the lifecycle: `prova learn specs` names proves",
   { proves = PROVES }, function(t)
-  local r = shell.run("prova learn specs 2>&1")
+  local r = shell.run(prova.bin .. " learn specs 2>&1")
   t:expect(r.code):equals(0)
   t:expect(r.stdout):contains("proves")
 end)

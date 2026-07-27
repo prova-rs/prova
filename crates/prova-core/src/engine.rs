@@ -224,6 +224,12 @@ pub struct RunConfig {
     /// `[run] globals = { exclude = [...] }` (api-freeze §2): bundled namespace names removed from
     /// global injection. Excluded names stay `require`-able; they are simply not ambient.
     globals_exclude: Vec<String>,
+    /// The prova executable driving this run, surfaced to authors as `prova.bin` (see
+    /// `with_prova_bin`). Injected rather than read from `std::env::current_exe()` here: prova-core
+    /// is a library, and a suite embedding it must not have "the current process is prova" assumed
+    /// on its behalf. `None` when the embedder does not supply one — `prova.bin` is then absent, and
+    /// a proof that needs it fails saying so rather than silently falling back to `PATH`.
+    prova_bin: Option<std::path::PathBuf>,
 }
 
 impl Default for RunConfig {
@@ -246,6 +252,7 @@ impl Default for RunConfig {
             specs_only: false,
             progress: std::sync::Arc::new(crate::progress::NullProgress),
             globals_exclude: Vec::new(),
+            prova_bin: None,
         }
     }
 }
@@ -373,6 +380,23 @@ impl RunConfig {
     /// cwd (an undocumented coincidence CI breaks). See `docs/design/agent-ergonomics.md` §2.
     pub fn with_project(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
         self.project_dir = Some(dir.into());
+        self
+    }
+
+    /// The prova executable driving this run, surfaced to authors as `prova.bin`.
+    ///
+    /// A suite that drives prova itself — prova's own proofs, an archetype proving what it renders,
+    /// any project whose tool under test invokes prova recursively — must reach a *specific* binary,
+    /// not whichever one `PATH` happens to resolve. Ambient resolution is not hermetic: with several
+    /// checkouts sharing one `~/.cargo/bin/prova`, the nested call silently tests a different build
+    /// than the one running the suite, and the failure surfaces as a proof failing on a symbol that
+    /// demonstrably exists in the tree.
+    ///
+    /// The caller passes its own executable (`std::env::current_exe()`), which makes the nested run
+    /// self-referential by construction: the suite tests the binary that is running it, with nothing
+    /// to remember and no environment to arrange.
+    pub fn with_prova_bin(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.prova_bin = Some(path.into());
         self
     }
 
@@ -2494,6 +2518,25 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
         let dir = dir.to_string_lossy();
         prova.set("root", dir.as_ref())?;
         prova.set("home", dir.as_ref())?;
+    }
+
+    // The prova binary running this suite (`RunConfig::with_prova_bin`), so a proof that drives prova
+    // recursively names the build under test instead of whatever `PATH` resolves. Same argument as
+    // `prova.root` one field up — anchor on what the runtime knows rather than trusting ambient
+    // process state — applied to the executable instead of the project.
+    //
+    // What this guarantees is SELF-CONSISTENCY: the nested run is the same build as the run that
+    // spawned it. That closes the split-brain case, where the suite runs from `target/` (`cargo xtask
+    // test`/`run`) while its nested calls resolve to an installed `~/.cargo/bin/prova` belonging to
+    // another checkout. It does NOT make an installed binary be the local build — invoke a stale
+    // install and both layers are consistently stale, which is a provisioning problem, not one Lua
+    // can see.
+    //
+    // Absent (nil) when the embedder supplied none; a proof then fails on a nil concat, which is the
+    // honest outcome. There is deliberately no `PATH` fallback — a fallback would restore the silent
+    // split this exists to remove.
+    if let Some(bin) = &config.prova_bin {
+        prova.set("bin", bin.to_string_lossy().as_ref())?;
     }
 
     // `prova.help([filter])` — the API surface, discoverable from inside the environment being

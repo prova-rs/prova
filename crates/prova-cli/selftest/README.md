@@ -10,8 +10,10 @@ the Rust library tests can't reach, because it exercises the *binary*.
 - `cli_test.lua` — exit codes, tally output, `--list`, `--format json`, error paths.
 - `manifest_test.lua` — `prova.toml` profile selection + env injection, via the real CLI.
 
-Driven by `tests/selftest.rs`, which runs `prova <selftest-dir>` with `PROVA_BIN` /
-`PROVA_FIXTURES` set (from `CARGO_BIN_EXE_prova`). So the flow is:
+Driven by `tests/selftest.rs`, which runs `prova <selftest-dir>` (from `CARGO_BIN_EXE_prova`) with
+`PROVA_FIXTURES` set. The inner binary is not passed in — each suite reads `prova.bin`, the
+executable the runtime knows it is running, so the inner run is the same build as the outer one by
+construction rather than by the launcher remembering to say so. So the flow is:
 
 ```
 cargo test → prova (outer) → runs *_test.lua → each shells out to → prova (inner) → asserts

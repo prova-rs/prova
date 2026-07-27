@@ -9,9 +9,10 @@
 ---   * topics with dynamic slots render THIS project's facts when run inside one, and degrade to
 ---     an imperative pointer (`prova init`) when there is no manifest
 ---
---- The launcher (tests/selftest.rs) sets PROVA_BIN and PROVA_FIXTURES.
+--- The binary under test is `prova.bin` (the runtime injects it); the launcher
+--- (tests/selftest.rs) sets PROVA_FIXTURES.
 
-local prova_bin = assert(os.getenv("PROVA_BIN"), "PROVA_BIN not set")
+local prova_bin = assert(prova.bin, "prova.bin not injected by the runtime")
 local fixtures = assert(os.getenv("PROVA_FIXTURES"), "PROVA_FIXTURES not set")
 
 local function learn(args, opts)

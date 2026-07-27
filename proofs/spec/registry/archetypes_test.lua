@@ -88,7 +88,7 @@ local function init(t, sb, args)
   local dest = sb.root .. "/renders/" .. tostring(t):gsub("%W", "") .. tostring(os.time())
     .. tostring(math.floor(os.clock() * 1e6))
   shell.run("mkdir -p " .. dest, { check = true })
-  local r = shell.run("prova init " .. args .. " --headless 2>&1", { cwd = dest, env = sb.env() })
+  local r = shell.run(prova.bin .. " init " .. args .. " --headless 2>&1", { cwd = dest, env = sb.env() })
   return r, dest
 end
 
@@ -161,7 +161,7 @@ end)
 prova.test("--list shows the catalog and says the registries hold more", function(t)
   local sb = t:use(sandbox)
   sb.configure()
-  local r = shell.run("prova init --list 2>&1", { cwd = sb.root, env = sb.env() })
+  local r = shell.run(prova.bin .. " init --list 2>&1", { cwd = sb.root, env = sb.env() })
 
   t:expect(r.code):equals(0)
   t:expect(r.stdout):contains("project")

@@ -1,8 +1,10 @@
 --- Prova testing Prova: acceptance-test the `prova` CLI by invoking the real binary against inner
---- fixtures and asserting on exit codes and output. The launcher (tests/selftest.rs) sets
---- `PROVA_BIN` (the built binary) and `PROVA_FIXTURES` (this dir's fixtures).
+--- fixtures and asserting on exit codes and output. The binary under test is `prova.bin` — the
+--- runtime hands every run its own executable, so this suite drives the build that is running it
+--- without an environment variable to arrange. The launcher (tests/selftest.rs) still sets
+--- `PROVA_FIXTURES` (this dir's fixtures).
 
-local prova_bin = assert(os.getenv("PROVA_BIN"), "PROVA_BIN not set")
+local prova_bin = assert(prova.bin, "prova.bin not injected by the runtime")
 local fixtures = assert(os.getenv("PROVA_FIXTURES"), "PROVA_FIXTURES not set")
 
 local function run(args)

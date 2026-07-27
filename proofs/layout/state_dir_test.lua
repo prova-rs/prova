@@ -64,14 +64,14 @@ end)
 --- empty string — which prova treats as unset. That keeps every run here hermetic even when the
 --- outer suite itself was invoked with PROVA_VAR_DIR set.
 local function run(dir, args, var_dir)
-  return shell.run("prova " .. (args or "") .. " 2>&1", {
+  return shell.run(prova.bin .. " " .. (args or "") .. " 2>&1", {
     cwd = dir,
     env = { PROVA_VAR_DIR = var_dir or "" },
   })
 end
 
 local function run_raw(dir, args, var_dir)
-  return shell.run("prova " .. (args or ""), {
+  return shell.run(prova.bin .. " " .. (args or ""), {
     cwd = dir,
     env = { PROVA_VAR_DIR = var_dir or "" },
   })

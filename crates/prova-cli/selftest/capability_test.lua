@@ -16,7 +16,7 @@
 --- not an optimization: a capability that answered differently for two suites in one run would be a
 --- bug, and eager evaluation is what lets the precondition see it before any suite exists.
 
-local prova_bin = assert(os.getenv("PROVA_BIN"), "PROVA_BIN not set")
+local prova_bin = assert(prova.bin, "prova.bin not injected by the runtime")
 
 --- A predicate body that RECORDS that it ran, then answers `verdict`.
 ---

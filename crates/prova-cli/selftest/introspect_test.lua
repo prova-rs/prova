@@ -2,9 +2,10 @@
 --- declares a plugin shipping a `library/` stub, `prova.help()` must answer for the plugin's
 --- API — the same "one source, N sinks" rail the core stubs ride. Black-box via `prova eval`.
 ---
---- The launcher (tests/selftest.rs) sets PROVA_BIN and PROVA_FIXTURES.
+--- The binary under test is `prova.bin` (the runtime injects it); the launcher
+--- (tests/selftest.rs) sets PROVA_FIXTURES.
 
-local prova_bin = assert(os.getenv("PROVA_BIN"), "PROVA_BIN not set")
+local prova_bin = assert(prova.bin, "prova.bin not injected by the runtime")
 local fixtures = assert(os.getenv("PROVA_FIXTURES"), "PROVA_FIXTURES not set")
 local project = fixtures .. "/mcp-project"
 

@@ -104,7 +104,7 @@ end)
 -- about warnings/errors; leave it off when asserting what the row listing does NOT contain.
 local function plugins(sb, args, opts)
   opts = opts or {}
-  return shell.run("prova plugins " .. args, {
+  return shell.run(prova.bin .. " plugins " .. args, {
     cwd = opts.cwd or sb.root,
     env = sb.env(opts.config),
   })
@@ -278,7 +278,7 @@ end)
 prova.test("`prova learn plugins` teaches the registries and the search-first move", function(t)
   local sb = t:use(sandbox)
   local proj = project(sb, "learn-slot")
-  local r = shell.run("prova learn plugins 2>&1", { cwd = proj, env = sb.env() })
+  local r = shell.run(prova.bin .. " learn plugins 2>&1", { cwd = proj, env = sb.env() })
   t:expect(r.code):equals(0)
   t:expect(r.stdout):contains("prova plugins")         -- the verb an agent should reach for
   t:expect(r.stdout):contains("main")                  -- the configured registries, rendered live

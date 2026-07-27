@@ -1,7 +1,7 @@
 --- Prova testing Prova: acceptance-test the suite manifest by writing a `prova.toml` into a temp
 --- dir, invoking the real binary there, and asserting the profile selection + env injection.
 
-local prova_bin = assert(os.getenv("PROVA_BIN"), "PROVA_BIN not set")
+local prova_bin = assert(prova.bin, "prova.bin not injected by the runtime")
 
 -- A scratch project: a manifest with two profiles pointing at different files, plus an env var the
 -- test file reads back.

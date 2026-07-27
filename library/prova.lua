@@ -300,6 +300,7 @@ function GroupBuilder:describe(label, body) end
 ---@field root string   # the PROJECT root — the ancestor dir the manifest was found under (the repo). Anchor repo paths here: `prova.root .. "/target/debug/app"`. Nil with no manifest.
 ---@field home string   # where `prova.toml` lives — the root, or its `prova/` / `.prova/` child. Anchor manifest-relative paths here. Nil with no manifest.
 ---@field ports string  # host port mode: "auto" | "fixed"
+---@field bin string    # the prova binary running this suite. Drive prova recursively through it — `shell.run(prova.bin .. " --version")` — never a bare `prova`, which resolves through PATH and can be a different build than the one running you.
 prova = {}
 
 --- The API surface, as data — every function, method, and value shape as

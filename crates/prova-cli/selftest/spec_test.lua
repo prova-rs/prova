@@ -3,7 +3,7 @@
 --- flag is removed; `--specs` selects the spec surface; `--strict-specs` is the implementing
 --- agent's driver mode; TAP renders open specs as `# TODO`.
 
-local prova_bin = assert(os.getenv("PROVA_BIN"), "PROVA_BIN not set")
+local prova_bin = assert(prova.bin, "prova.bin not injected by the runtime")
 
 local function run(args)
   return shell.run(prova_bin .. " " .. args)
