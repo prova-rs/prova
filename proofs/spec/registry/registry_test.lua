@@ -267,7 +267,11 @@ prova.test("a registry-known name never resolves via require until the manifest 
   -- `dupe` exists in the configured registries but not in this package's [plugins]; the
   -- searcher must not consult the registry (require's no-network safety boundary).
   local proj = project(sb, "discovery-only")
-  local r = shell.run([[prova eval 'return (pcall(require, "dupe"))' 2>&1]], {
+  -- prova.bin, not bare `prova`: this call replaces the environment via sb.env(), so PATH is not
+  -- inherited. On a machine with prova installed the bare name resolved anyway and hid that; on a
+  -- CI runner that only builds, it is `sh: prova: not found`. The absolute path is immune to both
+  -- the replaced env and the changed cwd.
+  local r = shell.run(prova.bin .. [[ eval 'return (pcall(require, "dupe"))' 2>&1]], {
     cwd = proj, env = sb.env(),
   })
   t:expect(r.stdout):contains("false")
