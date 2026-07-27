@@ -124,7 +124,7 @@ tempdir remove_all` (relative paths resolve against the invocation cwd). `net.fr
 `http.get/post/...(url, {headers, json, timeout}) → response` (`.status`, `.body`, `:json()`;
 userdata — not table-iterable), `http.client{ base_url }`, `http.wait_for(url, {status, timeout,
 every})`. `grpc.client(addr)` (`:call`, `:call_status`), `grpc.wait_for`. `graphql.client{ url }`
-(`:query`, `:execute`). `yaml.parse/parse_all`. `sqlite.client(url)`. `docker.run{...} →
+(`:query`, `:execute`). `yaml.decode/decode_all`. `sqlite.client(url)`. `docker.run{...} →
 container` (`:host_port`, `:run(argv)`, `:exec`, `:logs`, `:stop`), `docker.build{...} → image`,
 `docker.network{...} → network`. `archetect.render{...}` /
 `archetect.verify(...)`. When unsure of a shape: probe it with `eval` — that is what it is for.

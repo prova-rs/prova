@@ -9,13 +9,30 @@ for the gap inventory this serves). Everything below is normative: the spec suit
 Technology-first sibling modules, encode + decode together; `prova.parse.json` is **removed**
 (no alias — pre-1.0, break cleanly):
 
+> **Amended 2026-07-26 — the names below now match the principle.** §1 said "encode + decode
+> together" but the shipped implementations drifted: `yaml` used `parse`/`parse_all`/`dump`/`dump_all`
+> and `toml`/`csv` used `parse`, each borrowed from its own ecosystem (PyYAML, the Rust toml crate).
+> Read as a table that left **two** outliers — `json.decode` against three `parse`s, and `yaml.dump`
+> against three `encode`s — so neither direction was consistent. Every document format now reads with
+> `decode` and writes with `encode`, with a `_all` suffix where the format genuinely has multi-document
+> streams (YAML only).
+>
+> **The former spellings are removed outright, no aliases** — the same clean cut this section made for
+> `prova.parse.json`, and for the same reason: pre-announcement there are no consumers to carry, so a
+> shim would only be a second name to keep working, a second thing to document, and a route for the
+> drift to grow back. `proofs/spec/formats/naming_test.lua` lists them among the forbidden verbs, so
+> the removal is permanent rather than a thing the next format quietly reintroduces.
+>
+> `base64.{encode,decode}` and `url.{parse,encode}` are deliberately untouched — those are blob and
+> component transforms, not document (de)serialization.
+
 - `json.decode(s)` / `json.encode(v, opts?)` — plus fidelity sentinels: decode keeps `null → nil`;
   encode and subset shapes accept **`json.null`** (assert/emit explicit null) and **`json.array{}`**
   (force `[]` for empty/ambiguous tables; bare `{}` encodes as `{}` object).
-- `yaml.parse(s)` / `yaml.parse_all(s)` / `yaml.dump(v)` / `yaml.dump_all(docs)` — multi-doc emit
+- `yaml.decode(s)` / `yaml.decode_all(s)` / `yaml.encode(v)` / `yaml.encode_all(docs)` — multi-doc emit
   for k8s-shaped streams. Same sentinels as json.
-- `toml.parse(s)` / `toml.encode(v)` — dep already in-tree.
-- `csv.parse(s, opts?)` / `csv.encode(rows, opts?)` — header-aware; row shape mirrors
+- `toml.decode(s)` / `toml.encode(v)` — dep already in-tree.
+- `csv.decode(s, opts?)` / `csv.encode(rows, opts?)` — header-aware; row shape mirrors
   `prova.parse.table`.
 - `xml` — **deferred** until real demand; heavy to do well.
 - `prova.parse.{lines,rows,table}` stay — format-agnostic text utilities, correctly homed.
@@ -147,7 +164,7 @@ Order:
 3. Implementation burndown against `--specs --strict-specs`, trust-track hardening interleaved
    per the gap assessment's sequence.
 
-**Burndown status (2026-07-24):** §1 formats (`json`/`yaml.dump`/`toml`/`csv`) + utility belt,
+**Burndown status (2026-07-24):** §1 formats (`json`/`yaml.encode`/`toml`/`csv`) + utility belt,
 §3 matching (incl. the `json.null` sentinel), and §4 `:eventually` are **implemented and
 graduated** — their suites run flag-free, `prova --specs --list` is empty. `prova.parse.json` is
 removed and callers migrated.

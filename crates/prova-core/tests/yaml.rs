@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use prova_core::{run_path, NullReporter};
 
-/// `yaml.parse` (single doc → table) and `yaml.parse_all` (multi-document `---` stream), plus a
+/// `yaml.decode` (single doc → table) and `yaml.decode_all` (multi-document `---` stream), plus a
 /// raise on invalid YAML — all three tests green.
 #[test]
 fn yaml_module_parses_single_and_multi_doc() {

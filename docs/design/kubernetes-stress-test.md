@@ -34,7 +34,7 @@ have to clear the parity bar first.
 ## The mapping: what the plugin looks like
 
 The plugin decomposes the way the ecosystem doc predicts — `prova-kind` (a resource plugin) and
-`prova-kubernetes` (drives the `kubectl` CLI, parses with `json.decode` / `yaml.parse_all`). Both
+`prova-kubernetes` (drives the `kubectl` CLI, parses with `json.decode` / `yaml.decode_all`). Both
 are **pure Lua**. `kubectl` is already a registered capability detector (binary on PATH), so
 `requires = { "kubectl" }` gives graceful skip for free.
 
@@ -70,7 +70,7 @@ Everything in that sketch except `:matches({...})` maps onto an intrinsic that *
 | command/script blocks | `shell` is a *first-class primitive*, not an escape hatch | ✅ stronger |
 | try/catch/finally | Lua — real control flow | ✅ stronger |
 | namespace cleanup / `finally` | scope teardown; every teardown runs even if one raises | ✅ stronger/general |
-| multi-doc manifest input | `yaml.parse_all` (documented "as in k8s manifests") | ✅ exists |
+| multi-doc manifest input | `yaml.decode_all` (documented "as in k8s manifests") | ✅ exists |
 | poll-until (eventual consistency) | `prova.retry(fn, {timeout, every})` | ✅ exists |
 | pod logs `-f` / port-forward / watch | `shell.spawn` → background `Process` w/ `:output()`/`:stop()`/`:wait()` | ✅ exists (poll, no live stream) |
 | shared cluster, per-test namespace isolation | `Scope.Suite` fixture + `Scope.Test` fixture depending on it (proven in `scopes_test.lua`) | ✅ exists |
@@ -131,12 +131,12 @@ to a real seam.
 `kubectl describe`/events into the raised error string, exactly as `shell.run` does. Ugly, but it
 unblocks a v0 before Gap 2 lands.
 
-### Gap 3 — Structured encode (`yaml.dump` / `json.encode`)  **(CLOSED — api-freeze §1)**
+### Gap 3 — Structured encode (`yaml.encode` / `json.encode`)  **(CLOSED — api-freeze §1)**
 
 ~~There is no encode primitive.~~ The tech-first format modules landed: `json.encode`/`json.decode`
-(with the `json.null`/`json.array` fidelity sentinels), `yaml.dump`/`yaml.dump_all` round-tripping
+(with the `json.null`/`json.array` fidelity sentinels), `yaml.encode`/`yaml.encode_all` round-tripping
 `parse`/`parse_all` — so the table-first authoring style (`k:apply(ns, { apiVersion = ..., kind =
-... })`) is available, and `yaml.dump_all` emits the multi-doc manifest stream directly.
+... })`) is available, and `yaml.encode_all` emits the multi-doc manifest stream directly.
 
 ### Deferred — streaming `:expect` over `shell.spawn`
 
@@ -164,8 +164,8 @@ domain stays entirely in a plugin.
 
 1. **`:matches(shape)` subset matcher + table diff** (`engine.rs`). Unblocks the differentiator;
    smallest, highest-leverage, useful far beyond K8s. Prove it with a proof suite over decoded
-   `yaml.parse_all` fixtures — no cluster required.
-2. **`yaml.dump` / `json.encode`** (`modules.rs`). Trivial; enables table-first manifest authoring.
+   `yaml.decode_all` fixtures — no cluster required.
+2. **`yaml.encode` / `json.encode`** (`modules.rs`). Trivial; enables table-first manifest authoring.
 3. **On-failure diagnostic attachments** (`model.rs` + reporters + `engine.rs`). The debuggability
    seam that closes the *pleasant-to-use* gap with Chainsaw. Ship the plugin's v0 on the
    error-string workaround before this lands.

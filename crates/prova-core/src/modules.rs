@@ -23,11 +23,39 @@ use std::time::Instant;
 use mlua::{Lua, LuaSerdeExt, Table, UserData, UserDataFields, UserDataMethods, Value};
 
 use crate::model::parse_duration;
+use crate::progress::{self, Kind, Progress};
+use std::sync::Arc;
+
+/// One naming rule for every document-format module: **`decode` reads text into a Lua value, `encode`
+/// writes a Lua value back to text.** `json`, `yaml`, `toml` and `csv` all obey it, and a `_all`
+/// suffix marks the multi-document variants where the format actually has them (YAML `---` streams).
+///
+/// This used to be per-format folklore — `json.decode` but `yaml.parse`, `toml.encode` but
+/// `yaml.dump` — each name borrowed from its own ecosystem (cjson, PyYAML, the Rust toml crate). That
+/// reads fine one module at a time and badly in a proof that touches two: the four share one encode
+/// half and one set of fidelity sentinels (`json.null`, `json.array`), so they are one system, and a
+/// system wants one vocabulary. Lua has no compile-time check, so a wrong-but-plausible name is a
+/// runtime `attempt to call a nil value` at the moment that line runs — or worse, swallowed by a
+/// `pcall` and reported as something else entirely.
+///
+/// `proofs/spec/formats/naming_test.lua` holds the rule executably — including the reverse direction
+/// (no format may expose a read/write verb outside it, `parse`/`dump` among them), so the fifth format
+/// cannot drift.
+///
+/// The previous spellings are **gone, with no aliases** — the same clean cut api-freeze §1 made when it
+/// removed `prova.parse.json`. Pre-announcement there is nobody to carry, and a deprecation shim on a
+/// surface with no consumers is just a second name to keep working and a second thing to explain.
+mod format_names {
+    pub const DECODE: &str = "decode";
+    pub const ENCODE: &str = "encode";
+    pub const DECODE_ALL: &str = "decode_all";
+    pub const ENCODE_ALL: &str = "encode_all";
+}
 
 /// Install the built-in module globals (`shell`, `fs`, `docker`, and — with the `http` feature —
 /// `http`) into `lua`.
-pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
-    lua.globals().set("shell", make_shell(lua)?)?;
+pub(crate) fn install(lua: &Lua, progress: &Arc<dyn Progress>) -> mlua::Result<()> {
+    lua.globals().set("shell", make_shell(lua, progress)?)?;
     lua.globals().set("fs", make_fs(lua)?)?;
     lua.globals().set("net", make_net(lua)?)?;
     // `prova.parse.*` — the exec-CLI output-parsing toolkit (lines / rows / table), added to
@@ -48,7 +76,7 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set("uuid", make_uuid(lua)?)?;
     lua.globals().set("url", make_url(lua)?)?;
     #[cfg(feature = "docker")]
-    lua.globals().set("docker", docker::make(lua)?)?;
+    lua.globals().set("docker", docker::make(lua, progress)?)?;
     #[cfg(feature = "http")]
     lua.globals().set("http", http::make(lua)?)?;
     #[cfg(feature = "sqlite")]
@@ -176,7 +204,7 @@ fn json_value_to_lua(lua: &Lua, v: &serde_json::Value) -> mlua::Result<mlua::Val
 }
 
 /// Convert a Lua value to a `serde_json::Value` — the encode half shared by `json.encode`,
-/// `yaml.dump`, and `toml.encode`, carrying the fidelity sentinels (api-freeze §1):
+/// `yaml.encode`, and `toml.encode`, carrying the fidelity sentinels (api-freeze §1):
 ///
 /// - `json.null` (mlua's null lightuserdata) encodes as explicit `null`;
 /// - a table wearing the array metatable (`json.array{...}`) is an array even when empty;
@@ -287,16 +315,16 @@ fn make_json(lua: &Lua) -> mlua::Result<Table> {
     Ok(json)
 }
 
-/// `toml.*` — parse/encode, exposing the dep the manifest reader already compiles in.
+/// `toml.*` — decode/encode, exposing the dep the manifest reader already compiles in.
 fn make_toml(lua: &Lua) -> mlua::Result<Table> {
     let toml_ns = lua.create_table()?;
 
-    // toml.parse(s) → Lua value. Raises on invalid TOML.
+    // toml.decode(s) → Lua value. Raises on invalid TOML.
     toml_ns.set(
-        "parse",
+        format_names::DECODE,
         lua.create_function(|lua, s: String| {
             let v: toml::Value = toml::from_str(&s)
-                .map_err(|e| mlua::Error::RuntimeError(format!("toml.parse: {e}")))?;
+                .map_err(|e| mlua::Error::RuntimeError(format!("toml.decode: {e}")))?;
             lua.to_value(&v)
         })?,
     )?;
@@ -315,27 +343,27 @@ fn make_toml(lua: &Lua) -> mlua::Result<Table> {
     Ok(toml_ns)
 }
 
-/// `csv.*` — header-aware parse/encode; the row shape mirrors `prova.parse.table` (a list of
+/// `csv.*` — header-aware decode/encode; the row shape mirrors `prova.parse.table` (a list of
 /// header-keyed maps, every value a string — CSV is untyped text).
 fn make_csv(lua: &Lua) -> mlua::Result<Table> {
     let csv_ns = lua.create_table()?;
 
-    // csv.parse(s, opts?) → { {header = value, ...}, ... }. `opts.delimiter` (default ",").
+    // csv.decode(s, opts?) → { {header = value, ...}, ... }. `opts.delimiter` (default ",").
     csv_ns.set(
-        "parse",
+        format_names::DECODE,
         lua.create_function(|lua, (s, opts): (String, Option<Table>)| {
-            let delimiter = csv_delimiter(&opts, "csv.parse")?;
+            let delimiter = csv_delimiter(&opts, "csv.decode")?;
             let mut reader = csv::ReaderBuilder::new()
                 .delimiter(delimiter)
                 .from_reader(s.as_bytes());
             let headers = reader
                 .headers()
-                .map_err(|e| mlua::Error::RuntimeError(format!("csv.parse: {e}")))?
+                .map_err(|e| mlua::Error::RuntimeError(format!("csv.decode: {e}")))?
                 .clone();
             let rows = lua.create_table()?;
             for (i, record) in reader.records().enumerate() {
                 let record =
-                    record.map_err(|e| mlua::Error::RuntimeError(format!("csv.parse: {e}")))?;
+                    record.map_err(|e| mlua::Error::RuntimeError(format!("csv.decode: {e}")))?;
                 let row = lua.create_table()?;
                 for (h, field) in headers.iter().zip(record.iter()) {
                     row.set(h, field)?;
@@ -405,7 +433,7 @@ fn make_csv(lua: &Lua) -> mlua::Result<Table> {
     Ok(csv_ns)
 }
 
-/// The one-byte `delimiter` option shared by `csv.parse` / `csv.encode`.
+/// The one-byte `delimiter` option shared by `csv.decode` / `csv.encode`.
 fn csv_delimiter(opts: &Option<Table>, who: &str) -> mlua::Result<u8> {
     let Some(d) = opts
         .as_ref()
@@ -836,11 +864,15 @@ impl UserData for Process {
     }
 }
 
-fn make_shell(lua: &Lua) -> mlua::Result<Table> {
+fn make_shell(lua: &Lua, progress: &Arc<dyn Progress>) -> mlua::Result<Table> {
     let shell = lua.create_table()?;
     shell.set(
         "run",
-        lua.create_async_function(|lua, (cmd, opts): (mlua::Value, Option<Table>)| async move {
+        {
+            let progress = Arc::clone(progress);
+            lua.create_async_function(move |lua, (cmd, opts): (mlua::Value, Option<Table>)| {
+                let progress = Arc::clone(&progress);
+                async move {
             // Extract options up front (owned) so nothing borrows Lua across the await.
             let cmd = CommandSpec::parse(cmd)?;
             let cwd = opt_string(&opts, "cwd")?;
@@ -863,6 +895,10 @@ fn make_shell(lua: &Lua) -> mlua::Result<Table> {
                 command.env(k, v);
             }
 
+            // Bracket the blocking region: a captured build says nothing until it exits, which is
+            // pause #2 in the inventory. The renderer decides whether this is worth a line — a 30ms
+            // `echo` stays silent, a two-minute `cargo build` does not.
+            let activity = progress::start(&progress, Kind::Command, cmd.display_name());
             let start = Instant::now();
             let run = command.output();
             let output = match timeout {
@@ -881,6 +917,11 @@ fn make_shell(lua: &Lua) -> mlua::Result<Table> {
                 stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
                 duration: start.elapsed().as_secs_f64(),
             };
+            if result.code == 0 {
+                activity.done();
+            } else {
+                activity.done_with(format!("exit {}", result.code));
+            }
             if check && result.code != 0 {
                 // Builds put failure detail on either stream (msbuild/pnpm favor stdout), so the
                 // error carries the tail of both — better than any hand-rolled assert.
@@ -892,7 +933,9 @@ fn make_shell(lua: &Lua) -> mlua::Result<Table> {
                 )));
             }
             lua.create_userdata(result)
-        })?,
+                }
+            })?
+        },
     )?;
 
     // shell.spawn(cmd, { cwd, env }) → a Process handle for a long-running command (a booted app,
@@ -951,6 +994,23 @@ enum CommandSpec {
 }
 
 impl CommandSpec {
+    /// A short label for an activity line. Truncated hard: a `cargo build` invocation with twenty
+    /// flags is not what someone staring at a stalled run needs — the program and a hint of its
+    /// arguments is. The full command is still in the error on failure.
+    fn display_name(&self) -> String {
+        const MAX: usize = 60;
+        let full = match self {
+            Self::Shell(s) => s.clone(),
+            Self::Argv(argv) => argv.join(" "),
+        };
+        let flat = full.split_whitespace().collect::<Vec<_>>().join(" ");
+        if flat.chars().count() <= MAX {
+            return flat;
+        }
+        let head: String = flat.chars().take(MAX - 1).collect();
+        format!("{head}…")
+    }
+
     fn parse(v: mlua::Value) -> mlua::Result<Self> {
         match v {
             mlua::Value::String(s) => Ok(Self::Shell(s.to_str()?.to_string())),
@@ -2833,10 +2893,13 @@ pub(crate) mod docker {
         format!("prova-net-{}-{}", std::process::id(), n)
     }
 
-    pub(crate) fn make(lua: &Lua) -> mlua::Result<Table> {
+    pub(crate) fn make(
+        lua: &Lua,
+        progress: &super::Arc<dyn super::Progress>,
+    ) -> mlua::Result<Table> {
         let docker = lua.create_table()?;
-        docker.set("run", run_fn(lua)?)?;
-        docker.set("build", build_fn(lua)?)?;
+        docker.set("run", run_fn(lua, progress)?)?;
+        docker.set("build", build_fn(lua, progress)?)?;
         docker.set("network", network_fn(lua)?)?;
         // `docker.diagnostics()` — what the container runtime got wrong that prova papered over.
         // Process-wide and monotonic, so a caller reads it before and after and takes the delta.
@@ -2858,11 +2921,16 @@ pub(crate) mod docker {
         Ok(docker)
     }
 
-    fn run_fn(lua: &Lua) -> mlua::Result<Function> {
-        lua.create_async_function(|lua, opts: Table| {
+    fn run_fn(
+        lua: &Lua,
+        progress: &super::Arc<dyn super::Progress>,
+    ) -> mlua::Result<Function> {
+        let progress = super::Arc::clone(progress);
+        lua.create_async_function(move |lua, opts: Table| {
+            let progress = super::Arc::clone(&progress);
             let spec = Spec::from_table(&opts);
             async move {
-                let container = start(spec?).await?;
+                let container = start(spec?, &progress).await?;
                 lua.create_userdata(container)
             }
         })
@@ -2969,10 +3037,25 @@ pub(crate) mod docker {
     /// It costs nothing in requirements: the `docker` capability gate already probes `docker info`
     /// through this same CLI, so any test that can reach a daemon can run it (and
     /// `create_managed_network` sets the shell-out precedent).
-    fn build_fn(lua: &Lua) -> mlua::Result<Function> {
-        lua.create_async_function(|_, opts: Table| {
+    fn build_fn(
+        lua: &Lua,
+        progress: &super::Arc<dyn super::Progress>,
+    ) -> mlua::Result<Function> {
+        let progress = super::Arc::clone(progress);
+        lua.create_async_function(move |_, opts: Table| {
+            let progress = super::Arc::clone(&progress);
             let spec = BuildSpec::from_table(&opts);
-            async move { build(spec?).await }
+            async move {
+                let spec = spec?;
+                let activity =
+                    super::progress::start(&progress, super::Kind::Build, spec.tag.clone());
+                let out = build(spec).await;
+                match &out {
+                    Ok(_) => activity.done(),
+                    Err(_) => activity.done_with("failed"),
+                }
+                out
+            }
         })
     }
 
@@ -3276,7 +3359,10 @@ pub(crate) mod docker {
         }))
     }
 
-    async fn start(spec: Spec) -> mlua::Result<Container> {
+    async fn start(
+        spec: Spec,
+        progress: &super::Arc<dyn super::Progress>,
+    ) -> mlua::Result<Container> {
         let client = connect().await?;
 
         // Pull the image only if it isn't already local — `docker run`'s own rule. A locally-BUILT
@@ -3284,7 +3370,10 @@ pub(crate) mod docker {
         // misleading "pull access denied / repository does not exist"; and for a pulled image, a
         // tag that's already present skips a pointless registry round-trip.
         if client.inspect_image(&spec.image).await.is_err() {
-            // Pull the image (drain the progress stream to completion).
+            // The dominant cause of a run that looks hung: a cold pull is tens of MB over a registry
+            // and, until now, drained in total silence. bollard already hands us per-layer status —
+            // this reports it instead of discarding it (docs/plans/run-progress-feedback.md #1).
+            let activity = super::progress::start(progress, super::Kind::Pull, spec.image.clone());
             let (from_image, tag) = split_image(&spec.image);
             let mut pull = client.create_image(
                 Some(CreateImageOptions {
@@ -3295,8 +3384,24 @@ pub(crate) mod docker {
                 None,
                 None,
             );
+            // Layer ids seen, so the completion note can say how big the pull actually was. Counting
+            // ids rather than stream items: bollard emits many messages per layer.
+            let mut layers: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
             while let Some(item) = pull.next().await {
-                item.map_err(derr)?;
+                let info = item.map_err(derr)?;
+                if let Some(id) = info.id.as_deref() {
+                    // Docker uses the image ref itself as the `id` on summary messages; only short
+                    // hex layer ids are layers.
+                    if id.len() <= 16 && !id.contains(':') && layers.insert(id.to_string()) {
+                        activity.update(&format!("{} layers", layers.len()));
+                    }
+                }
+            }
+            if layers.is_empty() {
+                activity.done();
+            } else {
+                let n = layers.len();
+                activity.done_with(format!("{n} layer{}", if n == 1 { "" } else { "s" }));
             }
         }
 
@@ -3445,7 +3550,7 @@ pub(crate) mod docker {
         };
 
         if let Some(wait) = spec.wait {
-            wait_ready(&container, &wait).await?;
+            wait_ready(&container, &wait, progress, &spec.image).await?;
         }
         Ok(container)
     }
@@ -3718,7 +3823,17 @@ pub(crate) mod docker {
         })
     }
 
-    async fn wait_ready(container: &Container, wait: &Wait) -> mlua::Result<()> {
+    async fn wait_ready(
+        container: &Container,
+        wait: &Wait,
+        progress: &super::Arc<dyn super::Progress>,
+        image: &str,
+    ) -> mlua::Result<()> {
+        // Pause #4: a readiness poll is silent for up to a minute, and it is the pause most likely
+        // to be mistaken for a wedge — the container is already up, so nothing else is obviously
+        // happening. Held by scope: `wait_ready` returns from three places (ready, timeout, probe
+        // failure) and `Activity`'s Drop closes all three, so no exit can strand an open line.
+        let _activity = super::progress::start(progress, super::Kind::Waiting, image.to_string());
         let deadline = Instant::now() + wait.timeout;
         // Whether the in-container probe is supported — latched OFF only on a definitive
         // `Unsupported`, never on a transient `Failed`.
@@ -3954,6 +4069,12 @@ pub(crate) mod docker {
     mod tests {
         use super::*;
 
+        /// These drive `start` directly; activity reporting is not what they are about, so they get
+        /// the silent sink a library consumer gets.
+        fn silent() -> crate::progress::NullProgressArc {
+            crate::progress::null()
+        }
+
         fn bind(host_port: &str) -> PortBinding {
             PortBinding {
                 host_ip: Some("127.0.0.1".to_string()),
@@ -4050,7 +4171,7 @@ pub(crate) mod docker {
             // One spoiled attempt: prova should replace the container and hand back a working one.
             let before = PORT_BIND_RECOVERIES.load(Ordering::Relaxed);
             let container = rt
-                .block_on(start(spec_with_fault(1)))
+                .block_on(start(spec_with_fault(1), &silent()))
                 .expect("a single spoiled attempt must be recovered, not surfaced");
             assert!(
                 container.ports.contains_key(&80),
@@ -4067,7 +4188,7 @@ pub(crate) mod docker {
             // Spoiled beyond the retry budget: give up, say why, and count it as a failure.
             let before_fail = PORT_BIND_FAILURES.load(Ordering::Relaxed);
             let before_recover = PORT_BIND_RECOVERIES.load(Ordering::Relaxed);
-            let msg = match rt.block_on(start(spec_with_fault(99))) {
+            let msg = match rt.block_on(start(spec_with_fault(99), &silent())) {
                 Ok(_) => panic!("a permanently unbindable port must not be reported as success"),
                 Err(e) => e.to_string(),
             };
@@ -4114,7 +4235,7 @@ pub(crate) mod docker {
             // misread.
             let mut spec = spec_with_fault(0);
             spec.command = vec!["true".to_string()];
-            let result = rt.block_on(start(spec));
+            let result = rt.block_on(start(spec, &silent()));
 
             // Whether the scan caught it before or after it exited is a race, and either outcome is
             // legitimate — what must NEVER happen is blaming the runtime for it.
@@ -5728,40 +5849,46 @@ mod grpc_mock {
 }
 
 // ---------------------------------------------------------------------------------------------
-// yaml (sync — parse YAML text to Lua values; the counterpart to http's `:json()`)
+// yaml (sync — decode YAML text to Lua values; the counterpart to http's `:json()`)
 // ---------------------------------------------------------------------------------------------
 
 // A general capability for a cloud-oriented, polyglot world: k8s manifests, CI configs, and compose
-// files are all YAML. `yaml.parse` handles a single document; `yaml.parse_all` handles a
+// files are all YAML. `yaml.decode` handles a single document; `yaml.decode_all` handles a
 // multi-document stream (`---`-separated), which is exactly what Kubernetes manifests use.
+//
+// The `_all` pair is the one place a format module carries more than decode/encode, and it earns it:
+// `---` streams are a real YAML feature with no analogue in json/toml/csv. The suffix — rather than a
+// separate verb — is what keeps the extra capability inside the one naming rule (see `format_names`).
 #[cfg(feature = "yaml")]
 mod yaml {
     use mlua::{Lua, LuaSerdeExt, Table};
     use serde::Deserialize;
 
+    use super::format_names;
+
     pub(crate) fn make(lua: &Lua) -> mlua::Result<Table> {
         let yaml = lua.create_table()?;
 
-        // yaml.parse(text) → Lua value for the single/first document. Raises on invalid YAML.
+        // yaml.decode(text) → Lua value for the single/first document. Raises on invalid YAML.
         yaml.set(
-            "parse",
+            format_names::DECODE,
             lua.create_function(|lua, text: String| {
                 let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&text)
-                    .map_err(|e| mlua::Error::RuntimeError(format!("yaml.parse: {e}")))?;
+                    .map_err(|e| mlua::Error::RuntimeError(format!("yaml.decode: {e}")))?;
                 lua.to_value(&value)
             })?,
         )?;
 
-        // yaml.parse_all(text) → list of Lua values, one per `---`-separated document. Raises on the
+        // yaml.decode_all(text) → list of Lua values, one per `---`-separated document. Raises on the
         // first invalid document (with its 1-based index). An empty/whitespace-only string yields {}.
         yaml.set(
-            "parse_all",
+            format_names::DECODE_ALL,
             lua.create_function(|lua, text: String| {
                 let out = lua.create_table()?;
                 for (i, doc) in serde_yaml_ng::Deserializer::from_str(&text).enumerate() {
                     let value = serde_yaml_ng::Value::deserialize(doc).map_err(|e| {
                         mlua::Error::RuntimeError(format!(
-                            "yaml.parse_all: document {}: {e}",
+                            "yaml.decode_all: document {}: {e}",
                             i + 1
                         ))
                     })?;
@@ -5771,21 +5898,21 @@ mod yaml {
             })?,
         )?;
 
-        // yaml.dump(v) → YAML text for one document. Carries the json sentinels (api-freeze §1):
+        // yaml.encode(v) → YAML text for one document. Carries the json sentinels (api-freeze §1):
         // `json.null` emits an explicit null, `json.array{}` forces a flow-empty sequence.
         yaml.set(
-            "dump",
+            format_names::ENCODE,
             lua.create_function(|lua, v: mlua::Value| {
                 let jv = super::lua_value_to_json(lua, &v)?;
                 serde_yaml_ng::to_string(&jv)
-                    .map_err(|e| mlua::Error::RuntimeError(format!("yaml.dump: {e}")))
+                    .map_err(|e| mlua::Error::RuntimeError(format!("yaml.encode: {e}")))
             })?,
         )?;
 
-        // yaml.dump_all(docs) → one `---`-separated stream (the k8s manifest shape), the exact
-        // inverse of parse_all.
+        // yaml.encode_all(docs) → one `---`-separated stream (the k8s manifest shape), the exact
+        // inverse of decode_all.
         yaml.set(
-            "dump_all",
+            format_names::ENCODE_ALL,
             lua.create_function(|lua, docs: Table| {
                 let mut out = String::new();
                 for doc in docs.sequence_values::<mlua::Value>() {
@@ -5794,7 +5921,7 @@ mod yaml {
                         out.push_str("---\n");
                     }
                     out.push_str(&serde_yaml_ng::to_string(&jv).map_err(|e| {
-                        mlua::Error::RuntimeError(format!("yaml.dump_all: {e}"))
+                        mlua::Error::RuntimeError(format!("yaml.encode_all: {e}"))
                     })?);
                 }
                 Ok(out)

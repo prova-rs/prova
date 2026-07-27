@@ -127,7 +127,7 @@ Built-ins, one line each: `shell.run(cmd, {cwd, env, timeout, check})` + `shell.
 process) · `fs` (read/write/exists/glob/tempdir/remove_all) · `net.free_port()` ·
 `http.get/post/…` (async; `.status`, `:json()`), `http.client`, `http.wait_for` ·
 `grpc.client(addr)` (`:call`, `:call_status`; server reflection), `grpc.wait_for` ·
-`graphql.client{ url }` · `yaml.parse/parse_all` · `sqlite.client(url)` ·
+`graphql.client{ url }` · `yaml.decode/decode_all` · `sqlite.client(url)` ·
 `docker.run{...}`/`build`/`network` · mock facets: `http.mock`/`grpc.mock` (stubs with Lua reply
 handlers + a request journal; see [`mocks-proxies-drivers.md`](mocks-proxies-drivers.md)) —
 plus `archetect.render{...}`/`verify{...}`, a bundled plugin (always present in the standalone

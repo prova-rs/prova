@@ -684,22 +684,22 @@ yaml = {}
 --- Parse a single YAML document into a Lua value. Raises on invalid YAML.
 ---@param text string
 ---@return any
-function yaml.parse(text) end
+function yaml.decode(text) end
 --- Parse a multi-document YAML stream (`---`-separated, as in Kubernetes manifests) into a list of
 --- Lua values. Raises on the first invalid document.
 ---@param text string
 ---@return any[]
-function yaml.parse_all(text) end
+function yaml.decode_all(text) end
 --- Emit one value as a YAML document. Carries the json sentinels: `json.null` emits an explicit
 --- null; `json.array{}` forces an empty sequence.
 ---@param v any
 ---@return string
-function yaml.dump(v) end
+function yaml.encode(v) end
 --- Emit a list of values as one `---`-separated multi-document stream (the Kubernetes manifest
---- shape) — the exact inverse of `yaml.parse_all`.
+--- shape) — the exact inverse of `yaml.decode_all`.
 ---@param docs any[]
 ---@return string
-function yaml.dump_all(docs) end
+function yaml.encode_all(docs) end
 
 ------------------------------------------------------------------------------------------
 -- json / toml / csv — tech-first format modules: decode AND encode together (api-freeze §1)
@@ -732,7 +732,7 @@ toml = {}
 --- Parse TOML text into a Lua value. Raises on invalid TOML.
 ---@param s string
 ---@return table
-function toml.parse(s) end
+function toml.decode(s) end
 --- Encode a table as TOML text. TOML has no null, so `json.null` is an encode error here.
 ---@param v table
 ---@return string
@@ -749,7 +749,7 @@ csv = {}
 ---@param s string
 ---@param opts? prova.CsvOpts
 ---@return table<string, string>[]
-function csv.parse(s, opts) end
+function csv.decode(s, opts) end
 --- Encode a list of header-keyed row maps as CSV text with a header line. Quoting is automatic
 --- (RFC 4180).
 ---@param rows table<string, any>[]

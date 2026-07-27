@@ -103,6 +103,12 @@ local retired = {
   ["prova.shared"] = "prova.reads",
 }
 
+-- The format modules needed no entry here. Their pre-consolidation spellings (`yaml.parse`,
+-- `yaml.dump`, `toml.parse`, `csv.parse`) were removed outright rather than soft-deprecated, so there
+-- is nothing registered-but-hidden to exempt — `spec/formats/naming_test.lua` asserts they carry no
+-- value at all. Worth stating: reverse parity is exactly the proof that would have caught a shim left
+-- behind and forgotten.
+
 prova.test("every function the core globals carry is in help()", function(t)
   local entries = prova.help()
   local documented = {}
@@ -113,7 +119,7 @@ prova.test("every function the core globals carry is in help()", function(t)
   -- modules enumerate nothing, and their methods are covered by the class stubs.
   local surfaces = {
     prova = prova, shell = shell, fs = fs, net = net,
-    json = json, toml = toml, csv = csv,
+    json = json, yaml = yaml, toml = toml, csv = csv,
     base64 = base64, hash = hash, uuid = uuid, url = url,
     workspace = require("prova.workspace"),
   }
@@ -153,6 +159,25 @@ prova.test("the retired resource words stay callable but unadvertised", function
     -- A ref is opaque by design (that is why it can't be typo'd) — what a proof can see from here is
     -- that the retired constructor still yields one a `resources` list accepts.
     t:expect(prova[old_name]("db"), old .. " must still construct a ref"):never():is_nil()
+  end
+end)
+
+prova.test("help() teaches decode/encode for every format, and nothing else", function(t)
+  -- What an agent reading prova's own surface should find: one vocabulary, no residue of the former
+  -- spellings. The removal is asserted in `spec/formats/naming_test.lua`; what matters HERE is that
+  -- introspection — the thing an agent actually learns from — never mentions them.
+  local documented = {}
+  for _, e in ipairs(prova.help()) do documented[e.name] = true end
+
+  for _, module in ipairs({ "json", "yaml", "toml", "csv" }) do
+    t:expect(documented[module .. ".decode"] == true, "help() must answer for " .. module .. ".decode")
+      :is_true()
+    t:expect(documented[module .. ".encode"] == true, "help() must answer for " .. module .. ".encode")
+      :is_true()
+    for _, gone in ipairs({ "parse", "parse_all", "dump", "dump_all" }) do
+      t:expect(documented[module .. "." .. gone] == true, "help() must not mention " ..
+        module .. "." .. gone):is_false()
+    end
   end
 end)
 

@@ -119,7 +119,7 @@ function archetect.verify(a, b)
           local matches = fs.glob(root, g)
           t:expect(#matches, "glob '" .. g .. "' matched no files"):never():equals(0)
           for _, path in ipairs(matches) do
-            yaml.parse_all(fs.read(path))  -- raises (fails the test) on invalid YAML
+            yaml.decode_all(fs.read(path))  -- raises (fails the test) on invalid YAML
           end
         end
       end)

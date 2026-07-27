@@ -70,7 +70,7 @@ tested.
    flat, `display()` renders any table as `<table>`. Blocks: K8s plugin (its differentiator),
    every JSON-API assertion, `prova.double`'s own `:on` subset matching (currently reimplements
    it in Lua — converge them). Smallest, highest-leverage item on this list.
-2. **Encoders: `json.encode`, `yaml.dump`** (`modules.rs`). Verified: **no Lua-callable encoder
+2. **Encoders: `json.encode`, `yaml.encode`** (`modules.rs`). Verified: **no Lua-callable encoder
    for any format exists**; proofs never round-trip (decode-and-assert only), which masks it.
    Blocks: table-first manifest authoring, request-body building beyond `json=`, cassette
    post-processing, any plugin that must *produce* structured text.
@@ -159,7 +159,7 @@ already ships.
 | # | Capability track | Trust track (parallel) |
 |---|---|---|
 | 1 | Subset matcher + table diff (one semantics for expect/double/mock-stub) | `--last-failed` behavioral selftest |
-| 2 | `json.encode` / `yaml.dump` + utility belt (base64/hash/uuid/url/csv) | `prova watch` test harness |
+| 2 | `json.encode` / `yaml.encode` + utility belt (base64/hash/uuid/url/csv) | `prova watch` test harness |
 | 3 | Mock stub matchers (query/header/body via #1) → `graphql.mock` in Lua as dogfood | graphql + sqlite error-path suites |
 | 4 | TLS client (`https` feature) | yaml/parse/net malformed-input pins |
 | 5 | Fault vocabulary on passthrough (`drop/corrupt/throttle/after`) | grpc.mock proof-layer dogfood |
