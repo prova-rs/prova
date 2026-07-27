@@ -52,12 +52,6 @@ use serde::Deserialize;
 /// grouping that doesn't match the directory tree (a directory's `suite.lua` is the zero-config path).
 #[derive(Debug, Deserialize, Default)]
 pub struct Manifest {
-    /// The version gate. Read twice on purpose: once generically before the schema is applied
-    /// (see [`check_version_gate`]), and once here so its own shape is validated — otherwise
-    /// `[requires] prvoa = "0.12"` would be invisible to both passes and the gate would silently
-    /// never fire.
-    #[serde(default)]
-    pub requires: RequiresSection,
     #[serde(default)]
     pub run: Profile,
     #[serde(default)]
@@ -427,18 +421,6 @@ impl Resolved {
     pub const DEFAULT_PROOFS: &'static [&'static str] = &["proofs"];
 }
 
-/// `[requires]` — what this package needs from the tooling that reads it.
-///
-/// Deliberately its own table rather than a key under `[run]`: it is a property of the package,
-/// not of a run profile, and a profile could otherwise weaken it. Mirrors archetect's
-/// `requires.archetect`, since the two tools are siblings and the problem is identical.
-#[derive(Debug, Deserialize, Default, Clone, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct RequiresSection {
-    /// Minimum prova version. A floor, not a pin — see [`check_version_gate`].
-    pub prova: Option<String>,
-}
-
 /// The version this binary reports, for the `[requires] prova` gate.
 fn running_version() -> semver::Version {
     semver::Version::parse(env!("CARGO_PKG_VERSION"))
@@ -481,7 +463,19 @@ fn check_version_gate(text: &str) -> Result<(), String> {
     let Ok(value) = text.parse::<toml::Value>() else {
         return Ok(());
     };
-    let Some(declared) = value.get("requires").and_then(|r| r.get("prova")) else {
+    let Some(requires) = value.get("requires") else {
+        return Ok(());
+    };
+    // `[requires]` is intentionally invisible to the typed schema — it has to stay readable by
+    // binaries that predate whatever else is in the file. That means nothing else validates its
+    // shape, so a typo here would leave the gate silently never firing. Check it in place.
+    let table = requires
+        .as_table()
+        .ok_or_else(|| "[requires] must be a table, e.g. [requires]\nprova = \"0.12\"".to_string())?;
+    if let Some(unknown) = table.keys().find(|k| k.as_str() != "prova") {
+        return Err(format!("[requires]: unknown key `{unknown}` (the only key is `prova`)"));
+    }
+    let Some(declared) = table.get("prova") else {
         return Ok(());
     };
 
