@@ -441,9 +441,12 @@ mod tests {
         write_config(
             at,
             &format!(
+                // A TOML *literal* string (single quotes): a Windows path is `C:\…\registry-repo`,
+                // and in a basic (double-quoted) string those backslashes are escape sequences, so
+                // `\U`/`\r`/… make the config unparseable. Literal strings take the path verbatim.
                 "[[registries]]\n\
                  name = \"prova-rs\"\n\
-                 source = \"{}\"\n{extra_init}",
+                 source = '{}'\n{extra_init}",
                 reg.display()
             ),
         );
