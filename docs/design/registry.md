@@ -21,14 +21,30 @@ locally.
 
 ```
 package-registry/
-  registry/
+  registry/           # plugins — what `require` will eventually resolve, via a manifest pin
     postgres.toml
     rabbitmq.toml
     kafka.toml
     ...
+  archetypes/         # archetypes — what `prova init <key>` renders
+    project.toml
+    plugin.toml
+    ...
   proofs/            # the registry proves itself — see Automation
   prova.toml
 ```
+
+**Two sibling namespaces, not one.** Plugins and archetypes are both served by a registry, from
+separate directories, because they are different kinds of identifier and different projections:
+
+- An archetype key and a plugin name never collide. `postgres` can reasonably be both a plugin you
+  require and an archetype you render; one directory would force a choice.
+- A plugin entry is *derived* from the plugin's own `[plugin]` manifest plus `prova plugin lint`'s
+  shape classification. An archetype has neither — its metadata comes from `archetype.yaml`, and it
+  carries a field no plugin has (`in_package`). One shared schema would leave half the fields always
+  empty and make the required set uncheckable.
+
+A registry may serve either or both; a missing directory is a normal shape, not an error.
 
 Users list registries in the user-level config (`~/.config/prova/config.toml`); the `prova-rs`
 registry (`prova-rs/package-registry`) is built in as the default, and user entries add to or
@@ -93,6 +109,33 @@ search surface — free-form terms an agent would reach for ("postgres", "databa
 "jwt"), matched together with name and description. `latest` is the **recommended pin**, not a
 constraint: it is what `prova plugins add` writes into the manifest when no `@ref` is given.
 
+### The archetype entry
+
+```toml
+# archetypes/project.toml
+schema      = 1
+name        = "project"                  # the `prova init <key>` key — nothing else derives it
+repo         = "https://github.com/prova-rs/prova-init-project-archetype"
+description = "A prova package: .prova/ nook (manifest, config, shared lib plugin) + starter proofs"
+latest      = "v1"                       # the ref rendered; absent means default branch, unpinned
+in_package  = "deny"                     # deny (default) | allow — see below
+```
+
+Same required trio (`name`, `repo`, `description`) and the same tolerance rules: unknown keys ignored,
+an unreadable or newer-schema entry skipped with a warning while its siblings still serve.
+
+`in_package` is **publisher policy, not the consumer's**, and that is why it belongs on the entry: only
+the archetype knows whether it creates a package (`deny` — refuse to render over an existing manifest)
+or augments one (`allow` — e.g. scaffolding a local plugin into `plugin_root`). A consumer who declares
+the key in their own config can still override it, but they should not have to know it.
+
+**The key does not encode the repo.** `prova init acme-api` resolves `acme-api` through this table; it
+does not derive a URL from the key's spelling. That distinction is the point of the indirection — an
+archetype can live at any host under any repo name and still be reachable by a short, memorable key.
+The full four-rung resolution order (explicit `source` → declared key looked up here → built-in →
+bare registry name), and why a built-in deliberately beats a registry entry of the same name, is
+documented in the [`catalog` module](../../crates/prova-cli/src/catalog.rs).
+
 **The plugin repo is the source of truth for its own entry.** Automation derives the entry from
 the plugin's manifest (`[plugin]` section, advertised topologies) and `prova plugin lint`'s shape
 classification — the registry entry is a projection, never hand-maintained metadata that can
@@ -118,6 +161,13 @@ config — so the registry must sit entirely on the presentation side of the lin
   pinned source of truth (ecosystem.md's standing rule), and a fresh checkout reproduces the run
   with **zero registries configured**. Delete every registry from your config and nothing that
   ran yesterday changes today.
+
+- **An archetype lookup is a one-shot render, not a resolution.** `prova init <key>` consults the
+  registries, but nothing durable depends on the answer: the render produces files, and the
+  `prova.toml` it writes names no registry. Re-running `init` later with a different registry set
+  cannot change a package that already exists. So archetype lookup sits on the same presentation side
+  of the line as search — it is the `plugins add` case (a human, once, materializing something
+  concrete), never the `require` case.
 
 This also settles how the resolution ladder's tier 5 (`redis = "^1.2"`) must eventually work, if
 it is ever built: version-range resolution would happen at **add/update time** (a future

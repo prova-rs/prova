@@ -133,11 +133,21 @@ fn registry_dir(
     Ok((dir, None))
 }
 
-/// Read every `registry/*.toml` under a resolved registry dir. Tolerance is the contract: an
-/// entry with an unknown schema major, a missing required field, or unparseable TOML is skipped
-/// with a warning naming it; its siblings still serve.
-fn load_entries(reg: &RegistryRef, dir: &Path, warnings: &mut Vec<String>) -> Vec<Entry> {
-    let entries_dir = dir.join("registry");
+/// List `<dir>/<subdir>/*.toml`, sorted. A missing or unreadable directory is a warning naming it,
+/// not a failure: a registry that serves plugins but no archetypes (or the reverse) is normal, and
+/// tolerance is the contract on both scans.
+fn entry_files(
+    reg: &RegistryRef,
+    dir: &Path,
+    subdir: &str,
+    warnings: &mut Vec<String>,
+) -> Vec<PathBuf> {
+    let entries_dir = dir.join(subdir);
+    if !entries_dir.is_dir() {
+        // Silent: an archetype-less plugin registry (or vice versa) is a normal shape, not a problem
+        // to report on every listing.
+        return Vec::new();
+    }
     let mut files: Vec<PathBuf> = match std::fs::read_dir(&entries_dir) {
         Ok(rd) => rd
             .filter_map(|e| e.ok().map(|e| e.path()))
@@ -153,7 +163,14 @@ fn load_entries(reg: &RegistryRef, dir: &Path, warnings: &mut Vec<String>) -> Ve
         }
     };
     files.sort();
+    files
+}
 
+/// Read every `registry/*.toml` under a resolved registry dir. Tolerance is the contract: an
+/// entry with an unknown schema major, a missing required field, or unparseable TOML is skipped
+/// with a warning naming it; its siblings still serve.
+fn load_entries(reg: &RegistryRef, dir: &Path, warnings: &mut Vec<String>) -> Vec<Entry> {
+    let files = entry_files(reg, dir, "registry", warnings);
     let mut out = Vec::new();
     for path in files {
         let stem = path
@@ -209,6 +226,176 @@ fn load_entries(reg: &RegistryRef, dir: &Path, warnings: &mut Vec<String>) -> Ve
         });
     }
     out
+}
+
+// ---------------------------------------------------------------------------------------------
+// Archetypes — the `prova init` half of a registry
+// ---------------------------------------------------------------------------------------------
+//
+// Archetype entries live in a SIBLING directory (`archetypes/`), not alongside plugins in
+// `registry/`, for two reasons that both bite later if merged:
+//
+//   * **Independent namespaces.** An archetype key and a plugin name are different kinds of
+//     identifier; `postgres` can reasonably be both a plugin you require and an archetype you
+//     render. One directory would force them to collide.
+//   * **Different projections.** A plugin entry is derived from the plugin's `[plugin]` manifest and
+//     `prova plugin lint`'s shape classification. An archetype has neither — its metadata comes from
+//     `archetype.yaml`, and it carries a field no plugin has (`in_package`). Squeezing both into one
+//     schema would mean half the fields are always empty and the required set can't be checked.
+//
+// Discovery-only, exactly like the plugin half: a registry lookup happens when a human runs
+// `prova init`, never during a run. Nothing about a committed `prova.toml` depends on a registry.
+
+/// One archetype entry, as served.
+#[derive(Debug, Clone)]
+pub struct ArchetypeEntry {
+    /// The serving registry's configured name — the disambiguator when two registries carry a key.
+    pub registry: String,
+    pub name: String,
+    pub repo: String,
+    pub description: String,
+    /// The recommended ref to render, appended to `repo` as `#<latest>`. Absent means the default
+    /// branch, which is unpinned — reported when it happens.
+    pub latest: Option<String>,
+    /// Whether this archetype may render inside an already-initialized package. Publisher policy,
+    /// not the consumer's: only the archetype knows whether it creates a package or augments one.
+    pub in_package: Option<String>,
+}
+
+impl ArchetypeEntry {
+    /// The archetype source to render: the repo, pinned to `latest` when the entry recommends one.
+    ///
+    /// The `#ref` suffix is appended only for a **git** source. A registry may serve a local path (the
+    /// same source classification plugins use — handy for an org-internal registry pointing into a
+    /// monorepo), and `path#ref` is not a path: archetect would look for a directory with `#ref` in its
+    /// name and report it missing. A path has no ref semantics, so `latest` is dropped rather than
+    /// concatenated — [`latest_ignored`] is how the caller learns it happened.
+    pub fn source(&self) -> String {
+        match &self.latest {
+            Some(r) if is_git_source(&self.repo) => format!("{}#{r}", self.repo),
+            _ => self.repo.clone(),
+        }
+    }
+
+    /// Whether this entry recommends a pin that [`source`](Self::source) cannot apply — a `latest` on a
+    /// local-path repo. Silently dropping a pin is the kind of thing that surprises later, so it is
+    /// reported rather than swallowed.
+    pub fn latest_ignored(&self) -> bool {
+        self.latest.is_some() && !is_git_source(&self.repo)
+    }
+}
+
+/// The on-disk archetype entry, parsed as leniently as the plugin one: every field optional,
+/// unknown keys ignored, requiredness checked after parse so a miss is a per-entry warning.
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+struct ArchetypeFile {
+    schema: Option<i64>,
+    name: Option<String>,
+    repo: Option<String>,
+    description: Option<String>,
+    latest: Option<String>,
+    in_package: Option<String>,
+}
+
+/// Read every `archetypes/*.toml` under a resolved registry dir.
+fn load_archetypes(reg: &RegistryRef, dir: &Path, warnings: &mut Vec<String>) -> Vec<ArchetypeEntry> {
+    let mut out = Vec::new();
+    for path in entry_files(reg, dir, "archetypes", warnings) {
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("<entry>")
+            .to_string();
+        let mut skip = |why: String| {
+            warnings.push(format!(
+                "registry {}: skipping archetype {stem}: {why}",
+                reg.name
+            ));
+        };
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) => {
+                skip(format!("cannot read: {e}"));
+                continue;
+            }
+        };
+        let file: ArchetypeFile = match toml::from_str(&text) {
+            Ok(f) => f,
+            Err(e) => {
+                skip(format!("invalid TOML: {e}"));
+                continue;
+            }
+        };
+        let schema = file.schema.unwrap_or(KNOWN_SCHEMA);
+        if schema != KNOWN_SCHEMA {
+            skip(format!(
+                "schema {schema} is newer than this binary understands ({KNOWN_SCHEMA})"
+            ));
+            continue;
+        }
+        let (Some(name), Some(repo), Some(description)) = (file.name, file.repo, file.description)
+        else {
+            skip("missing a required field (name, repo, description)".to_string());
+            continue;
+        };
+        out.push(ArchetypeEntry {
+            registry: reg.name.clone(),
+            name,
+            repo,
+            description,
+            latest: file.latest,
+            in_package: file.in_package,
+        });
+    }
+    out
+}
+
+/// Every archetype the configured registries serve, sorted by (name, registry). Warnings are
+/// returned rather than printed so the caller decides whether this is a listing or a lookup.
+pub fn archetypes(
+    layout: &dyn SystemLayout,
+    warnings: &mut Vec<String>,
+) -> Result<Vec<ArchetypeEntry>, String> {
+    let git_opts = GitFetchOptions::default();
+    let mut out = Vec::new();
+    let mut errors = Vec::new();
+    for reg in &configured(layout)? {
+        match registry_dir(reg, layout, &git_opts) {
+            Ok((dir, _lease)) => out.extend(load_archetypes(reg, &dir, warnings)),
+            Err(e) => errors.push(e),
+        }
+    }
+    // A registry that cannot be served at all is worth saying out loud, but it must not sink a
+    // lookup that the remaining registries can answer — the same degrade-don't-break rule the
+    // per-entry tolerance follows.
+    warnings.extend(errors);
+    out.sort_by(|a, b| (&a.name, &a.registry).cmp(&(&b.name, &b.registry)));
+    Ok(out)
+}
+
+/// Look one archetype key up across the configured registries. `Ok(None)` means no registry serves
+/// it. When two registries do, the first in configured order wins and the shadowing is reported —
+/// silently preferring one would make `prova init <key>` depend on config order nobody can see.
+pub fn lookup_archetype(
+    key: &str,
+    layout: &dyn SystemLayout,
+    warnings: &mut Vec<String>,
+) -> Result<Option<ArchetypeEntry>, String> {
+    let all = archetypes(layout, warnings)?;
+    let hits: Vec<ArchetypeEntry> = all.into_iter().filter(|a| a.name == key).collect();
+    if hits.len() > 1 {
+        let names = hits
+            .iter()
+            .map(|a| a.registry.clone())
+            .collect::<Vec<_>>()
+            .join(", ");
+        warnings.push(format!(
+            "archetype {key:?} is served by more than one registry ({names}) — using {}",
+            hits[0].registry
+        ));
+    }
+    Ok(hits.into_iter().next())
 }
 
 /// Everything the configured registries currently serve, plus what went wrong along the way.

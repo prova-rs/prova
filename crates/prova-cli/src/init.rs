@@ -173,13 +173,24 @@ pub fn run(args: Vec<String>) -> ExitCode {
             Err(code) => return code,
         },
     };
-    let entry = match catalog.get(&key) {
+    // Resolve the key to a renderable source: a declared `source`, a registry lookup for a key that
+    // declares none, a built-in, or a bare registry name (see the catalog module's ladder). Registry
+    // tolerance messages are printed rather than fatal — an unreachable registry must not sink a
+    // render the remaining ones can serve.
+    let mut warnings = Vec::new();
+    let entry = match crate::catalog::resolve(&catalog, &key, &sys_layout, &mut warnings) {
         Ok(e) => e,
         Err(err) => {
+            for w in &warnings {
+                eprintln!("prova init: {w}");
+            }
             eprintln!("prova init: {err}");
             return ExitCode::from(2);
         }
     };
+    for w in &warnings {
+        eprintln!("prova init: {w}");
+    }
 
     // Refuse to clobber — unless the entry declares it AUGMENTS an initialized package
     // (`in_package = "allow"`), in which case the archetype decides what to write.
@@ -228,7 +239,13 @@ pub fn run(args: Vec<String>) -> ExitCode {
 
     let destination = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let answers = prova_archetect::string_answers(merged);
-    println!("prova: rendering {key:?} from {}", entry.source);
+    println!(
+        "prova: rendering {key:?} from {} ({})",
+        entry.source, entry.origin
+    );
+    if !entry.description.is_empty() {
+        println!("prova: {}", entry.description);
+    }
     if let Err(err) = prova_archetect::render_interactive(
         &entry.source,
         &destination,
