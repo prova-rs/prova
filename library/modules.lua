@@ -469,9 +469,13 @@ local Network = {}
 --- Remove the network. Idempotent; retries briefly while endpoints are still detaching.
 function Network:stop() end
 
+--- Readiness gate. Give exactly ONE signal — `port`, `log`, or `cmd` — each honest about a different
+--- observable. Use `port` when a listening socket means serving (Redis, nginx); use `cmd` when it does
+--- not (Postgres binds TCP then finishes startup — `pg_isready` is the race-free check).
 ---@class prova.DockerWait
----@field port? integer       # wait until this container port accepts a TCP connection
----@field log? string         # wait until the logs contain this substring
+---@field port? integer       # ready when this container port is in LISTEN state (asks the container, not the host)
+---@field log? string         # ready when the logs contain this substring
+---@field cmd? string[]       # ready when this command, run in the container, exits 0 (e.g. {"pg_isready","-U","postgres"})
 ---@field timeout? string     # default "30s"
 ---@field every? string       # poll interval, default "250ms"
 

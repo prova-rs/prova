@@ -313,7 +313,9 @@ impl UserData for TermUd {
             #[cfg(not(unix))]
             {
                 let _ = name;
-                Err(err(
+                // Annotate the Ok type: this branch has no `Ok(())` to pin it, so `Err(..)` alone
+                // leaves the success type ambiguous (E0283) — only surfaces on non-unix builds.
+                Err::<(), _>(err(
                     "signal: POSIX signals need a unix platform (ConPTY has no signal channel)",
                 ))
             }

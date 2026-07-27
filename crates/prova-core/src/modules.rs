@@ -3444,6 +3444,12 @@ pub(crate) mod docker {
     struct Wait {
         port: Option<u16>,
         log: Option<String>,
+        /// A readiness COMMAND run inside the container: ready ⇔ it exits 0. The general,
+        /// service-agnostic signal, for the servers where `port` (LISTEN state) is not the same as
+        /// application-readiness — Postgres binds its TCP socket and *then* finishes startup,
+        /// rejecting queries with "the database system is starting up" in the gap, so a port probe
+        /// races. `pg_isready`, `redis-cli ping`, `curl -f /health` — each image's own honest check.
+        cmd: Option<Vec<String>>,
         timeout: Duration,
         every: Duration,
     }
@@ -3532,18 +3538,41 @@ pub(crate) mod docker {
             }
             let wait = match opts.get::<Option<Table>>("wait")? {
                 None => None,
-                Some(w) => Some(Wait {
-                    port: w.get::<Option<u16>>("port")?,
-                    log: w.get::<Option<String>>("log")?,
-                    timeout: w
-                        .get::<Option<String>>("timeout")?
-                        .and_then(|s| parse_duration(&s))
-                        .unwrap_or(Duration::from_secs(30)),
-                    every: w
-                        .get::<Option<String>>("every")?
-                        .and_then(|s| parse_duration(&s))
-                        .unwrap_or(Duration::from_millis(250)),
-                }),
+                Some(w) => {
+                    let port = w.get::<Option<u16>>("port")?;
+                    let log = w.get::<Option<String>>("log")?;
+                    // `cmd` is a command vector (argv), run directly in the container with no shell —
+                    // same convention as `container:run`'s table form.
+                    let cmd = w.get::<Option<Vec<String>>>("cmd")?;
+                    // The three signals are honest about *different* observables (a listening port, a
+                    // log line, a command's verdict), so combining them would be ambiguous about what
+                    // "ready" even means. Exactly one — or none (return-when-started).
+                    if [port.is_some(), log.is_some(), cmd.is_some()]
+                        .iter()
+                        .filter(|set| **set)
+                        .count()
+                        > 1
+                    {
+                        return Err(mlua::Error::RuntimeError(
+                            "docker.run `wait` takes exactly one of `port`, `log`, or `cmd` — they \
+                             are different readiness signals and cannot be combined"
+                                .into(),
+                        ));
+                    }
+                    Some(Wait {
+                        port,
+                        log,
+                        cmd,
+                        timeout: w
+                            .get::<Option<String>>("timeout")?
+                            .and_then(|s| parse_duration(&s))
+                            .unwrap_or(Duration::from_secs(30)),
+                        every: w
+                            .get::<Option<String>>("every")?
+                            .and_then(|s| parse_duration(&s))
+                            .unwrap_or(Duration::from_millis(250)),
+                    })
+                }
             };
             // `network` accepts a `docker.network` handle (read its `.name`) or a raw name string.
             const NETWORK_EXPECT: &str =
@@ -4107,7 +4136,18 @@ pub(crate) mod docker {
         // that merely failed is a different thing and must not latch anything.
         let mut probe_supported = true;
         loop {
-            let ready = if let Some(port) = wait.port {
+            let ready = if let Some(cmd) = &wait.cmd {
+                // Run the author's readiness command in the container: ready ⇔ exit 0. This is the
+                // honest signal for a server whose listening socket predates its ability to serve
+                // (Postgres: `pg_isready` returns non-zero while the postmaster is still starting up,
+                // so it does not race the way a `port` probe does). An exec that fails to *launch* —
+                // container not accepting execs yet, or the command absent (127) — is "not ready yet",
+                // not a hard error: retry until the deadline, then the timeout error tails the logs.
+                match container_exec(&container.client, &container.id, cmd.clone(), None).await {
+                    Ok((0, _, _)) => true,
+                    Ok(_) | Err(_) => false,
+                }
+            } else if let Some(port) = wait.port {
                 // Ask the CONTAINER, not the host. Connecting to the mapped host port is worthless as
                 // a readiness signal: Docker Desktop's port proxy binds and accepts the moment the
                 // container starts, so the check passes while the server is still booting — and never

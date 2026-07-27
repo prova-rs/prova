@@ -17,7 +17,9 @@ prova.test("a sibling container reaches a resource by network alias", { requires
     env = { POSTGRES_PASSWORD = "secret" },
     ports = { 5432 },                     -- host vantage (the test runner's mapped port)
     network = net, alias = "db",          -- network vantage (siblings resolve `db` by DNS)
-    wait = { port = 5432, timeout = "60s" },
+    -- Postgres binds TCP before it can serve, so a `port` gate would race the first query; its own
+    -- readiness check (`pg_isready`) is the honest signal. See testdata/docker_readiness.lua.
+    wait = { cmd = { "pg_isready", "-h", "127.0.0.1", "-U", "postgres" }, timeout = "60s" },
   })
 
   -- Host vantage unchanged: the mapped (random) host port, not the container port.
@@ -33,10 +35,10 @@ prova.test("a sibling container reaches a resource by network alias", { requires
     command = "sleep 120",                -- keep it alive so we can exec into it
   })
 
-  -- No retry: `wait = { port = 5432 }` above is a TRUE readiness contract (it asks the container's
-  -- own kernel what is listening — see testdata/docker_readiness.lua), so the first probe succeeds.
-  -- This line briefly carried a prova.retry to paper over a false-ready; fixing the signal made the
-  -- workaround removable, which is the honest end state.
+  -- No retry: `wait = { cmd = pg_isready }` above is a TRUE readiness contract (it runs Postgres's
+  -- own readiness check — see testdata/docker_readiness.lua), so the first probe succeeds. This line
+  -- briefly carried a prova.retry to paper over a false-ready; fixing the signal made the workaround
+  -- removable, which is the honest end state.
   local out = client:run({
     "env", "PGPASSWORD=secret",
     "psql", "-h", "db", "-U", "postgres", "-tAc", "select 42",

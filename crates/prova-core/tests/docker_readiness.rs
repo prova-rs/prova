@@ -11,13 +11,16 @@ fn docker_available() -> bool {
 }
 
 /// The readiness contract: when `docker.run` returns, the container is READY — a client's FIRST probe
-/// succeeds, with no retry. `wait = { port }` asks the container's own kernel (`/proc/net/tcp`) what
-/// is listening, rather than connecting to the mapped host port, which is not a signal at all on
-/// Docker Desktop: the port proxy accepts the moment the container starts, so the old check passed
-/// while the server was still booting and NEVER failed for a container that never listened. The bar
-/// has three parts — the first probe succeeds; an UNPUBLISHED port (an in-network-only resource) is
-/// still waitable; and a container that never listens times out rather than being waved through.
-/// Runs where docker is present, skips (never fails) where it is absent.
+/// succeeds, with no retry. `wait` offers signals honest about different observables, and the proof
+/// exercises each on a server where it is TRUE: `wait = { port }` asks the container's own kernel
+/// (`/proc/net/tcp`) what is listening (not the mapped host port, which Docker Desktop's proxy
+/// accepts the moment the container starts — passing while the server boots and never failing for a
+/// container that never listens); `wait = { cmd }` runs a real readiness command for a server whose
+/// socket predates its serving (Postgres, where a `port` probe races "the database system is
+/// starting up"). The bar has four parts — the port probe's first probe succeeds; the cmd probe's
+/// first query succeeds where a port probe would race; an UNPUBLISHED port (an in-network-only
+/// resource) is still waitable; and a container that never listens times out rather than being waved
+/// through. Runs where docker is present, skips (never fails) where it is absent.
 #[test]
 fn docker_readiness_proof_runs_or_skips_gracefully() {
     let _docker = common::docker_guard();
@@ -26,10 +29,10 @@ fn docker_readiness_proof_runs_or_skips_gracefully() {
 
     assert_eq!(summary.failed, 0, "never fails, docker present or not");
     if docker_available() {
-        assert_eq!(summary.passed, 3);
+        assert_eq!(summary.passed, 4);
         assert_eq!(summary.skipped, 0);
     } else {
-        assert_eq!(summary.skipped, 3);
+        assert_eq!(summary.skipped, 4);
         assert_eq!(summary.passed, 0);
     }
 }
