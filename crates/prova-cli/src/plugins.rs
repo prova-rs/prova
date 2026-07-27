@@ -529,12 +529,15 @@ fn read_plugin_manifest(dir: &Path) -> Result<Option<PluginManifest>, String> {
 
 /// Check the running prova version against a plugin's `requires.prova` semver range. On 0.x, the
 /// minor is the breaking axis, which `semver`'s `VersionReq` handles (`^0.1` = `>=0.1.0, <0.2.0`).
+///
+/// The comparison is [`crate::manifest::prova_requirement_satisfied`], shared with the package
+/// reader — a `prova.toml` is one file wearing whichever hats it declares, so the same
+/// `requires.prova` must not mean one thing to a plugin consumer and another to the plugin's own
+/// self-test suite. Only the wording is local to this caller.
 fn check_compat(req: &str, prova_version: &str) -> Result<(), String> {
-    let range = semver::VersionReq::parse(req)
-        .map_err(|e| format!("invalid `requires.prova` range {req:?}: {e}"))?;
     let version = semver::Version::parse(prova_version)
         .map_err(|e| format!("cannot parse prova version {prova_version:?}: {e}"))?;
-    if range.matches(&version) {
+    if crate::manifest::prova_requirement_satisfied(req, &version)? {
         Ok(())
     } else {
         Err(format!(

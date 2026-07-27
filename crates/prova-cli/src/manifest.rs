@@ -515,19 +515,24 @@ fn running_version() -> semver::Version {
         .expect("CARGO_PKG_VERSION is always valid semver")
 }
 
-/// The lowest version a requirement admits. `"0.12"` and `">= 0.12"` both floor at 0.12.0.
-fn minimum_of(req: &semver::VersionReq) -> semver::Version {
-    req.comparators
-        .iter()
-        .map(|c| semver::Version {
-            major: c.major,
-            minor: c.minor.unwrap_or(0),
-            patch: c.patch.unwrap_or(0),
-            pre: c.pre.clone(),
-            build: semver::BuildMetadata::EMPTY,
-        })
-        .max()
-        .unwrap_or_else(|| semver::Version::new(0, 0, 0))
+/// Does the running prova satisfy a `requires.prova` range?
+///
+/// **The one answer to that question**, and it has to be, because a `prova.toml` is one file
+/// wearing whichever hats it declares — a plugin, a suite, or both. `prova init plugin` scaffolds
+/// exactly that overlap: a plugin carrying its own self-test suite. If the two readers disagreed,
+/// a single `requires.prova = "^0.5"` would pass the plugin's own CI and be rejected by every
+/// consumer of it. So the predicate lives here and both callers use it; only the wording differs,
+/// because "your suite needs a newer prova" and "this plugin does not support your prova" are
+/// different sentences about the same fact.
+///
+/// Full `VersionReq` semantics, upper bounds included. A caret is a wall on 0.x — `^0.5` is
+/// `>=0.5.0, <0.6.0` — which is right for a plugin bound to the Lua API, and is why a SUITE that
+/// wants "this or newer" must write `>= 0.13` rather than a bare `0.13`. A bare version is a
+/// caret, and a caret would refuse the very upgrades a suite is supposed to keep working across.
+pub fn prova_requirement_satisfied(req: &str, running: &semver::Version) -> Result<bool, String> {
+    let range = semver::VersionReq::parse(req)
+        .map_err(|e| format!("invalid `requires.prova` range {req:?}: {e}"))?;
+    Ok(range.matches(running))
 }
 
 /// Phase one of the manifest read: the `[requires] prova` gate, and nothing else.
@@ -542,10 +547,9 @@ fn minimum_of(req: &semver::VersionReq) -> semver::Version {
 /// version must stay something every future binary can still parse. The gate's own syntax cannot
 /// evolve, because the binary that needs to read it is by definition the old one.
 ///
-/// The comparison is a **floor, never a wall**. Archetect separates majors — a 2.x archetype
-/// refuses a 3.x binary — because its scripting substrate was replaced twice and the artifacts
-/// genuinely do not run. Prova has one substrate and intends newer binaries to keep running older
-/// suites, so a wall would do nothing but break every 0.x suite the day 1.0 ships.
+/// The comparison itself is [`prova_requirement_satisfied`], shared with the plugin reader so one
+/// file cannot get two answers. A suite that means "this version or newer" writes `>= 0.13`; a
+/// bare `0.13` is a caret, and on 0.x a caret walls at `<0.14`.
 fn check_version_gate(text: &str) -> Result<(), String> {
     // A syntax error is phase two's to report, with its line and column intact.
     let Ok(value) = text.parse::<toml::Value>() else {
@@ -570,18 +574,17 @@ fn check_version_gate(text: &str) -> Result<(), String> {
     let declared = declared.as_str().ok_or_else(|| {
         "[requires] prova must be a version string, e.g. prova = \"0.12\"".to_string()
     })?;
-    let req = semver::VersionReq::parse(declared).map_err(|e| {
-        format!("[requires] prova: `{declared}` is not a version requirement ({e})")
-    })?;
-
-    let (running, needed) = (running_version(), minimum_of(&req));
-    if running < needed {
-        return Err(format!(
-            "this suite requires prova {declared}, and this is prova {running}.\n\
-             prova: upgrade to {needed} or newer — https://github.com/prova-rs/prova/releases"
-        ));
+    let running = running_version();
+    if prova_requirement_satisfied(declared, &running)
+        .map_err(|e| format!("[requires] prova: {e}"))?
+    {
+        return Ok(());
     }
-    Ok(())
+    Err(format!(
+        "this suite requires prova {declared}, and this is prova {running}.\n\
+         prova: see https://github.com/prova-rs/prova/releases — and note that a bare version is a\n\
+         prova: caret range, so `>= {running}` is how a suite says \"this or newer\""
+    ))
 }
 
 impl Manifest {

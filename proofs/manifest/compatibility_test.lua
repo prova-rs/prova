@@ -53,15 +53,40 @@ prova.test("a manifest requiring a newer prova is refused up front",
   t:expect(r.stdout, "no proof was attempted"):never():contains("the sandbox proof runs")
 end)
 
-prova.test("a manifest requiring this prova or older runs normally",
-  { proves = "compatibility: the floor is a floor, not a wall — a 0.4 suite must run on 0.11 and keep running on 1.x, so the comparison is ordering and never same-major" }, function(t)
-  -- The half that keeps the gate from being a wall. A 0.4 suite must run on a 0.11 binary, and
-  -- must keep running on 1.x — so the comparison is ordering, never "same major".
+prova.test("`>=` is how a suite says this-version-or-newer",
+  { proves = "compatibility: a suite that must survive upgrades writes an open range — a bare version is a caret, and on 0.x a caret walls at the next minor" }, function(t)
+  -- The half that keeps a declaration from freezing the suite to one line of releases. Written
+  -- `>=`, it keeps running as prova advances — which is the whole promise the gate exists to make
+  -- safe to rely on.
   local pkg = t:use(package_with)
-  local r = shell.run(prova.bin .. " 2>&1", { cwd = pkg('[requires]\nprova = "0.4.0"\n\n[run]\nproofs = ["proofs"]\n') })
+  local r = shell.run(prova.bin .. " 2>&1", { cwd = pkg('[requires]\nprova = ">= 0.4"\n\n[run]\nproofs = ["proofs"]\n') })
 
   t:expect(r.code, "runs"):equals(0)
   t:expect(r.stdout, "the proof executed"):contains("the sandbox proof runs")
+end)
+
+prova.test("one file, one answer: a plugin's requires.prova means the same to both readers",
+  { proves = "compatibility: a prova.toml is one file wearing whichever hats it declares, so the version gate cannot mean a range to a plugin consumer and a floor to the plugin's own suite" }, function(t)
+  -- The proof that pins the two readers together. `prova init plugin` scaffolds precisely this
+  -- overlap — a plugin carrying its own self-test suite — so a single requires.prova is read once
+  -- by the package gate and once by the plugin resolver. They disagreed: an out-of-range caret
+  -- passed the plugin's own CI and was rejected by every consumer of it. Same verdict now, and
+  -- this fails if either reader drifts.
+  local dir = t:use(package_with)('[plugin]\nname = "p"\nentry = "p.lua"\n\n[requires]\nprova = "^0.5"\n\n[run]\nproofs = ["proofs"]\n')
+  fs.write(dir .. "/p.lua", 'return { hello = function() return "hi" end }\n')
+
+  local consumer = t:use(package_with)('[run]\nproofs = ["proofs"]\n\n[plugins]\np = "' .. dir .. '"\n')
+  fs.write(consumer .. "/proofs/use_test.lua",
+    'local p = require("p")\nprova.test("uses it", function(t) t:expect(p.hello()):equals("hi") end)\n')
+
+  local as_package = shell.run(prova.bin .. " 2>&1", { cwd = dir })
+  local as_plugin = shell.run(prova.bin .. " 2>&1", { cwd = consumer })
+
+  -- ^0.5 excludes every prova that will ever run this, so BOTH must refuse it.
+  t:expect(as_package.code, "the package gate refuses it"):never():equals(0)
+  t:expect(as_plugin.code, "the plugin resolver refuses it"):never():equals(0)
+  t:expect(as_package.stdout, "the package gate names the range"):contains("^0.5")
+  t:expect(as_plugin.stdout, "the plugin resolver names the range"):contains("^0.5")
 end)
 
 prova.test("the version gate is readable even when the rest of the manifest is not",
