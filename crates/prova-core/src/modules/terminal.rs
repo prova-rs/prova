@@ -61,7 +61,22 @@ fn opt_timeout(opts: &Option<Table>, default: Duration) -> mlua::Result<Duration
 struct TermBuf {
     raw: Vec<u8>,
     parser: vt100::Parser,
-    eof: bool,
+    /// Why the reader stopped, once it has — `None` while the stream is still live.
+    ///
+    /// The REASON is kept, not merely the fact. A clean EOF (the child closed the pty and exited)
+    /// and a failed read are the same "no more output" to a caller but completely different
+    /// diagnoses when expected output never arrives: the first says the program produced nothing,
+    /// the second says we may have lost what it produced. This previously collapsed to a bool, and
+    /// an intermittent empty-screen failure cost a forty-run bisect that still could not tell those
+    /// two apart. Cheap to carry, decisive when it matters.
+    end: Option<String>,
+}
+
+impl TermBuf {
+    /// The stream is finished — no further output can arrive.
+    fn ended(&self) -> bool {
+        self.end.is_some()
+    }
 }
 
 struct TermUd {
@@ -179,7 +194,7 @@ impl UserData for TermUd {
                         if b.raw.windows(needle.len()).any(|w| w == &needle[..]) {
                             return Ok(());
                         }
-                        if b.eof {
+                        if b.ended() {
                             let tail = String::from_utf8_lossy(&b.raw)
                                 .chars()
                                 .rev()
@@ -188,18 +203,38 @@ impl UserData for TermUd {
                                 .chars()
                                 .rev()
                                 .collect::<String>();
+                            let why = b.end.clone().unwrap_or_default();
+                            let bytes = b.raw.len();
                             return Err(err(format!(
-                                "expect {:?}: the program exited without producing it \
-                                 (transcript tail: {tail:?})",
+                                "expect {:?}: the stream ended without producing it \
+                                 [{bytes} bytes read, {why}] (transcript tail: {tail:?})",
                                 String::from_utf8_lossy(&needle)
                             )));
                         }
                     }
                     if tokio::time::Instant::now() >= deadline {
-                        let b = this.buf.lock().unwrap();
-                        let screen = b.parser.screen().contents();
+                        // An empty screen is the least informative thing a pty failure can show,
+                        // and on its own it cannot distinguish "the program never ran" from "it ran
+                        // and said nothing" from "it spoke and we lost it". Report the three facts
+                        // that separate those, so the first recurrence explains itself instead of
+                        // needing a bisect.
+                        let (screen, bytes, reader) = {
+                            let b = this.buf.lock().unwrap();
+                            (
+                                b.parser.screen().contents(),
+                                b.raw.len(),
+                                b.end.clone().unwrap_or_else(|| "still streaming".to_string()),
+                            )
+                        };
+                        let child = match this.child.borrow_mut().try_wait() {
+                            Ok(Some(status)) => format!("exited ({status:?})"),
+                            Ok(None) => "still running".to_string(),
+                            Err(e) => format!("status unknown ({e})"),
+                        };
                         return Err(err(format!(
-                            "expect {:?}: not observed within {dur:?}\n-- screen --\n{screen}",
+                            "expect {:?}: not observed within {dur:?}\n\
+                             -- pty: {bytes} bytes read, reader {reader}, child {child} --\n\
+                             -- screen --\n{screen}",
                             String::from_utf8_lossy(&needle)
                         )));
                     }
@@ -216,14 +251,14 @@ impl UserData for TermUd {
             let mut quiet_since = tokio::time::Instant::now();
             loop {
                 tokio::time::sleep(POLL).await;
-                let (len, eof) = {
+                let (len, ended) = {
                     let b = this.buf.lock().unwrap();
-                    (b.raw.len(), b.eof)
+                    (b.raw.len(), b.ended())
                 };
                 if len != last_len {
                     last_len = len;
                     quiet_since = tokio::time::Instant::now();
-                } else if eof || quiet_since.elapsed() >= QUIET {
+                } else if ended || quiet_since.elapsed() >= QUIET {
                     return Ok(());
                 }
                 if tokio::time::Instant::now() >= deadline {
@@ -407,7 +442,7 @@ fn spawn_fn(lua: &Lua) -> mlua::Result<Function> {
         let buf = Arc::new(Mutex::new(TermBuf {
             raw: Vec::new(),
             parser: vt100::Parser::new(rows, cols, 0),
-            eof: false,
+            end: None,
         }));
 
         // The reader is a plain OS thread: pty reads are blocking, and this keeps the runtime
@@ -417,8 +452,17 @@ fn spawn_fn(lua: &Lua) -> mlua::Result<Function> {
             let mut chunk = [0u8; 8 * 1024];
             loop {
                 match reader.read(&mut chunk) {
-                    Ok(0) | Err(_) => {
-                        thread_buf.lock().unwrap().eof = true;
+                    Ok(0) => {
+                        thread_buf.lock().unwrap().end = Some("clean EOF".to_string());
+                        break;
+                    }
+                    // Not silently equivalent to EOF. A pty master can fail the read once the last
+                    // slave closes, and whether buffered output survives that is platform-dependent
+                    // — so this branch is exactly the case where the screen can come up empty
+                    // through no fault of the program under test. Record what happened.
+                    Err(e) => {
+                        thread_buf.lock().unwrap().end =
+                            Some(format!("read failed: {e} ({:?})", e.kind()));
                         break;
                     }
                     Ok(n) => {
