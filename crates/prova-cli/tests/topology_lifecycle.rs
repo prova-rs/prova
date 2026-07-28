@@ -23,24 +23,32 @@ fn start_ps_down_supervises_a_detached_topology() {
     std::fs::create_dir_all(&root).unwrap();
     let marker = root.join("teardown.marker");
 
+    // The inhabited verbs resolve topologies from `[topologies]` only — never by scanning test
+    // files — so the factory lives in a plugin and the manifest registers it. That is the whole
+    // supported path for `start`/`ps`/`down`.
     std::fs::write(
         root.join("prova.toml"),
-        "[run]\nproofs = [\".\"]\n[luals]\nmanage = \"never\"\n",
+        "[run]\nproofs = [\".\"]\n[luals]\nmanage = \"never\"\n\
+         [plugins]\nfixture = { path = \"./fixture\" }\n\
+         [topologies]\norders = { plugin = \"fixture\", factory = \"orders\" }\n",
     )
     .unwrap();
+    std::fs::create_dir_all(root.join("fixture")).unwrap();
+    std::fs::write(root.join("fixture/prova.toml"), "[plugin]\nname = \"fixture\"\n").unwrap();
     // A no-docker topology: two fake resources with `url`s, and a deferred teardown that appends to a
     // marker file — so we can prove the detached child ran teardown when `down` signalled it.
     std::fs::write(
-        root.join("orders_test.lua"),
+        root.join("fixture/init.lua"),
         format!(
-            "local env = prova.topology(\"orders\", function(ctx)\n\
+            "local M = {{}}\n\
+             function M.orders(ctx)\n\
              \x20 ctx:defer(function()\n\
              \x20\x20  local f = io.open({marker:?}, \"a\"); if f then f:write(\"down\\n\"); f:close() end\n\
              \x20 end)\n\
              \x20 return {{ db = {{ url = \"postgres://127.0.0.1:5432/orders\" }},\n\
              \x20\x20\x20\x20\x20\x20   web = {{ url = \"http://127.0.0.1:8080\" }} }}\n\
-             end)\n\
-             prova.test(\"smoke\", function(t) t:expect(t:use(env).web.url):matches(\"^http\") end)\n",
+             end\n\
+             return M\n",
             marker = marker.to_string_lossy(),
         ),
     )

@@ -841,41 +841,44 @@ fn build_topology_run(
 
     let run = resolve_from_manifest(&home, profile, None, None, None, &layout, false, false, true)?;
 
-    // Gather every file that could declare a topology: the discovered `proofs` dirs plus any explicit
-    // suites. `proofs` are directory-NAME patterns found anywhere below the root; suites are literal.
-    let mut files: Vec<PathBuf> = Vec::new();
-    let mut discover = |dir: PathBuf| -> Result<(), ExitCode> {
-        match discover_files(&dir) {
-            Ok(found) => {
-                files.extend(found);
-                Ok(())
-            }
-            Err(err) => {
-                eprintln!("prova {verb}: {}: {err}", dir.display());
-                Err(ExitCode::from(2))
-            }
-        }
-    };
-    for dir in find_proof_dirs(&home.dir, &run.proofs) {
-        discover(dir)?;
-    }
-    for decl in run.suites.values() {
-        for p in &decl.paths {
-            discover(home.dir.join(p))?;
-        }
-    }
-    files.sort();
-    files.dedup();
-    // A topology can come from a file (`prova.topology`) OR the manifest (`[topologies]`), so only
-    // error on "nothing to load" when BOTH are empty.
-    if files.is_empty() && run.topologies.is_empty() {
+    // The inhabited verbs resolve topologies from `[topologies]` REGISTRATIONS ONLY — never by
+    // scanning code. A topology has exactly two consumers and they enter by different doors: a test
+    // builds one in-process (`prova.topology(...)`, requiring what it needs), and `up`/`down` and
+    // friends stand up a registered factory. Nothing discovers one by reading test files.
+    //
+    // Previously `up` loaded every proof file and picked up any `prova.topology` call it found. That
+    // made a test-local fixture silently addressable as an environment, and it collided head-on with
+    // the manifest: registering a topology AND declaring it in a proof — the natural thing to do when
+    // one package is both a plugin and its own suite — aborted the run with
+    // `topology "x" is already defined`, an error that never mentioned that one of the two came from
+    // the manifest. Sourcing from one place removes the ambiguity rather than papering over it.
+    //
+    // It also makes the `requires` gate universal: every topology now carries the advertisement's
+    // environment requirements, where a code-declared one had none and stood up ungated.
+    //
+    // No files are loaded, so a `[topologies]` entry is the whole surface.
+    let files: Vec<PathBuf> = Vec::new();
+    if run.topologies.is_empty() {
         match name {
-            Some(n) => {
-                eprintln!("prova {verb}: no files found to search for topologies (topology {n:?})")
-            }
-            None => eprintln!("prova {verb}: no topologies defined (nothing under the run paths)"),
+            Some(n) => eprintln!(
+                "prova {verb}: no topology {n:?} — register it in [topologies], e.g.\n  \
+                 [topologies]\n  {n} = {{ plugin = \"<plugin>\", topology = \"<advertised>\" }}"
+            ),
+            None => eprintln!(
+                "prova {verb}: no topologies registered — add a [topologies] entry to prova.toml"
+            ),
         }
         return Err(ExitCode::from(2));
+    }
+    if let Some(n) = name {
+        if !run.topologies.contains_key(n) {
+            let known: Vec<&str> = run.topologies.keys().map(String::as_str).collect();
+            eprintln!(
+                "prova {verb}: no topology {n:?} in [topologies] (registered: {})",
+                known.join(", ")
+            );
+            return Err(ExitCode::from(2));
+        }
     }
 
     // Build the engine config with the declared plugins (so the topology's `require(...)` resolves).
@@ -918,7 +921,8 @@ fn build_topology_run(
 
 /// Reject standing up `name` when its `requires` are not met here — before anything is provisioned.
 /// `Ok(())` = clear to proceed (met, or the topology declares nothing); `Err` = the reason, already
-/// printed. Only manifest topologies carry `requires` today; a Lua-declared one has none.
+/// printed. Every topology reaching this point is a `[topologies]` registration, so the gate is
+/// universal — there is no longer a code-declared topology that stands up ungated.
 fn check_topology_requires(prep: &TopologyRun, name: &str) -> Result<(), ExitCode> {
     let Some(requires) = prep.topology_requires.get(name) else {
         return Ok(());

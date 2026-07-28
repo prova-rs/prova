@@ -29,17 +29,31 @@ fn up_no_arg(cwd: &Path) -> (bool, String) {
     (out.status.success(), combined)
 }
 
-/// With topologies defined, `prova up` (no arg) lists their names. RED today: `up` with no argument
-/// prints a usage error instead of discovering what's there.
+/// With topologies registered, `prova up` (no arg) lists their names.
+///
+/// Registered, not declared in code: the inhabited verbs resolve `[topologies]` only, so listing
+/// reports the environments a project actually publishes rather than every fixture a test happens
+/// to build in-process.
 #[test]
 fn up_with_no_arg_lists_defined_topologies() {
     let dir = tmp("some");
-    write(&dir, ".prova.toml", "[run]\nproofs = [\".\"]\n");
     write(
         &dir,
-        "topo_test.lua",
-        "prova.topology(\"web\", function(ctx) return { url = \"http://x\" } end)\n\
-         prova.topology(\"db\", function(ctx) return {} end)\n",
+        ".prova.toml",
+        "[run]\nproofs = [\".\"]\n\
+         [plugins]\nfixture = { path = \"./fixture\" }\n\
+         [topologies]\n\
+         web = { plugin = \"fixture\", factory = \"web\" }\n\
+         db = { plugin = \"fixture\", factory = \"db\" }\n",
+    );
+    write(&dir, "fixture/prova.toml", "[plugin]\nname = \"fixture\"\n");
+    write(
+        &dir,
+        "fixture/init.lua",
+        "local M = {}\n\
+         function M.web(ctx) return { url = \"http://x\" } end\n\
+         function M.db(ctx) return {} end\n\
+         return M\n",
     );
     let (ok, out) = up_no_arg(&dir);
     assert!(ok, "listing should succeed: {out}");
