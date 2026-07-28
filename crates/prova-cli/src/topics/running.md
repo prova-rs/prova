@@ -36,6 +36,9 @@ matching nothing is an error unless `--allow-empty`.
   and a `failures:` recap at the end re-states each failure (full path + `file:line`) with a
   `prova --node "<path>"` rerun line — copy-paste it, don't grep. `-q` = failures (with their
   header chain) + recap + tally only. Color is TTY-only by default (`--color`, `NO_COLOR`).
+- A run that pauses on something slow — an image pulling, a readiness gate — narrates it on
+  **stderr** so it never looks hung (`--progress`, manifest `[run] progress`; `auto` is on for
+  a TTY, off when piped). stdout stays exactly the report, so redirection is unaffected.
 - `-j/--jobs N` is throughput ONLY — it can never change what a run means.
 
 ## Profiles and guarantees
