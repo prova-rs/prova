@@ -75,3 +75,31 @@ jobs:
         if: runner.os == 'Linux' || runner.os == 'macOS'
         shell: bash
         run: cargo xtask proofs
+
+      # TEMPORARY (Thrust 1): localize the Windows-only proof-pass hang. Windows now reaches the
+      # proofs (the git-cache fetch fix in v3.4.1) but a specific proof stalls forever, and the
+      # reporters print only on NodeFinished — so a hung proof is silent. Run each proof FILE under a
+      # 60s bash-native watchdog (background + kill; `timeout` in git-bash resolves to the incompatible
+      # Windows timeout.exe), echoing each. A file that trips the watchdog (exit 124) is flagged; one
+      # run lists every hang and the sweep still completes. Non-gating. Remove once the hang is fixed.
+      - name: Localize Windows proof hang (temporary)
+        if: runner.os == 'Windows'
+        shell: bash
+        timeout-minutes: 10
+        run: |
+          set +e
+          echo "== python on this runner =="
+          which python3 python 2>&1; python3 --version 2>&1
+          BIN="target/debug/prova.exe"
+          echo "== run probe_test.lua with output + 90s watchdog =="
+          # MARK lines from the fixture show the last phase reached; PASS lines mean tests ran. If all
+          # 4 PASS then it stalls => teardown hang (killing the shell.spawn'd python — signals are
+          # unix-only). No MARKs => spawn/setup hang.
+          "$BIN" proofs/http/probe_test.lua &
+          pid=$!; waited=0
+          while kill -0 "$pid" 2>/dev/null; do
+            sleep 1; waited=$((waited + 1))
+            if [ "$waited" -ge 90 ]; then echo "!!! WATCHDOG killed prova at 90s"; kill -9 "$pid" 2>/dev/null; break; fi
+          done
+          echo "== waited ${waited}s =="
+          true
