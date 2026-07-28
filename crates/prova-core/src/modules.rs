@@ -1574,6 +1574,27 @@ mod http {
         }
     }
 
+    /// Flatten an error's `source()` chain into the message.
+    ///
+    /// `reqwest`'s Display is uninformative on a failed send — "error sending request for url (…)" —
+    /// while the actionable part (connection refused, dns error, certificate expired, timed out) sits
+    /// one or more levels down in `source()`. Dropping it makes a whole class of failure
+    /// undiagnosable: intermittent egress and an expired CA read identically, and the only way to
+    /// tell them apart is to stop using prova and reach for curl.
+    fn why(e: &(dyn std::error::Error + 'static)) -> String {
+        let mut parts = vec![e.to_string()];
+        let mut cur = e.source();
+        while let Some(c) = cur {
+            let s = c.to_string();
+            // Skip a link that merely repeats its parent — reqwest/hyper often re-wrap verbatim.
+            if !parts.iter().any(|p| p == &s) {
+                parts.push(s);
+            }
+            cur = c.source();
+        }
+        parts.join(": ")
+    }
+
     async fn send(prepared: Prepared) -> mlua::Result<HttpResponse> {
         let client = reqwest::Client::new();
         let mut req = client.request(prepared.method, &prepared.url);
@@ -1589,7 +1610,7 @@ mod http {
         let resp = req
             .send()
             .await
-            .map_err(|e| mlua::Error::RuntimeError(format!("http request failed: {e}")))?;
+            .map_err(|e| mlua::Error::RuntimeError(format!("http request failed: {}", why(&e))))?;
         let status = resp.status().as_u16();
         let headers = resp
             .headers()
