@@ -53,13 +53,12 @@ jobs:
       # ground `cargo test` structurally cannot: manifest parsing, discovery, capability gating,
       # and the CLI's own surface as a user meets it. ~11s for ~180 proofs.
       #
-      # ubuntu only, and that is a finding rather than a preference. Windows has never run this
-      # suite. macOS is worse: the first CI run red-lined proofs/http/probe_test.lua on the GitHub
-      # macos runner — four boot-then-probe assertions timing out at 10s each — while the same
-      # proofs pass on a local mac and on ubuntu. So a spawned service does not come up under that
-      # runner, which is a real gap in either the proof or the runner, not something to paper over.
-      # Gating every push on it before anyone has diagnosed it would just train people to ignore a
-      # red build. Widen this the moment that is understood.
+      # Linux and macOS. Windows has never run this suite (Phase 3). macOS was held out for a while by
+      # a single proof — proofs/http/probe_test.lua, whose fixture booted `python -m http.server`:
+      # stock http.server calls socket.getfqdn() between bind() and listen(), and reverse DNS is ~70s
+      # on the GitHub macOS runner, so the port sat unreachable and the 10s readiness wait timed out.
+      # Diagnosed (not papered over): the proof now scripts a getfqdn-free server that binds to a
+      # literal IP, so it boots deterministically. That was the last macOS gap; widened here.
       #
       # Open specs report as the `spec` outcome and keep this green by design — that is the point
       # of the flag. A spec whose body starts passing fails here, demanding graduation.
@@ -73,6 +72,6 @@ jobs:
       # `prova.bin` — the runtime hands each run its own executable — so the inner prova is the outer
       # one by construction rather than by arranging the environment correctly.
       - name: Proofs (prova, proven by prova)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' || runner.os == 'macOS'
         shell: bash
         run: cargo xtask proofs
