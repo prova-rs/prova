@@ -59,3 +59,49 @@ fn companions_do_not_leak_across_resolves() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// A capability predicate must be able to make an async-backed call.
+///
+/// `runtime.capability`'s own documentation offers "a GPU, a licence file, a kind cluster" as the
+/// motivating cases, and two of those three want to make a call — probing a real dependency is the
+/// whole point of a custom capability. The companion used to load from plain sync `main()`, so any
+/// async-backed API panicked with "there is no reactor running"; supplying a reactor alone still left
+/// "attempt to yield from outside a coroutine", because neither the chunk nor the predicate was
+/// invoked asynchronously.
+///
+/// The failure mode is nastier than a crash: a plugin that wrapped its probe in `pcall` read the
+/// panic as "the dependency is unreachable", silently degraded to a presence-only check, and ran its
+/// suite against a credential the registry rejects.
+///
+/// Asserts the call REACHED the network stack — a refused connection to a closed port proves the
+/// reactor was there to refuse it. Deliberately NOT "some particular error is absent": an earlier
+/// version of this test asserted `not find("no reactor running")` and duly passed once the error
+/// merely changed to the coroutine one, while the async call remained impossible.
+#[test]
+fn a_capability_predicate_can_make_an_async_call() {
+    let cfg = RunConfig::new(1);
+    let dir = std::env::temp_dir().join(format!("prova-caps-async-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let c = companion(
+        &dir,
+        "async.lua",
+        r#"
+        -- Port 1 is reserved and never listening, so this is a deterministic connection refusal.
+        local ok, err = pcall(function()
+          return http.get("http://127.0.0.1:1/", { timeout = "2s" })
+        end)
+        _G.__probe_err = tostring(err)
+        runtime.capability("async_probe_ran", function()
+          return tostring(_G.__probe_err):find("Connection refused") ~= nil
+        end)
+        "#,
+    );
+
+    let caps = load_project_config(&c, &cfg).expect("companion loads");
+    assert!(
+        caps.available("async_probe_ran"),
+        "a predicate's async call must reach the network stack: {:?}",
+        "expected a refused connection, not a reactor or coroutine error"
+    );
+}

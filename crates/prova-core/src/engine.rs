@@ -4513,8 +4513,14 @@ pub fn load_project_config(
     let caps = std::rc::Rc::new(std::cell::RefCell::new(Capabilities::default()));
     let caps_w = caps.clone();
 
+    // An ASYNC function, and `call_async` below, because a predicate is where you probe a real
+    // dependency — and an async-backed probe (`http`, `grpc`, `docker`) can only yield from a
+    // coroutine. A sync registrar calling a sync `f.call(())` leaves the predicate no way to await,
+    // which surfaces as "attempt to yield from outside a coroutine".
     let registrar = lua
-        .create_function(move |_, (name, f): (String, mlua::Function)| {
+        .create_async_function(move |_, (name, f): (String, mlua::Function)| {
+            let caps_w = caps_w.clone();
+            async move {
             if is_builtin_capability(&name) {
                 return Err(mlua::Error::RuntimeError(format!(
                     "runtime.capability({name:?}): {name:?} is a built-in capability and cannot be \
@@ -4522,7 +4528,7 @@ pub fn load_project_config(
                 )));
             }
             // The predicate runs NOW, at load; only its answer survives (see `Capabilities`).
-            let verdict: Value = f.call(())?;
+            let verdict: Value = f.call_async(()).await?;
             match verdict {
                 // Unavailable → not registered, so it reads as absent everywhere.
                 Value::Nil | Value::Boolean(false) => {}
@@ -4548,6 +4554,7 @@ pub fn load_project_config(
                 }
             }
             Ok(())
+            }
         })
         .map_err(|e| format!("{}: {e}", path.display()))?;
 
@@ -4566,10 +4573,28 @@ pub fn load_project_config(
         .set("runtime", runtime)
         .map_err(|e| format!("{}: {e}", path.display()))?;
 
-    lua.load(&src)
-        .set_name(file_chunk_name(path))
-        .exec()
-        .map_err(|e| format!("{}: {e}", path.display()))?;
+    // Inside a runtime, and as a coroutine (`exec_async`), because a capability predicate is exactly
+    // where you probe a real dependency — `runtime.capability`'s own docs offer "a GPU, a licence
+    // file, a kind cluster", and two of those three want to make a call.
+    //
+    // The companion used to load from plain sync `main()`, so any async-backed API panicked with
+    // "there is no reactor running". Supplying a reactor alone was not enough: a sync `exec` gives
+    // the chunk no coroutine to yield from. Going through `block_on_local` (as every other execution
+    // path does) supplies the reactor and keeps `spawn_local` working; `exec_async` supplies the
+    // coroutine.
+    //
+    // Found by a plugin whose predicate validated a registry credential over HTTP: the panic was
+    // swallowed into "unreachable", the gate degraded to a presence-only check, and the suite ran on
+    // a credential the registry rejects — the vacuous green this function's own doc-comment warns
+    // about, arriving by a route it did not anticipate.
+    let rt = new_runtime().map_err(|e| format!("{}: {e}", path.display()))?;
+    block_on_local(&rt, async {
+        lua.load(&src)
+            .set_name(file_chunk_name(path))
+            .exec_async()
+            .await
+            .map_err(|e| format!("{}: {e}", path.display()))
+    })?;
 
     let out = caps.borrow().clone();
     Ok(out)
