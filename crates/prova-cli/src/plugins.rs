@@ -68,16 +68,26 @@ pub struct ResolvedPlugins {
     pub leases: Arc<Vec<Lease>>,
 }
 
-/// The plugin-relevant view of a `prova.toml`: the `[plugin]` contract and the `[requires]` compat
-/// block. Every field is optional — a plugin without a `[plugin]` section falls back to filename
-/// conventions and declares no compatibility constraint. Other sections (`[run]`, `[plugins]`, …) are
-/// ignored here; the manifest is one file wearing whichever hats it declares.
+/// The plugin-relevant view of a `prova.toml`: the `[plugin]` contract, the `[requires]` compat
+/// block, and the plugin's own `[plugins]` — its dependencies. Every field is optional: a plugin
+/// without a `[plugin]` section falls back to filename conventions and declares no constraint.
+/// Remaining sections (`[run]`, `[topologies]`, …) are ignored; the manifest is one file wearing
+/// whichever hats it declares.
 #[derive(Debug, Deserialize, Default)]
 struct PluginManifest {
     #[serde(default)]
     plugin: PluginMeta,
     #[serde(default)]
     requires: PluginRequires,
+    /// The plugin's OWN dependencies, resolved transitively (see `resolve_plugins`).
+    ///
+    /// Ignoring these was a real gap: a plugin that composes others — the whole point of publishing
+    /// a topology — could not be consumed without its consumer re-declaring every internal it
+    /// happens to `require`. That leaks implementation detail into every consumer's manifest and
+    /// breaks the moment the plugin changes what it composes. A plugin already states its needs
+    /// here; the resolver simply reads them now.
+    #[serde(default)]
+    plugins: BTreeMap<String, PluginSource>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -126,22 +136,66 @@ pub fn resolve_plugins(
 ) -> Result<ResolvedPlugins, String> {
     let mut resolved = ResolvedPlugins::default();
     let mut leases: Vec<Lease> = Vec::new();
-    for (name, source) in plugins {
-        let detail = match source {
+
+    // Breadth-first from the consumer's own `[plugins]`, then each resolved plugin's, and so on.
+    //
+    // Breadth-first plus first-wins is what makes the precedence rule fall out for free: everything
+    // the consumer declared is resolved before anything merely pulled in, so **an explicit
+    // declaration always beats a transitive one**. A project that pins `postgres` to a specific tag
+    // keeps that tag even when a plugin it uses asks for another — the consumer owns its own
+    // environment, and a dependency cannot quietly swap a version out from under it.
+    //
+    // `queued` also terminates cycles (A needs B needs A): a name is enqueued at most once, so a
+    // loop is simply a plugin already seen rather than an error to report — nothing about a cycle
+    // makes an environment wrong, it only needs to stop.
+    let mut queue: std::collections::VecDeque<(String, PluginSource, PathBuf, Option<String>)> =
+        plugins
+            .iter()
+            .map(|(n, s)| (n.clone(), s.clone(), base_dir.to_path_buf(), None))
+            .collect();
+    let mut queued: std::collections::BTreeSet<String> = plugins.keys().cloned().collect();
+
+    while let Some((name, source, dir, via)) = queue.pop_front() {
+        // Errors name the plugin that asked, not just the plugin that failed — a transitive
+        // failure is otherwise unattributable from a consumer's manifest, which never mentions it.
+        let blame = |e: String| match &via {
+            Some(parent) => format!("plugin {name:?} (required by {parent:?}): {e}"),
+            None => format!("plugin {name:?}: {e}"),
+        };
+
+        let detail = match &source {
             // A bare string is classified: a git URL or org/repo shorthand becomes a git source; a
             // path stays a path. (The table form is already explicit.)
-            PluginSource::Path(s) => {
-                classify_string_source(s, sources).map_err(|e| format!("plugin {name:?}: {e}"))?
-            }
+            PluginSource::Path(s) => classify_string_source(s, sources).map_err(blame)?,
             PluginSource::Detailed(d) => d.clone(),
         };
-        let one = resolve_one(name, &detail, base_dir, layout, prova_version, git_opts)
-            .map_err(|e| format!("plugin {name:?}: {e}"))?;
+        let one =
+            resolve_one(&name, &detail, &dir, layout, prova_version, git_opts).map_err(blame)?;
+
+        // Enqueue this plugin's own dependencies, each resolved against ITS manifest directory.
+        let dep_base = one
+            .manifest_dir
+            .clone()
+            .unwrap_or_else(|| one.root.clone());
+        for (dep_name, dep_source) in &one.deps {
+            // A plugin declaring itself (`kitchen = { path = "." }`, the self-resolution every
+            // plugin's own suite uses) is not a dependency to chase.
+            if *dep_name == name || !queued.insert(dep_name.clone()) {
+                continue;
+            }
+            queue.push_back((
+                dep_name.clone(),
+                dep_source.clone(),
+                dep_base.clone(),
+                Some(name.clone()),
+            ));
+        }
+
         // The entry's directory is the module root — where sibling `require`s resolve.
-        if let Some(dir) = one.entry.parent() {
+        if let Some(d) = one.entry.parent() {
             resolved
                 .namespaces
-                .insert(one.canonical.clone(), dir.to_path_buf());
+                .insert(one.canonical.clone(), d.to_path_buf());
         }
         resolved.roots.insert(one.canonical.clone(), one.root);
         resolved.named.insert(name.clone(), one.entry);
@@ -318,6 +372,12 @@ struct ResolvedOne {
     advertised: Vec<AdvertisedTopology>,
     /// The git source's session lease (`None` for local sources) — kept alive for the run.
     lease: Option<Lease>,
+    /// This plugin's own `[plugins]`, to be resolved transitively.
+    deps: BTreeMap<String, PluginSource>,
+    /// The directory its manifest was read from — the base a dependency's relative `path` resolves
+    /// against. A transitive path is written relative to the plugin that declares it, never to the
+    /// consumer that happens to be pulling it in.
+    manifest_dir: Option<PathBuf>,
 }
 
 /// Classify a bare string plugin source into a `PluginDetail`:
@@ -482,10 +542,13 @@ fn resolve_one(
 
     // Plugin root: where `prova.toml` and `library/` live (the dir for a directory source, a
     // file's parent for a single-file source).
-    let plugin_root = manifest_dir.unwrap_or_else(|| root.clone());
+    let plugin_root = manifest_dir.clone().unwrap_or_else(|| root.clone());
 
-    // The topologies the plugin advertises (`[[plugin.topologies]]`) — its public topology contract.
-    let advertised = manifest.map(|m| m.plugin.topologies).unwrap_or_default();
+    // The topologies the plugin advertises (`[[plugin.topologies]]`) — its public topology contract —
+    // and the dependencies it needs to honour them.
+    let (advertised, deps) = manifest
+        .map(|m| (m.plugin.topologies, m.plugins))
+        .unwrap_or_default();
 
     Ok(ResolvedOne {
         entry,
@@ -493,6 +556,8 @@ fn resolve_one(
         root: plugin_root,
         advertised,
         lease,
+        deps,
+        manifest_dir,
     })
 }
 
