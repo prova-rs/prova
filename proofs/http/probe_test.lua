@@ -27,12 +27,23 @@ local service = prova.fixture("service", Scope.File, function(ctx)
   fs.write(root .. "/index.json", '{"status":"ok","name":"demo"}')
   fs.write(root .. "/serve.py", SERVER_PY)
 
-  local port = 8987
+  -- OS-assigned, not a literal: a fixed port collides with anything already holding it and with a
+  -- second run of this suite on the same machine. `net.free_port` exists for exactly this, and a
+  -- proof that dogfoods boot-then-probe should demonstrate the readiness pattern in full.
+  local port = net.free_port()
   -- shell.spawn returns a managed process handle; ctx:manage stops it during async teardown.
   local proc = ctx:manage(shell.spawn("python3 " .. root .. "/serve.py " .. port .. " " .. root))
 
   local base = "http://127.0.0.1:" .. port
-  http.wait_for(base .. "/health", { status = 200, timeout = "10s", every = "100ms" })
+  -- A readiness failure has to say WHY. shell.spawn discards stdout/stderr, so a bare timeout
+  -- reports only that nothing answered — which is precisely how the getfqdn stall above cost a
+  -- diagnosis. proc:output() carries the service's last 64KB; surface it with the timeout.
+  local ok, err = pcall(http.wait_for, base .. "/health",
+    { status = 200, timeout = "10s", every = "100ms" })
+  if not ok then
+    error(tostring(err) .. "\n--- service output ---\n" .. (proc:output() or "<none>") ..
+      "\n--- still running: " .. tostring(proc:running()) .. " ---")
+  end
   return { base = base, proc = proc }
 end)
 
