@@ -34,6 +34,7 @@ env:
   BINARY_DESCRIPTION: "Prova"
   DOWNLOAD_PREFIX: "https://github.com/${{ github.repository }}/releases/download"
   DESTINATION_HOMEBREW_TAP: ${{ github.repository_owner }}/homebrew-tap
+  DESTINATION_RUN_ACTION: ${{ github.repository_owner }}/run-action
   PROVA_DISPATCH_TOKEN: ${{ secrets.PROVA_DISPATCH_TOKEN }}
   # The highest major version currently considered the "latest" line. A tag whose
   # major is >= this value updates the main `prova` formula and is marked --latest;
@@ -281,6 +282,30 @@ jobs:
             # demote the current stable (GitHub otherwise auto-marks the newest).
             gh release edit "${VERSION}" --latest=false
           fi
+
+  update_run_action:
+    name: Update run-action Default Version
+    needs: [setup, build]
+    # Same gate as the main Homebrew formula: only a release that becomes "latest" moves the
+    # default every consumer inherits. Prereleases and maintenance lines must not.
+    if: needs.setup.outputs.update_main == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      # run-action's `version` input default is what every CI workflow in the fleet resolves
+      # through `prova-rs/run-action@v1`. Bumping it by hand meant a release could ship while every
+      # consumer silently stayed on the previous engine — which is exactly what happened across the
+      # v0.11 -> v0.14 deserializer rename.
+      - name: Dispatch event to ${{ env.DESTINATION_RUN_ACTION }}
+        uses: ph-fritsche/action-dispatch@v1
+        with:
+          token: ${{ env.PROVA_DISPATCH_TOKEN }}
+          type: repository
+          repo: ${{ env.DESTINATION_RUN_ACTION }}
+          ident: update-default-version
+          payload: |
+            {
+              "version": "${{ needs.setup.outputs.tag }}"
+            }
 
   update_homebrew_formula:
     name: Update Homebrew Formula

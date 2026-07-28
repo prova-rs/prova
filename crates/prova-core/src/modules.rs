@@ -886,9 +886,21 @@ impl UserData for Process {
             let buf = this.output.lock().unwrap_or_else(|p| p.into_inner());
             Ok(String::from_utf8_lossy(&buf).into_owned())
         });
-        // Kill (SIGKILL) and reap. Idempotent — a second stop, or stop after exit, is a no-op.
+        // Kill and reap. Idempotent — a second stop, or stop after exit, is a no-op.
         methods.add_async_method_mut("stop", |_, mut this, ()| async move {
             if let Some(mut child) = this.child.take() {
+                // On Windows the command runs under `cmd /C <cmd>`, which does NOT exec-replace: cmd.exe
+                // stays the parent and the real program (e.g. python) is a CHILD that survives
+                // TerminateProcess(cmd.exe) and keeps the inherited stdout/stderr pipe open — wedging
+                // teardown forever on the never-closing pipe. Kill the whole tree so descendants die
+                // and the pipes reach EOF. (On unix, `sh -c <one command>` exec-replaces, so the child
+                // IS the program and `child.kill()` alone suffices.)
+                #[cfg(windows)]
+                if let Some(pid) = this.pid {
+                    let _ = std::process::Command::new("taskkill")
+                        .args(["/F", "/T", "/PID", &pid.to_string()])
+                        .output();
+                }
                 let _ = child.kill().await;
             }
             Ok(())
