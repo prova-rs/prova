@@ -46,6 +46,69 @@ fn err(msg: impl Into<String>) -> mlua::Error {
     mlua::Error::RuntimeError(msg.into())
 }
 
+/// Best-effort snapshot of everything still alive under a stalled child, for a failure message only.
+///
+/// "child still running" localizes a hang to the session but not to a process, and a pty session is
+/// routinely a chain — a shell, a PATH shim, the real program under it. Which link stalled is the
+/// whole question, and it is unrecoverable after the fact because teardown reaps the tree. So it is
+/// captured at the moment of failure.
+///
+/// Failure-tolerant by construction: no `ps`, an unparsable table, or a since-exited child all
+/// degrade the message and never the run. Unix-only; Windows keeps the shorter form.
+#[cfg(unix)]
+fn process_tree(root: Option<u32>) -> String {
+    let Some(root) = root else { return String::new() };
+    let Ok(out) = std::process::Command::new("ps")
+        .args(["-A", "-o", "pid=,ppid=,stat=,command="])
+        .output()
+    else {
+        return String::new();
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+
+    let mut rows: Vec<(u32, u32, &str)> = Vec::new();
+    for line in text.lines() {
+        let mut it = line.split_whitespace();
+        let (Some(pid), Some(ppid), Some(stat)) = (it.next(), it.next(), it.next()) else {
+            continue;
+        };
+        let (Ok(pid), Ok(ppid)) = (pid.parse::<u32>(), ppid.parse::<u32>()) else {
+            continue;
+        };
+        rows.push((pid, ppid, line.trim()));
+        let _ = stat;
+    }
+
+    // Walk down from the child: repeated sweeps, since `ps` output is not topologically ordered.
+    let mut keep: Vec<u32> = vec![root];
+    loop {
+        let before = keep.len();
+        for (pid, ppid, _) in &rows {
+            if keep.contains(ppid) && !keep.contains(pid) {
+                keep.push(*pid);
+            }
+        }
+        if keep.len() == before {
+            break;
+        }
+    }
+
+    let listed: Vec<&str> = rows
+        .iter()
+        .filter(|(pid, _, _)| keep.contains(pid))
+        .map(|(_, _, line)| *line)
+        .collect();
+    if listed.is_empty() {
+        return String::new();
+    }
+    format!("\n-- still alive --\n{}", listed.join("\n"))
+}
+
+#[cfg(not(unix))]
+fn process_tree(_root: Option<u32>) -> String {
+    String::new()
+}
+
 fn opt_timeout(opts: &Option<Table>, default: Duration) -> mlua::Result<Duration> {
     match opts {
         Some(t) => match t.get::<Option<String>>("timeout")? {
@@ -228,12 +291,23 @@ impl UserData for TermUd {
                         };
                         let child = match this.child.borrow_mut().try_wait() {
                             Ok(Some(status)) => format!("exited ({status:?})"),
-                            Ok(None) => "still running".to_string(),
+                            // Alive but silent is the case worth naming precisely: it means the pty
+                            // slave is still held, so output was never produced rather than lost.
+                            // Which link of the chain is holding it is the actual question.
+                            Ok(None) => match this.pid {
+                                Some(p) => format!("still running (pid {p})"),
+                                None => "still running".to_string(),
+                            },
                             Err(e) => format!("status unknown ({e})"),
+                        };
+                        let tree = if child.starts_with("still running") {
+                            process_tree(this.pid)
+                        } else {
+                            String::new()
                         };
                         return Err(err(format!(
                             "expect {:?}: not observed within {dur:?}\n\
-                             -- pty: {bytes} bytes read, reader {reader}, child {child} --\n\
+                             -- pty: {bytes} bytes read, reader {reader}, child {child} --{tree}\n\
                              -- screen --\n{screen}",
                             String::from_utf8_lossy(&needle)
                         )));
