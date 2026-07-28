@@ -183,7 +183,7 @@ options:
   -h, --help                print this help";
 
 /// The running prova version, checked against each plugin's `requires.prova` compatibility range.
-const PROVA_VERSION: &str = env!("CARGO_PKG_VERSION");
+const PROVA_VERSION: &str = prova_core::VERSION;
 
 enum Format {
     Console,
@@ -1481,7 +1481,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             "--offline" => offline = true,
             "--json" => cli_format = Some(Format::Json),
             "--version" | "-V" => {
-                println!("prova {}", env!("CARGO_PKG_VERSION"));
+                println!("prova {}", prova_core::VERSION);
                 return ExitCode::SUCCESS;
             }
             "--help" | "-h" => {

@@ -2539,6 +2539,12 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
         prova.set("bin", bin.to_string_lossy().as_ref())?;
     }
 
+    // `prova.version` — the running version, as `--version` reports it, INCLUDING the `+dev.<sha>`
+    // build metadata that marks a non-release build. A proof can therefore assert what it is
+    // actually running on, which is the one thing that was missing when a local build and the
+    // release it was cut from both claimed 0.11.0 and behaved differently.
+    prova.set("version", crate::VERSION)?;
+
     // `prova.help([filter])` — the API surface, discoverable from inside the environment being
     // driven. Returns DATA (a list of `{name, signature, summary}`), not printed prose, so an agent
     // can filter it and a proof can assert on it. Parsed from the same LuaCATS stubs that ship to

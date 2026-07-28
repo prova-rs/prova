@@ -20,6 +20,11 @@ mod suite;
 /// plugin-root file bearing one of these is a manifest validation error; assignment to one from
 /// test code raises. `prova` and `Scope` are core authoring globals — reserved like the rest but
 /// never excludable from injection.
+/// The version prova reports — `CARGO_PKG_VERSION`, plus `+dev.<sha>` when this is not a release
+/// build. See `build.rs`: the suffix is build metadata precisely so semver comparisons ignore it,
+/// which keeps a dev build satisfying the same `[requires] prova` ranges a release would.
+pub const VERSION: &str = env!("PROVA_VERSION");
+
 pub const RESERVED_NAMESPACES: &[&str] = &[
     "prova", "Scope", "shell", "fs", "net", "http", "docker", "sqlite", "grpc", "graphql",
     "json", "yaml", "toml", "csv", "base64", "hash", "uuid", "url", "socket", "terminal",

@@ -603,7 +603,7 @@ impl ServerHandler for ProvaMcpServer {
                 .enable_resources()
                 .build(),
         )
-        .with_server_info(Implementation::new("prova", env!("CARGO_PKG_VERSION")))
+        .with_server_info(Implementation::new("prova", prova_core::VERSION))
         // The embedded agent skill — one document, every transport (see `prova skill`).
         .with_instructions(crate::SKILL)
     }

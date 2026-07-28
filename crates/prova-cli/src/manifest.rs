@@ -511,8 +511,8 @@ fn diagnose_unknown_key(err: &str) -> Option<String> {
 
 /// The version this binary reports, for the `[requires] prova` gate.
 fn running_version() -> semver::Version {
-    semver::Version::parse(env!("CARGO_PKG_VERSION"))
-        .expect("CARGO_PKG_VERSION is always valid semver")
+    semver::Version::parse(prova_core::VERSION)
+        .expect("PROVA_VERSION is always valid semver")
 }
 
 /// Does the running prova satisfy a `requires.prova` range?

@@ -181,6 +181,13 @@ jobs:
         with:
           ref: ${{ env.VERSION }}
 
+      # Tells build.rs this is a release, so the binary reports a bare version rather than
+      # `+dev.<sha>`. Explicit rather than inferred: the checkout above is shallow and single-ref,
+      # so the tag object git would need to work this out for itself may not be present.
+      - name: Mark this as a release build
+        shell: bash
+        run: echo "PROVA_RELEASE=1" >> "$GITHUB_ENV"
+
       # `pulsar`'s build script needs protoc on PATH; runner images don't ship it.
       - name: Install protoc
         uses: arduino/setup-protoc@v3
