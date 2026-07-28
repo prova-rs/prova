@@ -492,11 +492,17 @@ function Network:stop() end
 ---@class prova.DockerNetworkOpts
 ---@field name? string                  # override the generated unique "prova-net-<...>" name
 
+---@class prova.DockerBuildSecret
+---@field env? string                   # read the secret from this variable in prova's own environment
+---@field file? string                   # a file already on disk (must exist)
+---@field value? string                  # a literal value; written to a 0600 temp file for the build and removed after
+
 ---@class prova.DockerBuildOpts
 ---@field context string                # the build-context directory
 ---@field dockerfile? string            # relative to `context` (default "Dockerfile"); `COPY` still resolves against the context root
 ---@field tag? string                   # default: a stable tag derived from `context`, so rebuilds replace it and the layer cache hits
 ---@field buildargs? table<string,string|number|boolean>
+---@field secrets? table<string, prova.DockerBuildSecret> # BuildKit secrets by id, for `RUN --mount=type=secret,id=…`. Exactly one of env/file/value per secret
 ---@field target? string                # multi-stage build target
 ---@field pull? boolean                 # always re-pull the base image (default false)
 ---@field nocache? boolean              # ignore the build cache (default false)
@@ -509,7 +515,13 @@ docker = {}
 ---@return prova.Container
 function docker.run(opts) end
 --- Build a local image from a Dockerfile and return its ref, ready for `docker.run{ image = … }`.
---- Honors `.dockerignore` and BuildKit cache mounts. Raises with the builder's log if the build fails.
+--- Honors `.dockerignore`, BuildKit cache mounts, and BuildKit secrets. Raises with the builder's
+--- log if the build fails.
+---
+--- A production Dockerfile that reads a private registry token via
+--- `RUN --mount=type=secret,id=npm` is built by naming that id in `secrets`:
+--- `secrets = { npm = { env = "NPM_TOKEN" } }`. Prefer this over `buildargs` for anything sensitive
+--- — build args are recorded in image history, which is what BuildKit secrets exist to avoid.
 ---@param opts prova.DockerBuildOpts
 ---@return string image                 # the image ref (the resolved `tag`)
 function docker.build(opts) end

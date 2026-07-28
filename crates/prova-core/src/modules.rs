@@ -640,7 +640,7 @@ fn absent_stub(lua: &Lua, name: &'static str) -> mlua::Result<Table> {
 /// production artifact (see docs/design/topologies.md).
 ///
 /// Spec fields: `name` (for messages), `image` (base repo, pulled) **or** `build` (built — a
-/// `{ context, dockerfile?, tag?, buildargs?, target?, pull?, nocache? }` table, or a bare string as
+/// `{ context, dockerfile?, tag?, buildargs?, secrets?, target?, pull?, nocache? }` table, or a bare string as
 /// shorthand for `{ context = … }`), `tag` (default tag; pulled images only), `port`/`ports`
 /// (published; `port` is the primary for readiness + url; a `ports` entry may be a number for a
 /// random host port or `{ container, host }` for a fixed one), `command?`, `env?` (table or
@@ -3217,9 +3217,24 @@ pub(crate) mod docker {
         dockerfile: String,
         tag: String,
         buildargs: Vec<(String, String)>,
+        secrets: Vec<(String, BuildSecret)>,
         target: Option<String>,
         pull: bool,
         nocache: bool,
+    }
+
+    /// Where a BuildKit secret's bytes come from. A production Dockerfile that reads a private
+    /// registry token via `RUN --mount=type=secret,id=…` cannot be built without this, and a
+    /// build arg is not a substitute: build args are baked into image history, which is exactly
+    /// what BuildKit secrets exist to avoid.
+    enum BuildSecret {
+        /// `--secret id=…,env=VAR` — the daemon reads the named variable from our environment.
+        Env(String),
+        /// `--secret id=…,src=PATH` — a file already on disk.
+        File(String),
+        /// A literal value from Lua. Written to a private temp file for the duration of the build
+        /// and removed after, because the Docker CLI has no way to take a secret on stdin.
+        Value(String),
     }
 
     /// A default image tag derived from the context path — **stable across runs**, so a rebuild
@@ -3281,11 +3296,56 @@ pub(crate) mod docker {
                 }
             }
 
+            // `secrets = { ["id"] = { env = "VAR" } | { file = "path" } | { value = "…" } }`.
+            // Deliberately no bare-string shorthand: a string would be ambiguous between a path and
+            // a literal secret, and guessing wrong either leaks the value into the build or silently
+            // mounts the wrong bytes.
+            let mut secrets = Vec::new();
+            if let Some(tbl) = t.get::<Option<Table>>("secrets")? {
+                for pair in tbl.pairs::<String, Value>() {
+                    let (id, v) = pair?;
+                    let src = match v {
+                        Value::Table(spec) => {
+                            let env = spec.get::<Option<String>>("env")?;
+                            let file = spec.get::<Option<String>>("file")?;
+                            let value = spec.get::<Option<String>>("value")?;
+                            match (env, file, value) {
+                                (Some(e), None, None) => BuildSecret::Env(e),
+                                (None, Some(f), None) => {
+                                    if !std::path::Path::new(&f).is_file() {
+                                        return Err(mlua::Error::RuntimeError(format!(
+                                            "docker.build: secret `{id}` file `{f}` does not exist"
+                                        )));
+                                    }
+                                    BuildSecret::File(f)
+                                }
+                                (None, None, Some(val)) => BuildSecret::Value(val),
+                                _ => {
+                                    return Err(mlua::Error::RuntimeError(format!(
+                                        "docker.build: secret `{id}` needs exactly one of \
+                                         `env`, `file`, or `value`"
+                                    )))
+                                }
+                            }
+                        }
+                        other => {
+                            return Err(mlua::Error::RuntimeError(format!(
+                                "docker.build: secret `{id}` must be a table with one of `env`, \
+                                 `file`, or `value`, got {}",
+                                other.type_name()
+                            )))
+                        }
+                    };
+                    secrets.push((id, src));
+                }
+            }
+
             Ok(BuildSpec {
                 context,
                 dockerfile,
                 tag,
                 buildargs,
+                secrets,
                 target: t.get::<Option<String>>("target")?,
                 pull: t.get::<Option<bool>>("pull")?.unwrap_or(false),
                 nocache: t.get::<Option<bool>>("nocache")?.unwrap_or(false),
@@ -3293,8 +3353,9 @@ pub(crate) mod docker {
         }
     }
 
-    /// `docker.build{ context, dockerfile?, tag?, buildargs?, target?, pull?, nocache? }` — build a
-    /// local image from a Dockerfile and return its ref, ready for `docker.run{ image = … }`.
+    /// `docker.build{ context, dockerfile?, tag?, buildargs?, secrets?, target?, pull?, nocache? }`
+    /// — build a local image from a Dockerfile and return its ref, ready for
+    /// `docker.run{ image = … }`.
     ///
     /// This shells out to the `docker` CLI rather than driving bollard's build endpoint, for two
     /// substantive reasons:
@@ -3344,6 +3405,40 @@ pub(crate) mod docker {
         for (k, v) in &spec.buildargs {
             cmd.arg("--build-arg").arg(format!("{k}={v}"));
         }
+
+        // Inline `value` secrets need to exist as files for the CLI to read. Hold the temp dir in a
+        // guard so it is removed when this function returns — success, failure, or early `?`.
+        let secret_dir = if spec
+            .secrets
+            .iter()
+            .any(|(_, s)| matches!(s, BuildSecret::Value(_)))
+        {
+            Some(SecretDir(
+                crate::engine::make_tempdir().map_err(|e| derr(format!("docker.build: {e}")))?,
+            ))
+        } else {
+            None
+        };
+        for (id, src) in &spec.secrets {
+            match src {
+                BuildSecret::Env(var) => {
+                    cmd.arg("--secret").arg(format!("id={id},env={var}"));
+                }
+                BuildSecret::File(path) => {
+                    cmd.arg("--secret").arg(format!("id={id},src={path}"));
+                }
+                BuildSecret::Value(value) => {
+                    // Unwrap is sound: the guard is created above iff a Value secret exists.
+                    let dir = &secret_dir.as_ref().expect("secret dir").0;
+                    let path = dir.join(id);
+                    write_private(&path, value)
+                        .map_err(|e| derr(format!("docker.build: secret `{id}`: {e}")))?;
+                    cmd.arg("--secret")
+                        .arg(format!("id={id},src={}", path.display()));
+                }
+            }
+        }
+
         if let Some(target) = &spec.target {
             cmd.arg("--target").arg(target);
         }
@@ -3380,6 +3475,33 @@ pub(crate) mod docker {
             )));
         }
         Ok(spec.tag)
+    }
+
+    /// Owns the temp dir holding inline secret values, and removes it on drop — so the bytes are
+    /// gone whether the build succeeded, failed, or panicked.
+    struct SecretDir(std::path::PathBuf);
+
+    impl Drop for SecretDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Write a secret to `path` readable only by this user. The mode is set *before* the bytes land
+    /// on unix (create with 0600 rather than writing then chmod'ing), so there is no window where
+    /// the value is world-readable.
+    fn write_private(path: &std::path::Path, value: &str) -> std::io::Result<()> {
+        use std::io::Write;
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut f = opts.open(path)?;
+        f.write_all(value.as_bytes())?;
+        f.flush()
     }
 
     /// Keep the last `n` characters of a build log — the error is at the end, and a full BuildKit
