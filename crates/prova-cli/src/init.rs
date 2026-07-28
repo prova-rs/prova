@@ -84,6 +84,13 @@ pub fn run(args: Vec<String>) -> ExitCode {
     let mut list = false;
     let mut headless = false;
     let mut defaults = false;
+    // Freshness knob, matching `prova` (run) and `archetect`.
+    //
+    // `-U`/`--update` is deliberately NOT here yet. It needs `Configuration::with_force_update`,
+    // which archetect only grows in the release after the pinned v3.4.1 — shipping the flag now
+    // would make it a silent no-op, which is worse than its absence for a knob whose whole job is
+    // "I do not trust the cache".
+    let mut offline = false;
     let mut key: Option<String> = None;
     let mut cli_answers: Vec<(String, String)> = Vec::new();
     let mut cli_switches: Vec<String> = Vec::new();
@@ -95,6 +102,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
             "--list" => list = true,
             "--headless" => headless = true,
             "--defaults" => defaults = true,
+            "--offline" => offline = true,
             "--answer" | "-a" => {
                 let Some(pair) = it.next() else {
                     eprintln!("prova init: --answer expects key=value");
@@ -118,13 +126,20 @@ pub fn run(args: Vec<String>) -> ExitCode {
             "-h" | "--help" => {
                 println!(
                     "usage: prova init [<key>] [--list] [--answer k=v]... [--switch name]... \
-                     [--defaults] [--headless] [--no-ide]\n\
+                     [--defaults] [--headless] [--no-ide] [--offline]\n\
                      \n\
                      render a catalog archetype into the current directory, then wire LuaLS IDE\n\
                      support. <key> names a catalog entry (see `prova init --list`); omit it to\n\
                      choose interactively. --headless never prompts (an unanswered, undefaulted\n\
                      prompt is an error); --defaults takes each prompt's default; --no-ide skips\n\
-                     IDE wiring."
+                     IDE wiring.\n\
+                     \n\
+                     --offline uses only what is already cached, never the network.\n\
+                     \n\
+                     NOTE: a moved tag (the floating-major `v1` convention) stays cached until\n\
+                     archetect's update interval lapses — a day by default — so a freshly\n\
+                     published archetype can render stale. Until `prova init -U` lands, lower\n\
+                     `updates.interval` in archetect's config, or run `archetect -U` once."
                 );
                 return ExitCode::SUCCESS;
             }
@@ -253,6 +268,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
         switches,
         use_defaults,
         headless,
+        offline,
     ) {
         eprintln!("prova init: render failed: {err}");
         return ExitCode::from(2);

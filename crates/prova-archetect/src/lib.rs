@@ -317,6 +317,7 @@ pub fn render_interactive(
     switches: Vec<String>,
     defaults: bool,
     headless: bool,
+    offline: bool,
 ) -> Result<Vec<String>, ArchetectError> {
     let dest = Utf8PathBuf::from_path_buf(destination.to_path_buf())
         .map_err(|_| ArchetectError::GeneralError("non-UTF-8 destination".into()))?;
@@ -327,7 +328,12 @@ pub fn render_interactive(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-    let configuration = Configuration::default().with_headless(headless);
+    // `offline` forbids the network entirely: cached sources only. The complementary knob — force a
+    // re-probe — needs `Configuration::with_force_update`, which lands in the archetect release after
+    // the pinned v3.4.1, so `prova init -U` waits for that bump rather than shipping a no-op.
+    let configuration = Configuration::default()
+        .with_headless(headless)
+        .with_offline(offline);
     let layout = XdgSystemLayout::new()
         .map_err(|e| ArchetectError::GeneralError(format!("archetect system layout: {e}")))?;
 
