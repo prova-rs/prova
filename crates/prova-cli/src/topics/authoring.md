@@ -34,10 +34,18 @@ end)
   `prova.port` are writers by default. Groups' `tags`/`requires` are inherited.
   Tests and flows also take `spec = "reason"` — a proof authored ahead of its implementation
   (`prova learn specs`); never on a group or in `suite.config`.
-- Matchers on `t:expect(v, label?)`: `equals is is_true is_falsy is_nil contains matches
-  has_length is_one_of gt gte lt lte exists is_file is_dir is_empty is_fully_rendered
-  matches_snapshot` — negate with `:never()`. `t:expect_all(fn)` collects soft failures;
-  `t:skip(why)`.
+- Matchers on `t:expect(v, label?)` — negate any with `:never()`. Grouped by what the SUBJECT is,
+  because a flat list hides which ones ask the filesystem:
+  - **any value**: `equals is is_true is_falsy is_nil contains matches has_length is_one_of exists`
+  - **numbers**: `gt gte lt lte`
+  - **paths** (a path string, or a handle carrying `path`): `is_file is_dir is_fully_rendered`,
+    and `exists`/`is_empty` when the subject IS path-shaped
+  - `is_empty` and `exists` are polymorphic: empty/present *for whatever the subject is*. A
+    **string** is resolved as a path, since asserting a file is there is the load-bearing use — so
+    `expect("some value"):exists()` asks the filesystem. For a string's presence use
+    `never():is_nil()`.
+
+  `t:expect_all(fn)` collects soft failures; `t:skip(why)`.
 - `requires = { "docker", "dotnet >= 9" }`: a capability is a tool name checked on PATH
   (`docker` probes the daemon; version constraints compare). Missing → the node SKIPS with the
   reason shown, never fails — so a TYPO'D NAME SILENTLY SKIPS; read skip reasons. Custom

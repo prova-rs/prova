@@ -86,8 +86,13 @@ end)
   only — it can never change what a run means.
 - Context: `ctx:use(handle)`, `ctx:manage(resource)` (auto stop/close at scope end),
   `ctx:defer(fn)`, `ctx:tempdir()`, `t:expect(v, label?)`, `t:expect_all(fn)` (soft), `t:skip(why)`.
-- Matchers: `equals is is_true is_falsy is_nil contains matches has_length is_one_of gt gte lt
-  lte exists is_file is_dir is_empty is_fully_rendered matches_snapshot` — negate with `:never()`.
+- Matchers, by what the SUBJECT is (a flat list hides which ask the filesystem) — negate with
+  `:never()`:
+  - any value: `equals is is_true is_falsy is_nil contains matches has_length is_one_of exists`
+  - numbers: `gt gte lt lte` · paths: `is_file is_dir is_fully_rendered` · trees: `matches_snapshot`
+  - `exists`/`is_empty` are polymorphic — present/empty *for whatever the subject is* — but a
+    **string is resolved as a path** (asserting a file is there is the load-bearing use). For a
+    string's presence use `never():is_nil()`.
 - `requires = { "docker", "cargo", ... }`: a capability is a **tool name checked on `PATH`**
   (special cases: `docker` probes the live daemon; `github` checks `GITHUB_TOKEN`; native names
   like `http`/`grpc` check compiled features). Missing ⇒ the node **skips with the reason shown,

@@ -138,8 +138,13 @@ function Matcher:lt(n) end
 --- Numeric `subject <= n`.
 ---@param n number
 function Matcher:lte(n) end
---- Filesystem-handle matchers (subject is a file/dir/tree handle):
---- The path exists (file or directory).
+--- Present, for whatever the subject IS. A path string or a handle carrying `path` is resolved
+--- against the FILESYSTEM (the path exists, file or directory); anything else — a table, number,
+--- boolean — passes when it is simply non-nil.
+---
+--- The string case is deliberate: asserting a file is there is this matcher's load-bearing use, so
+--- `expect("some value"):exists()` asks the filesystem and fails. For a string's presence, use
+--- `never():is_nil()`.
 function Matcher:exists() end
 --- The path exists and is a regular file.
 function Matcher:is_file() end

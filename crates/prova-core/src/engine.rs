@@ -1822,11 +1822,46 @@ impl UserData for Matcher {
         });
 
         // Filesystem matchers: the subject is a path string (e.g. `t:expect(dir.."/Cargo.toml")`).
+        //
+        // `exists` means exists for whatever the subject IS — the same resolution `is_empty` below
+        // already makes, and for the same reason. Sitting next to `is_nil` in every matcher listing,
+        // `exists` reads as its opposite, so `expect(some_table):exists()` is the natural way to
+        // write a presence check. It used to FAIL, reporting `expected path <table> to exist` about
+        // a value that was never a path — a message no one can act on. The inconsistency was the
+        // bug, not the expectation.
+        //
+        // Strings stay filesystem-checked: asserting a file is there is this matcher's load-bearing
+        // use, and `expect(dir.."/f"):exists()` must keep failing when the file is missing. For a
+        // string's presence, `never():is_nil()` is the matcher.
         methods.add_method("exists", |_, this, ()| {
-            let pass = subject_path(&this.subject).is_some_and(|p| p.exists());
-            this.record(pass, || {
-                format!("expected path {} to exist", display(&this.subject))
-            })
+            match subject_path(&this.subject) {
+                Some(p) => {
+                    let pass = p.exists();
+                    let subject = display(&this.subject);
+                    // A separator-less string that is not on disk is far more likely a value someone
+                    // meant to null-check than a path they expected to find, so name the other
+                    // matcher rather than leaving them to guess.
+                    let looks_like_a_value = matches!(&this.subject, Value::String(_))
+                        && !subject.contains(std::path::MAIN_SEPARATOR)
+                        && !subject.contains('/');
+                    this.record(pass, move || {
+                        if looks_like_a_value {
+                            format!(
+                                "expected path {subject} to exist — `exists` is a filesystem \
+                                 matcher; for a presence check use `never():is_nil()`"
+                            )
+                        } else {
+                            format!("expected path {subject} to exist")
+                        }
+                    })
+                }
+                // Not path-shaped at all (a table without `path`, a number, a boolean): the only
+                // coherent reading is "this value is present".
+                None => {
+                    let pass = !matches!(this.subject, Value::Nil);
+                    this.record(pass, || "expected a value to be present, got nil".to_string())
+                }
+            }
         });
         methods.add_method("is_file", |_, this, ()| {
             let pass = subject_path(&this.subject).is_some_and(|p| p.is_file());
