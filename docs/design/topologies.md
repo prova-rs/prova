@@ -39,23 +39,34 @@ test fixtures are four separate descriptions of "the same" environment that sile
 collapses them to one. No existing tool does this, because they are separate tools.
 
 ```lua
-local env = prova.topology("orders", function(ctx)
+-- The factory, exported from a plugin so both doors can reach it (see §Two doors below).
+function kitchen.orders(ctx)
   local db  = require("postgres").container(ctx)
   local mq  = require("kafka").container(ctx)
-  local app = boot_app(ctx, { db = db.url, kafka = mq.url })   -- wiring via the grammar's `url`
+  -- The SUT is a container, so it is wired with the IN-NETWORK vantage — `db.network.url`
+  -- (alias + container port), never `db.url` (127.0.0.1 + mapped port). Inside a container,
+  -- `127.0.0.1` is that container; see §The containerized SUT.
+  local app = boot_app(ctx, { db = db.network.url, kafka = mq.network.url })
   return { db = db, mq = mq, app = app }
-end)
+end
+
+local env = prova.topology("orders", kitchen.orders)
 
 prova.test("an order lands in the DB", function(t)
   local e = t:use(env)                        -- test: instantiate → drive → assert → teardown
-  e.app:post("/orders", { sku = "A1" })
+  e.app:post("/orders", { sku = "A1" })       -- the runner drives it over the HOST vantage
   t:expect(e.db.client:query_value("select count(*) from orders")):equals("1")
 end)
 ```
 
+```toml
+[topologies]
+orders = { plugin = "kitchen", topology = "orders" }
 ```
-prova test           # runs the assertions against `env`
-prova up orders      # stands up the SAME `env`, prints endpoints, holds until Ctrl-C
+
+```
+prova                # runs the assertions against `env`
+prova up orders      # stands up the SAME factory, prints endpoints, holds until Ctrl-C
 ```
 
 ## Why it's a layer, not a rewrite
@@ -80,6 +91,31 @@ verb-agnostic bundle of wired resources that both verbs address. A topology is, 
 designed to be a whole environment and addressable by name* — `t:use(env)` instantiates it under a
 test scope; `prova up orders` instantiates the identical object under a held environment scope.
 
+## Two doors — registration is the whole surface for the inhabited verbs (landed 2026-07-28)
+
+A topology has exactly two consumers, and they enter by different doors. A **test** builds one
+in-process (`prova.topology(...)`); the **inhabited verbs** stand up a **registered** factory.
+`up`/`start`/`watch`/`ps` originally did both — loading every proof file and standing up any
+`prova.topology` call found there — and two problems followed.
+
+A test-local fixture became silently addressable as a shared environment, which is not what
+declaring a fixture inside a test file means. And the two sources collided: registering a topology
+in `[topologies]` *and* declaring it in a proof — the natural thing when one package is both a
+plugin and its own suite, which is exactly the reference kitchen sink — aborted with
+`topology "x" is already defined`, an error that never mentioned that one registration came from
+the manifest. The only way to have both verbs work was to pick one and lose the other.
+
+`[topologies]` is now the whole surface for the inhabited verbs; **no files are loaded**. The two
+doors stop competing, so a package can register a topology for `prova up` and build the same
+factory as a fixture in its proofs — one definition, addressed twice, unable to drift. The
+`requires` gate also becomes universal: a code-declared topology carried no advertisement and so
+stood up ungated, where a registered one inherits the environment requirements its plugin
+advertises.
+
+Breaking, deliberately, and pre-1.0: a topology declared *only* in a test file is no longer
+visible to `up`. The failure says so and prints the `[topologies]` entry to add, rather than
+reporting "no topologies defined".
+
 ## Where the grammar pays off again
 
 - **Endpoint reporting** — `prova up` prints each resource's `url`, so you get "postgres →
@@ -93,9 +129,10 @@ test scope; `prova up orders` instantiates the identical object under a held env
 - **`prova.topology(name, [scope,] fn)`** — **done.** A named, verb-agnostic fixture (default
   `Scope.File`), registered so verbs can address it by name. In test mode it is used exactly like any
   fixture (`t:use(handle)`).
-- **`prova up <name>` (attached)** — **done.** Loads the manifest's files, provisions the named
-  topology under a held File scope, prints each resource's `url`, and blocks until **SIGINT or
-  SIGTERM**, then runs the existing `ctx:manage` teardown. Verified with a real Postgres container
+- **`prova up <name>` (attached)** — **done.** Resolves the named topology from `[topologies]`
+  (see §Two doors — it does **not** load proof files), provisions it under a held File scope,
+  prints each resource's `url`, and blocks until **SIGINT or SIGTERM**, then runs the existing
+  `ctx:manage` teardown. Verified with a real Postgres container
   (endpoint on a live host port; container reaped on Ctrl-C). A running `up` **self-registers** a
   record under `<home>/.prova/var/running/<name>.json` (pid + endpoints; self-gitignored) and removes it on
   clean teardown.

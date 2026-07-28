@@ -16,6 +16,34 @@ prova.test("reads through the stack", function(t)
 end)
 ```
 
+## Two doors, and they are not the same door
+
+A topology has exactly two consumers, and each enters differently:
+
+- **A test** builds one in-process with `prova.topology(...)`. That is a fixture — local to the
+  files that declare it, and never addressable from outside the run.
+- **The inhabited verbs** (`up`/`start`/`watch`/`ps`) stand up a **registered** factory, resolved
+  from `[topologies]` in the manifest and **nowhere else**. They do not load or scan proof files.
+
+So `prova.topology("orders", ...)` sitting in a test file is *not* visible to `prova up orders` —
+declaring a fixture inside a test file means it belongs to that test, not that it is a shared
+environment. To get both verbs, export the factory from a plugin and register it; a test then
+builds that same factory as its fixture:
+
+```toml
+[topologies]
+orders = { plugin = "kitchen", topology = "orders" }
+vm     = { plugin = "parallels", topology = "vm", options = { image = "ubuntu-24.04" } }
+```
+
+```lua
+local orders = prova.topology("orders", require("kitchen").orders)   -- the same factory
+```
+
+One definition, addressed twice — they cannot drift, and registering does not collide with
+declaring. `options` is passed as the factory's second argument. A topology registered this way
+also inherits the `requires` its plugin advertises, so it gates on the environment it needs.
+
 ## The verbs over the same definition
 
 | Verb | Holds it |
@@ -25,14 +53,6 @@ end)
 | `prova watch orders` | re-applies on definition change (the dev loop) |
 | MCP `up { name }` → `run`/`eval` `{ topology = name }` → `down { name }` | WARM inside the server — millisecond re-runs while iterating; see `prova learn mcp` |
 | `prova up <git-url>` | stand up a topology a remote repo advertises |
-
-Manifest-registered topologies name a plugin's factory (with `options` passed as the factory's
-second argument):
-
-```toml
-[topologies]
-vm = { plugin = "parallels", topology = "vm", options = { image = "ubuntu-24.04" } }
-```
 
 ## In this package
 
