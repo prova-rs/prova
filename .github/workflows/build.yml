@@ -53,12 +53,13 @@ jobs:
       # ground `cargo test` structurally cannot: manifest parsing, discovery, capability gating,
       # and the CLI's own surface as a user meets it. ~11s for ~180 proofs.
       #
-      # Linux and macOS. Windows has never run this suite (Phase 3). macOS was held out for a while by
-      # a single proof — proofs/http/probe_test.lua, whose fixture booted `python -m http.server`:
-      # stock http.server calls socket.getfqdn() between bind() and listen(), and reverse DNS is ~70s
-      # on the GitHub macOS runner, so the port sat unreachable and the 10s readiness wait timed out.
-      # Diagnosed (not papered over): the proof now scripts a getfqdn-free server that binds to a
-      # literal IP, so it boots deterministically. That was the last macOS gap; widened here.
+      # All three platforms. Two platform-divergence bugs were diagnosed (not papered over) to get
+      # here. macOS: proofs/http/probe_test.lua booted `python -m http.server`, whose server_bind()
+      # calls socket.getfqdn() between bind() and listen() — ~70s reverse DNS on the GitHub macOS
+      # runner left the port unreachable; the fixture now scripts a getfqdn-free server on a literal
+      # IP. Windows: shell.spawn runs under `cmd /C`, which (unlike unix `sh -c`) does not
+      # exec-replace, so a spawned service survived TerminateProcess as a grandchild holding the stdout
+      # pipe open and wedged teardown; Process::stop() now tree-kills on Windows.
       #
       # Open specs report as the `spec` outcome and keep this green by design — that is the point
       # of the flag. A spec whose body starts passing fails here, demanding graduation.
@@ -72,34 +73,6 @@ jobs:
       # `prova.bin` — the runtime hands each run its own executable — so the inner prova is the outer
       # one by construction rather than by arranging the environment correctly.
       - name: Proofs (prova, proven by prova)
-        if: runner.os == 'Linux' || runner.os == 'macOS'
+        if: runner.os == 'Linux' || runner.os == 'macOS' || runner.os == 'Windows'
         shell: bash
         run: cargo xtask proofs
-
-      # TEMPORARY (Thrust 1): localize the Windows-only proof-pass hang. Windows now reaches the
-      # proofs (the git-cache fetch fix in v3.4.1) but a specific proof stalls forever, and the
-      # reporters print only on NodeFinished — so a hung proof is silent. Run each proof FILE under a
-      # 60s bash-native watchdog (background + kill; `timeout` in git-bash resolves to the incompatible
-      # Windows timeout.exe), echoing each. A file that trips the watchdog (exit 124) is flagged; one
-      # run lists every hang and the sweep still completes. Non-gating. Remove once the hang is fixed.
-      - name: Localize Windows proof hang (temporary)
-        if: runner.os == 'Windows'
-        shell: bash
-        timeout-minutes: 10
-        run: |
-          set +e
-          echo "== python on this runner =="
-          which python3 python 2>&1; python3 --version 2>&1
-          BIN="target/debug/prova.exe"
-          echo "== run probe_test.lua with output + 90s watchdog =="
-          # MARK lines from the fixture show the last phase reached; PASS lines mean tests ran. If all
-          # 4 PASS then it stalls => teardown hang (killing the shell.spawn'd python — signals are
-          # unix-only). No MARKs => spawn/setup hang.
-          "$BIN" proofs/http/probe_test.lua &
-          pid=$!; waited=0
-          while kill -0 "$pid" 2>/dev/null; do
-            sleep 1; waited=$((waited + 1))
-            if [ "$waited" -ge 90 ]; then echo "!!! WATCHDOG killed prova at 90s"; kill -9 "$pid" 2>/dev/null; break; fi
-          done
-          echo "== waited ${waited}s =="
-          true

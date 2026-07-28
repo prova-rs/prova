@@ -31,10 +31,8 @@ local service = prova.fixture("service", Scope.File, function(ctx)
   -- second run of this suite on the same machine. `net.free_port` exists for exactly this, and a
   -- proof that dogfoods boot-then-probe should demonstrate the readiness pattern in full.
   local port = net.free_port()
-  io.stderr:write("MARK fixture: got free_port " .. tostring(port) .. "\n")
   -- shell.spawn returns a managed process handle; ctx:manage stops it during async teardown.
   local proc = ctx:manage(shell.spawn("python3 " .. root .. "/serve.py " .. port .. " " .. root))
-  io.stderr:write("MARK fixture: spawned python\n")
 
   local base = "http://127.0.0.1:" .. port
   -- A readiness failure has to say WHY. shell.spawn discards stdout/stderr, so a bare timeout
@@ -46,7 +44,6 @@ local service = prova.fixture("service", Scope.File, function(ctx)
     error(tostring(err) .. "\n--- service output ---\n" .. (proc:output() or "<none>") ..
       "\n--- still running: " .. tostring(proc:running()) .. " ---")
   end
-  io.stderr:write("MARK fixture: health OK, returning\n")
   return { base = base, proc = proc }
 end)
 
