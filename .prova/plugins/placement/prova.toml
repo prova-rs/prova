@@ -1,0 +1,3 @@
+[plugin]
+name = "placement"
+description = "Test-support client for the placement conformance suite (docs/design/placement.md) — dials a broker over a unix socket and speaks newline-delimited JSON."
