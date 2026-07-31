@@ -34,6 +34,17 @@ in the test) or remove it — so implementation + graduation land as one proof-c
 some in a repo? That is scoped work — offer to burn it down with `prova burndown`.
 `prova learn specs` carries the lifecycle.
 
+**Falsifiers — proving the proof can fail.** A proof that has only ever been green is not
+evidence: it may be checking the contract, or checking nothing (an assertion over a value that
+cannot vary, a bar a stub already satisfies), and the two are indistinguishable in a report.
+Declare the mutation that MUST break it — `{ falsified_by = function(t) … end }` — and
+`prova falsify` applies it and inverts the verdict: red is the passing result. A body that
+survives its own falsifier is reported **vacuous** and fails the run. Reach for one when a proof
+asserts an *absence* (no anonymous control, no leaked handle), and especially when the
+implementation was written after the proof — a stub that refuses everything satisfies a great
+many careless assertions. Costs nothing on the ordinary path; the mutation runs only under the
+verb that asks for it.
+
 Prova complements the language's own test harness; it does not replace it. Prove the CONTRACT
 with prova (behavior a real caller observes at the boundary); prove the INTERNALS with native
 unit/integration tests (one function's logic, seams the boundary can't reach). A change often
@@ -51,6 +62,7 @@ Everything below is the crash course; depth is one call away, computed for THIS 
 | Which archetypes `init` can scaffold | `prova init --list` (or `prova learn init`) |
 | A live value's shape | probe it with `eval` |
 | The open-spec backlog (proofs ahead of implementation) | `prova specs` · `prova learn specs` |
+| Whether the proofs can actually fail (vacuous-proof hunt) | `prova falsify` · `prova learn specs` |
 | A plugin for a technology you need to prove | `prova plugins <term>` (search registries) → `prova plugins add <name>` |
 
 ## Test files, in one screen
@@ -81,7 +93,8 @@ end)
   upstream failure **skips** downstream, never fails it, never passes state.
 - opts: `tags`, `requires`, `timeout = "60s"`,
   `resources = { prova.port(N), prova.writes("db"), prova.reads("cache") }` (say what the test does
-  to the resource: `writes` = exclusive, `reads` = concurrent), `serial = true`, `spec = "reason"` (a
+  to the resource: `writes` = exclusive, `reads` = concurrent), `serial = true`, `falsified_by = fn` (the mutation that must break it — `prova falsify`),
+  `spec = "reason"` (a
   proof authored ahead of its implementation — `prova learn specs`). `--jobs` is throughput
   only — it can never change what a run means.
 - Context: `ctx:use(handle)`, `ctx:manage(resource)` (auto stop/close at scope end),
