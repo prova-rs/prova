@@ -59,14 +59,14 @@ prova.test("a malformed frame is rejected without killing the connection", OPEN,
 
 	-- Surviving a bad frame matters because leases are held across turns: dropping the connection
 	-- on a parse error would release every slot this client holds as a side effect of a typo.
-	local after = broker:request("resolve", { capabilities = {} })
+	local after = broker:request("resolve", { capabilities = json.array({}) })
 	t:expect(after.ok, "the connection still works"):is_true()
 end)
 
 prova.test("every terminal frame echoes the request id", OPEN, function(t)
 	local broker = placement.connect(t)
 	local hello = broker:hello()
-	local resolved = broker:request("resolve", { capabilities = {} })
+	local resolved = broker:request("resolve", { capabilities = json.array({}) })
 
 	-- Ids are what let a streaming op interleave with anything else on the connection. Without
 	-- them, a client cannot tell whose response it just read.

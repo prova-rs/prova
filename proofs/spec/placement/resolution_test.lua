@@ -56,6 +56,28 @@ prova.test("version constraints are honoured, not ignored", OPEN, function(t)
 	t:expect(response.outcome):equals("unsatisfiable")
 end)
 
+prova.test("a constraint is EVALUATED, not merely refused", OPEN, function(t)
+	local broker = connected(t)
+
+	-- The proof above is passed by a broker that evaluates versions correctly AND by one that
+	-- refuses every constrained capability outright. Those are not the same broker, and the second
+	-- makes every version-gated proof in every consuming suite skip silently forever.
+	--
+	-- Asking the same capability twice discriminates without this suite needing to know what
+	-- version anything is: a floor of 0 is met by every version that exists, so the two answers
+	-- MUST differ. Both granted means constraints are ignored; both unsatisfiable means they are
+	-- refused wholesale; different means the broker actually compared something.
+	local floor = broker:request("resolve", {
+		capabilities = { { name = "sh", constraint = ">= 0" } },
+	})
+	local ceiling = broker:request("resolve", {
+		capabilities = { { name = "sh", constraint = ">= 9999" } },
+	})
+
+	t:expect(floor.outcome, "a floor every version meets"):equals("granted")
+	t:expect(ceiling.outcome, "a floor no version meets"):equals("unsatisfiable")
+end)
+
 prova.test("several capabilities resolve conjunctively", OPEN, function(t)
 	local broker = connected(t)
 
@@ -72,7 +94,7 @@ end)
 
 prova.test("an empty capability list resolves against the whole pool", OPEN, function(t)
 	local broker = connected(t)
-	local response = broker:request("resolve", { capabilities = {} })
+	local response = broker:request("resolve", { capabilities = json.array({}) })
 
 	-- A proof with no `requires` runs anywhere. That degenerate case has to be `granted` rather
 	-- than an error, because it is the common case: most proofs demand nothing in particular.
