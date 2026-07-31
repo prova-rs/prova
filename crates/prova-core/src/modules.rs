@@ -4268,6 +4268,21 @@ pub(crate) mod docker {
         })
     }
 
+    /// Whether the port's **host mapping** accepts a connection — the half of readiness the
+    /// in-container probe cannot see.
+    ///
+    /// An UNPUBLISHED port is ready by definition: an in-network-only resource is reached by DNS
+    /// from a peer container and has no host mapping to wait on. Returning false there would hang
+    /// every such resource until timeout.
+    async fn host_mapping_ready(container: &Container, port: u16) -> bool {
+        match container.ports.get(&port) {
+            Some(&host_port) => tokio::net::TcpStream::connect(("127.0.0.1", host_port))
+                .await
+                .is_ok(),
+            None => true,
+        }
+    }
+
     async fn wait_ready(
         container: &Container,
         wait: &Wait,
@@ -4314,7 +4329,16 @@ pub(crate) mod docker {
                     Probe::Unsupported
                 };
                 match asked {
-                    Probe::Answered(listening) => listening,
+                    // Listening inside is necessary but NOT sufficient. The test dials the
+                    // *published* port, and a host-side forwarder can lag the container as easily
+                    // as it can lead it: Docker Desktop's proxy accepts before the server is up
+                    // (which is why the container is asked at all), while OrbStack's refuses for a
+                    // beat after it is. Each check alone is a false positive on one runtime — the
+                    // container answers "is the server up", the mapping answers "can the test
+                    // reach it", and readiness is both.
+                    Probe::Answered(listening) => {
+                        listening && host_mapping_ready(container, port).await
+                    }
                     // Retry next tick; this says nothing about readiness either way.
                     Probe::Failed => false,
                     // The image cannot answer (no `cat`/procfs). Fall back to the coarse host-port
