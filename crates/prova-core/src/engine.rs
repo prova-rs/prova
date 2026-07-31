@@ -216,6 +216,9 @@ pub struct RunConfig {
     /// `--specs` (the selector): narrow the run to leaves carrying an effective spec flag —
     /// graduated leaves and ordinary tests are deselected. Composes with `--list`.
     pub specs_only: bool,
+    /// Run the falsification pass: select only leaves declaring `falsified_by`, apply the mutation
+    /// before the body, and invert the verdict — a body that survives is vacuous.
+    pub falsify: bool,
     /// Where activity during a blocking pause is reported (see [`crate::progress`]). Deliberately
     /// here rather than on the reporter: activity is stderr-only and ephemeral, while the reporter
     /// carries durable results to stdout. Defaults to a silent sink, so a library consumer or a test
@@ -250,6 +253,7 @@ impl Default for RunConfig {
             capabilities: Capabilities::default(),
             strict_specs: false,
             specs_only: false,
+            falsify: false,
             progress: std::sync::Arc::new(crate::progress::NullProgress),
             globals_exclude: Vec::new(),
             prova_bin: None,
@@ -329,6 +333,11 @@ impl RunConfig {
     /// `--specs` (the selector): run only the leaves carrying an effective spec flag.
     pub fn with_specs_only(mut self, specs_only: bool) -> Self {
         self.specs_only = specs_only;
+        self
+    }
+
+    pub fn with_falsify(mut self, falsify: bool) -> Self {
+        self.falsify = falsify;
         self
     }
 
@@ -588,6 +597,9 @@ struct RunState {
     update_snapshots: bool,
     /// Shared registry of referenced `.snap` files, for unreferenced-snapshot reconciliation.
     snapshot_registry: Option<SnapshotRegistry>,
+    /// The falsification pass is active: apply each leaf's declared mutation before its body and
+    /// invert the verdict.
+    falsify: bool,
 }
 
 impl RunState {
@@ -742,6 +754,9 @@ struct Node {
     opts: UnitOpts,
     children: Vec<NodeIx>,
     body: Option<Function>,
+    /// The declared mutation that must turn `body` red (`falsified_by`). Lives beside the body
+    /// rather than in `UnitOpts` because it is a Lua value, and `UnitOpts` stays plain data.
+    falsifier: Option<Function>,
     /// A `test_each` case, delivered to the body as its second argument and as `t.case`. `None` for
     /// ordinary tests (the body simply ignores the extra nil argument).
     case: Option<Value>,
@@ -788,6 +803,7 @@ impl Collector {
                 opts: UnitOpts::default(),
                 children: vec![],
                 body: None,
+                falsifier: None,
                 case: None,
                 file: 0,
                 line: None,
@@ -842,14 +858,51 @@ fn reject_bare_in_builder(col: &SharedCollector, what: &str) -> mlua::Result<()>
 
 type SharedCollector = Rc<RefCell<Collector>>;
 
-fn split_opts_body(a: Value, b: Value) -> mlua::Result<(UnitOpts, Function)> {
+fn split_opts_body(a: Value, b: Value) -> mlua::Result<(UnitOpts, Function, Option<Function>)> {
     match (a, b) {
-        (Value::Function(f), Value::Nil) => Ok((UnitOpts::default(), f)),
-        (Value::Table(t), Value::Function(f)) => Ok((parse_opts(&t)?, f)),
+        (Value::Function(f), Value::Nil) => Ok((UnitOpts::default(), f, None)),
+        (Value::Table(t), Value::Function(f)) => {
+            let falsifier = parse_falsified_by(&t.get::<Value>("falsified_by")?)?;
+            Ok((parse_opts(&t)?, f, falsifier))
+        }
         _ => Err(mlua::Error::RuntimeError(
             "expected (name, fn) or (name, opts, fn)".into(),
         )),
     }
+}
+
+/// The `falsified_by` opt: a **function** that mutates the system so the body must go red.
+///
+/// A proof that has only ever been green is not evidence — it might be checking the contract, or
+/// it might be checking nothing, and the two are indistinguishable in a report. Declaring the
+/// mutation makes the negative case a checkable artifact instead of something a careful author
+/// once did by hand and nobody repeated.
+///
+/// Rejected loudly when misdeclared: a falsifier that is quietly ignored is worse than none,
+/// because the suite then claims a rigor it does not have.
+fn parse_falsified_by(v: &Value) -> mlua::Result<Option<Function>> {
+    match v {
+        Value::Nil => Ok(None),
+        Value::Function(f) => Ok(Some(f.clone())),
+        _ => Err(mlua::Error::RuntimeError(
+            "falsified_by takes a function that breaks the system so the body fails — \
+             `falsified_by = function(t) … end`; remove the entry if there is nothing to break"
+                .into(),
+        )),
+    }
+}
+
+/// `falsified_by` is test-level, like `spec` and `proves`. A group or flow cannot carry one: the
+/// mutation has to be paired with the assertion it must break, and a container has no assertions
+/// of its own to invalidate.
+fn reject_falsifier(falsifier: Option<Function>, what: &str) -> mlua::Result<()> {
+    if falsifier.is_some() {
+        return Err(mlua::Error::RuntimeError(format!(
+            "falsified_by is test-level — a {what} has no assertion of its own for a mutation to \
+             break; move it onto the test whose body must go red"
+        )));
+    }
+    Ok(())
 }
 
 fn parse_opts(t: &mlua::Table) -> mlua::Result<UnitOpts> {
@@ -2835,12 +2888,13 @@ fn register_test(
     case: Option<Value>,
     line: Option<u32>,
 ) -> mlua::Result<NodeIx> {
-    let (opts, body) = split_opts_body(a, b)?;
+    let (opts, body, falsifier) = split_opts_body(a, b)?;
     Ok(col.borrow_mut().add(
         parent,
         Node {
             name,
             kind: NodeKind::Test,
+            falsifier,
             params: Params::default(),
             opts,
             children: vec![],
@@ -2942,7 +2996,8 @@ fn register_group(
     a: Value,
     b: Value,
 ) -> mlua::Result<NodeIx> {
-    let (opts, body) = split_opts_body(a, b)?;
+    let (opts, body, falsifier) = split_opts_body(a, b)?;
+    reject_falsifier(falsifier, "group")?;
     let line = caller_line(lua, col);
     let gix = col.borrow_mut().add(
         parent,
@@ -2953,6 +3008,7 @@ fn register_group(
             opts,
             children: vec![],
             body: None,
+            falsifier: None,
             case: None,
             file: 0,
             line,
@@ -3002,6 +3058,7 @@ fn register_describe(
                 opts: UnitOpts::default(),
                 children: vec![],
                 body: None,
+                falsifier: None,
                 case: None,
                 file: 0,
                 line,
@@ -3027,7 +3084,8 @@ fn register_flow(
     a: Value,
     b: Value,
 ) -> mlua::Result<NodeIx> {
-    let (opts, body) = split_opts_body(a, b)?;
+    let (opts, body, falsifier) = split_opts_body(a, b)?;
+    reject_falsifier(falsifier, "flow")?;
     let line = caller_line(lua, col);
     let fix = col.borrow_mut().add(
         parent,
@@ -3038,6 +3096,7 @@ fn register_flow(
             opts,
             children: vec![],
             body: None,
+            falsifier: None,
             case: None,
             file: 0,
             line,
@@ -3074,13 +3133,14 @@ struct FlowBuilder {
 impl UserData for FlowBuilder {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("step", |lua, this, (name, a, b): (String, Value, Value)| {
-            let (opts, body) = split_opts_body(a, b)?;
+            let (opts, body, falsifier) = split_opts_body(a, b)?;
             let line = caller_line(lua, &this.col);
             this.col.borrow_mut().add(
                 this.ix,
                 Node {
                     name,
                     kind: NodeKind::Test,
+                    falsifier,
                     params: Params::default(),
                     opts,
                     children: vec![],
@@ -3102,6 +3162,8 @@ impl UserData for FlowBuilder {
 struct PlanItem {
     path: String,
     body: Function,
+    /// Applied before the body under `prova falsify`, never on the ordinary path.
+    falsifier: Option<Function>,
     timeout: Option<Duration>,
     case: Option<Value>,
     /// Source file index — selects this item's `Scope.File` instance.
@@ -3142,6 +3204,7 @@ fn plan_item(node: &Node, ancestors: &[String]) -> PlanItem {
     PlanItem {
         path: path.join(" › "),
         body: node.body.clone().expect("test/step node has a body"),
+        falsifier: node.falsifier.clone(),
         timeout: node.opts.timeout,
         case: node.case.clone(),
         file: node.file,
@@ -3169,6 +3232,8 @@ struct Leaf {
     precondition_skip: Option<String>,
     /// Effective tags: the unit's own plus every enclosing group's (selection matches on these).
     tags: Vec<String>,
+    /// Whether this leaf declares a `falsified_by` mutation — the selector for `prova falsify`.
+    falsifiable: bool,
     /// `Some(reason)` when this leaf carries its own `spec` flag (always a non-empty reason)
     /// — test-level only, never inherited. Drives the outcome inversion: red body →
     /// `Outcome::Spec`, green body → a failure demanding the flag's removal.
@@ -3283,6 +3348,7 @@ fn push_leaf(leaves: &mut Vec<Leaf>, unit: PlanUnit, node: &Node, inherited: &In
         precondition_skip: None,
         tags,
         // Test-level only, by design: the leaf's own flag, never an ancestor's.
+        falsifiable: node.falsifier.is_some(),
         spec: node.opts.spec.clone(),
     });
     id
@@ -3308,6 +3374,16 @@ fn apply_selection(plan: Plan, sel: &Selection) -> (Plan, usize) {
 /// Narrow a plan to the leaves carrying an effective spec flag (`--specs`): the burndown
 /// selector. Graduated leaves are ordinary tests again and count as deselected, exactly like an
 /// unmatched `-k` — the spec surface is precisely what is still open (or wrongly green).
+/// `prova falsify` selects exactly the leaves that declare a mutation. A proof without one is not
+/// a failure — most proofs will never declare one — it is simply not what this pass is about.
+fn apply_falsify_filter(plan: Plan, enabled: bool) -> (Plan, usize) {
+    if !enabled {
+        return (plan, 0);
+    }
+    let keep = plan.leaves.iter().map(|l| l.falsifiable).collect();
+    narrow_plan(plan, keep)
+}
+
 fn apply_specs_filter(plan: Plan, enabled: bool) -> (Plan, usize) {
     if !enabled {
         return (plan, 0);
@@ -3488,7 +3564,15 @@ fn resolve_requires(leaves: &mut [Leaf], caps: &Capabilities) {
                 .or_insert_with(|| caps.unmet_reason(cap))
                 .clone();
             if let Some(reason) = unmet {
-                leaf.precondition_skip = Some(format!("skipped: {reason}"));
+                // An unmet `requires` wins over the spec flag — nothing was observed, so there is
+                // no outcome to invert. But "not applicable on this machine" and "not built
+                // anywhere" are different facts with different remedies, and collapsing them into
+                // one bare `skipped:` hides a standing backlog from anyone reading the run. The
+                // skip stays a skip; it just stops pretending the spec isn't there.
+                leaf.precondition_skip = Some(match &leaf.spec {
+                    Some(spec) => format!("skipped: {reason} — still an open spec: {spec}"),
+                    None => format!("skipped: {reason}"),
+                });
                 break;
             }
         }
@@ -3943,6 +4027,22 @@ async fn run_one(
 
     let file = state.file_path_str(item.file);
     let start = Instant::now();
+
+    // The falsification pass: break the system FIRST, then run the body against the wreckage. A
+    // falsifier that itself raises is a failure of the mutation, not of the proof, and says so —
+    // otherwise a broken falsifier would masquerade as a body that correctly went red.
+    let falsifier_error = if state.falsify {
+        match &item.falsifier {
+            Some(f) => match f.call_async::<()>(ctx_ud.clone()).await {
+                Ok(()) => None,
+                Err(e) => Some(format!("falsifier raised before the body ran: {e}")),
+            },
+            None => None,
+        }
+    } else {
+        None
+    };
+
     let call = item.body.call_async::<()>((ctx_ud, case_arg));
 
     let result = match item.timeout {
@@ -3985,6 +4085,31 @@ async fn run_one(
             (Outcome::Passed, None)
         };
         (outcome, message, r.assertions)
+    };
+
+    // Invert: under falsification, going red is the proof succeeding. A body that survives its own
+    // mutation asserts nothing about the system — it is vacuous, and reporting it green would let
+    // it keep counting as evidence forever.
+    let (outcome, message) = if state.falsify && item.falsifier.is_some() {
+        match falsifier_error {
+            Some(err) => (Outcome::Failed, Some(err)),
+            None => match outcome {
+                Outcome::Failed => (Outcome::Passed, None),
+                Outcome::Passed => (
+                    Outcome::Failed,
+                    Some(
+                        "vacuous — the body still passed with its falsifier applied, so it is not \
+                         asserting what the mutation breaks. Sharpen the assertion, or fix the \
+                         falsifier to break what the proof actually checks."
+                            .to_string(),
+                    ),
+                ),
+                // A skip observed nothing, so there is nothing to invert.
+                other => (other, message),
+            },
+        }
+    } else {
+        (outcome, message)
     };
 
     let errors = teardown_scope(&test_scope).await;
@@ -4430,7 +4555,9 @@ fn execute_collected(
         let col = col.borrow();
         let plan = build_plan(&col, &config.capabilities)?;
         let (plan, deselected) = apply_selection(plan, &config.selection);
+        let (plan, falsify_deselected) = apply_falsify_filter(plan, config.falsify);
         let (plan, spec_deselected) = apply_specs_filter(plan, config.specs_only);
+        let spec_deselected = spec_deselected + falsify_deselected;
         let deselected = deselected + spec_deselected;
         let state = Rc::new(RunState {
             defs: col.fixtures.clone(),
@@ -4439,6 +4566,7 @@ fn execute_collected(
             file_paths: col.file_paths.clone(),
             update_snapshots: config.update_snapshots,
             snapshot_registry: config.snapshot_registry.clone(),
+            falsify: config.falsify,
         });
         (plan, deselected, state)
     };
@@ -4611,6 +4739,7 @@ pub fn eval_snippet(code: &str, config: &RunConfig) -> mlua::Result<serde_json::
         file_paths: Vec::new(),
         update_snapshots: false,
         snapshot_registry: None,
+        falsify: false,
     });
 
     let rt = new_runtime()?;
@@ -4932,6 +5061,7 @@ fn load_topology(
         file_paths: col.borrow().file_paths.clone(),
         update_snapshots: false, // snapshots are a test-mode concern, not for inhabited topologies
         snapshot_registry: None,
+        falsify: false,
     });
     Ok((lua, col, state, id))
 }
@@ -5124,7 +5254,9 @@ impl HeldTopology {
             let col = self.col.borrow();
             let plan = build_plan(&col, &self.config.capabilities)?;
             let (plan, deselected) = apply_selection(plan, selection);
+            let (plan, falsify_deselected) = apply_falsify_filter(plan, self.config.falsify);
             let (plan, spec_deselected) = apply_specs_filter(plan, self.config.specs_only);
+            let spec_deselected = spec_deselected + falsify_deselected;
             let deselected = deselected + spec_deselected;
 
             // A fresh run state — the run's own scopes, so its teardown reaps only what it built.
@@ -5135,6 +5267,7 @@ impl HeldTopology {
                 file_paths: col.file_paths.clone(),
                 update_snapshots: self.config.update_snapshots,
                 snapshot_registry: self.config.snapshot_registry.clone(),
+                falsify: self.config.falsify,
             });
 
             // Held-instance injection, keyed by topology NAME (topologies are name-addressable by
@@ -5206,6 +5339,7 @@ impl HeldTopology {
             file_paths: Vec::new(),
             update_snapshots: false,
             snapshot_registry: None,
+            falsify: false,
         });
         if let Some(&id) = self.col.borrow().topologies.get(&self.name) {
             state
@@ -5301,6 +5435,7 @@ fn group_node(name: String) -> Node {
         opts: UnitOpts::default(),
         children: vec![],
         body: None,
+        falsifier: None,
         case: None,
         file: 0,
         line: None,
@@ -5377,6 +5512,7 @@ pub(crate) fn discover_suite_files(
 fn list_plan(col: &Collector, config: &RunConfig) -> mlua::Result<Vec<String>> {
     let (plan, _deselected) =
         apply_selection(build_plan(col, &config.capabilities)?, &config.selection);
+    let (plan, _falsify_deselected) = apply_falsify_filter(plan, config.falsify);
     let (plan, _spec_deselected) = apply_specs_filter(plan, config.specs_only);
     Ok(plan
         .leaves

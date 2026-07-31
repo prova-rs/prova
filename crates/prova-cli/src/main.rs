@@ -102,6 +102,12 @@ const VERBS: &[Verb] = &[
         run: burndown_subcommand,
     },
     Verb {
+        name: "falsify",
+        help: "  prova falsify [<sel>]     prove the proofs can fail: run only tests declaring `falsified_by`,\n\
+               \x20                           applying the mutation — a body that survives it is vacuous",
+        run: falsify_subcommand,
+    },
+    Verb {
         name: "mcp",
         help: "  prova mcp                 serve an MCP stdio server whose tools mirror the CLI (run, list, eval)",
         run: mcp::run,
@@ -323,6 +329,18 @@ fn burndown_subcommand(args: Vec<String>) -> ExitCode {
         "--strict-specs".to_string(),
         "--allow-empty".to_string(),
     ];
+    full.extend(args);
+    run(full)
+}
+
+/// `prova falsify [<sel>]` — the falsification pass. Selects only tests declaring `falsified_by`,
+/// applies each mutation before its body, and inverts the verdict: going red is the proof
+/// succeeding, and a body that survives its own falsifier is reported vacuous.
+///
+/// `--allow-empty` because a suite where nothing declares a mutation is not an error — most proofs
+/// never will. It is, however, worth noticing, which is what the empty tally says.
+fn falsify_subcommand(args: Vec<String>) -> ExitCode {
+    let mut full = vec!["--falsify".to_string(), "--allow-empty".to_string()];
     full.extend(args);
     run(full)
 }
@@ -1335,6 +1353,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     let mut cli_config: Option<String> = None;
     let mut list = false;
     let mut specs_only = false;
+    let mut falsify = false;
     let mut strict_specs = false;
     let mut explicit_paths: Vec<String> = Vec::new();
     let mut profile: Option<String> = None;
@@ -1477,6 +1496,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             "--list" => list = true,
             "--quiet" | "-q" => cli_quiet = true,
             "--last-failed" => last_failed = true,
+            "--falsify" => falsify = true,
             "--specs" => specs_only = true,
             "--strict-specs" => strict_specs = true,
             "--allow-empty" => allow_empty = true,
@@ -1708,6 +1728,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         .with_update_snapshots(update_snapshots)
         .with_strict_specs(strict_specs)
         .with_specs_only(specs_only)
+        .with_falsify(falsify)
         .with_capabilities(capabilities)
         .with_globals_exclude(globals_exclude);
 
