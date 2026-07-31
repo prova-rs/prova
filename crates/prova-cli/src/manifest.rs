@@ -63,6 +63,11 @@ pub struct Manifest {
     /// Not profile-specific — the plugin set is a property of the package, applied to every run.
     #[serde(default)]
     pub plugins: BTreeMap<String, PluginSource>,
+    /// `[globals]` — which modules are bound as unqualified ambient globals (`inject`). A property of
+    /// the package, not a profile: the API surface a suite is written against does not vary by run
+    /// profile. `None` (no section) falls back to the default set; a present section is authoritative.
+    #[serde(default)]
+    pub globals: Option<GlobalsSection>,
     /// Registered source aliases for plugin shorthands: `alias → base`, where `base` is a host
     /// shorthand (`github:acme`) or a base URL (`https://github.com/acme`). A plugin written
     /// `"acme:redis"` then expands via `acme` to `https://github.com/acme/redis`.
@@ -363,10 +368,6 @@ pub struct Profile {
     /// through an out-of-band CI input. On a name conflict the profile's entry wins.
     #[serde(default)]
     pub plugins: BTreeMap<String, PluginSource>,
-    /// `[run] globals` — injection knobs for the bundled namespaces (api-freeze §2). `exclude`
-    /// removes names from ambient injection; the team then does `local fs = require("fs")` (any
-    /// local name) where wanted. Excluding is an injection choice, never a capability loss.
-    pub globals: Option<GlobalsSection>,
     /// Capabilities this context **guarantees** — checked as a precondition, before anything runs.
     ///
     /// The other half of `requires`, and the reason they are two things: a test's `requires` is a
@@ -385,12 +386,15 @@ pub struct Profile {
     pub must_run: Vec<String>,
 }
 
-/// `[run] globals` — the closed shape of the globals-injection knobs (api-freeze §2).
+/// `[globals]` — the closed shape of the globals-injection knobs. `inject` lists the modules (bundled
+/// or plugin names) bound as unqualified ambient globals; the canonical form is always `prova.<name>`
+/// (bundled) or `require(name)` (plugin). Presence is authoritative — an omitted section falls back
+/// to the default set, a present one (even `inject = []`) is the whole truth.
 #[derive(Debug, Deserialize, Default, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct GlobalsSection {
     #[serde(default)]
-    pub exclude: Vec<String>,
+    pub inject: Vec<String>,
 }
 
 /// A fully-resolved run configuration (base `[run]` with an optional profile overlaid).
@@ -424,9 +428,10 @@ pub struct Resolved {
     pub luals: Luals,
     /// Git-source update policy (`[updates]`), applied to every run.
     pub updates: UpdatesSection,
-    /// Bundled namespace names excluded from global injection (`[run] globals.exclude`); the
-    /// profile's section replaces the base's when present. Validated against the reserved registry.
-    pub globals_exclude: Vec<String>,
+    /// Module names bound as unqualified ambient globals (`[globals] inject`) — bundled modules and/or
+    /// declared plugins. Package-level (not profile-overridable); absent → the default set. Validated
+    /// against the known-module registry + the resolved plugin set.
+    pub globals_inject: Vec<String>,
     /// Capabilities this run guarantees — the union of `[run] must_run` and the selected profile's.
     /// A guarantee is **additive**: a profile promises *more* than the package baseline, never less,
     /// because a context that could retract a guarantee would let the strictest bar be silenced by
@@ -686,20 +691,21 @@ impl Manifest {
             }
         }
 
-        // `[run] globals.exclude` — the profile's section replaces the base's when present (same
-        // rule as `proofs`), and every entry must be an excludable reserved name: excluding a
-        // non-namespace is a typo, and excluding `prova`/`Scope` is a run that cannot author tests.
-        let globals_exclude = overlay
-            .and_then(|p| p.globals.clone())
-            .or_else(|| base.globals.clone())
-            .map(|g| g.exclude)
-            .unwrap_or_default();
-        for name in &globals_exclude {
-            if !prova_core::excludable_namespace(name) {
+        // `[globals] inject` — the package-level list of unqualified ambient globals. Not
+        // profile-overridable (the API surface a suite is written against does not vary by profile):
+        // absent → the default set; present → authoritative, even `inject = []`. Each entry must be an
+        // injectable bundled module or a declared plugin — anything else is a typo that would silently
+        // inject nothing. Validated against the MERGED plugin set so a profile plugin counts too.
+        let globals_inject = match &self.globals {
+            Some(g) => g.inject.clone(),
+            None => prova_core::default_inject(),
+        };
+        for name in &globals_inject {
+            if !prova_core::is_injectable_module(name) && !plugins.contains_key(name) {
                 return Err(format!(
-                    "[run] globals.exclude: `{name}` is not an excludable prova namespace \
-                     (core globals `prova`/`Scope` cannot be excluded; other names must be \
-                     bundled namespaces)"
+                    "[globals] inject: `{name}` is neither a bundled module nor a declared plugin \
+                     (bundled modules are the reserved namespaces except `prova`/`Scope`; a plugin \
+                     must be declared in [plugins])"
                 ));
             }
         }
@@ -722,7 +728,7 @@ impl Manifest {
             topologies: self.topologies.clone(),
             luals: self.luals.clone(),
             updates: self.updates.clone(),
-            globals_exclude,
+            globals_inject,
             must_run,
             context: self.context.clone(),
         })
@@ -782,7 +788,7 @@ proofs = ["tests/smoke"]
                 topologies: BTreeMap::new(),
                 luals: Luals::default(),
                 updates: UpdatesSection::default(),
-                globals_exclude: Vec::new(),
+                globals_inject: prova_core::default_inject(),
                 must_run: Vec::new(),
                 context: Vec::new(),
             }

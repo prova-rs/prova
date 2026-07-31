@@ -1574,7 +1574,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         sources,
         manage,
         capabilities,
-        globals_exclude,
+        globals_inject,
     ) = if !explicit_paths.is_empty() {
         match &home {
             // The named paths belong to a package: borrow its environment (plugins, capabilities,
@@ -1606,7 +1606,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                     r.sources,
                     Manage::Never,
                     r.capabilities,
-                    r.globals_exclude,
+                    r.globals_inject,
                 ),
                 Err(code) => return code,
             },
@@ -1667,7 +1667,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                 r.sources,
                 r.manage,
                 r.capabilities,
-                r.globals_exclude,
+                r.globals_inject,
             ),
             Err(code) => return code,
         }
@@ -1730,7 +1730,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         .with_specs_only(specs_only)
         .with_falsify(falsify)
         .with_capabilities(capabilities)
-        .with_globals_exclude(globals_exclude);
+        .with_globals_inject(globals_inject);
 
     // `--last-failed`: fold the previous run's failed node paths into the selection as exact nodes.
     if last_failed {
@@ -1995,8 +1995,8 @@ struct ManifestRun {
     /// `requires` resolution sees the same vocabulary the `must_run` precondition just checked. Per
     /// resolve, so the warm MCP's packages don't share.
     capabilities: prova_core::Capabilities,
-    /// `[run] globals.exclude` (api-freeze §2) — bundled namespaces withheld from injection.
-    globals_exclude: Vec<String>,
+    /// `[globals] inject` — module names (bundled and/or plugin) bound as unqualified ambient globals.
+    globals_inject: Vec<String>,
 }
 
 /// If a linted plugin ships no LuaCATS stub (`library/<canonical>.lua`), return an advisory message.
@@ -2646,7 +2646,7 @@ fn resolve_from_manifest(
         manage,
         topologies: resolved.topologies,
         capabilities,
-        globals_exclude: resolved.globals_exclude,
+        globals_inject: resolved.globals_inject,
     })
 }
 

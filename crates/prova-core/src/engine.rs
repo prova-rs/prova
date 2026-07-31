@@ -224,9 +224,10 @@ pub struct RunConfig {
     /// carries durable results to stdout. Defaults to a silent sink, so a library consumer or a test
     /// pays nothing.
     progress: std::sync::Arc<dyn crate::progress::Progress>,
-    /// `[run] globals = { exclude = [...] }` (api-freeze §2): bundled namespace names removed from
-    /// global injection. Excluded names stay `require`-able; they are simply not ambient.
-    globals_exclude: Vec<String>,
+    /// `[globals] inject = [...]`: the module names (bundled and/or plugin) bound as unqualified
+    /// ambient globals. Non-injected modules stay reachable as `prova.<name>` / `require(name)` — they
+    /// are simply not ambient. The core authoring globals `prova`/`Scope` are always injected on top.
+    globals_inject: Vec<String>,
     /// The prova executable driving this run, surfaced to authors as `prova.bin` (see
     /// `with_prova_bin`). Injected rather than read from `std::env::current_exe()` here: prova-core
     /// is a library, and a suite embedding it must not have "the current process is prova" assumed
@@ -255,7 +256,11 @@ impl Default for RunConfig {
             specs_only: false,
             falsify: false,
             progress: std::sync::Arc::new(crate::progress::NullProgress),
-            globals_exclude: Vec::new(),
+            // Default to injecting the full bundled set, so any RunConfig that does not customize
+            // injection (eval, up, watch) still exposes the ambient globals — matching the old
+            // "empty exclude = inject all" default. The manifest-run path overrides this with the
+            // package's resolved `[globals] inject` list.
+            globals_inject: crate::default_inject(),
             prova_bin: None,
         }
     }
@@ -304,10 +309,11 @@ impl RunConfig {
         &self.progress
     }
 
-    /// Bundled namespace names to withhold from global injection (`[run] globals.exclude`,
-    /// api-freeze §2). The CLI validates the names; the engine just honors the list.
-    pub fn with_globals_exclude(mut self, exclude: Vec<String>) -> Self {
-        self.globals_exclude = exclude;
+    /// Module names to bind as unqualified ambient globals (`[globals] inject`). The CLI validates the
+    /// names (bundled module or declared plugin); the engine just honors the list. `prova`/`Scope` are
+    /// always injected regardless.
+    pub fn with_globals_inject(mut self, inject: Vec<String>) -> Self {
+        self.globals_inject = inject;
         self
     }
 
@@ -2743,38 +2749,71 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
         &config.plugin_namespaces,
     )?;
 
-    // The §2 injection contract, installed LAST so none of prova's own setup writes pass through
-    // the gate. The reserved namespaces are moved out of raw `_G` into a registry table and served
-    // back through `__index` — that is what makes `__newindex` fire on assignment at all (a raw
-    // key would bypass it), and what lets `[run] globals.exclude` withhold a name from injection
-    // while `require("<name>")` (the searcher's registry tier) still reaches it.
+    // The injection contract, installed LAST so none of prova's own setup writes pass through the
+    // gate. The bundled modules are moved out of raw `_G` into (a) the canonical first-party surface
+    // `prova.*` and (b) the `prova.namespaces` registry that `require` resolves. Ambient globals are
+    // then whatever `[globals] inject` names — the core authoring globals `prova`/`Scope` always, other
+    // modules only when injected, plus any injected PLUGINS (loaded eagerly, bound as bare globals,
+    // NOT joined to `prova.*`). Moving names out of raw `_G` is what makes `__newindex` fire on
+    // assignment at all; `__index` serves only the injected set, so a non-injected name reads as `nil`
+    // (yet stays reachable as `prova.<name>` / `require("<name>")`) and is free for the user to assign.
     {
-        let all = lua.create_table()?; // every present namespace — what `require` resolves
-        let injected = lua.create_table()?; // minus excludes — what ambient reads see
+        let prova_tbl: Table = lua.globals().raw_get("prova")?;
+        let all = lua.create_table()?; // name -> module, for require (bundled)
+        let injected = lua.create_table()?; // name -> module, what ambient reads see
+        // Names that raise on assignment: the injected set. `prova`/`Scope` are always injected.
+        let mut injected_names: Vec<String> = vec!["prova".into(), "Scope".into()];
+
         for name in crate::RESERVED_NAMESPACES {
             let v: Value = lua.globals().raw_get(*name)?;
             if v.is_nil() {
-                continue; // designed-but-unshipped transports reserve the name, nothing to serve
+                continue; // reserved but unshipped — nothing to serve
             }
             all.set(*name, v.clone())?;
-            if !config.globals_exclude.iter().any(|e| e == name) {
-                injected.set(*name, v)?;
+            // First-party canonical surface: every bundled module under `prova.*` (not prova/Scope
+            // themselves — those are the root, not fields of it).
+            if *name != "prova" && *name != "Scope" {
+                prova_tbl.set(*name, v.clone())?;
+            }
+            let inject_it = *name == "prova"
+                || *name == "Scope"
+                || config.globals_inject.iter().any(|e| e == name);
+            if inject_it {
+                injected.set(*name, v.clone())?;
+                if *name != "prova" && *name != "Scope" {
+                    injected_names.push((*name).to_string());
+                }
             }
             lua.globals().raw_set(*name, Value::Nil)?;
         }
         lua.set_named_registry_value("prova.namespaces", all)?;
 
+        // Injected PLUGINS: a name in the inject list that is not a bundled module is a declared
+        // plugin. Eagerly `require` it (the searcher is already installed above) and bind it as a bare
+        // unqualified global. Plugins do NOT join `prova.*` — a third party does not share prova's
+        // namespace.
+        let require: mlua::Function = lua.globals().get("require")?;
+        for name in &config.globals_inject {
+            if crate::is_injectable_module(name) {
+                continue; // a bundled module, handled above
+            }
+            let m: Value = require.call(name.clone())?;
+            injected.set(name.as_str(), m)?;
+            injected_names.push(name.clone());
+        }
+
         let mt = lua.create_table()?;
         mt.set("__index", injected)?;
         mt.set(
             "__newindex",
-            lua.create_function(|_, (t, k, v): (Table, Value, Value)| {
+            lua.create_function(move |_, (t, k, v): (Table, Value, Value)| {
                 if let Value::String(s) = &k {
                     let name = s.to_string_lossy();
-                    if crate::RESERVED_NAMESPACES.contains(&name.as_ref()) {
+                    let name: &str = &name;
+                    if injected_names.iter().any(|n| n.as_str() == name) {
                         return Err(mlua::Error::RuntimeError(format!(
-                            "cannot assign to '{name}' — it is a prova namespace; use a local, \
-                             or exclude it in [run] globals"
+                            "cannot assign to '{name}' — it is an injected prova namespace; use a \
+                             local, or drop it from [globals] inject"
                         )));
                     }
                 }

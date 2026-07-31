@@ -121,7 +121,7 @@ fn resolve(
 ) -> mlua::Result<Value> {
     // 0. Bundled namespace tables (api-freeze §2): `require("fs")` returns THE namespace — the
     //    same table injection serves — whether or not the name is globally injected. This is what
-    //    makes `[run] globals.exclude` an injection knob, never a capability knob.
+    //    makes `[globals] inject` an injection knob, never a capability knob.
     if let Ok(reg) = lua.named_registry_value::<mlua::Table>("prova.namespaces") {
         let v: Value = reg.get(name)?;
         if !v.is_nil() {

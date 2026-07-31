@@ -306,6 +306,28 @@ function GroupBuilder:describe(label, body) end
 ---@field home string   # where `prova.toml` lives — the root, or its `prova/` / `.prova/` child. Anchor manifest-relative paths here. Nil with no manifest.
 ---@field ports string  # host port mode: "auto" | "fixed"
 ---@field bin string    # the prova binary running this suite. Drive prova recursively through it — `shell.run(prova.bin .. " --version")` — never a bare `prova`, which resolves through PATH and can be a different build than the one running you.
+--- Canonical access to every bundled module — always available as `prova.<name>` whether or not the
+--- name is injected as an unqualified global (`[globals] inject`). Use these in shared library code
+--- that cannot assume injection, or wherever the unqualified name is not in scope.
+---@field fs prova.fs
+---@field shell prova.shell
+---@field net prova.net
+---@field http prova.http
+---@field docker prova.docker
+---@field sqlite prova.sqlite
+---@field grpc prova.grpc
+---@field graphql prova.graphql
+---@field json prova.json
+---@field yaml prova.yaml
+---@field toml prova.toml
+---@field csv prova.csv
+---@field base64 prova.base64
+---@field hash prova.hash
+---@field uuid prova.uuid
+---@field url prova.url
+---@field socket prova.socket
+---@field terminal prova.terminal
+---@field websocket prova.websocket
 prova = {}
 
 --- The API surface, as data — every function, method, and value shape as

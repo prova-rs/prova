@@ -18,8 +18,8 @@ mod suite;
 /// transports that are designed but not yet shipped — reserving ahead of the implementation is
 /// the point, so no plugin claims `socket` the release before prova does. A `[plugins]` entry or
 /// plugin-root file bearing one of these is a manifest validation error; assignment to one from
-/// test code raises. `prova` and `Scope` are core authoring globals — reserved like the rest but
-/// never excludable from injection.
+/// test code raises. `prova` and `Scope` are core authoring globals — reserved like the rest and
+/// always injected (never optional).
 /// The version prova reports — `CARGO_PKG_VERSION`, plus `+dev.<sha>` when this is not a release
 /// build. See `build.rs`: the suffix is build metadata precisely so semver comparisons ignore it,
 /// which keeps a dev build satisfying the same `[requires] prova` ranges a release would.
@@ -31,10 +31,23 @@ pub const RESERVED_NAMESPACES: &[&str] = &[
     "websocket",
 ];
 
-/// The names a manifest may exclude from global injection: the reserved set minus the core
-/// authoring globals a test cannot function without.
-pub fn excludable_namespace(name: &str) -> bool {
+/// A bundled namespace that may be INJECTED as an unqualified global via `[globals] inject` — every
+/// reserved name except the core authoring globals `prova`/`Scope`, which are always present and are
+/// not optional "modules". Also the set a `[globals] inject` entry is validated against: an entry must
+/// be one of these, or a declared `[plugins]` name.
+pub fn is_injectable_module(name: &str) -> bool {
     name != "prova" && name != "Scope" && RESERVED_NAMESPACES.contains(&name)
+}
+
+/// The default unqualified-global set injected when a package declares no `[globals]` section: every
+/// injectable bundled module (backward-compatible). The init archetype writes this out explicitly, so
+/// a real project SEES its globals rather than inheriting an invisible default.
+pub fn default_inject() -> Vec<String> {
+    RESERVED_NAMESPACES
+        .iter()
+        .filter(|n| is_injectable_module(n))
+        .map(|s| s.to_string())
+        .collect()
 }
 
 pub use engine::{
