@@ -2609,9 +2609,13 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
     // process cwd. `prova.root` and `prova.home` are synonyms for the project ROOT. Absent (nil) when
     // there is no manifest, e.g. a bare `prova <file>` run.
     if let Some(dir) = &config.project_dir {
-        let dir = dir.to_string_lossy();
-        prova.set("root", dir.as_ref())?;
-        prova.set("home", dir.as_ref())?;
+        // /-normalized like every path-PRODUCING API (fs.tempdir, fs.glob, plugin.dir): discovery
+        // canonicalizes, which on Windows grows the `\\?\` prefix, and a raw root breaks prefix
+        // arithmetic against the normalized outputs (`hit:sub(#prova.root + 2)` over fs.glob).
+        // `prova.bin` deliberately stays OS-native — it is used in command position, not as data.
+        let dir = crate::modules::emit_path(dir);
+        prova.set("root", dir.as_str())?;
+        prova.set("home", dir.as_str())?;
     }
 
     // The prova binary running this suite (`RunConfig::with_prova_bin`), so a proof that drives prova
