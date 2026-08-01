@@ -328,6 +328,7 @@ function GroupBuilder:describe(label, body) end
 ---@field socket prova.socket
 ---@field terminal prova.terminal
 ---@field websocket prova.websocket
+---@field path prova.path   # canonical-only by default: no ambient `path` global unless a package injects it
 prova = {}
 
 --- The API surface, as data — every function, method, and value shape as

@@ -1254,3 +1254,48 @@ function WsProxy:stop() end
 ---@param opts { upstream: string }
 ---@return prova.WsProxy
 function websocket.proxy(ctx, opts) end
+
+------------------------------------------------------------------------------------------
+-- path — pure, platform-agnostic path algebra. Canonical access is `prova.path`; the bare
+-- name is too collision-prone to squat, so it is ambient only when a package lists "path"
+-- in `[globals] inject` (hence a `local` table here, not a global stub — kept LAST in this
+-- file so the local never shadows the many `path` parameters above).
+------------------------------------------------------------------------------------------
+
+--- String-based on purpose (NOT the OS path type, which renders `\` on Windows): every function
+--- accepts either separator and emits `/`-normalized strings, so the same proof assertions hold
+--- on every OS. No filesystem access — pure string laws.
+---@class prova.path
+local path = {}
+--- Join segments with `/`; empty segments contribute nothing, and an absolute later segment
+--- resets the join (`path.join("a", "/etc", "b")` → `"/etc/b"`).
+---@param ... string
+---@return string
+function path.join(...) end
+--- Everything before the last component — `"."` for a bare name, the root for a first-level
+--- entry (`"/a"` → `"/"`, `"C:/a"` → `"C:/"`). A trailing slash does not make a component.
+---@param p string
+---@return string
+function path.dirname(p) end
+--- The last component (`""` for a bare root, which has none).
+---@param p string
+---@return string
+function path.basename(p) end
+--- The extension of the last component WITHOUT the dot (`"txt"`, not `".txt"`); `""` when there
+--- is none. A dotfile (`".gitignore"`) is all stem, no extension.
+---@param p string
+---@return string
+function path.ext(p) end
+--- The last component minus its extension (`"b.tar.gz"` → `"b.tar"`).
+---@param p string
+---@return string
+function path.stem(p) end
+--- Collapse `.`/`..`/duplicate separators, strip any trailing slash, emit `/`. Purely lexical:
+--- leading `..` in a relative path survives; `..` cannot climb above a root; `""` → `"."`.
+---@param p string
+---@return string
+function path.normalize(p) end
+--- Whether `p` is absolute — unix (`"/…"`), drive (`"C:/…"` or `"C:\…"`), or UNC (`"//server/…"`).
+---@param p string
+---@return boolean
+function path.is_absolute(p) end

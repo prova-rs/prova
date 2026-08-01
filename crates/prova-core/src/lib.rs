@@ -28,7 +28,7 @@ pub const VERSION: &str = env!("PROVA_VERSION");
 pub const RESERVED_NAMESPACES: &[&str] = &[
     "prova", "Scope", "shell", "fs", "net", "http", "docker", "sqlite", "grpc", "graphql",
     "json", "yaml", "toml", "csv", "base64", "hash", "uuid", "url", "socket", "terminal",
-    "websocket",
+    "websocket", "path",
 ];
 
 /// A bundled namespace that may be INJECTED as an unqualified global via `[globals] inject` — every
@@ -39,15 +39,19 @@ pub fn is_injectable_module(name: &str) -> bool {
     name != "prova" && name != "Scope" && RESERVED_NAMESPACES.contains(&name)
 }
 
-/// The default unqualified-global set injected when a package declares no `[globals]` section: every
-/// injectable bundled module (backward-compatible). The init archetype writes this out explicitly, so
-/// a real project SEES its globals rather than inheriting an invisible default.
+/// The default unqualified-global set injected when a package declares no `[globals]` section — a
+/// CURATED list, deliberately not "everything injectable". The DSL-shaped modules that predate the
+/// injection model keep their ambient names (backward-compatible); high-collision utility names
+/// (`path`, later `str`) are canonical-only by default — always reachable as `prova.<name>`,
+/// ambient only when a package asks via `[globals] inject`. The init archetype writes the list out
+/// explicitly, so a real project SEES its globals rather than inheriting an invisible default.
+pub const DEFAULT_INJECT: &[&str] = &[
+    "shell", "fs", "net", "http", "docker", "sqlite", "grpc", "graphql", "json", "yaml", "toml",
+    "csv", "base64", "hash", "uuid", "url", "socket", "terminal", "websocket",
+];
+
 pub fn default_inject() -> Vec<String> {
-    RESERVED_NAMESPACES
-        .iter()
-        .filter(|n| is_injectable_module(n))
-        .map(|s| s.to_string())
-        .collect()
+    DEFAULT_INJECT.iter().map(|s| s.to_string()).collect()
 }
 
 pub use engine::{

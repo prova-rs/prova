@@ -87,6 +87,7 @@ fn journal_keep(lua: &Lua, filter: &Option<Value>, entry: &Table) -> mlua::Resul
 pub(crate) fn install(lua: &Lua, progress: &Arc<dyn Progress>) -> mlua::Result<()> {
     lua.globals().set("shell", make_shell(lua, progress)?)?;
     lua.globals().set("fs", make_fs(lua)?)?;
+    lua.globals().set("path", make_path(lua)?)?;
     lua.globals().set("net", make_net(lua)?)?;
     lua.globals().set("socket", socket::make(lua)?)?;
     lua.globals().set("terminal", terminal::make(lua)?)?;
@@ -1326,6 +1327,187 @@ fn make_fs(lua: &Lua) -> mlua::Result<Table> {
     )?;
 
     Ok(fs)
+}
+
+// ---------------------------------------------------------------------------------------------
+// path — pure, platform-agnostic path algebra (canonical `prova.path`; ambient only if injected)
+// ---------------------------------------------------------------------------------------------
+
+/// One separator convention for every path prova emits: `/`. These are STRING functions on
+/// purpose — `std::path` renders `\` on Windows, which is exactly the class of output that broke
+/// TOML-embedding, shell-quoting, and pattern-matching in proofs. Input accepts either separator
+/// (and the Windows verbatim `\\?\` prefix); output is always `/`-normalized, so the same
+/// assertions hold on every OS.
+fn path_norm_seps(p: &str) -> String {
+    p.strip_prefix(r"\\?\").unwrap_or(p).replace('\\', "/")
+}
+
+/// The root prefix of an already `/`-normalized path: `"//"` (UNC — the double slash is
+/// load-bearing, the server/share are plain components under it), `"/"` (unix), `"X:/"` (drive),
+/// or `""` (relative). What follows the prefix is plain components.
+fn path_root(p: &str) -> &str {
+    if p.starts_with("//") && !p[2..].starts_with('/') && p.len() > 2 {
+        "//"
+    } else if p.starts_with('/') {
+        "/"
+    } else if p.len() >= 3
+        && p.as_bytes()[1] == b':'
+        && p.as_bytes()[2] == b'/'
+        && p.as_bytes()[0].is_ascii_alphabetic()
+    {
+        &p[..3]
+    } else {
+        ""
+    }
+}
+
+fn path_is_absolute(p: &str) -> bool {
+    !path_root(&path_norm_seps(p)).is_empty()
+}
+
+/// Strip trailing separators without eating a root ("a/b/" → "a/b", but "/" stays "/").
+fn path_trim_trailing(p: &str) -> &str {
+    let root = path_root(p);
+    let mut end = p.len();
+    while end > root.len() && p.as_bytes()[end - 1] == b'/' {
+        end -= 1;
+    }
+    &p[..end]
+}
+
+fn make_path(lua: &Lua) -> mlua::Result<Table> {
+    let path = lua.create_table()?;
+
+    // path.join(a, b, …) — segments joined with `/`; empty segments contribute nothing, and an
+    // absolute later segment resets the join (the std::path law: predictable, not surprising).
+    path.set(
+        "join",
+        lua.create_function(|_, segments: mlua::Variadic<String>| {
+            let mut out = String::new();
+            for seg in segments.iter() {
+                let seg = path_norm_seps(seg);
+                if seg.is_empty() {
+                    continue;
+                }
+                if out.is_empty() || path_is_absolute(&seg) {
+                    out = seg;
+                } else {
+                    while out.ends_with('/') {
+                        out.pop();
+                    }
+                    out.push('/');
+                    out.push_str(seg.trim_start_matches('/'));
+                }
+            }
+            Ok(out)
+        })?,
+    )?;
+
+    // path.dirname(p) — everything before the last component; "." for a bare name, the root for a
+    // first-level entry ("/a" → "/", "C:/a" → "C:/").
+    path.set(
+        "dirname",
+        lua.create_function(|_, p: String| {
+            let s = path_norm_seps(&p);
+            let s = path_trim_trailing(&s);
+            let root = path_root(s);
+            if s == root {
+                return Ok(if root.is_empty() { ".".into() } else { root.to_string() });
+            }
+            match s.rfind('/') {
+                None => Ok(".".to_string()),
+                Some(i) if i < root.len() => Ok(root.to_string()),
+                Some(i) => Ok(s[..i.max(root.len())].to_string()),
+            }
+        })?,
+    )?;
+
+    // path.basename(p) — the last component ("" for a bare root, which has none).
+    path.set(
+        "basename",
+        lua.create_function(|_, p: String| {
+            let s = path_norm_seps(&p);
+            let s = path_trim_trailing(&s);
+            let root = path_root(s);
+            if s == root {
+                return Ok(String::new());
+            }
+            Ok(match s.rfind('/') {
+                None => s[root.len()..].to_string(),
+                Some(i) => s[i + 1..].to_string(),
+            })
+        })?,
+    )?;
+
+    // path.ext(p) — the extension of the last component, WITHOUT the dot ("txt", not ".txt");
+    // "" when there is none. A dotfile (".gitignore") is all stem, no extension.
+    path.set(
+        "ext",
+        lua.create_function(|_, p: String| {
+            let s = path_norm_seps(&p);
+            let s = path_trim_trailing(&s);
+            let base = s.rfind('/').map_or(s, |i| &s[i + 1..]);
+            Ok(match base.rfind('.') {
+                Some(i) if i > 0 => base[i + 1..].to_string(),
+                _ => String::new(),
+            })
+        })?,
+    )?;
+
+    // path.stem(p) — the last component minus its extension ("b.tar.gz" → "b.tar").
+    path.set(
+        "stem",
+        lua.create_function(|_, p: String| {
+            let s = path_norm_seps(&p);
+            let s = path_trim_trailing(&s);
+            let base = s.rfind('/').map_or(s, |i| &s[i + 1..]);
+            Ok(match base.rfind('.') {
+                Some(i) if i > 0 => base[..i].to_string(),
+                _ => base.to_string(),
+            })
+        })?,
+    )?;
+
+    // path.normalize(p) — collapse `.`/`..`/duplicate separators, strip trailing slash, emit `/`.
+    // Purely lexical (no filesystem): leading `..` in a relative path survives; `..` cannot climb
+    // above a root. "" and a fully-collapsed relative path normalize to ".".
+    path.set(
+        "normalize",
+        lua.create_function(|_, p: String| {
+            let s = path_norm_seps(&p);
+            let root = path_root(&s).to_string();
+            let mut stack: Vec<&str> = Vec::new();
+            for comp in s[root.len()..].split('/') {
+                match comp {
+                    "" | "." => {}
+                    ".." => match stack.last() {
+                        Some(&last) if last != ".." => {
+                            stack.pop();
+                        }
+                        _ if !root.is_empty() => {} // cannot climb above a root
+                        _ => stack.push(".."),
+                    },
+                    c => stack.push(c),
+                }
+            }
+            let joined = stack.join("/");
+            Ok(if root.is_empty() {
+                if joined.is_empty() { ".".to_string() } else { joined }
+            } else if joined.is_empty() {
+                root
+            } else {
+                root + &joined
+            })
+        })?,
+    )?;
+
+    // path.is_absolute(p) — unix ("/…"), drive ("C:/…" or "C:\…"), and UNC ("//server/…") roots.
+    path.set(
+        "is_absolute",
+        lua.create_function(|_, p: String| Ok(path_is_absolute(&p)))?,
+    )?;
+
+    Ok(path)
 }
 
 // ---------------------------------------------------------------------------------------------
