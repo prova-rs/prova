@@ -25,6 +25,7 @@ use crate::manifest::{Manifest, PluginSource, Profile, Resolved};
 pub enum Topic {
     Pdd,
     Specs,
+    Falsify,
     Project,
     Init,
     Authoring,
@@ -43,6 +44,7 @@ impl Topic {
     pub const ALL: &'static [Topic] = &[
         Topic::Pdd,
         Topic::Specs,
+        Topic::Falsify,
         Topic::Project,
         Topic::Init,
         Topic::Authoring,
@@ -76,6 +78,9 @@ impl Topic {
         ("xfail", Topic::Specs),
         ("pending", Topic::Specs),
         ("backlog", Topic::Specs),
+        ("falsifier", Topic::Falsify),
+        ("falsifiers", Topic::Falsify),
+        ("vacuous", Topic::Falsify),
         ("tests", Topic::Authoring),
         ("dsl", Topic::Authoring),
         ("matchers", Topic::Authoring),
@@ -100,6 +105,7 @@ impl Topic {
         match self {
             Topic::Pdd => "pdd",
             Topic::Specs => "specs",
+            Topic::Falsify => "falsify",
             Topic::Project => "project",
             Topic::Init => "init",
             Topic::Authoring => "authoring",
@@ -121,6 +127,7 @@ impl Topic {
         match self {
             Topic::Pdd => include_str!("topics/pdd.md"),
             Topic::Specs => include_str!("topics/specs.md"),
+            Topic::Falsify => include_str!("topics/falsify.md"),
             Topic::Project => include_str!("topics/project.md"),
             Topic::Init => include_str!("topics/init.md"),
             Topic::Authoring => include_str!("topics/authoring.md"),
