@@ -18,12 +18,14 @@
 
 local sandbox = prova.fixture("archetype-registry-sandbox", Scope.File, function(ctx)
   local root = ctx:tempdir()
-  shell.run("mkdir -p registry/archetypes config/prova renders", { cwd = root, check = true })
+  for _, dir in ipairs({ "registry/archetypes", "config/prova", "renders" }) do
+    fs.mkdir(root .. "/" .. dir)
+  end
 
   -- A minimal but REAL archetype: renders a working prova package, so "resolved" is proven by the
   -- files that land rather than by a log line.
   local function archetype(dir, marker)
-    shell.run("mkdir -p " .. dir .. "/contents/proofs", { check = true })
+    fs.mkdir(dir .. "/contents/proofs")
     fs.write(dir .. "/archetype.yaml", '---\ndescription: "' .. marker .. '"\n'
       .. 'requires:\n  archetect: "3.0.0"\n')
     fs.write(dir .. "/archetype.lua",
@@ -87,8 +89,9 @@ end)
 local function init(t, sb, args)
   local dest = sb.root .. "/renders/" .. tostring(t):gsub("%W", "") .. tostring(os.time())
     .. tostring(math.floor(os.clock() * 1e6))
-  shell.run("mkdir -p " .. dest, { check = true })
-  local r = shell.run(prova.bin .. " init " .. args .. " --headless 2>&1", { cwd = dest, env = sb.env() })
+  fs.mkdir(dest)
+  local r = shell.run(prova.bin .. " init " .. args .. " --headless",
+    { cwd = dest, env = sb.env(), merge_stderr = true })
   return r, dest
 end
 
@@ -161,7 +164,7 @@ end)
 prova.test("--list shows the catalog and says the registries hold more", function(t)
   local sb = t:use(sandbox)
   sb.configure()
-  local r = shell.run(prova.bin .. " init --list 2>&1", { cwd = sb.root, env = sb.env() })
+  local r = shell.run(prova.bin .. " init --list", { cwd = sb.root, env = sb.env(), merge_stderr = true })
 
   t:expect(r.code):equals(0)
   t:expect(r.stdout):contains("project")

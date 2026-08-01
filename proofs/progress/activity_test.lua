@@ -15,7 +15,7 @@
 
 local sandbox = prova.fixture("activity-sandbox", Scope.File, function(ctx)
   local root = ctx:tempdir()
-  shell.run("mkdir -p " .. root .. "/proofs", { check = true })
+  fs.mkdir(root .. "/proofs")
   fs.write(root .. "/prova.toml", '[run]\nproofs = ["proofs"]\n')
   -- One proof with a pause long enough to cross the 400ms threshold, and one that is instant.
   fs.write(root .. "/proofs/slow_test.lua", [[
@@ -118,7 +118,7 @@ end)
 
 prova.test("a fast operation is never narrated", function(t)
   local sb = t:use(sandbox)
-  shell.run("mkdir -p " .. sb .. "/fast/proofs", { check = true })
+  fs.mkdir(sb .. "/fast/proofs")
   fs.write(sb .. "/fast/prova.toml", '[run]\nproofs = ["proofs"]\n')
   fs.write(sb .. "/fast/proofs/quick_test.lua", [[
 prova.test("instant", function(t)

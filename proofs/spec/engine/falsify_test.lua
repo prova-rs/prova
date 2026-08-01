@@ -18,7 +18,7 @@
 local sandbox = prova.fixture("falsify-sandbox", Scope.File, function(ctx)
   local root = ctx:tempdir()
   local proj = root .. "/pkg"
-  shell.run("mkdir -p " .. proj .. "/proofs", { check = true })
+  fs.mkdir(proj .. "/proofs")
   fs.write(proj .. "/prova.toml", '[run]\nproofs = ["proofs"]\n')
   -- Three shapes: a proof whose falsifier bites, one whose falsifier does NOT (the vacuous case
   -- this feature exists to expose), and one that declares no falsifier at all.
@@ -50,7 +50,7 @@ prova.test("a falsifier that bites proves the assertion is load-bearing", {
   proves = "the inversion is the whole mechanism: under falsification a red body is the PASSING result, because what is being proven is the body's capacity to fail",
 }, function(t)
   local proj = t:use(sandbox)
-  local r = shell.run(prova.bin .. " falsify 2>&1", { cwd = proj })
+  local r = shell.run(prova.bin .. " falsify", { cwd = proj, merge_stderr = true })
 
   -- Red under mutation is the PASSING result here: the verdict is inverted, because what is being
   -- proven is the body's capacity to fail.
@@ -62,7 +62,7 @@ prova.test("a body that survives its falsifier is reported as vacuous", {
   proves = "the reason this exists. A proof that cannot fail still reports green forever, and is indistinguishable from one that works until something it swore was covered breaks",
 }, function(t)
   local proj = t:use(sandbox)
-  local r = shell.run(prova.bin .. " falsify 2>&1", { cwd = proj })
+  local r = shell.run(prova.bin .. " falsify", { cwd = proj, merge_stderr = true })
 
   -- The whole point. `2 + 2 == 4` is true no matter what the falsifier does, so the proof asserts
   -- nothing about the system and must say so out loud rather than adding to the green count.
@@ -75,7 +75,7 @@ prova.test("falsify selects only what declares a falsifier", {
   proves = "the verb IS the selection, as with burndown. Most proofs will never declare a mutation, and treating their absence as failure would make the pass unusable",
 }, function(t)
   local proj = t:use(sandbox)
-  local r = shell.run(prova.bin .. " falsify 2>&1", { cwd = proj })
+  local r = shell.run(prova.bin .. " falsify", { cwd = proj, merge_stderr = true })
 
   -- Mirrors `burndown`: the verb IS the selection. A proof with no falsifier is not a failure —
   -- most proofs will never declare one — it is simply not what this pass is about.
@@ -86,7 +86,7 @@ prova.test("a normal run is unaffected by a declared falsifier", {
   proves = "if a bare `prova` started perturbing systems, nobody would ever declare a falsifier — the cost has to sit behind the verb that asks for it",
 }, function(t)
   local proj = t:use(sandbox)
-  local r = shell.run(prova.bin .. " 2>&1", { cwd = proj })
+  local r = shell.run(prova.bin, { cwd = proj, merge_stderr = true })
 
   -- Declaring a falsifier must cost nothing on the ordinary path: the mutation runs only under the
   -- verb that asks for it. If `prova` alone started perturbing systems, nobody would declare one.
@@ -98,7 +98,7 @@ prova.test("the binary teaches the verb: `prova learn specs` names falsify", {
   proves = "a capability an agent cannot discover does not exist; learn is where it looks",
 }, function(t)
   local proj = t:use(sandbox)
-  local r = shell.run(prova.bin .. " learn specs 2>&1", { cwd = proj })
+  local r = shell.run(prova.bin .. " learn specs", { cwd = proj, merge_stderr = true })
 
   -- A capability an agent cannot discover does not exist. `learn` is where it looks.
   t:expect(r.code):equals(0)
@@ -115,7 +115,7 @@ prova.test("misdeclared", { falsified_by = "make it fail" }, function(t)
   t:expect(1):equals(1)
 end)
 ]])
-  local r = shell.run(prova.bin .. " 2>&1", { cwd = proj })
+  local r = shell.run(prova.bin, { cwd = proj, merge_stderr = true })
   fs.remove_all(proj .. "/proofs/bad_test.lua")
 
   -- Rejected at declaration with the fix, in the house style: a wrong shape is a typo caught now,

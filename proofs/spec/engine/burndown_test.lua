@@ -13,7 +13,7 @@
 local sandbox = prova.fixture("spec-engine-sandbox", Scope.File, function(ctx)
   local root = ctx:tempdir()
   local proj = root .. "/pkg"
-  shell.run("mkdir -p " .. proj .. "/proofs", { check = true })
+  fs.mkdir(proj .. "/proofs")
   fs.write(proj .. "/prova.toml", '[run]\nproofs = ["proofs"]\n')
   fs.write(proj .. "/proofs/widget_test.lua", [[
 prova.test("arithmetic holds", function(t)
@@ -36,7 +36,7 @@ end)
 prova.test("`prova --specs --list` enumerates the open surface without running anything",
   function(t)
   local proj = t:use(sandbox)
-  local r = shell.run(prova.bin .. " --specs --list 2>&1", { cwd = proj })
+  local r = shell.run(prova.bin .. " --specs --list", { cwd = proj, merge_stderr = true })
   t:expect(r.code):equals(0)
   t:expect(r.stdout):contains("frobnicates")            -- both flagged tests are the surface
   t:expect(r.stdout):contains("already exists")
@@ -48,7 +48,7 @@ end)
 
 prova.test("`prova specs` enumerates the open surface — the no-flags spelling", function(t)
   local proj = t:use(sandbox)
-  local r = shell.run(prova.bin .. " specs 2>&1", { cwd = proj })
+  local r = shell.run(prova.bin .. " specs", { cwd = proj, merge_stderr = true })
   t:expect(r.code):equals(0)
   t:expect(r.stdout):contains("frobnicates")
   t:expect(r.stdout):contains("already exists")
@@ -57,7 +57,7 @@ end)
 
 prova.test("`prova burndown` is the inner loop: spec-selected, open specs fail loud", function(t)
   local proj = t:use(sandbox)
-  local r = shell.run(prova.bin .. " burndown 2>&1", { cwd = proj })
+  local r = shell.run(prova.bin .. " burndown", { cwd = proj, merge_stderr = true })
   t:expect(r.code):never():equals(0)                    -- open specs are real failures here
   t:expect(r.stdout):contains("frobnicates")            -- the open spec, with its detail
   t:expect(r.stdout):contains("expected")               -- full failure detail, not a summary
@@ -67,7 +67,7 @@ end)
 
 prova.test("the binary teaches the verbs: `prova learn specs` names them", function(t)
   local proj = t:use(sandbox)
-  local r = shell.run(prova.bin .. " learn specs 2>&1", { cwd = proj })
+  local r = shell.run(prova.bin .. " learn specs", { cwd = proj, merge_stderr = true })
   t:expect(r.code):equals(0)
   t:expect(r.stdout):contains("prova specs")
   t:expect(r.stdout):contains("prova burndown")

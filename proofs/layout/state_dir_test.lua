@@ -23,7 +23,7 @@ local sandbox = prova.fixture("state-dir-sandbox", Scope.Test, function(ctx)
   local root = ctx:tempdir()
 
   -- `pkg` — a package with one passing and one failing proof, so a run has something to record.
-  shell.run("mkdir -p pkg/proofs", { cwd = root, check = true })
+  fs.mkdir(root .. "/pkg/proofs")
   fs.write(root .. "/pkg/prova.toml", '[run]\nproofs = ["proofs"]\n')
   fs.write(root .. "/pkg/proofs/widget_test.lua", [[
 prova.test("arithmetic holds", function(t)
@@ -37,7 +37,8 @@ end)
 
   -- `nested` — a package holding a SECOND, independent package (its own prova.toml). The parent's
   -- run prunes it (`has_manifest`), so it is the lazy-creation and recursion case.
-  shell.run("mkdir -p nested/proofs nested/inner/proofs", { cwd = root, check = true })
+  fs.mkdir(root .. "/nested/proofs")
+  fs.mkdir(root .. "/nested/inner/proofs")
   fs.write(root .. "/nested/prova.toml", '[run]\nproofs = ["proofs"]\n')
   fs.write(root .. "/nested/proofs/outer_test.lua", [[
 prova.test("outer fails", function(t) t:expect(1):equals(2) end)
@@ -48,7 +49,7 @@ prova.test("inner fails", function(t) t:expect(1):equals(2) end)
 ]])
 
   -- `other` — a second, unrelated package, for the shared-PROVA_VAR_DIR collision case.
-  shell.run("mkdir -p other/proofs", { cwd = root, check = true })
+  fs.mkdir(root .. "/other/proofs")
   fs.write(root .. "/other/prova.toml", '[run]\nproofs = ["proofs"]\n')
   fs.write(root .. "/other/proofs/other_test.lua", [[
 prova.test("other fails", function(t) t:expect(1):equals(2) end)
@@ -64,9 +65,10 @@ end)
 --- empty string — which prova treats as unset. That keeps every run here hermetic even when the
 --- outer suite itself was invoked with PROVA_VAR_DIR set.
 local function run(dir, args, var_dir)
-  return shell.run(prova.bin .. " " .. (args or "") .. " 2>&1", {
+  return shell.run(prova.bin .. " " .. (args or ""), {
     cwd = dir,
     env = { PROVA_VAR_DIR = var_dir or "" },
+    merge_stderr = true,
   })
 end
 

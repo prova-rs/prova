@@ -6,11 +6,12 @@
 
 local sandbox = prova.fixture("registry-sandbox", Scope.File, function(ctx)
   local root = ctx:tempdir()
-  shell.run(
-    "mkdir -p registries/main/registry registries/second/registry registries/override/registry "
-      .. "config/prova config-empty/prova cache data projects",
-    { cwd = root, check = true }
-  )
+  for _, dir in ipairs({
+    "registries/main/registry", "registries/second/registry", "registries/override/registry",
+    "config/prova", "config-empty/prova", "cache", "data", "projects",
+  }) do
+    fs.mkdir(root .. "/" .. dir)
+  end
 
   -- The main registry: realistic entries plus the tolerance cases.
   fs.write(root .. "/registries/main/registry/postgres.toml", [[
@@ -100,20 +101,22 @@ source = "%s/registries/override"
   }
 end)
 
--- Run `prova plugins <args>` inside the sandbox. Append `2>&1` in args when the assertion is
--- about warnings/errors; leave it off when asserting what the row listing does NOT contain.
+-- Run `prova plugins <args>` inside the sandbox. Pass `opts.merge` when the assertion is about
+-- warnings/errors (folds stderr into stdout); leave it off when asserting what the row listing
+-- does NOT contain.
 local function plugins(sb, args, opts)
   opts = opts or {}
   return shell.run(prova.bin .. " plugins " .. args, {
     cwd = opts.cwd or sb.root,
     env = sb.env(opts.config),
+    merge_stderr = opts.merge,
   })
 end
 
 -- A fresh throwaway package for the add specs (add mutates prova.toml).
 local function project(sb, name)
   local dir = sb.root .. "/projects/" .. name
-  shell.run("mkdir -p " .. dir .. "/proofs", { check = true })
+  fs.mkdir(dir .. "/proofs")
   fs.write(dir .. "/prova.toml", '[run]\nproofs = ["proofs"]\n')
   return dir
 end
@@ -180,7 +183,7 @@ prova.test("an entry with an unrecognized schema is skipped per-entry, with a wa
   t:expect(rows.code):equals(0)                        -- the registry still serves
   t:expect(rows.stdout):contains("postgres")           -- siblings unaffected
   t:expect(rows.stdout):never():contains("futuristic") -- the schema-99 entry is not offered
-  local warned = plugins(sb, "2>&1")
+  local warned = plugins(sb, "", { merge = true })
   t:expect(warned.stdout):contains("futuristic")       -- the skip names the entry
 end)
 
@@ -189,7 +192,7 @@ prova.test("an entry missing a required field is skipped with a warning, not fat
   local rows = plugins(sb, "")
   t:expect(rows.code):equals(0)
   t:expect(rows.stdout):never():contains("broken")
-  local warned = plugins(sb, "2>&1")
+  local warned = plugins(sb, "", { merge = true })
   t:expect(warned.stdout):contains("broken")
 end)
 
@@ -208,7 +211,7 @@ prova.test("the prova-rs registry is built in; offline with a cold cache it fail
   local sb = t:use(sandbox)
   -- No user config at all: the built-in default is the whole set. Offline + never fetched →
   -- a clear error naming the registry it cannot serve, not a silent empty listing.
-  local r = plugins(sb, "--offline 2>&1", { config = "config-empty" })
+  local r = plugins(sb, "--offline", { config = "config-empty", merge = true })
   t:expect(r.code):never():equals(0)
   t:expect(r.stdout):contains("prova-rs")
 end)
@@ -238,7 +241,7 @@ end)
 prova.test("a name in two registries demands registry:name disambiguation", function(t)
   local sb = t:use(sandbox)
   local proj = project(sb, "add-ambiguous")
-  local ambiguous = plugins(sb, "add dupe 2>&1", { cwd = proj })
+  local ambiguous = plugins(sb, "add dupe", { cwd = proj, merge = true })
   t:expect(ambiguous.code):never():equals(0)
   t:expect(ambiguous.stdout):contains("main")          -- the error names both candidates
   t:expect(ambiguous.stdout):contains("second")
@@ -250,7 +253,7 @@ end)
 prova.test("adding an unknown name is a clear error, not a guess", function(t)
   local sb = t:use(sandbox)
   local proj = project(sb, "add-unknown")
-  local r = plugins(sb, "add nosuchplugin 2>&1", { cwd = proj })
+  local r = plugins(sb, "add nosuchplugin", { cwd = proj, merge = true })
   t:expect(r.code):never():equals(0)
   t:expect(r.stdout):contains("nosuchplugin")
   t:expect(fs.read(proj .. "/prova.toml")):never():contains("nosuchplugin")
@@ -271,8 +274,8 @@ prova.test("a registry-known name never resolves via require until the manifest 
   -- inherited. On a machine with prova installed the bare name resolved anyway and hid that; on a
   -- CI runner that only builds, it is `sh: prova: not found`. The absolute path is immune to both
   -- the replaced env and the changed cwd.
-  local r = shell.run(prova.bin .. [[ eval 'return (pcall(require, "dupe"))' 2>&1]], {
-    cwd = proj, env = sb.env(),
+  local r = shell.run({ prova.bin, "eval", 'return (pcall(require, "dupe"))' }, {
+    cwd = proj, env = sb.env(), merge_stderr = true,
   })
   t:expect(r.stdout):contains("false")
 end)
@@ -282,7 +285,7 @@ end)
 prova.test("`prova learn plugins` teaches the registries and the search-first move", function(t)
   local sb = t:use(sandbox)
   local proj = project(sb, "learn-slot")
-  local r = shell.run(prova.bin .. " learn plugins 2>&1", { cwd = proj, env = sb.env() })
+  local r = shell.run(prova.bin .. " learn plugins", { cwd = proj, env = sb.env(), merge_stderr = true })
   t:expect(r.code):equals(0)
   t:expect(r.stdout):contains("prova plugins")         -- the verb an agent should reach for
   t:expect(r.stdout):contains("main")                  -- the configured registries, rendered live

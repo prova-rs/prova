@@ -26,13 +26,13 @@ prova.test("the version is a semver the requires gate can compare",
   -- Whatever this build is, a range that admits its release line must admit it.
   local major, minor = v:match("^(%d+)%.(%d+)")
   local pkg = fs.tempdir()
-  shell.run({ "mkdir", "-p", pkg .. "/proofs" }, { check = true })
+  fs.mkdir(pkg .. "/proofs")
   fs.write(pkg .. "/proofs/a_test.lua",
     'prova.test("ran", function(t) t:expect(1):equals(1) end)\n')
   fs.write(pkg .. "/prova.toml",
     ('[requires]\nprova = ">= %s.%s"\n\n[run]\nproofs = ["proofs"]\n'):format(major, minor))
 
-  local r = shell.run(prova.bin .. " 2>&1", { cwd = pkg })
+  local r = shell.run(prova.bin, { cwd = pkg, merge_stderr = true })
   t:expect(r.code, "a dev build still satisfies its own release line"):equals(0)
   t:expect(r.stdout, "the suite actually ran"):contains("ran")
 end)

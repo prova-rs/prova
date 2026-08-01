@@ -28,7 +28,7 @@
 local package_with = prova.fixture("manifest-sandbox", Scope.File, function(ctx)
   return function(manifest)
     local dir = ctx:tempdir()
-    shell.run({ "mkdir", "-p", dir .. "/proofs" }, { check = true })
+    fs.mkdir(dir .. "/proofs")
     fs.write(dir .. "/proofs/a_test.lua",
       'prova.test("the sandbox proof runs", function(t) t:expect(1):equals(1) end)\n')
     fs.write(dir .. "/prova.toml", manifest)
@@ -44,7 +44,7 @@ prova.test("a manifest requiring a newer prova is refused up front",
   -- unreleased binary crashed mid-run in CI with `attempt to call a nil value (field 'writes')`,
   -- which says nothing about the real cause. A precondition naming both versions does.
   local pkg = t:use(package_with)
-  local r = shell.run(prova.bin .. " 2>&1", { cwd = pkg('[requires]\nprova = "99.0.0"\n\n[run]\nproofs = ["proofs"]\n') })
+  local r = shell.run(prova.bin, { cwd = pkg('[requires]\nprova = "99.0.0"\n\n[run]\nproofs = ["proofs"]\n'), merge_stderr = true })
 
   t:expect(r.code, "exits non-zero"):never():equals(0)
   t:expect(r.stdout, "names the required version"):contains("99.0.0")
@@ -59,7 +59,7 @@ prova.test("`>=` is how a suite says this-version-or-newer",
   -- `>=`, it keeps running as prova advances — which is the whole promise the gate exists to make
   -- safe to rely on.
   local pkg = t:use(package_with)
-  local r = shell.run(prova.bin .. " 2>&1", { cwd = pkg('[requires]\nprova = ">= 0.4"\n\n[run]\nproofs = ["proofs"]\n') })
+  local r = shell.run(prova.bin, { cwd = pkg('[requires]\nprova = ">= 0.4"\n\n[run]\nproofs = ["proofs"]\n'), merge_stderr = true })
 
   t:expect(r.code, "runs"):equals(0)
   t:expect(r.stdout, "the proof executed"):contains("the sandbox proof runs")
@@ -79,8 +79,8 @@ prova.test("one file, one answer: a plugin's requires.prova means the same to bo
   fs.write(consumer .. "/proofs/use_test.lua",
     'local p = require("p")\nprova.test("uses it", function(t) t:expect(p.hello()):equals("hi") end)\n')
 
-  local as_package = shell.run(prova.bin .. " 2>&1", { cwd = dir })
-  local as_plugin = shell.run(prova.bin .. " 2>&1", { cwd = consumer })
+  local as_package = shell.run(prova.bin, { cwd = dir, merge_stderr = true })
+  local as_plugin = shell.run(prova.bin, { cwd = consumer, merge_stderr = true })
 
   -- ^0.5 excludes every prova that will ever run this, so BOTH must refuse it.
   t:expect(as_package.code, "the package gate refuses it"):never():equals(0)
@@ -96,8 +96,9 @@ prova.test("the version gate is readable even when the rest of the manifest is n
   -- validation happens afterwards, once the version is known to be acceptable. Get this
   -- backwards and the gate reports "unknown key" precisely when it should report "too old".
   local pkg = t:use(package_with)
-  local r = shell.run(prova.bin .. " 2>&1", {
+  local r = shell.run(prova.bin, {
     cwd = pkg('[requires]\nprova = "99.0.0"\n\n[run]\nproofs = ["proofs"]\nkey_from_the_future = true\n'),
+    merge_stderr = true,
   })
 
   t:expect(r.stdout, "reports the version, not the unknown key"):contains("99.0.0")
@@ -112,7 +113,7 @@ prova.test("an unknown key inside [run] is an error",
   -- compatibility worth having and costs a silent typo — the exact trade prova refuses
   -- everywhere else.
   local pkg = t:use(package_with)
-  local r = shell.run(prova.bin .. " 2>&1", { cwd = pkg('[run]\nproofs = ["proofs"]\nbogus_key = 42\n') })
+  local r = shell.run(prova.bin, { cwd = pkg('[run]\nproofs = ["proofs"]\nbogus_key = 42\n'), merge_stderr = true })
 
   t:expect(r.code, "exits non-zero"):never():equals(0)
   t:expect(r.stdout, "names the offending key"):contains("bogus_key")
@@ -123,8 +124,9 @@ prova.test("[run.env] still accepts anything",
   -- The counterweight. Environment names are user data, not schema; strictness that reached in
   -- here would be a regression dressed up as rigor.
   local pkg = t:use(package_with)
-  local r = shell.run(prova.bin .. " 2>&1", {
+  local r = shell.run(prova.bin, {
     cwd = pkg('[run]\nproofs = ["proofs"]\n\n[run.env]\nANYTHING_AT_ALL = "fine"\n'),
+    merge_stderr = true,
   })
 
   t:expect(r.code, "runs"):equals(0)
@@ -136,7 +138,7 @@ prova.test("a near-miss key is reported as the typo it is",
   -- of typo regardless of what the manifest declares. This is the cheapest error message in the
   -- system and it turns the worst failure — a key that quietly does nothing — into the best.
   local pkg = t:use(package_with)
-  local r = shell.run(prova.bin .. " 2>&1", { cwd = pkg('[run]\nporofs = ["proofs"]\n') })
+  local r = shell.run(prova.bin, { cwd = pkg('[run]\nporofs = ["proofs"]\n'), merge_stderr = true })
 
   t:expect(r.code, "exits non-zero"):never():equals(0)
   t:expect(r.stdout, "suggests the intended key"):matches("did you mean.*proofs")
@@ -151,7 +153,7 @@ prova.test("the retired `paths` key reports its replacement",
   -- every stale manifest, example and blog post to a search engine; a tombstone answers in
   -- place. Tombstones age out a major or two later, once did-you-mean can carry the stragglers.
   local pkg = t:use(package_with)
-  local r = shell.run(prova.bin .. " 2>&1", { cwd = pkg('[run]\npaths = ["proofs"]\n') })
+  local r = shell.run(prova.bin, { cwd = pkg('[run]\npaths = ["proofs"]\n'), merge_stderr = true })
 
   t:expect(r.code, "exits non-zero"):never():equals(0)
   t:expect(r.stdout, "names the dead key"):contains("paths")
@@ -172,11 +174,11 @@ prova.test("a suite's `paths` are literal paths, not directory-name patterns",
   -- two distinct concepts into one word and lose the distinction that makes each precise.
   local pkg = t:use(package_with)
   local dir = pkg('[run]\nproofs = ["proofs"]\n\n[suites.extra]\npaths = ["nested/deep"]\n')
-  shell.run({ "mkdir", "-p", dir .. "/nested/deep" }, { check = true })
+  fs.mkdir(dir .. "/nested/deep")
   fs.write(dir .. "/nested/deep/b_test.lua",
     'prova.test("the declared suite runs", function(t) t:expect(1):equals(1) end)\n')
 
-  local r = shell.run(prova.bin .. " 2>&1", { cwd = dir })
+  local r = shell.run(prova.bin, { cwd = dir, merge_stderr = true })
   t:expect(r.code, "the literal path resolves"):equals(0)
   t:expect(r.stdout, "the declared suite was discovered"):contains("the declared suite runs")
 end)
@@ -188,11 +190,11 @@ prova.test("`proofs` inside a suite is rejected, not ignored",
   -- never runs, and the result is green. Strictness turns a vanished suite into a sentence.
   local pkg = t:use(package_with)
   local dir = pkg('[run]\nproofs = ["proofs"]\n\n[suites.extra]\nproofs = ["nested/deep"]\n')
-  shell.run({ "mkdir", "-p", dir .. "/nested/deep" }, { check = true })
+  fs.mkdir(dir .. "/nested/deep")
   fs.write(dir .. "/nested/deep/b_test.lua",
     'prova.test("the declared suite runs", function(t) t:expect(1):equals(1) end)\n')
 
-  local r = shell.run(prova.bin .. " 2>&1", { cwd = dir })
+  local r = shell.run(prova.bin, { cwd = dir, merge_stderr = true })
   t:expect(r.code, "exits non-zero rather than dropping the suite"):never():equals(0)
   t:expect(r.stdout, "names the offending key"):contains("proofs")
 end)

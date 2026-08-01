@@ -1,10 +1,11 @@
--- Dogfoods the shell and fs modules: build a workspace in a temp dir, then probe it with shell
--- (run a command, check exit/stdout) and fs (files exist, contents match) — plus a Scope.File
--- fixture whose factory awaits shell.run, built once and torn down after the file.
+-- Dogfoods the shell and fs modules: build a workspace in a temp dir with fs, then probe it with
+-- shell (run a command, check exit/stdout) and fs (files exist, contents match) — plus a
+-- Scope.File fixture built once and torn down after the file. Every command is portable: the one
+-- program every platform running this suite is guaranteed to have is prova itself (prova.bin).
 
 local workspace = prova.fixture("workspace", Scope.File, function(ctx)
   local dir = ctx:tempdir()
-  shell.run("mkdir -p src && printf 'fn main() {}\\n' > src/main.rs", { cwd = dir, check = true })
+  fs.write(dir .. "/src/main.rs", "fn main() {}\n")   -- fs.write creates the parent dirs
   return dir
 end)
 
@@ -17,10 +18,10 @@ end)
 
 prova.test("shell.run reports exit code and stdout", function(t)
   local dir = t:use(workspace)
-  local r = shell.run("cat src/main.rs", { cwd = dir })
+  local r = shell.run(prova.bin .. " --version", { cwd = dir })
   t:expect(r.code):equals(0)
   t:expect(r:ok()):is_true()
-  t:expect(r.stdout):contains("fn main")
+  t:expect(r.stdout):contains("prova")
 end)
 
 prova.test("fs.read returns the file contents", function(t)
@@ -35,8 +36,9 @@ prova.test("fs.glob finds the source tree", function(t)
   t:expect(hits[1]):contains("main.rs")
 end)
 
-prova.test("check=true turns a non-zero exit into a failure", function(t)
+prova.test("a non-zero exit is reported, not raised, without check", function(t)
   local dir = t:use(workspace)
-  local r = shell.run("test -f Cargo.toml", { cwd = dir })  -- no Cargo.toml → exit 1, but check=false
+  -- argv form: no shell anywhere, so the same spelling exits non-zero on every OS
+  local r = shell.run({ prova.bin, "--no-such-flag" }, { cwd = dir, merge_stderr = true })
   t:expect(r.code):never():equals(0)
 end)

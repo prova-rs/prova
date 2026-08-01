@@ -38,7 +38,7 @@ local function nested(t, extra_plugins)
 end
 
 local function run(root)
-  return shell.run(prova.bin .. " 2>&1", { cwd = root })
+  return shell.run(prova.bin, { cwd = root, merge_stderr = true })
 end
 
 prova.test("a consumer inherits the plugins its plugin declares", function(t)
