@@ -359,6 +359,10 @@ struct SelectionArgs {
     /// `list` to enumerate the surface without running; an empty selection there means the
     /// burndown is complete. See `learn { topic = "specs" }`.
     specs: Option<bool>,
+    /// Run the falsification pass: select only tests declaring `falsified_by`, apply the mutation,
+    /// and invert the verdict — a body that survives its own falsifier is vacuous and fails. The
+    /// CLI's `prova falsify`.
+    falsify: Option<bool>,
     /// Manifest profile to resolve for this call (CLI `--profile NAME`).
     profile: Option<String>,
     /// Target ANOTHER suite: a directory to resolve from (as a CLI run there would — walking up,
@@ -698,7 +702,7 @@ impl ProvaMcpServer {
 
     #[tool(
         name = "run",
-        description = "Run the package's test suite with an optional selection (the MCP mirror of the CLI's -k/--tags/--node/--last-failed/--specs/--strict-specs/--profile/--jobs flags). Spec burndown: specs=true selects only spec-flagged tests (proofs authored ahead of implementation); with strict_specs=true open specs fail loud — the implementing agent's inner loop (see learn { topic = \"specs\" }). With `topology`, run WARM against a topology held by a prior `up`: t:use resolves the held live instance instead of provisioning (never provisions implicitly — an un-held topology is an error). Returns compact JSON: { passed, failed, skipped, spec, deselected, duration_ms, failures: [{ path, message, file?, line? }] } (spec = open specs — red-by-definition proofs awaiting implementation) (file/line = the failing test's declaration site, when known). The result is marked isError when any node failed, and a selection that matches NOTHING is an error (usually a typo — mirror of the CLI's default; the CLI's --allow-empty has no MCP counterpart). Also records the failed nodes so a later run with last_failed=true (or CLI --last-failed) re-runs exactly them; last_failed with no recorded state runs everything and says so in a `note` field. Pass `package` (a directory or manifest path) to target ANOTHER package anywhere on disk — the server's startup package is only the default, and a `package` resolves fresh, so a manifest you just scaffolded works without a restart."
+        description = "Run the package's test suite with an optional selection (the MCP mirror of the CLI's -k/--tags/--node/--last-failed/--specs/--strict-specs/--profile/--jobs flags). Spec burndown: specs=true selects only spec-flagged tests (proofs authored ahead of implementation); with strict_specs=true open specs fail loud — the implementing agent's inner loop (see learn { topic = \"specs\" }). Vacuity hunt: falsify=true selects only tests declaring `falsified_by`, applies each mutation and INVERTS the verdict — a body that still passes with its falsifier applied is asserting nothing and fails as vacuous (see learn { topic = \"falsify\" }). With `topology`, run WARM against a topology held by a prior `up`: t:use resolves the held live instance instead of provisioning (never provisions implicitly — an un-held topology is an error). Returns compact JSON: { passed, failed, skipped, spec, deselected, duration_ms, failures: [{ path, message, file?, line? }] } (spec = open specs — red-by-definition proofs awaiting implementation) (file/line = the failing test's declaration site, when known). The result is marked isError when any node failed, and a selection that matches NOTHING is an error (usually a typo — mirror of the CLI's default; the CLI's --allow-empty has no MCP counterpart). Also records the failed nodes so a later run with last_failed=true (or CLI --last-failed) re-runs exactly them; last_failed with no recorded state runs everything and says so in a `note` field. Pass `package` (a directory or manifest path) to target ANOTHER package anywhere on disk — the server's startup package is only the default, and a `package` resolves fresh, so a manifest you just scaffolded works without a restart."
     )]
     async fn run(&self, Parameters(req): Parameters<RunRequest>) -> CallToolResult {
         let _serialized = self.run_lock.lock().await;
@@ -957,6 +961,7 @@ fn run_blocking(env: &McpEnv, req: RunRequest) -> Result<(serde_json::Value, boo
     let mut config = crate::engine_config(jobs, &call.plugins, Some(&call.home), prova_core::progress::null())
         .with_capabilities(call.capabilities.clone())
         .with_specs_only(req.selection.specs.unwrap_or(false))
+        .with_falsify(req.selection.falsify.unwrap_or(false))
         .with_strict_specs(req.strict_specs.unwrap_or(false));
     config.selection = selection;
 

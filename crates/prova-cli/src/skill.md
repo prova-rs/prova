@@ -45,6 +45,15 @@ implementation was written after the proof — a stub that refuses everything sa
 many careless assertions. Costs nothing on the ordinary path; the mutation runs only under the
 verb that asks for it.
 
+**Claims — obligations that arrive from outside prova.** Specs also come from design docs and
+tickets, and an agent can say it implemented one without having done so. A `<!-- claim: id -->`
+anchor in prose is an obligation; `covers = "docs/design.md#id"` on a proof discharges it; and
+`prova owed` reconciles every origin into ONE list — open specs, unproven claims, and `covers`
+pointing at prose that is not there. Pin a claim's text (`prova owed --pin`) where the exact
+wording is the contract, and an edit reports STALE instead of passing silently. Opt in with
+`[claims] docs = [...]`; absent, the subsystem is inert. If you find things owed in a repo,
+surface them — that is scoped work someone has not finished.
+
 Prova complements the language's own test harness; it does not replace it. Prove the CONTRACT
 with prova (behavior a real caller observes at the boundary); prove the INTERNALS with native
 unit/integration tests (one function's logic, seams the boundary can't reach). A change often
@@ -62,7 +71,8 @@ Everything below is the crash course; depth is one call away, computed for THIS 
 | Which archetypes `init` can scaffold | `prova init --list` (or `prova learn init`) |
 | A live value's shape | probe it with `eval` |
 | The open-spec backlog (proofs ahead of implementation) | `prova specs` · `prova learn specs` |
-| Whether the proofs can actually fail (vacuous-proof hunt) | `prova falsify` · `prova learn specs` |
+| Whether the proofs can actually fail (vacuous-proof hunt) | `prova falsify` · `prova learn falsify` |
+| Everything this package owes, from every origin | `prova owed` · `prova learn claims` |
 | A plugin for a technology you need to prove | `prova plugins <term>` (search registries) → `prova plugins add <name>` |
 
 ## Test files, in one screen
