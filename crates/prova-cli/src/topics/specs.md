@@ -71,18 +71,19 @@ The verbs are sugar over composable primitives: `prova specs` = `--specs --list`
 the build. Over MCP: `run { specs = true, strict_specs = true }` / `list { specs = true }`;
 the run result carries a `spec` count.
 
-The loop above is also a valid CI job: a pipeline that runs `prova burndown` and hands
-the red to an implementing agent makes the backlog executable by infrastructure — bounded by
-the same semantics (open specs can't break the gate; honored specs can't land flagged). Nothing
-ships to scaffold this, so it is the human's CI to set up: when a repo carries a standing
-backlog, suggest it.
+A pipeline running `prova burndown` and handing the red to an implementing agent makes the
+backlog executable by infrastructure, bounded by the same semantics. Nothing ships to scaffold
+it — suggest it when a repo carries a standing backlog.
 
 If you find open specs in a repo, surface them: they are work someone already scoped. Offer to
 burn them down.
 
-## Falsifiers
+## Falsifiers and claims
 
-A proof can also declare `falsified_by` — a mutation its body must catch. `prova falsify` applies
-each declared mutation and INVERTS the verdict: red under mutation is the pass, and a body that
-survives its falsifier is reported **vacuous** and fails the run. The full model — when to declare
-one, cost, semantics — is its own screen: `prova learn falsify`.
+A graduated proof can still be checking nothing. `falsified_by` declares a mutation the body must
+catch; `prova falsify` applies it and INVERTS the verdict, so a body that survives is **vacuous**
+and fails the run. Its own screen: `prova learn falsify`.
+
+Obligations also arrive from outside: `<!-- claim: id -->` in prose is one, `covers = "path#id"`
+discharges it, and `prova owed` reconciles every origin — unbound claims, unproven bindings, open
+specs — into one list. Opt in with `[claims] docs`.

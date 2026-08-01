@@ -97,6 +97,20 @@ pub struct Manifest {
     /// package, not a profile — the same guidance regardless of which run profile is selected.
     #[serde(default)]
     pub agent: AgentSection,
+    /// `[claims]` — where prose obligations live. **Absent by default, and absence is the whole
+    /// point**: a package that never opts in pays nothing, scans nothing, and is never told about
+    /// a subsystem it does not use. Declaring `docs` is the opt-in.
+    #[serde(default)]
+    pub claims: Option<ClaimsSection>,
+}
+
+/// `[claims]` — the prose side of the obligation ledger.
+#[derive(Debug, Deserialize, Clone, Default, PartialEq)]
+pub struct ClaimsSection {
+    /// Files and directories scanned for `<!-- claim: id -->` anchors, package-relative. Scoped
+    /// deliberately: prova must never crawl a whole repo looking for prose.
+    #[serde(default)]
+    pub docs: Vec<String>,
 }
 
 /// `[agent]` — knobs on the guidance `prova learn` gives an agent. The seed of a configurable skill:

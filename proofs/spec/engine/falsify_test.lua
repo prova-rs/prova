@@ -94,16 +94,25 @@ prova.test("a normal run is unaffected by a declared falsifier", {
   t:expect(r.stdout):contains("3 passed")
 end)
 
-prova.test("the binary teaches the verb: `prova learn specs` names falsify", {
-  proves = "a capability an agent cannot discover does not exist; learn is where it looks",
+prova.test("the binary teaches the verb, catalog and topic alike", {
+  proves = "a capability an agent cannot discover does not exist, and discovery is two steps: the catalog has to name it, then its topic has to explain it. Checking only one leaves a capability that is either unfindable or unexplained",
 }, function(t)
   local proj = t:use(sandbox)
-  local r = shell.run(prova.bin .. " learn specs", { cwd = proj, merge_stderr = true })
 
-  -- A capability an agent cannot discover does not exist. `learn` is where it looks.
-  t:expect(r.code):equals(0)
-  t:expect(r.stdout):contains("prova falsify")
-  t:expect(r.stdout):contains("falsified_by")
+  -- Step one: an agent scanning the catalog must SEE it exists.
+  local catalog = shell.run(prova.bin .. " learn", { cwd = proj, merge_stderr = true })
+  t:expect(catalog.code):equals(0)
+  t:expect(catalog.stdout, "the catalog names the topic"):contains("falsify")
+
+  -- Step two: the topic must actually teach the verb and the attribute.
+  local topic = shell.run(prova.bin .. " learn falsify", { cwd = proj, merge_stderr = true })
+  t:expect(topic.code):equals(0)
+  t:expect(topic.stdout, "the verb"):contains("prova falsify")
+  t:expect(topic.stdout, "the attribute"):contains("falsified_by")
+
+  -- And the spec lifecycle points at it, so an agent reading about specs finds the next step.
+  local specs = shell.run(prova.bin .. " learn specs", { cwd = proj, merge_stderr = true })
+  t:expect(specs.stdout, "specs points onward"):contains("learn falsify")
 end)
 
 prova.test("a falsifier must be a function", {

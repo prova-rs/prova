@@ -943,6 +943,7 @@ fn parse_opts(t: &mlua::Table) -> mlua::Result<UnitOpts> {
     let requires = t
         .get::<Option<Vec<String>>>("requires")?
         .unwrap_or_default();
+    let covers = parse_covers_opt(&t.get::<Value>("covers")?)?;
     let spec = parse_spec_opt(&t.get::<Value>("spec")?)?;
     let proves = parse_proves_opt(&t.get::<Value>("proves")?)?;
     if spec.is_some() && proves.is_some() {
@@ -959,7 +960,34 @@ fn parse_opts(t: &mlua::Table) -> mlua::Result<UnitOpts> {
         requires,
         spec,
         proves,
+        covers,
     })
+}
+
+/// The `covers` opt: one address, or a list of them — `"docs/design.md#claim-id"` or a ticket.
+/// A proof may discharge several obligations, and an obligation may need several proofs, so this
+/// is many-to-many by construction.
+fn parse_covers_opt(v: &Value) -> mlua::Result<Vec<String>> {
+    match v {
+        Value::Nil => Ok(Vec::new()),
+        Value::String(s) if !s.to_string_lossy().is_empty() => {
+            Ok(vec![s.to_string_lossy().to_string()])
+        }
+        Value::Table(t) => {
+            let addrs: Vec<String> = t.clone().sequence_values::<String>().collect::<mlua::Result<_>>()?;
+            if addrs.iter().any(|a| a.is_empty()) {
+                return Err(mlua::Error::RuntimeError(
+                    "covers entries must be non-empty addresses".into(),
+                ));
+            }
+            Ok(addrs)
+        }
+        _ => Err(mlua::Error::RuntimeError(
+            "covers names the obligation(s) this proof discharges — a claim anchor \
+             (\"docs/design.md#claim-id\") or a ticket, as a string or a list"
+                .into(),
+        )),
+    }
 }
 
 /// The `spec` opt: a **non-empty reason string** — the why/ticket behind the still-open
@@ -3275,6 +3303,8 @@ struct Leaf {
     precondition_skip: Option<String>,
     /// Effective tags: the unit's own plus every enclosing group's (selection matches on these).
     tags: Vec<String>,
+    /// Obligation addresses this leaf discharges (`covers`).
+    covers: Vec<String>,
     /// Whether this leaf declares a `falsified_by` mutation — the selector for `prova falsify`.
     falsifiable: bool,
     /// `Some(reason)` when this leaf carries its own `spec` flag (always a non-empty reason)
@@ -3392,6 +3422,7 @@ fn push_leaf(leaves: &mut Vec<Leaf>, unit: PlanUnit, node: &Node, inherited: &In
         tags,
         // Test-level only, by design: the leaf's own flag, never an ancestor's.
         falsifiable: node.falsifier.is_some(),
+        covers: node.opts.covers.clone(),
         spec: node.opts.spec.clone(),
     });
     id
@@ -5548,6 +5579,46 @@ pub(crate) fn discover_suite_files(
     load_member_files(&lua, &col, files)?;
     let col = col.borrow();
     list_plan(&col, config)
+}
+
+/// What a proof owes or discharges — collected WITHOUT running anything, because reconciling
+/// prose against proofs is a static question and must not require a green suite (or a docker
+/// daemon, or a broker) to answer.
+#[derive(Debug, Clone)]
+pub struct ProofObligation {
+    pub path: String,
+    /// The `spec` reason, when this proof is still open.
+    pub spec: Option<String>,
+    /// Obligation addresses this proof claims to discharge.
+    pub covers: Vec<String>,
+}
+
+/// Collect every proof's obligations for a suite, without executing them.
+pub fn obligations_for_suite(
+    setup: Option<&Path>,
+    files: &[PathBuf],
+    config: &RunConfig,
+) -> mlua::Result<Vec<ProofObligation>> {
+    let (lua, col) = build_lua("obligations".to_string(), config)?;
+    if let Some(setup) = setup {
+        let code = std::fs::read_to_string(setup).map_err(|e| {
+            mlua::Error::RuntimeError(format!("cannot read {}: {e}", setup.display()))
+        })?;
+        lua.load(&code).set_name(file_chunk_name(setup)).exec()?;
+    }
+    load_member_files(&lua, &col, files)?;
+    let col = col.borrow();
+    let plan = build_plan(&col, &config.capabilities)?;
+    Ok(plan
+        .leaves
+        .iter()
+        .filter(|leaf| leaf.spec.is_some() || !leaf.covers.is_empty())
+        .map(|leaf| ProofObligation {
+            path: leaf.unit.leaf_paths().first().map(|s| s.to_string()).unwrap_or_default(),
+            spec: leaf.spec.clone(),
+            covers: leaf.covers.clone(),
+        })
+        .collect())
 }
 
 /// The shared tail of discovery: build the plan (validations included), honor selection and the

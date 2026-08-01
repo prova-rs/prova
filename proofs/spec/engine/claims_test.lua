@@ -1,0 +1,148 @@
+--- Claims — binding prose to proofs, and reporting what is owed.
+---
+--- Specs do not only come from prova. They come from design docs, tickets, and conversations, and
+--- an agent can say it implemented one without ever having done so. A `<!-- claim: id -->` anchor
+--- in prose is an obligation entering the system from outside; `covers = "path#id"` on a proof is
+--- the discharge. What prova adds is the reconciliation: which obligations exist, which are
+--- discharged, and which references point at nothing.
+---
+--- Opt-in at the package level: no `[claims]` section means no scanning and no cost. Reported, never
+--- fatal — except a duplicate id, which makes an address ambiguous and is a defect rather than
+--- unfinished work.
+
+local sandbox = prova.fixture("claims-sandbox", Scope.File, function(ctx)
+  local root = ctx:tempdir()
+  local proj = root .. "/pkg"
+  shell.run("mkdir -p " .. proj .. "/proofs " .. proj .. "/docs", { check = true })
+  fs.write(proj .. "/prova.toml", '[run]\nproofs = ["proofs"]\n\n[claims]\ndocs = ["docs"]\n')
+  fs.write(proj .. "/docs/design.md", [[
+# Design
+
+<!-- claim: busy-not-absent -->
+Contention and absence are different answers and must never be conflated.
+
+<!-- claim: never-preempt -->
+A held lease is never revoked out from under its holder.
+
+<!-- claim: nobody-proves-me -->
+This claim has no covering proof and should be reported as owed.
+]])
+  fs.write(proj .. "/proofs/contract_test.lua", [[
+prova.test("busy is not unsatisfiable", {
+  covers = "docs/design.md#busy-not-absent",
+}, function(t)
+  t:expect(1):equals(1)
+end)
+
+prova.test("a lease survives a drain", {
+  covers = "docs/design.md#never-preempt",
+  spec = "drain semantics need a multi-node broker",
+}, function(t)
+  t:expect(1):equals(2)
+end)
+
+prova.test("points at prose nobody wrote", {
+  covers = "docs/design.md#not-written-yet",
+}, function(t)
+  t:expect(1):equals(1)
+end)
+]])
+  return proj
+end)
+
+prova.test("`prova owed` reports an anchored claim with no covering proof", {
+  proves = "the intake half: writing an anchor admits an obligation from outside prova entirely, so work scoped in prose stops being invisible until someone remembers it",
+}, function(t)
+  local proj = t:use(sandbox)
+  local r = shell.run(prova.bin .. " owed 2>&1", { cwd = proj })
+
+  -- The intake half: writing an anchor admits an obligation from outside prova entirely, and it
+  -- shows up as work owed rather than being invisible until someone remembers it.
+  t:expect(r.stdout, "the unproven claim is owed"):contains("nobody-proves-me")
+  t:expect(r.stdout):contains("UNPROVEN")
+end)
+
+prova.test("a covered claim is not reported as owed", {
+  proves = "discharged obligations must leave the list, or the list stops being read",
+}, function(t)
+  local proj = t:use(sandbox)
+  local r = shell.run(prova.bin .. " owed 2>&1", { cwd = proj })
+
+  -- Discharged obligations must leave the list, or the list stops being read.
+  t:expect(r.stdout):never():contains("busy-not-absent")
+end)
+
+prova.test("a covers pointing at no anchor is UNBOUND, and not fatal", {
+  proves = "prose-not-yet-written and prose-deleted produce the same state and want different remedies; both are unfinished work and neither is a broken build",
+}, function(t)
+  local proj = t:use(sandbox)
+  local r = shell.run(prova.bin .. " owed 2>&1", { cwd = proj })
+
+  -- Two situations produce this identical state — prose not written yet, and prose deleted after
+  -- the proof captured the contract. Both are unfinished work, neither is a broken build, and the
+  -- remedy differs (write it, or retire the reference into `proves`).
+  t:expect(r.stdout):contains("UNBOUND")
+  t:expect(r.stdout):contains("not-written-yet")
+  t:expect(r.code, "owed reports, it does not gate"):equals(0)
+end)
+
+prova.test("open specs and unproven claims share one list", {
+  proves = "an agent orienting in a repo asks one question — what is owed here? An answer living in two places has one that goes stale",
+}, function(t)
+  local proj = t:use(sandbox)
+  local r = shell.run(prova.bin .. " owed 2>&1", { cwd = proj })
+
+  -- An agent orienting in a repo asks ONE question — what is owed here? Origin is a column, not a
+  -- separate concept, or the answer lives in two places and one of them goes stale.
+  t:expect(r.stdout, "the open spec is owed too"):contains("SPEC")
+  t:expect(r.stdout):contains("multi-node broker")
+end)
+
+prova.test("a duplicate claim id in one file is an error", {
+  proves = "unlike everything else here this is a real defect: an ambiguous address cannot be discharged by anything, so the ledger is incoherent rather than behind",
+}, function(t)
+  local proj = t:use(sandbox)
+  fs.write(proj .. "/docs/dupe.md", [[
+<!-- claim: twice -->
+First.
+
+<!-- claim: twice -->
+Second.
+]])
+  local r = shell.run(prova.bin .. " owed 2>&1", { cwd = proj })
+  fs.remove_all(proj .. "/docs/dupe.md")
+
+  -- Unlike everything else here, this is a real defect: an ambiguous address cannot be discharged
+  -- by anything, so the system is incoherent rather than merely behind.
+  t:expect(r.code):never():equals(0)
+  t:expect(r.stdout):contains("twice")
+end)
+
+prova.test("no [claims] section means the whole subsystem is inert", {
+  proves = "the manifest entry IS the opt-in — a package that never asked for claims pays nothing and is never told about a subsystem it does not use",
+}, function(t)
+  local proj = t:use(sandbox)
+  local bare = proj .. "/../bare"
+  shell.run("mkdir -p " .. bare .. "/proofs", { check = true })
+  fs.write(bare .. "/prova.toml", '[run]\nproofs = ["proofs"]\n')
+  fs.write(bare .. "/proofs/x_test.lua", 'prova.test("x", function(t) t:expect(1):equals(1) end)\n')
+
+  local r = shell.run(prova.bin .. " owed 2>&1", { cwd = bare })
+
+  -- The manifest entry IS the opt-in. A package that never asked for claims pays nothing and is
+  -- never told about a subsystem it does not use.
+  t:expect(r.code):equals(0)
+  t:expect(r.stdout):never():contains("UNPROVEN")
+end)
+
+prova.test("a normal run ignores claims entirely", {
+  proves = "prova must not parse markdown to run a test, and an unproven claim must never turn a green suite red",
+}, function(t)
+  local proj = t:use(sandbox)
+  local r = shell.run(prova.bin .. " 2>&1", { cwd = proj })
+
+  -- Reconciliation belongs to the verb that asks for it. `prova` must not parse markdown to run a
+  -- test, and an unproven claim must never turn a green suite red.
+  t:expect(r.stdout):never():contains("UNPROVEN")
+  t:expect(r.stdout):never():contains("UNBOUND")
+end)

@@ -19,6 +19,7 @@
 //! home discovery anchors at the named paths, so a file runs the same from anywhere.
 
 mod annotations;
+mod claims;
 mod catalog;
 mod home;
 mod ide;
@@ -100,6 +101,12 @@ const VERBS: &[Verb] = &[
         help: "  prova burndown [<sel>]    the implementing loop: run only spec-flagged tests, open specs fail\n\
                \x20                           loud with full detail (same as `--specs --strict-specs`)",
         run: burndown_subcommand,
+    },
+    Verb {
+        name: "owed",
+        help: "  prova owed                what this package still owes: open specs, unproven claims,\n\
+               \x20                           and covers pointing at prose that is not there",
+        run: owed_subcommand,
     },
     Verb {
         name: "falsify",
@@ -331,6 +338,86 @@ fn burndown_subcommand(args: Vec<String>) -> ExitCode {
     ];
     full.extend(args);
     run(full)
+}
+
+/// `prova owed` — the obligation ledger: everything this package owes, from every origin.
+///
+/// An agent orienting in a repo should ask ONE question — what is owed here? — so open specs
+/// (in-repo deferrals) and unproven claims (obligations that entered from prose) land in one list
+/// with origin as a column. An answer that lives in two places has one that goes stale.
+///
+/// Reports, never gates. The single exception is a duplicate claim id, which makes an address
+/// ambiguous and is a defect rather than unfinished work.
+fn owed_subcommand(_args: Vec<String>) -> ExitCode {
+    let home = match resolve_home(None) {
+        Ok(h) => h,
+        Err(code) => return code,
+    };
+    let manifest = match std::fs::read_to_string(&home.manifest)
+        .map_err(|e| e.to_string())
+        .and_then(|text| Manifest::parse(&text))
+    {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("prova: {e}");
+            return ExitCode::from(2);
+        }
+    };
+
+    // The manifest entry IS the opt-in. No `[claims]` means no scan, no cost, and no lecture about
+    // a subsystem this package never asked for — but open specs are still owed, so the ledger still
+    // has something to say.
+    let docs = manifest.claims.as_ref().map(|c| c.docs.clone()).unwrap_or_default();
+
+    let claims = match claims::scan(&home.dir, &docs) {
+        Ok(claims) => claims,
+        Err(e) => {
+            eprintln!("prova: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let proofs = match collect_obligations(&home, &manifest) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("prova: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let owed = claims::reconcile(&claims, &proofs);
+    if owed.is_empty() {
+        println!("prova: nothing owed — no open specs, and every claim is covered");
+        return ExitCode::SUCCESS;
+    }
+    for row in &owed {
+        println!("  {:<9} {}", row.status.tag(), row.subject);
+        println!("            {}", row.detail);
+    }
+    println!();
+    println!("  {} owed", owed.len());
+    ExitCode::SUCCESS
+}
+
+/// Collect every proof's `spec`/`covers` WITHOUT running anything. Reconciling prose against
+/// proofs is a static question: it must not need a green suite, a docker daemon, or a broker.
+fn collect_obligations(
+    home: &home::Home,
+    manifest: &Manifest,
+) -> Result<Vec<prova_core::ProofObligation>, String> {
+    let resolved = manifest.resolve(None)?;
+    let config = prova_core::RunConfig::new(1);
+    let mut out = Vec::new();
+    for dir in find_proof_dirs(&home.dir, &resolved.proofs) {
+        let suites = discover_suites(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        for suite in suites {
+            let found =
+                prova_core::obligations_for_suite(suite.setup.as_deref(), &suite.files, &config)
+                    .map_err(|e| e.to_string())?;
+            out.extend(found);
+        }
+    }
+    Ok(out)
 }
 
 /// `prova falsify [<sel>]` — the falsification pass. Selects only tests declaring `falsified_by`,

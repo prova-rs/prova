@@ -84,6 +84,10 @@ pub struct UnitOpts {
     /// either carries the flag or it is a full proof — there is no inheritance and no
     /// `spec = false`.
     pub spec: Option<String>,
+    /// `covers` — addresses of the external obligations this proof discharges (a doc-claim anchor,
+    /// a ticket). Test-level, like `spec`: an obligation is discharged by an assertion, and a
+    /// container has none of its own. Plain data, so it lives here rather than beside the body.
+    pub covers: Vec<String>,
     /// The `proves` attribute — **test-level only**: graduated context. `Some(context)` carries
     /// the why behind a finished proof (usually the converted reason of a spec that graduated,
     /// or retrofitted onto an existing test) in the test itself, where a reviewer cannot miss
