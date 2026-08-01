@@ -53,7 +53,9 @@ function net.free_port() end
 
 ---@class prova.fs
 fs = {}
----Create a temp dir. Not auto-cleaned; pair with `ctx:defer` or use `ctx:tempdir()`.
+---Create a temp dir. Not auto-cleaned; pair with `ctx:defer` or use `ctx:tempdir()`. The returned
+---path is absolute and `/`-normalized on every OS (no `\`, no `\\?\` prefix — safe to embed in
+---TOML, shell strings, and patterns).
 ---@return string path
 function fs.tempdir() end
 --- Delete a path and everything under it. No error if it is already gone.
@@ -73,9 +75,9 @@ function fs.write(path, contents) end
 ---@return boolean
 function fs.exists(path) end
 --- Every path under `root` matching a glob `pattern` (`*` within a segment, `**` across segments).
---- Returns **ABSOLUTE** paths, not paths relative to `root` — strip `root` yourself if you need
---- relative ones (a report keyed on absolute paths differs per machine). Directories are matched too,
---- so pattern for what you want (`"**/*.rs"`, not `"**"`). Order is unspecified — sort it.
+--- Returns **ABSOLUTE**, `/`-normalized paths, not paths relative to `root` — strip `root` yourself
+--- if you need relative ones (a report keyed on absolute paths differs per machine). Directories are
+--- matched too, so pattern for what you want (`"**/*.rs"`, not `"**"`). Order is unspecified — sort it.
 ---@param root string
 ---@param pattern string   # e.g. "**/*.rs"
 ---@return string[] absolute paths

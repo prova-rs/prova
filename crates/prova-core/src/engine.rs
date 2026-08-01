@@ -1259,7 +1259,7 @@ impl UserData for Ctx {
         methods.add_method("tempdir", |_, this, ()| {
             let path = make_tempdir()
                 .map_err(|e| mlua::Error::RuntimeError(format!("tempdir failed: {e}")))?;
-            let s = path.to_string_lossy().into_owned();
+            let s = crate::modules::emit_path(&path);
             this.own_scope_state()?.borrow_mut().tempdirs.push(path);
             Ok(s)
         });

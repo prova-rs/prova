@@ -1292,7 +1292,7 @@ fn make_fs(lua: &Lua) -> mlua::Result<Table> {
         "tempdir",
         lua.create_function(|_, ()| {
             crate::engine::make_tempdir()
-                .map(|p| p.to_string_lossy().into_owned())
+                .map(|p| emit_path(&p))
                 .map_err(|e| mlua::Error::RuntimeError(format!("fs.tempdir: {e}")))
         })?,
     )?;
@@ -1319,7 +1319,7 @@ fn make_fs(lua: &Lua) -> mlua::Result<Table> {
                 .map_err(|e| mlua::Error::RuntimeError(format!("fs.glob {pattern:?}: {e}")))?;
             let mut out: Vec<String> = paths
                 .filter_map(|r| r.ok())
-                .map(|p| p.to_string_lossy().into_owned())
+                .map(|p| emit_path(&p))
                 .collect();
             out.sort();
             lua.create_sequence_from(out)
@@ -1340,6 +1340,19 @@ fn make_fs(lua: &Lua) -> mlua::Result<Table> {
 /// assertions hold on every OS.
 fn path_norm_seps(p: &str) -> String {
     p.strip_prefix(r"\\?\").unwrap_or(p).replace('\\', "/")
+}
+
+/// Render an OS path for emission to Lua: `/`-normalized on Windows (where the OS renders `\` and
+/// canonicalization grows a `\\?\` prefix), byte-exact everywhere else — a unix filename may
+/// legally CONTAIN `\`, so blanket replacement would corrupt it. Every path-PRODUCING API
+/// (`fs.tempdir`, `fs.glob`, `ctx:tempdir`) must emit through this.
+pub(crate) fn emit_path(p: &std::path::Path) -> String {
+    let s = p.to_string_lossy();
+    if cfg!(windows) {
+        path_norm_seps(&s)
+    } else {
+        s.into_owned()
+    }
 }
 
 /// The root prefix of an already `/`-normalized path: `"//"` (UNC — the double slash is

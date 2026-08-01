@@ -40,7 +40,8 @@ function Context:defer(fn) end
 ---@return T
 function Context:manage(resource) end
 
----Create a scratch directory that is removed automatically when the current scope ends.
+---Create a scratch directory that is removed automatically when the current scope ends. The
+---returned path is absolute and `/`-normalized on every OS (no `\`, no `\\?\` prefix).
 ---@return string path
 function Context:tempdir() end
 
