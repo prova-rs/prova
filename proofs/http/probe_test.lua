@@ -21,6 +21,12 @@ class Server(ThreadingHTTPServer):
 Server(("127.0.0.1", port), SimpleHTTPRequestHandler).serve_forever()
 ]]
 
+-- The interpreter's NAME is platform-conditional: Windows resolves `python3` to the Store
+-- app-execution alias — a stub that runs silently forever without ever binding (measured on the
+-- GitHub runner: still "running" after 10s, zero output, port never listening). The real
+-- interpreter there is `python`; everywhere else `python3` is the reliable spelling.
+local python = package.config:sub(1, 1) == "\\" and "python" or "python3"
+
 local service = prova.fixture("service", Scope.File, function(ctx)
   local root = ctx:tempdir()
   fs.write(root .. "/health", "ok")
@@ -32,7 +38,7 @@ local service = prova.fixture("service", Scope.File, function(ctx)
   -- proof that dogfoods boot-then-probe should demonstrate the readiness pattern in full.
   local port = net.free_port()
   -- shell.spawn returns a managed process handle; ctx:manage stops it during async teardown.
-  local proc = ctx:manage(shell.spawn("python3 " .. root .. "/serve.py " .. port .. " " .. root))
+  local proc = ctx:manage(shell.spawn(python .. " " .. root .. "/serve.py " .. port .. " " .. root))
 
   local base = "http://127.0.0.1:" .. port
   -- A readiness failure has to say WHY. shell.spawn discards stdout/stderr, so a bare timeout

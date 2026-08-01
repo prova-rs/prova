@@ -243,7 +243,9 @@ fn plugin_env(lua: &Lua, path: &Path) -> mlua::Result<mlua::Table> {
     // plugin's private `require`, or a stale `plugin`). (Ask how I know.)
     let info = lua.create_table()?;
     if let Some(dir) = path.parent() {
-        info.raw_set("dir", dir.to_string_lossy().into_owned())?;
+        // A path-PRODUCING API: /-normalized like fs.tempdir/fs.glob (plugin resolution
+        // canonicalizes, which on Windows grows the `\\?\` prefix this strips).
+        info.raw_set("dir", crate::modules::emit_path(dir))?;
     }
     env.raw_set("plugin", info)?;
     let own = private_deps(path);
