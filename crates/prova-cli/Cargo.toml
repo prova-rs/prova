@@ -29,6 +29,10 @@ prova-archetect = { path = "../prova-archetect" }
 # Interactive catalog picker for `prova init` with no key. Same version archetect-terminal-io uses,
 # so the two share one build of inquire.
 inquire = "0.9"
+# Claim pinning: a short digest of a claim's normalized text, so an edit to prose the proof
+# discharges is reported instead of passing silently.
+sha2 = "0.10"
+hex = "0.4"
 # The suite manifest (`prova.toml`): declare what to run and how, for local + CI.
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"

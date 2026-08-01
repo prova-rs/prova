@@ -146,3 +146,132 @@ prova.test("a normal run ignores claims entirely", {
   t:expect(r.stdout):never():contains("UNPROVEN")
   t:expect(r.stdout):never():contains("UNBOUND")
 end)
+
+-- ── Pinning: the claim's TEXT, not just its id ───────────────────────────────────────────────
+--
+-- The nastiest drift keeps everything green. An anchor survives, its prose is edited, the proof
+-- still passes — and now discharges a claim it no longer matches. Nothing above catches that,
+-- because every id still resolves.
+--
+-- A pin records the claim's text, so an edit is reported. Opt-in per binding: you pin the claims
+-- that are load-bearing and leave the rest loose, because the churn is only worth it where the
+-- exact wording is the contract.
+
+local pinned = prova.fixture("claims-pin-sandbox", Scope.File, function(ctx)
+  local proj = ctx:tempdir() .. "/pkg"
+  shell.run("mkdir -p " .. proj .. "/proofs " .. proj .. "/docs", { check = true })
+  fs.write(proj .. "/prova.toml", '[run]\nproofs = ["proofs"]\n\n[claims]\ndocs = ["docs"]\n')
+  fs.write(proj .. "/docs/design.md", [[
+<!-- claim: pinned-claim -->
+Contention and absence are different answers.
+
+<!-- claim: loose-claim -->
+A held lease is never revoked.
+]])
+  return proj
+end)
+
+prova.test("`--pin` records the claim's text on the binding", {
+  proves = "the pin has to be written by the tool: a hash a human types is a hash nobody verifies, and one that lands in the proof source is reviewable in a diff rather than hidden in a lockfile",
+}, function(t)
+  local proj = t:use(pinned)
+  fs.write(proj .. "/proofs/pin_test.lua", [[
+prova.test("covered", { covers = "docs/design.md#pinned-claim" }, function(t)
+  t:expect(1):equals(1)
+end)
+]])
+  local r = shell.run(prova.bin .. " owed --pin 2>&1", { cwd = proj })
+  t:expect(r.code):equals(0)
+
+  local source = fs.read(proj .. "/proofs/pin_test.lua")
+  t:expect(source, "the binding gained a pin"):matches("docs/design.md#pinned%-claim@%x+")
+end)
+
+prova.test("editing a pinned claim is reported as STALE", {
+  proves = "the drift that keeps everything green: the anchor resolves, the proof passes, and the claim now says something the proof does not check. Only the text can catch it",
+}, function(t)
+  local proj = t:use(pinned)
+  fs.write(proj .. "/proofs/pin_test.lua", [[
+prova.test("covered", { covers = "docs/design.md#pinned-claim" }, function(t)
+  t:expect(1):equals(1)
+end)
+]])
+  shell.run(prova.bin .. " owed --pin", { cwd = proj })
+
+  fs.write(proj .. "/docs/design.md", [[
+<!-- claim: pinned-claim -->
+Contention and absence are different answers, and quota exhaustion is contention.
+
+<!-- claim: loose-claim -->
+A held lease is never revoked.
+]])
+  local r = shell.run(prova.bin .. " owed 2>&1", { cwd = proj })
+
+  t:expect(r.stdout, "the edit surfaces"):contains("STALE")
+  t:expect(r.stdout):contains("pinned-claim")
+end)
+
+prova.test("an unpinned binding never goes stale", {
+  proves = "opt-in per binding is what makes the churn acceptable: a claim whose exact wording is not the contract must not demand re-confirmation every time someone fixes a typo",
+}, function(t)
+  local proj = t:use(pinned)
+  fs.write(proj .. "/proofs/loose_test.lua", [[
+prova.test("covered loosely", { covers = "docs/design.md#loose-claim" }, function(t)
+  t:expect(1):equals(1)
+end)
+]])
+  fs.write(proj .. "/docs/design.md", [[
+<!-- claim: pinned-claim -->
+Contention and absence are different answers.
+
+<!-- claim: loose-claim -->
+A held lease is never revoked, ever, under any circumstances whatsoever.
+]])
+  local r = shell.run(prova.bin .. " owed 2>&1", { cwd = proj })
+  fs.remove_all(proj .. "/proofs/loose_test.lua")
+
+  t:expect(r.stdout):never():contains("STALE")
+end)
+
+prova.test("whitespace-only edits do not churn a pin", {
+  proves = "a pin that fired on reflowing a paragraph would be turned off within a week; normalising before hashing is what keeps it worth having",
+}, function(t)
+  local proj = t:use(pinned)
+  fs.write(proj .. "/proofs/ws_test.lua", [[
+prova.test("covered", { covers = "docs/design.md#pinned-claim" }, function(t)
+  t:expect(1):equals(1)
+end)
+]])
+  shell.run(prova.bin .. " owed --pin", { cwd = proj })
+
+  -- Same words, reflowed and re-indented.
+  fs.write(proj .. "/docs/design.md", [[
+<!-- claim: pinned-claim -->
+Contention   and absence
+are different answers.
+
+<!-- claim: loose-claim -->
+A held lease is never revoked.
+]])
+  local r = shell.run(prova.bin .. " owed 2>&1", { cwd = proj })
+  fs.remove_all(proj .. "/proofs/ws_test.lua")
+
+  t:expect(r.stdout):never():contains("STALE")
+end)
+
+prova.test("the binary teaches claims: catalog, topic, and the pin", {
+  proves = "a capability an agent cannot discover does not exist. Discovery is two steps — the catalog must name it and the topic must explain it — and checking one leaves a capability either unfindable or unexplained",
+}, function(t)
+  local proj = t:use(pinned)
+
+  local catalog = shell.run(prova.bin .. " learn 2>&1", { cwd = proj })
+  t:expect(catalog.stdout, "the catalog names the topic"):contains("claims")
+
+  local topic = shell.run(prova.bin .. " learn claims 2>&1", { cwd = proj })
+  t:expect(topic.code):equals(0)
+  t:expect(topic.stdout, "the anchor form"):contains("<!-- claim:")
+  t:expect(topic.stdout, "the attribute"):contains("covers")
+  t:expect(topic.stdout, "the verb"):contains("prova owed")
+  t:expect(topic.stdout, "the opt-in"):contains("[claims]")
+  t:expect(topic.stdout, "pinning"):contains("--pin")
+end)

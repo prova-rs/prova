@@ -348,7 +348,8 @@ fn burndown_subcommand(args: Vec<String>) -> ExitCode {
 ///
 /// Reports, never gates. The single exception is a duplicate claim id, which makes an address
 /// ambiguous and is a defect rather than unfinished work.
-fn owed_subcommand(_args: Vec<String>) -> ExitCode {
+fn owed_subcommand(args: Vec<String>) -> ExitCode {
+    let pinning = args.iter().any(|a| a == "--pin");
     let home = match resolve_home(None) {
         Ok(h) => h,
         Err(code) => return code,
@@ -385,6 +386,24 @@ fn owed_subcommand(_args: Vec<String>) -> ExitCode {
         }
     };
 
+    if pinning {
+        let files = match proof_files(&home, &manifest) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("prova: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        match claims::pin(&files, &claims) {
+            Ok(n) => println!("prova: pinned claim text in {n} file(s)"),
+            Err(e) => {
+                eprintln!("prova: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+        return ExitCode::SUCCESS;
+    }
+
     let owed = claims::reconcile(&claims, &proofs);
     if owed.is_empty() {
         println!("prova: nothing owed — no open specs, and every claim is covered");
@@ -415,6 +434,19 @@ fn collect_obligations(
                 prova_core::obligations_for_suite(suite.setup.as_deref(), &suite.files, &config)
                     .map_err(|e| e.to_string())?;
             out.extend(found);
+        }
+    }
+    Ok(out)
+}
+
+/// Every proof file in the package — what `--pin` rewrites.
+fn proof_files(home: &home::Home, manifest: &Manifest) -> Result<Vec<PathBuf>, String> {
+    let resolved = manifest.resolve(None)?;
+    let mut out = Vec::new();
+    for dir in find_proof_dirs(&home.dir, &resolved.proofs) {
+        let suites = discover_suites(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        for suite in suites {
+            out.extend(suite.files);
         }
     }
     Ok(out)

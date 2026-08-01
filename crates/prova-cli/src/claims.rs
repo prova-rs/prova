@@ -16,6 +16,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use sha2::{Digest, Sha256};
+
 /// A normative statement anchored in prose.
 #[derive(Debug, Clone)]
 pub struct Claim {
@@ -23,6 +25,41 @@ pub struct Claim {
     pub address: String,
     pub file: PathBuf,
     pub line: usize,
+    /// Short digest of the claim's normalized text — what a pinned binding compares against.
+    pub digest: String,
+}
+
+/// The prose an anchor labels: the lines under it, to the next blank line. A paragraph is what an
+/// author thinks of as "the claim", and taking more would make every neighbouring edit churn.
+fn claim_text(lines: &[&str], anchor_index: usize) -> String {
+    lines
+        .iter()
+        .skip(anchor_index + 1)
+        .take_while(|l| !l.trim().is_empty())
+        .copied()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Collapse whitespace before hashing.
+///
+/// A pin that fired when someone reflowed a paragraph would be switched off within a week, so
+/// wrapping and indentation must not count. Case and punctuation DO count: "must" and "may" are
+/// the whole content of a normative claim.
+pub fn digest(text: &str) -> String {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut hasher = <Sha256 as Digest>::new();
+    hasher.update(normalized.as_bytes());
+    hex::encode(hasher.finalize())[..8].to_string()
+}
+
+/// Split `path#id@digest` into its address and pin. No `@` means an unpinned binding — bound, but
+/// not watching the text.
+pub fn split_pin(address: &str) -> (&str, Option<&str>) {
+    match address.rsplit_once('@') {
+        Some((addr, pin)) if !pin.is_empty() => (addr, Some(pin)),
+        _ => (address, None),
+    }
 }
 
 /// What the ledger found. Ordered worst-first so the actionable rows are read.
@@ -34,6 +71,10 @@ pub enum Status {
     Unbound,
     /// An anchored claim nothing covers. The intake half: an obligation with no proof.
     Unproven,
+    /// A pinned claim whose text changed. The drift that keeps everything green: the anchor still
+    /// resolves and the proof still passes, but the claim now says something the proof may not
+    /// check. Only the text can catch it.
+    Stale,
     /// A proof authored ahead of its implementation.
     Spec,
 }
@@ -43,6 +84,7 @@ impl Status {
         match self {
             Status::Unbound => "UNBOUND",
             Status::Unproven => "UNPROVEN",
+            Status::Stale => "STALE",
             Status::Spec => "SPEC",
         }
     }
@@ -123,6 +165,7 @@ fn collect_file(root: &Path, path: &Path, out: &mut Vec<Claim>) -> Result<(), Cl
     })?;
     let relative = path.strip_prefix(root).unwrap_or(path).to_path_buf();
 
+    let all: Vec<&str> = text.lines().collect();
     let mut seen: BTreeMap<String, usize> = BTreeMap::new();
     for (index, line) in text.lines().enumerate() {
         let Some(id) = parse_anchor(line) else { continue };
@@ -139,6 +182,7 @@ fn collect_file(root: &Path, path: &Path, out: &mut Vec<Claim>) -> Result<(), Cl
             address: format!("{}#{id}", relative.display()),
             file: relative.clone(),
             line: line_no,
+            digest: digest(&claim_text(&all, index)),
         });
         seen.insert(id, line_no);
     }
@@ -157,23 +201,38 @@ fn parse_anchor(line: &str) -> Option<String> {
 /// Reconcile anchors against what the proofs claim to discharge.
 pub fn reconcile(claims: &[Claim], proofs: &[prova_core::ProofObligation]) -> Vec<Owed> {
     let mut owed = Vec::new();
-    let anchored: Vec<&str> = claims.iter().map(|c| c.address.as_str()).collect();
 
     for proof in proofs {
-        for address in &proof.covers {
+        for raw in &proof.covers {
             // External addresses (`jira:PROVA-142`) are opaque to this pass — unresolvable is not
             // unbound, and reporting one as the other would send an agent hunting for prose that
             // was never supposed to be local.
-            if address.contains(':') && !address.contains('#') {
+            if raw.contains(':') && !raw.contains('#') {
                 continue;
             }
-            if !anchored.contains(&address.as_str()) {
+            let (address, pin) = split_pin(raw);
+            let Some(claim) = claims.iter().find(|c| c.address == address) else {
                 owed.push(Owed {
                     status: Status::Unbound,
-                    subject: address.clone(),
+                    subject: address.to_string(),
                     detail: format!(
                         "{} covers it, but no anchor exists — write the prose, or retire the \
                          reference into `proves`",
+                        proof.path
+                    ),
+                });
+                continue;
+            };
+            // A pin is opt-in per binding: unpinned bindings are bound but not watching the text,
+            // so a wording change on a claim whose exact phrasing is not the contract costs
+            // nobody a re-confirmation.
+            if pin.is_some_and(|pin| pin != claim.digest) {
+                owed.push(Owed {
+                    status: Status::Stale,
+                    subject: address.to_string(),
+                    detail: format!(
+                        "the claim's text changed since {} pinned it — re-read it and confirm the \
+                         proof still discharges it, then `prova owed --pin`",
                         proof.path
                     ),
                 });
@@ -189,7 +248,9 @@ pub fn reconcile(claims: &[Claim], proofs: &[prova_core::ProofObligation]) -> Ve
     }
 
     for claim in claims {
-        let covered = proofs.iter().any(|p| p.covers.iter().any(|a| a == &claim.address));
+        let covered = proofs
+            .iter()
+            .any(|p| p.covers.iter().any(|a| split_pin(a).0 == claim.address));
         if !covered {
             owed.push(Owed {
                 status: Status::Unproven,
@@ -201,6 +262,53 @@ pub fn reconcile(claims: &[Claim], proofs: &[prova_core::ProofObligation]) -> Ve
 
     owed.sort_by(|a, b| a.status.cmp(&b.status).then(a.subject.cmp(&b.subject)));
     owed
+}
+
+
+/// Write the current digest onto every unpinned binding in `files`, and refresh any pin whose
+/// claim has since been edited.
+///
+/// The pin is written by the tool, into the proof source. A digest a human types is one nobody
+/// verifies; a digest in a lockfile is invisible in review. In the source it shows up in the diff
+/// as "this claim's text changed and someone re-accepted it" — which is exactly the signal a
+/// reviewer wants, and is worth the churn it costs.
+pub fn pin(files: &[PathBuf], claims: &[Claim]) -> Result<usize, ClaimError> {
+    let mut pinned = 0;
+    for file in files {
+        let text = std::fs::read_to_string(file).map_err(|source| ClaimError::Io {
+            path: file.clone(),
+            source,
+        })?;
+        let mut updated = text.clone();
+        for claim in claims {
+            // Quoted so one address cannot match inside a longer one (`#claim` in `#claim-2`).
+            for quote in ['"', '\''] {
+                let bare = format!("{quote}{}{quote}", claim.address);
+                let want = format!("{quote}{}@{}{quote}", claim.address, claim.digest);
+                if updated.contains(&bare) {
+                    updated = updated.replace(&bare, &want);
+                    continue;
+                }
+                // An existing pin on this address, stale or not, is replaced wholesale.
+                let prefix = format!("{quote}{}@", claim.address);
+                if let Some(at) = updated.find(&prefix) {
+                    let rest = &updated[at + prefix.len()..];
+                    if let Some(end) = rest.find(quote) {
+                        let old = &updated[at..at + prefix.len() + end + 1];
+                        updated = updated.replace(old, &want);
+                    }
+                }
+            }
+        }
+        if updated != text {
+            std::fs::write(file, &updated).map_err(|source| ClaimError::Io {
+                path: file.clone(),
+                source,
+            })?;
+            pinned += 1;
+        }
+    }
+    Ok(pinned)
 }
 
 #[cfg(test)]
