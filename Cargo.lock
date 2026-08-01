@@ -2934,6 +2934,7 @@ dependencies = [
 name = "prova-core"
 version = "0.15.0"
 dependencies = [
+ "archetect-inflections",
  "base64",
  "bollard",
  "bytes",

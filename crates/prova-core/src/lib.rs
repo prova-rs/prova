@@ -28,7 +28,7 @@ pub const VERSION: &str = env!("PROVA_VERSION");
 pub const RESERVED_NAMESPACES: &[&str] = &[
     "prova", "Scope", "shell", "fs", "net", "http", "docker", "sqlite", "grpc", "graphql",
     "json", "yaml", "toml", "csv", "base64", "hash", "uuid", "url", "socket", "terminal",
-    "websocket", "path",
+    "websocket", "path", "str",
 ];
 
 /// A bundled namespace that may be INJECTED as an unqualified global via `[globals] inject` — every

@@ -88,6 +88,7 @@ pub(crate) fn install(lua: &Lua, progress: &Arc<dyn Progress>) -> mlua::Result<(
     lua.globals().set("shell", make_shell(lua, progress)?)?;
     lua.globals().set("fs", make_fs(lua)?)?;
     lua.globals().set("path", make_path(lua)?)?;
+    lua.globals().set("str", make_str(lua)?)?;
     lua.globals().set("net", make_net(lua)?)?;
     lua.globals().set("socket", socket::make(lua)?)?;
     lua.globals().set("terminal", terminal::make(lua)?)?;
@@ -1327,6 +1328,93 @@ fn make_fs(lua: &Lua) -> mlua::Result<Table> {
     )?;
 
     Ok(fs)
+}
+
+// ---------------------------------------------------------------------------------------------
+// str — string utilities + the archetect casing vocabulary (canonical `prova.str`)
+// ---------------------------------------------------------------------------------------------
+
+/// The casing half CALLS archetect's own inflections and MIRRORS archetect's filter names
+/// (`constant_case` is archetect's name for screaming-snake, so it is prova's too). One
+/// implementation, one vocabulary: a proof asserting on an archetype's rendered output uses the
+/// same function the archetype's templates did, so the two cannot drift.
+fn make_str(lua: &Lua) -> mlua::Result<Table> {
+    let s = lua.create_table()?;
+
+    macro_rules! string_fn {
+        ($name:literal, $f:expr) => {
+            s.set(
+                $name,
+                lua.create_function(|_, v: String| {
+                    #[allow(clippy::redundant_closure_call)]
+                    Ok(($f)(v.as_str()))
+                })?,
+            )?;
+        };
+    }
+
+    // General utilities.
+    string_fn!("trim", |v: &str| v.trim().to_string());
+
+    // str.split(s, sep) — plain (non-pattern) separator split, KEEPING empty fields: a split is
+    // data extraction, and "a,,c" has three fields.
+    s.set(
+        "split",
+        lua.create_function(|lua, (v, sep): (String, String)| {
+            if sep.is_empty() {
+                return Err(mlua::Error::RuntimeError(
+                    "str.split: separator must be non-empty".into(),
+                ));
+            }
+            lua.create_sequence_from(v.split(&sep as &str).map(str::to_string))
+        })?,
+    )?;
+
+    // str.lines(s) — the portable line reader: splits on `\n`, absorbing a preceding `\r`, and a
+    // trailing newline yields no phantom empty line. The same result whether the text came from a
+    // unix or a Windows program — which is the whole reason to reach for it over a hand split.
+    s.set(
+        "lines",
+        lua.create_function(|lua, v: String| {
+            lua.create_sequence_from(v.lines().map(str::to_string))
+        })?,
+    )?;
+
+    // Casing converters — archetect's filter table, name for name.
+    string_fn!("camel_case", archetect_inflections::to_camel_case);
+    string_fn!("class_case", archetect_inflections::to_class_case);
+    string_fn!("cobol_case", archetect_inflections::to_cobol_case);
+    string_fn!("constant_case", archetect_inflections::to_screaming_snake_case);
+    string_fn!("directory_case", archetect_inflections::to_directory_case);
+    string_fn!("kebab_case", archetect_inflections::to_kebab_case);
+    string_fn!("package_case", archetect_inflections::to_package_case);
+    string_fn!("pascal_case", archetect_inflections::to_pascal_case);
+    string_fn!("sentence_case", archetect_inflections::to_sentence_case);
+    string_fn!("snake_case", archetect_inflections::to_snake_case);
+    string_fn!("title_case", archetect_inflections::to_title_case);
+    string_fn!("train_case", archetect_inflections::to_train_case);
+
+    // Casing predicates.
+    string_fn!("is_camel_case", archetect_inflections::is_camel_case);
+    string_fn!("is_class_case", archetect_inflections::is_class_case);
+    string_fn!("is_cobol_case", archetect_inflections::is_cobol_case);
+    string_fn!("is_constant_case", archetect_inflections::is_screaming_snake_case);
+    string_fn!("is_directory_case", archetect_inflections::is_directory_case);
+    string_fn!("is_kebab_case", archetect_inflections::is_kebab_case);
+    string_fn!("is_package_case", archetect_inflections::is_package_case);
+    string_fn!("is_pascal_case", archetect_inflections::is_pascal_case);
+    string_fn!("is_sentence_case", archetect_inflections::is_sentence_case);
+    string_fn!("is_snake_case", archetect_inflections::is_snake_case);
+    string_fn!("is_title_case", archetect_inflections::is_title_case);
+    string_fn!("is_train_case", archetect_inflections::is_train_case);
+
+    // Plurals and ordinals.
+    string_fn!("pluralize", archetect_inflections::to_plural);
+    string_fn!("singularize", archetect_inflections::to_singular);
+    string_fn!("ordinalize", archetect_inflections::ordinalize);
+    string_fn!("deordinalize", archetect_inflections::deordinalize);
+
+    Ok(s)
 }
 
 // ---------------------------------------------------------------------------------------------

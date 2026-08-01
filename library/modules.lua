@@ -1301,3 +1301,143 @@ function path.normalize(p) end
 ---@param p string
 ---@return boolean
 function path.is_absolute(p) end
+
+------------------------------------------------------------------------------------------
+-- str — string utilities + the archetect casing vocabulary. Canonical access is
+-- `prova.str`; like `path`, the bare name is ambient only when a package lists "str" in
+-- `[globals] inject` (hence a `local` table, kept last so it never shadows a parameter).
+------------------------------------------------------------------------------------------
+
+--- The casing half CALLS archetect's own inflections and MIRRORS archetect's filter names
+--- (`constant_case` is archetect's name for screaming-snake, so it is prova's too) — one
+--- implementation, one vocabulary, so a proof asserting on an archetype's rendered output uses
+--- the very function the archetype's templates did.
+---@class prova.str
+local str = {}
+--- Strip surrounding whitespace from both ends.
+---@param s string
+---@return string
+function str.trim(s) end
+--- Split on a plain (non-pattern) separator, KEEPING empty fields — `"a,,c"` has three fields.
+--- The separator must be non-empty.
+---@param s string
+---@param sep string
+---@return string[]
+function str.split(s, sep) end
+--- The portable line reader: split on `\n`, absorbing a preceding `\r`; a trailing newline yields
+--- no phantom empty line. Same result whether the text came from a unix or a Windows program.
+---@param s string
+---@return string[]
+function str.lines(s) end
+---`helloWorld` (archetect's `camel_case` filter)
+---@param s string
+---@return string
+function str.camel_case(s) end
+---`FooBar`, singularized (`"foo_bars"` → `"FooBar"`) — archetect's `class_case`
+---@param s string
+---@return string
+function str.class_case(s) end
+---`HELLO-WORLD` (archetect's `cobol_case`)
+---@param s string
+---@return string
+function str.cobol_case(s) end
+---`HELLO_WORLD` — archetect's name for screaming-snake
+---@param s string
+---@return string
+function str.constant_case(s) end
+---`foo/bar` (archetect's `directory_case`)
+---@param s string
+---@return string
+function str.directory_case(s) end
+---`hello-world` (archetect's `kebab_case`)
+---@param s string
+---@return string
+function str.kebab_case(s) end
+---`foo.bar` (archetect's `package_case`)
+---@param s string
+---@return string
+function str.package_case(s) end
+---`HelloWorld` (archetect's `pascal_case`)
+---@param s string
+---@return string
+function str.pascal_case(s) end
+---`Hello world` (archetect's `sentence_case`)
+---@param s string
+---@return string
+function str.sentence_case(s) end
+---`hello_world` (archetect's `snake_case`)
+---@param s string
+---@return string
+function str.snake_case(s) end
+---`Hello World` (archetect's `title_case`)
+---@param s string
+---@return string
+function str.title_case(s) end
+---`Hello-World` (archetect's `train_case`)
+---@param s string
+---@return string
+function str.train_case(s) end
+---Whether `s` is already camelCase.
+---@param s string
+---@return boolean
+function str.is_camel_case(s) end
+---Whether `s` is already ClassCase (pascal, singular).
+---@param s string
+---@return boolean
+function str.is_class_case(s) end
+---Whether `s` is already COBOL-CASE.
+---@param s string
+---@return boolean
+function str.is_cobol_case(s) end
+---Whether `s` is already CONSTANT_CASE.
+---@param s string
+---@return boolean
+function str.is_constant_case(s) end
+---Whether `s` is already directory/case.
+---@param s string
+---@return boolean
+function str.is_directory_case(s) end
+---Whether `s` is already kebab-case.
+---@param s string
+---@return boolean
+function str.is_kebab_case(s) end
+---Whether `s` is already package.case.
+---@param s string
+---@return boolean
+function str.is_package_case(s) end
+---Whether `s` is already PascalCase.
+---@param s string
+---@return boolean
+function str.is_pascal_case(s) end
+---Whether `s` is already Sentence case.
+---@param s string
+---@return boolean
+function str.is_sentence_case(s) end
+---Whether `s` is already snake_case.
+---@param s string
+---@return boolean
+function str.is_snake_case(s) end
+---Whether `s` is already Title Case.
+---@param s string
+---@return boolean
+function str.is_title_case(s) end
+---Whether `s` is already Train-Case.
+---@param s string
+---@return boolean
+function str.is_train_case(s) end
+---`"user"` → `"users"` (archetect's `pluralize`)
+---@param s string
+---@return string
+function str.pluralize(s) end
+---`"users"` → `"user"` (archetect's `singularize`)
+---@param s string
+---@return string
+function str.singularize(s) end
+---`"1"` → `"1st"`, `"22"` → `"22nd"` (archetect's `ordinalize`)
+---@param s string
+---@return string
+function str.ordinalize(s) end
+---`"1st"` → `"1"` (archetect's `deordinalize`)
+---@param s string
+---@return string
+function str.deordinalize(s) end
