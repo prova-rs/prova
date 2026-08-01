@@ -92,8 +92,11 @@ fn a_capability_predicate_can_make_an_async_call() {
           return http.get("http://127.0.0.1:1/", { timeout = "2s" })
         end)
         _G.__probe_err = tostring(err)
+        -- unix spells the refusal "Connection refused"; Windows "actively refused it"
+        -- (os error 10061). "refused" is the token both share, and no reactor or
+        -- coroutine error contains it.
         runtime.capability("async_probe_ran", function()
-          return tostring(_G.__probe_err):find("Connection refused") ~= nil
+          return tostring(_G.__probe_err):find("refused") ~= nil
         end)
         "#,
     );
