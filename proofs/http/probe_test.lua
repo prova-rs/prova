@@ -38,14 +38,19 @@ local service = prova.fixture("service", Scope.File, function(ctx)
   -- proof that dogfoods boot-then-probe should demonstrate the readiness pattern in full.
   local port = net.free_port()
   -- shell.spawn returns a managed process handle; ctx:manage stops it during async teardown.
-  local proc = ctx:manage(shell.spawn(python .. " " .. root .. "/serve.py " .. port .. " " .. root))
+  -- `-u` unbuffers python's streams so a crash traceback reaches proc:output() below instead of
+  -- dying in a buffer — the empty "--- service output ---" of a buffered failure diagnoses nothing.
+  local proc = ctx:manage(shell.spawn(python .. " -u " .. root .. "/serve.py " .. port .. " " .. root))
 
   local base = "http://127.0.0.1:" .. port
   -- A readiness failure has to say WHY. shell.spawn discards stdout/stderr, so a bare timeout
   -- reports only that nothing answered — which is precisely how the getfqdn stall above cost a
   -- diagnosis. proc:output() carries the service's last 64KB; surface it with the timeout.
+  -- 60s, not 10s: a readiness budget is for the SLOWEST honest boot, and CI runners have measured
+  -- ~10s+ of interpreter cold-start + antivirus scanning (Windows) — the getfqdn incident above
+  -- was 70s. A healthy boot still turns this around in well under a second.
   local ok, err = pcall(http.wait_for, base .. "/health",
-    { status = 200, timeout = "10s", every = "100ms" })
+    { status = 200, timeout = "60s", every = "100ms" })
   if not ok then
     error(tostring(err) .. "\n--- service output ---\n" .. (proc:output() or "<none>") ..
       "\n--- still running: " .. tostring(proc:running()) .. " ---")
