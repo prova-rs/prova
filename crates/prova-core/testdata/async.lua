@@ -2,12 +2,12 @@
 -- concurrently, and a timeout cancels an over-budget body.
 
 prova.test("awaits a sleep", function(t)
-  prova.sleep(400)
+  prova.sleep(1500)
   t:expect(true):is_true()
 end)
 
 prova.test("also sleeps concurrently", function(t)
-  prova.sleep(400)
+  prova.sleep(1500)
   t:expect(1):equals(1)
 end)
 

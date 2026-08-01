@@ -83,28 +83,40 @@ fn a_capability_predicate_can_make_an_async_call() {
     let dir = std::env::temp_dir().join(format!("prova-caps-async-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
 
+    let errfile = dir.join("probe_err.txt");
     let c = companion(
         &dir,
         "async.lua",
-        r#"
-        -- Port 1 is reserved and never listening, so this is a deterministic connection refusal.
+        &format!(
+            r#"
+        -- Port 1 is reserved and never listening, so the connect gets a socket-level outcome.
         local ok, err = pcall(function()
-          return http.get("http://127.0.0.1:1/", { timeout = "2s" })
+          return http.get("http://127.0.0.1:1/", {{ timeout = "2s" }})
         end)
         _G.__probe_err = tostring(err)
-        -- unix spells the refusal "Connection refused"; Windows "actively refused it"
-        -- (os error 10061). "refused" is the token both share, and no reactor or
-        -- coroutine error contains it.
+        local f = io.open([[{}]], "w"); f:write(_G.__probe_err); f:close()
+        -- What that outcome LOOKS like varies: unix refuses ("Connection refused"), Windows
+        -- refuses in its own words ("actively refused", os error 10061) or — on runners whose
+        -- firewall silently drops loopback port 1 — times out. Every spelling is a TRANSPORT
+        -- outcome, which is the point: the call reached the network stack. A missing reactor
+        -- ("no reactor running") or coroutine error contains none of these tokens.
         runtime.capability("async_probe_ran", function()
-          return tostring(_G.__probe_err):find("refused") ~= nil
+          local e = tostring(_G.__probe_err):lower()
+          for _, token in ipairs({{ "refused", "timed out", "timeout", "unreachable", "reset" }}) do
+            if e:find(token, 1, true) then return true end
+          end
+          return false
         end)
         "#,
+            errfile.display()
+        ),
     );
 
     let caps = load_project_config(&c, &cfg).expect("companion loads");
     assert!(
         caps.available("async_probe_ran"),
-        "a predicate's async call must reach the network stack: {:?}",
-        "expected a refused connection, not a reactor or coroutine error"
+        "a predicate's async call must reach the network stack (refused/timed out/unreachable), \
+         got: {:?}",
+        std::fs::read_to_string(&errfile).unwrap_or_else(|_| "<probe never ran>".into())
     );
 }

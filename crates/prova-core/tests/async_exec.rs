@@ -17,17 +17,18 @@ fn async_bodies_run_concurrently_and_time_out() {
         .expect("run async.lua");
     let elapsed = started.elapsed();
 
-    // Two 400ms sleepers pass; the over-budget test is cancelled → failed.
+    // Two 1500ms sleepers pass; the over-budget test is cancelled → failed.
     assert_eq!(summary.passed, 2, "passed");
     assert_eq!(summary.failed, 1, "failed (timeout)");
     assert_eq!(summary.skipped, 0, "skipped");
 
-    // Concurrency proof by construction, immune to slow runners: ANY sequential schedule must
-    // sleep 400+400+50 ≥ 850ms of pure wall-clock before overhead, while the concurrent run
-    // sleeps ~400ms. A sub-800ms finish is impossible without overlap, however slow the
-    // machine adds overhead on top.
+    // Concurrency proof by construction: ANY sequential schedule must sleep 1500+1500+50
+    // ≥ 3050ms of pure wall-clock before overhead, while the concurrent run sleeps ~1500ms.
+    // A sub-2900ms finish is impossible without overlap. The sleeps are this long (not 400ms)
+    // so the margin dominates runner overhead — the Windows CI runner was measured adding
+    // ~900ms of startup/scan noise, which a tighter construction misread as sequentialism.
     assert!(
-        elapsed < Duration::from_millis(800),
+        elapsed < Duration::from_millis(2900),
         "expected concurrent execution, took {elapsed:?}"
     );
 }
