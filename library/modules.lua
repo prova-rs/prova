@@ -80,6 +80,10 @@ function fs.exists(path) end
 ---@param pattern string   # e.g. "**/*.rs"
 ---@return string[] absolute paths
 function fs.glob(root, pattern) end
+--- Create a directory and every missing parent (like `mkdir -p`); idempotent (no error if it already
+--- exists). The platform-agnostic replacement for `shell.run("mkdir -p ...")`.
+---@param path string
+function fs.mkdir(path) end
 
 ------------------------------------------------------------------------------------------
 -- shell
@@ -101,6 +105,8 @@ function ShellResult:ok() end
 ---@field env? table<string, string|number|boolean>   # scalars coerce — ports stay numbers
 ---@field timeout? string     # e.g. "120s"
 ---@field check? boolean      # non-zero exit raises, carrying the tail of BOTH stdout and stderr
+---@field merge_stderr? boolean  # fold stderr into stdout (the portable replacement for `2>&1`); stderr is then empty
+---@field stdin? string          # feed the program's stdin (the portable replacement for `printf x | cmd`)
 
 --- A long-running process from `shell.spawn`. Prefer `ctx:defer(function() proc:stop() end)` so it
 --- is stopped during teardown; `stop`/`wait` are async.

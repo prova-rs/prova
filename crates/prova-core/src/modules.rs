@@ -953,6 +953,15 @@ fn make_shell(lua: &Lua, progress: &Arc<dyn Progress>) -> mlua::Result<Table> {
                 .transpose()?
                 .flatten()
                 .unwrap_or(false);
+            // Fold stderr into stdout in the result — the portable replacement for the `2>&1` redirect.
+            let merge_stderr = opts
+                .as_ref()
+                .map(|o| o.get::<Option<bool>>("merge_stderr"))
+                .transpose()?
+                .flatten()
+                .unwrap_or(false);
+            // Feed the program's stdin — the portable replacement for a `printf x | cmd` pipe.
+            let stdin = opt_string(&opts, "stdin")?;
 
             // A string runs through a shell (`"cargo build --release"` verbatim); an argv table runs
             // the program directly — no shell, no quoting.
@@ -969,7 +978,25 @@ fn make_shell(lua: &Lua, progress: &Arc<dyn Progress>) -> mlua::Result<Table> {
             // `echo` stays silent, a two-minute `cargo build` does not.
             let activity = progress::start(&progress, Kind::Command, cmd.display_name());
             let start = Instant::now();
-            let run = command.output();
+            // With `stdin`, pipe the input in and reap via wait_with_output; otherwise `output()` as
+            // before (which pipes stdout/stderr and gives the child no stdin).
+            let run = async {
+                if let Some(input) = &stdin {
+                    use tokio::io::AsyncWriteExt;
+                    command
+                        .stdin(std::process::Stdio::piped())
+                        .stdout(std::process::Stdio::piped())
+                        .stderr(std::process::Stdio::piped());
+                    let mut child = command.spawn()?;
+                    if let Some(mut si) = child.stdin.take() {
+                        si.write_all(input.as_bytes()).await?;
+                        si.shutdown().await?; // close so the child sees EOF
+                    }
+                    child.wait_with_output().await
+                } else {
+                    command.output().await
+                }
+            };
             let output = match timeout {
                 Some(budget) => tokio::time::timeout(budget, run).await.map_err(|_| {
                     mlua::Error::RuntimeError(format!(
@@ -980,10 +1007,19 @@ fn make_shell(lua: &Lua, progress: &Arc<dyn Progress>) -> mlua::Result<Table> {
             }
             .map_err(|e| mlua::Error::RuntimeError(format!("shell.run failed to spawn: {e}")))?;
 
+            let mut stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+            let mut stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+            if merge_stderr {
+                // Post-hoc concatenation: the streams were captured on separate pipes, so exact
+                // interleaving is approximate, but all output is present in `stdout` and `stderr` is
+                // emptied — the `2>&1` intent (everything on one stream) without a shell.
+                stdout.push_str(&stderr);
+                stderr.clear();
+            }
             let result = ShellResult {
                 code: output.status.code().unwrap_or(-1),
-                stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                stdout,
+                stderr,
                 duration: start.elapsed().as_secs_f64(),
             };
             if result.code == 0 {
@@ -1257,6 +1293,18 @@ fn make_fs(lua: &Lua) -> mlua::Result<Table> {
             crate::engine::make_tempdir()
                 .map(|p| p.to_string_lossy().into_owned())
                 .map_err(|e| mlua::Error::RuntimeError(format!("fs.tempdir: {e}")))
+        })?,
+    )?;
+
+    // fs.mkdir(path) — create the directory and every missing parent (like `mkdir -p`); idempotent
+    // (no error if it already exists). The platform-agnostic replacement for
+    // `shell.run("mkdir -p " .. path)`, which routes through `cmd /C` on Windows where `-p` is not a
+    // flag and `/` is not a separator.
+    fs.set(
+        "mkdir",
+        lua.create_function(|_, path: String| {
+            std::fs::create_dir_all(&path)
+                .map_err(|e| mlua::Error::RuntimeError(format!("fs.mkdir {path:?}: {e}")))
         })?,
     )?;
 
