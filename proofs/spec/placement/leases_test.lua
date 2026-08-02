@@ -8,7 +8,7 @@
 local placement = require("placement")
 
 local OPEN = {
-	spec = "placement: no broker implementation yet (docs/design/placement.md)",
+	promises = "placement: no broker implementation yet (docs/design/placement.md)",
 	requires = { "placement_broker" },
 }
 
@@ -149,7 +149,7 @@ prova.test("an unknown slot kind is unsatisfiable, not busy", OPEN, function(t)
 end)
 
 prova.test("a lease is never revoked out from under its holder", {
-	spec = "placement: no broker implementation yet — drain semantics need a multi-node broker",
+	promises = "placement: no broker implementation yet — drain semantics need a multi-node broker",
 	requires = { "placement_broker" },
 }, function(t)
 	local broker = connected(t)

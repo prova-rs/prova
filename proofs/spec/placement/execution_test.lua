@@ -8,7 +8,7 @@
 local placement = require("placement")
 
 local OPEN = {
-	spec = "placement: no broker implementation yet (docs/design/placement.md)",
+	promises = "placement: no broker implementation yet (docs/design/placement.md)",
 	requires = { "placement_broker" },
 }
 

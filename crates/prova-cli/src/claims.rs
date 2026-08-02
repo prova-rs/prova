@@ -63,29 +63,34 @@ pub fn split_pin(address: &str) -> (&str, Option<&str>) {
 }
 
 /// What the ledger found. Ordered worst-first so the actionable rows are read.
+///
+/// The tags are the negations of the lifecycle stages (docs/design/lifecycle.md), and one
+/// grammar: past participles about the obligation. `DANGLING` and `UNPROVEN` are the two
+/// directions of a broken link — a proof pointing at prose that is not there, and prose no proof
+/// points at — and the earlier names (`UNBOUND` for the first) did not say which was which.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Status {
     /// A `covers` naming an address with no anchor. Two situations produce this — prose not
     /// written yet, and prose deleted once the proof captured the contract — and the remedies
     /// differ, so the message names both rather than guessing.
-    Unbound,
+    Dangling,
     /// An anchored claim nothing covers. The intake half: an obligation with no proof.
     Unproven,
     /// A pinned claim whose text changed. The drift that keeps everything green: the anchor still
     /// resolves and the proof still passes, but the claim now says something the proof may not
     /// check. Only the text can catch it.
     Stale,
-    /// A proof authored ahead of its implementation.
-    Spec,
+    /// A proof authored ahead of its implementation — flagged `promises`, not yet kept.
+    Promised,
 }
 
 impl Status {
     pub fn tag(self) -> &'static str {
         match self {
-            Status::Unbound => "UNBOUND",
+            Status::Dangling => "DANGLING",
             Status::Unproven => "UNPROVEN",
             Status::Stale => "STALE",
-            Status::Spec => "SPEC",
+            Status::Promised => "PROMISED",
         }
     }
 }
@@ -213,7 +218,7 @@ pub fn reconcile(claims: &[Claim], proofs: &[prova_core::ProofObligation]) -> Ve
             let (address, pin) = split_pin(raw);
             let Some(claim) = claims.iter().find(|c| c.address == address) else {
                 owed.push(Owed {
-                    status: Status::Unbound,
+                    status: Status::Dangling,
                     subject: address.to_string(),
                     detail: format!(
                         "{} covers it, but no anchor exists — write the prose, or retire the \
@@ -240,7 +245,7 @@ pub fn reconcile(claims: &[Claim], proofs: &[prova_core::ProofObligation]) -> Ve
         }
         if let Some(reason) = &proof.spec {
             owed.push(Owed {
-                status: Status::Spec,
+                status: Status::Promised,
                 subject: proof.path.clone(),
                 detail: reason.clone(),
             });

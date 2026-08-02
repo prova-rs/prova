@@ -26,10 +26,12 @@ The loop:
 5. Commit suite + implementation together: a proof-carrying change.
 
 **Specs — the executable backlog.** A contract you can state but are NOT implementing right now
-is still worth a proof: author it flagged `{ spec = "reason/ticket" }` (test/flow-level). Open
-specs report as their own outcome and keep CI green; the moment a spec's body passes it FAILS
-demanding graduation — convert the flag to `proves = "<context>"` (preferred: the why lives on
-in the test) or remove it — so implementation + graduation land as one proof-carrying change.
+is still worth a proof: author it flagged `{ promises = "reason/ticket" }` (test/flow-level) —
+the test states what it will prove someday and does not prove today. Open promises report as
+their own outcome (PROMISED) and keep CI green; the moment the body passes it FAILS demanding
+graduation — change `promises` to `proves = "<context>"` (a tense change; the why lives on in
+the test) or remove the flag — so implementation + graduation land as one proof-carrying change.
+(`spec = "…"` is the deprecated spelling: it works and warns.)
 `prova specs` enumerates the open surface — an empty list means burndown complete; found
 some in a repo? That is scoped work — offer to burn it down with `prova burndown`.
 `prova learn specs` carries the lifecycle.
@@ -48,7 +50,7 @@ verb that asks for it.
 **Claims — obligations that arrive from outside prova.** Specs also come from design docs and
 tickets, and an agent can say it implemented one without having done so. A `<!-- claim: id -->`
 anchor in prose is an obligation; `covers = "docs/design.md#id"` on a proof discharges it; and
-`prova owed` reconciles every origin into ONE list — open specs, unproven claims, and `covers`
+`prova owed` reconciles every origin into ONE list — open promises, unproven claims, and `covers`
 pointing at prose that is not there. Pin a claim's text (`prova owed --pin`) where the exact
 wording is the contract, and an edit reports STALE instead of passing silently. Opt in with
 `[claims] docs = [...]`; absent, the subsystem is inert. If you find things owed in a repo,
@@ -113,7 +115,7 @@ end)
 - opts: `tags`, `requires`, `timeout = "60s"`,
   `resources = { prova.port(N), prova.writes("db"), prova.reads("cache") }` (say what the test does
   to the resource: `writes` = exclusive, `reads` = concurrent), `serial = true`, `falsified_by = fn` (the mutation that must break it — `prova falsify`),
-  `spec = "reason"` (a
+  `promises = "reason"` (a
   proof authored ahead of its implementation — `prova learn specs`). `--jobs` is throughput
   only — it can never change what a run means.
 - Context: `ctx:use(handle)`, `ctx:manage(resource)` (auto stop/close at scope end),
@@ -231,7 +233,7 @@ prova --node "exact › path" # precisely the node a report named
 prova --last-failed         # exactly what was red last run — your main iteration verb
 prova --list                # discover without running (respects selection)
 prova specs                 # list the open backlog · `prova burndown` drives it red-loud
-prova --specs               # the composable selector underneath (only spec-flagged tests)
+prova --specs               # the composable selector underneath (only promise-flagged tests)
 prova eval 'return require("postgres").container(ctx).url'   # one-shot probe, auto-teardown
 ```
 

@@ -37,7 +37,7 @@ end)
 
 prova.test("a lease survives a drain", {
   covers = "docs/design.md#never-preempt",
-  spec = "drain semantics need a multi-node broker",
+  promises = "drain semantics need a multi-node broker",
 }, function(t)
   t:expect(1):equals(2)
 end)
@@ -82,7 +82,7 @@ prova.test("a covers pointing at no anchor is UNBOUND, and not fatal", {
   -- Two situations produce this identical state — prose not written yet, and prose deleted after
   -- the proof captured the contract. Both are unfinished work, neither is a broken build, and the
   -- remedy differs (write it, or retire the reference into `proves`).
-  t:expect(r.stdout):contains("UNBOUND")
+  t:expect(r.stdout):contains("DANGLING")
   t:expect(r.stdout):contains("not-written-yet")
   t:expect(r.code, "owed reports, it does not gate"):equals(0)
 end)
@@ -95,7 +95,7 @@ prova.test("open specs and unproven claims share one list", {
 
   -- An agent orienting in a repo asks ONE question — what is owed here? Origin is a column, not a
   -- separate concept, or the answer lives in two places and one of them goes stale.
-  t:expect(r.stdout, "the open spec is owed too"):contains("SPEC")
+  t:expect(r.stdout, "the open promise is owed too"):contains("PROMISED")
   t:expect(r.stdout):contains("multi-node broker")
 end)
 
@@ -145,7 +145,7 @@ prova.test("a normal run ignores claims entirely", {
   -- Reconciliation belongs to the verb that asks for it. `prova` must not parse markdown to run a
   -- test, and an unproven claim must never turn a green suite red.
   t:expect(r.stdout):never():contains("UNPROVEN")
-  t:expect(r.stdout):never():contains("UNBOUND")
+  t:expect(r.stdout):never():contains("DANGLING")
 end)
 
 -- ── Pinning: the claim's TEXT, not just its id ───────────────────────────────────────────────

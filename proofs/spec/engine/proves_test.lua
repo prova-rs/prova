@@ -1,21 +1,21 @@
 --- The `proves` attribute — graduation keeps its context.
 ---
---- A spec flag carries the WHY while the proof is red; graduation used to force bare deletion,
---- which kept the ceremony honest but *discarded the context* the moment it was earned. The
---- revision: an honored spec is converted to `proves = "<context>"` (preferred) or removed.
---- `proves` is inert — the test is a full proof — but the design context now lives in the test
---- itself, where an agent reviewing it cannot miss it. Deliberately NOT a reference system
---- (no "see docs/foo.md"): a pointer is easy to ignore and easier to let drift; prose in the
---- opts table travels with the assertions it explains. A finished test can also be retrofitted
---- with `proves` to capture context after the fact.
+--- A `promises` flag carries the WHY while the proof is red; graduation used to force bare
+--- deletion, which kept the ceremony honest but *discarded the context* the moment it was
+--- earned. The revision: a kept promise is converted to `proves = "<context>"` (preferred) or
+--- removed — a tense change in one grammar. `proves` is inert — the test is a full proof — but
+--- the design context now lives in the test itself, where an agent reviewing it cannot miss it.
+--- Deliberately NOT a reference system (no "see docs/foo.md"): a pointer is easy to ignore and
+--- easier to let drift; prose in the opts table travels with the assertions it explains. A
+--- finished test can also be retrofitted with `proves` to capture context after the fact.
 ---
 --- Contract under proof here:
 ---   * `proves = "<context>"` on a test/flow is runtime-inert: pass is PASS, fail is FAIL.
----   * an honored spec's failure message offers the conversion, reason carried over verbatim.
----   * `spec` + `proves` on one test is refused — open work keeps its context in `spec`.
+---   * a kept promise's failure message offers the conversion, reason carried over verbatim.
+---   * `promises` + `proves` on one test is refused — open work keeps its context in the promise.
 ---   * `proves` demands a non-empty string: the context IS the point; a bare flag says nothing.
----   * `spec` demands its reason from day one, for the same reason — no bare `spec = true`.
----   * test-level only, like `spec`: no group/suite inheritance ceremony.
+---   * `promises` demands its reason from day one, for the same reason — no bare flag.
+---   * test-level only, like `promises`: no group/suite inheritance ceremony.
 ---   * `prova specs` still enumerates only the OPEN surface — proves-annotated tests are done.
 
 local PROVES = "graduation used to force bare deletion, discarding the context the moment it "
@@ -39,7 +39,7 @@ prova.test("a proves-annotated test is a plain full proof — the attribute is i
   local r = shell.run(prova.bin, { cwd = proj, merge_stderr = true })
   t:expect(r.code):equals(0)
   t:expect(r.stdout):contains("1 passed")
-  t:expect(r.stdout):never():contains("spec open")      -- proves is not the spec outcome
+  t:expect(r.stdout):never():contains("promised")      -- proves is not the open-promise outcome
 end)
 
 prova.test("a proves-annotated test that fails is a real failure — no inversion",
@@ -53,21 +53,21 @@ prova.test("a proves-annotated test that fails is a real failure — no inversio
   t:expect(r.stdout):contains("1 failed")
 end)
 
-prova.test("an honored spec offers the conversion, its reason carried into the fix",
+prova.test("a kept promise offers the conversion, its reason carried into the fix",
   { proves = PROVES }, function(t)
   local proj = pkg(
-    'prova.test("done", { spec = "why this matters" }, function(t)\n' ..
+    'prova.test("done", { promises = "why this matters" }, function(t)\n' ..
     '  t:expect(true):is_true()\n' ..
     'end)\n')
   local r = shell.run(prova.bin, { cwd = proj, merge_stderr = true })
   t:expect(r.code):never():equals(0)                    -- graduation is still mandatory
-  t:expect(r.stdout):contains("spec honored")
+  t:expect(r.stdout):contains("promise kept")
   t:expect(r.stdout):contains('proves = "why this matters"')
 end)
 
-prova.test("spec and proves on one test are refused — not both", { proves = PROVES }, function(t)
+prova.test("promises and proves on one test are refused — not both", { proves = PROVES }, function(t)
   local proj = pkg(
-    'prova.test("confused", { spec = "open", proves = "done" }, function(t)\n' ..
+    'prova.test("confused", { promises = "open", proves = "done" }, function(t)\n' ..
     '  t:expect(true):is_true()\n' ..
     'end)\n')
   local r = shell.run(prova.bin, { cwd = proj, merge_stderr = true })
@@ -109,7 +109,7 @@ prova.test("`prova specs` enumerates only the open surface — proven tests are 
     'prova.test("finished", { proves = "context lives here" }, function(t)\n' ..
     '  t:expect(true):is_true()\n' ..
     'end)\n' ..
-    'prova.test("still open", { spec = "not built yet" }, function(t)\n' ..
+    'prova.test("still open", { promises = "not built yet" }, function(t)\n' ..
     '  t:expect(1):equals(2)\n' ..
     'end)\n')
   local r = shell.run(prova.bin .. " specs", { cwd = proj, merge_stderr = true })
@@ -118,17 +118,17 @@ prova.test("`prova specs` enumerates only the open surface — proven tests are 
   t:expect(r.stdout):never():contains("finished")
 end)
 
-prova.test("spec demands its reason from day one — a bare or empty flag is refused",
-  { proves = "context from day one: a reason-less spec tells the burndown nothing" }, function(t)
+prova.test("promises demands its reason from day one — a bare or empty flag is refused",
+  { proves = "context from day one: a reason-less promise tells the burndown nothing" }, function(t)
   for _, value in ipairs({ "true", '""' }) do
     local proj = pkg(
-      'prova.test("wordless", { spec = ' .. value .. ' }, function(t)\n' ..
+      'prova.test("wordless", { promises = ' .. value .. ' }, function(t)\n' ..
       '  t:expect(1):equals(2)\n' ..
       'end)\n')
     local r = shell.run(prova.bin, { cwd = proj, merge_stderr = true })
     t:expect(r.code):never():equals(0)
     local out = r.stdout .. r.stderr
-    t:expect(out):contains("spec")
+    t:expect(out):contains("promises")
     t:expect(out):contains("reason")
   end
 end)

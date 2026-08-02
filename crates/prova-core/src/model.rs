@@ -189,7 +189,7 @@ impl Reporter for ConsoleReporter {
                     Outcome::Passed => "PASS",
                     Outcome::Failed => "FAIL",
                     Outcome::Skipped => "SKIP",
-                    Outcome::Spec => "SPEC",
+                    Outcome::Spec => "PROMISED",
                 };
                 println!("  {mark}  {path}  ({duration:.1?}, {assertions} assert)");
                 if let (Outcome::Failed, Some(m)) = (outcome, message) {
@@ -273,12 +273,12 @@ fn outcome_str(o: Outcome) -> &'static str {
     }
 }
 
-/// The `, N spec open` summary segment — present only while specs are open.
+/// The `, N promised` summary segment — present only while promises are open.
 pub fn spec_summary_segment(summary: &Summary) -> String {
     if summary.spec == 0 {
         return String::new();
     }
-    format!(", {} spec open", summary.spec)
+    format!(", {} promised", summary.spec)
 }
 
 /// Serialize an event to a stable JSON shape (the wire protocol for frontends).

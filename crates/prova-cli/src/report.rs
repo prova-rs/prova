@@ -350,7 +350,7 @@ impl Reporter for GitHubReporter {
                     // annotations too).
                     let detail = message
                         .map(|m| m.lines().next().unwrap_or(m))
-                        .unwrap_or("open spec");
+                        .unwrap_or("promised");
                     println!(
                         "::notice {}::{}",
                         self.props(*file, *line, path),
@@ -479,7 +479,7 @@ impl Reporter for HumanReporter {
                             .filter(|r| !r.is_empty())
                             .map(|r| format!("  {DIM}— {r}{DIM:#}"))
                             .unwrap_or_default();
-                        let _ = writeln!(out, "{indent}{SKIP}SPEC{SKIP:#}  {leaf}{why}{line_col}");
+                        let _ = writeln!(out, "{indent}{SKIP}PROMISED{SKIP:#}  {leaf}{why}{line_col}");
                         // First line only: the error is the call to action, but an EXPECTED
                         // failure carries no traceback noise. `--strict-specs` (where an open
                         // spec is being actively worked) reports it as FAIL with full detail.

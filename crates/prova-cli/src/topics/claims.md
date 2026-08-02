@@ -24,11 +24,11 @@ prova owed          # the ledger: every obligation, from every origin
 ```
 
 ```
-UNBOUND   docs/design.md#not-written-yet
+DANGLING  docs/design.md#not-written-yet
           contract_test › … covers it, but no anchor exists — write the prose, or
           retire the reference into `proves`
 UNPROVEN  docs/design.md#never-preempt      docs/design.md:6 — no proof covers it
-SPEC      contract_test › leases expire     not built yet
+PROMISED  contract_test › leases expire     not built yet
 ```
 
 Open specs and unproven claims share one list on purpose: an agent orienting in a repo asks ONE
@@ -46,7 +46,7 @@ turns a green suite red.
 
 Reported, never fatal — with one exception.
 
-- **UNBOUND** — a `covers` naming no anchor. Two situations produce this identical state: prose
+- **DANGLING** — a `covers` naming no anchor. Two situations produce this identical state: prose
   not written yet, and prose deleted once the proof captured the contract. Both are unfinished
   work. For the second, retire the claim's context into `proves` — deleting a design doc should be
   lossless, exactly the way a spec's reason graduates.

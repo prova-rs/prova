@@ -9,7 +9,7 @@ local placement = require("placement")
 -- an address having been named. `requires` skips where there is nothing to prove against; the spec
 -- flag keeps it open until something can pass.
 local OPEN = {
-	spec = "placement: no broker implementation yet (docs/design/placement.md)",
+	promises = "placement: no broker implementation yet (docs/design/placement.md)",
 	requires = { "placement_broker" },
 }
 

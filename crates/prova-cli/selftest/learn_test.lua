@@ -88,7 +88,7 @@ prova.group("prova learn", function(g)
     t:expect(r.code):equals(0)
     t:expect(r.stdout):contains("--specs --list")
     t:expect(r.stdout):contains("--strict-specs")
-    t:expect(r.stdout):contains("convert the spec flag")
+    t:expect(r.stdout):contains("change `promises` to")
     t:expect(r.stdout):contains("proves")
     -- The practice topic routes here: sensing an unimplemented contract should lead to a spec.
     t:expect(learn("pdd").stdout):contains("prova learn specs")
@@ -177,7 +177,7 @@ prova.group("prova skill routes to learn", function(g)
     -- An agent that reads ONLY the skill (or gets it as MCP instructions) must leave knowing
     -- the executable-backlog move and its verbs.
     local r = shell.run(prova_bin .. " skill")
-    t:expect(r.stdout):contains('spec = "reason')
+    t:expect(r.stdout):contains('promises = "reason')
     t:expect(r.stdout):contains("prova specs")
     t:expect(r.stdout):contains("prova burndown")
     t:expect(r.stdout):contains("prova learn specs")

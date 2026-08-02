@@ -39,7 +39,7 @@ prova.test("covers with no spec", { covers = "docs/d.md#solo" }, function(t)
   t:expect(1):equals(1)
 end)
 
-prova.test("spec with no covers", { spec = "not built" }, function(t)
+prova.test("promises with no covers", { promises = "not built" }, function(t)
   t:expect(1):equals(2)
 end)
 
@@ -52,9 +52,9 @@ end)
   local r = shell.run(prova.bin, { cwd = proj, merge_stderr = true })
   fs.remove_all(proj .. "/proofs/combos_test.lua")
 
-  -- The open spec reports as a spec and does not sink the run; the other two are ordinary passes.
-  t:expect(r.code, "an open spec keeps CI green"):equals(0)
-  t:expect(r.stdout):contains("spec")
+  -- The open promise reports as one and does not sink the run; the other two are ordinary passes.
+  t:expect(r.code, "an open promise keeps CI green"):equals(0)
+  t:expect(r.stdout):contains("PROMISED")
 end)
 
 prova.test("a package at level 0 pays nothing for the levels it did not adopt", {

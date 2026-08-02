@@ -944,11 +944,30 @@ fn parse_opts(t: &mlua::Table) -> mlua::Result<UnitOpts> {
         .get::<Option<Vec<String>>>("requires")?
         .unwrap_or_default();
     let covers = parse_covers_opt(&t.get::<Value>("covers")?)?;
-    let spec = parse_spec_opt(&t.get::<Value>("spec")?)?;
+    let promised = parse_promises_opt(&t.get::<Value>("promises")?)?;
+    let legacy = parse_spec_opt(&t.get::<Value>("spec")?)?;
+    if promised.is_some() && legacy.is_some() {
+        // The alias maps onto the same attribute, so both is one thing declared twice — and
+        // silently preferring either spelling would hide a genuine authoring mistake.
+        return Err(mlua::Error::RuntimeError(
+            "a test carries promises or its deprecated alias spec, not both — they are one attribute; keep `promises`".into(),
+        ));
+    }
+    if legacy.is_some() {
+        // Once per process, not per test: a 35-promise suite migrating gradually should read one
+        // line of guidance, not a wall of it.
+        static SPEC_DEPRECATED: std::sync::Once = std::sync::Once::new();
+        SPEC_DEPRECATED.call_once(|| {
+            eprintln!(
+                "prova: `spec` is deprecated — rename the flag to `promises` (it graduates to `proves` when kept)"
+            );
+        });
+    }
+    let spec = promised.or(legacy);
     let proves = parse_proves_opt(&t.get::<Value>("proves")?)?;
     if spec.is_some() && proves.is_some() {
         return Err(mlua::Error::RuntimeError(
-            "a test carries spec or proves, not both — while the work is open its context lives in the spec's reason; convert the flag to proves when the spec graduates".into(),
+            "a test carries promises or proves, not both — while the work is open its context lives in the promise's reason; change the flag to proves when the promise is kept".into(),
         ));
     }
     Ok(UnitOpts {
@@ -990,11 +1009,29 @@ fn parse_covers_opt(v: &Value) -> mlua::Result<Vec<String>> {
     }
 }
 
-/// The `spec` opt: a **non-empty reason string** — the why/ticket behind the still-open
-/// contract, forced from day one (a bare `spec = true` tells the burndown nothing, and the
+/// The `promises` opt: a **non-empty reason string** — the why/ticket behind the still-open
+/// contract, forced from day one (a bare `promises = true` tells the burndown nothing, and the
 /// reason is what graduates into the `proves` context). There is deliberately no
-/// `spec = false` — a test without the flag is already a full proof — so every wrong shape is
-/// rejected with the fix, not silently accepted.
+/// `promises = false` — a test without the flag is already a full proof — so every wrong shape
+/// is rejected with the fix, not silently accepted.
+fn parse_promises_opt(v: &Value) -> mlua::Result<Option<String>> {
+    match v {
+        Value::Nil => Ok(None),
+        Value::String(s) if !s.to_string_lossy().is_empty() => {
+            Ok(Some(s.to_string_lossy().to_string()))
+        }
+        Value::Boolean(false) => Err(mlua::Error::RuntimeError(
+            "promises = false is not a thing — a test without the flag is already a full proof; remove the entry".into(),
+        )),
+        _ => Err(mlua::Error::RuntimeError(
+            "promises carries the reason a contract is still open — give it a non-empty string (the why/ticket), or remove the entry".into(),
+        )),
+    }
+}
+
+/// The deprecated `spec` alias — one release's bridge to `promises`. Same shape, same
+/// validation, so a legacy suite behaves identically while the (once-per-process) warning at the
+/// use site teaches the new spelling.
 fn parse_spec_opt(v: &Value) -> mlua::Result<Option<String>> {
     match v {
         Value::Nil => Ok(None),
@@ -1002,10 +1039,10 @@ fn parse_spec_opt(v: &Value) -> mlua::Result<Option<String>> {
             Ok(Some(s.to_string_lossy().to_string()))
         }
         Value::Boolean(false) => Err(mlua::Error::RuntimeError(
-            "spec = false is not a thing — a test without a spec flag is already a full proof; remove the entry".into(),
+            "spec = false is not a thing — a test without the flag is already a full proof; remove the entry (and note: `spec` is now `promises`)".into(),
         )),
         _ => Err(mlua::Error::RuntimeError(
-            "spec carries the reason a contract is still open — give it a non-empty string (the why/ticket), or remove the entry".into(),
+            "spec (deprecated — now `promises`) carries the reason a contract is still open — give it a non-empty string, or remove the entry".into(),
         )),
     }
 }
@@ -2742,10 +2779,12 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
                 if let Some(reqs) = opts.get::<Option<Vec<String>>>("requires")? {
                     c.nodes[0].opts.requires.extend(reqs);
                 }
-                if !matches!(opts.get::<Value>("spec")?, Value::Nil) {
-                    return Err(mlua::Error::RuntimeError(
-                        "spec is test-level only — flag each open test, not the suite".into(),
-                    ));
+                for key in ["promises", "spec"] {
+                    if !matches!(opts.get::<Value>(key)?, Value::Nil) {
+                        return Err(mlua::Error::RuntimeError(
+                            "promises is test-level only — flag each open test, not the suite".into(),
+                        ));
+                    }
                 }
                 if !matches!(opts.get::<Value>("proves")?, Value::Nil) {
                     return Err(mlua::Error::RuntimeError(
@@ -3622,7 +3661,7 @@ fn build_plan(col: &Collector, caps: &Capabilities) -> mlua::Result<Plan> {
         };
         if node.opts.spec.is_some() {
             return Err(mlua::Error::RuntimeError(format!(
-                "spec is test-level only — flag each open test, not {name}"
+                "promises is test-level only — flag each open test, not {name}"
             )));
         }
         if node.opts.proves.is_some() {
@@ -3691,7 +3730,7 @@ fn resolve_requires(leaves: &mut [Leaf], caps: &Capabilities) {
                 // one bare `skipped:` hides a standing backlog from anyone reading the run. The
                 // skip stays a skip; it just stops pretending the spec isn't there.
                 leaf.precondition_skip = Some(match &leaf.spec {
-                    Some(spec) => format!("skipped: {reason} — still an open spec: {spec}"),
+                    Some(spec) => format!("skipped: {reason} — still promised: {spec}"),
                     None => format!("skipped: {reason}"),
                 });
                 break;
@@ -4089,8 +4128,9 @@ fn apply_spec_inversion(results: &mut [NodeResult], reason: &str, strict: bool) 
         }
         return;
     }
-    // The graduation fix is copy-pasteable: the spec's (always non-empty) reason becomes the
-    // proves context.
+    // The graduation fix is copy-pasteable: the promise's (always non-empty) reason becomes the
+    // proves context. Graduation is a tense change — promises → proves — and the message carries
+    // the exact replacement so keeping a promise and recording it land in one edit.
     let fix = format!("proves = {reason:?}");
     for r in results
         .iter_mut()
@@ -4098,7 +4138,7 @@ fn apply_spec_inversion(results: &mut [NodeResult], reason: &str, strict: bool) 
     {
         r.outcome = Outcome::Failed;
         r.message = Some(format!(
-            "spec honored — convert the spec flag to {fix} (keep the context) or remove it"
+            "promise kept — change `promises` to {fix} (keep the context) or remove the flag"
         ));
     }
 }

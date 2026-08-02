@@ -1,7 +1,7 @@
---- The `spec` flag through the real binary (docs/plans/api-freeze.md §5, revised — test-level
---- only): open specs keep CI green but are visibly counted; an honored spec fails until its
---- flag is removed; `--specs` selects the spec surface; `--strict-specs` is the implementing
---- agent's driver mode; TAP renders open specs as `# TODO`.
+--- The `promises` flag through the real binary (docs/plans/api-freeze.md §5, revised — test-
+--- level only): open promises keep CI green but are visibly counted; a kept promise fails until
+--- its flag graduates; `--specs` selects the promised surface; `--strict-specs` is the
+--- implementing agent's driver mode; TAP renders open promises as `# TODO`.
 
 local prova_bin = assert(prova.bin, "prova.bin not injected by the runtime")
 
@@ -17,24 +17,24 @@ end
 
 -- One temp suite reused across cases: an open spec + an ordinary test.
 local open_suite = write_suite(
-  'prova.test("json round-trips", { spec = "api-freeze" }, function(t) t:expect(1):equals(2) end)\n' ..
+  'prova.test("json round-trips", { promises = "api-freeze" }, function(t) t:expect(1):equals(2) end)\n' ..
   'prova.test("ordinary", function(t) t:expect(1):equals(1) end)\n')
 
 prova.test("open specs keep the run green and are counted", function(t)
   local r = run(open_suite)
   t:expect(r.code):equals(0)
-  t:expect(r.stdout):contains("SPEC")
-  t:expect(r.stdout):contains("1 spec open")
+  t:expect(r.stdout):contains("PROMISED")
+  t:expect(r.stdout):contains("1 promised")
 end)
 
 prova.test("an honored spec fails demanding graduation — convert to proves, or remove", function(t)
   local dir = write_suite(
-    'prova.test("done already", { spec = "oops" }, function(t) t:expect(1):equals(1) end)\n')
+    'prova.test("done already", { promises = "oops" }, function(t) t:expect(1):equals(1) end)\n')
   local r = run(dir)
   t:expect(r.code):equals(1)
-  t:expect(r.stdout):contains("spec honored")
+  t:expect(r.stdout):contains("promise kept")
   -- the fix is copy-pasteable: the spec's reason carried over as the proves context
-  t:expect(r.stdout):contains('convert the spec flag to proves = "oops"')
+  t:expect(r.stdout):contains('change `promises` to proves = "oops"')
 end)
 
 prova.test("--strict-specs turns open specs into failures", function(t)
@@ -46,7 +46,7 @@ end)
 prova.test("--specs selects only the spec surface", function(t)
   local r = run("--specs " .. open_suite)
   t:expect(r.code):equals(0)
-  t:expect(r.stdout):contains("1 spec open")
+  t:expect(r.stdout):contains("1 promised")
   -- the ordinary test is deselected, not run
   t:expect(r.stdout):contains("deselected")
   t:expect(r.stdout:find("PASS", 1, true)):is_falsy()
@@ -67,10 +67,10 @@ end)
 
 prova.test("an open spec renders reason + first error line, without the traceback", function(t)
   local dir = write_suite(
-    'prova.test("todo", { spec = "gap-7" }, function(t) error("json.encode is not built") end)\n')
+    'prova.test("todo", { promises = "gap-7" }, function(t) error("json.encode is not built") end)\n')
   local r = run(dir)
   t:expect(r.code):equals(0)
-  t:expect(r.stdout):contains("SPEC")
+  t:expect(r.stdout):contains("PROMISED")
   t:expect(r.stdout):contains("gap-7")
   -- The first line of the error is the call to action…
   t:expect(r.stdout):contains("json.encode is not built")
@@ -80,21 +80,21 @@ end)
 
 prova.test("--strict-specs keeps the full failure detail, traceback included", function(t)
   local dir = write_suite(
-    'prova.test("todo", { spec = "gap-7" }, function(t) error("json.encode is not built") end)\n')
+    'prova.test("todo", { promises = "gap-7" }, function(t) error("json.encode is not built") end)\n')
   local r = run("--strict-specs " .. dir)
   t:expect(r.code):equals(1)
   t:expect(r.stdout):contains("stack traceback")
 end)
 
-prova.test("a group-level spec flag is refused with the fix", function(t)
+prova.test("a group-level promises flag is refused with the fix", function(t)
   local dir = write_suite(
-    'prova.group("g", { spec = "wip" }, function(g)\n' ..
+    'prova.group("g", { promises = "wip" }, function(g)\n' ..
     '  g:test("open", function(t) t:expect(1):equals(2) end)\n' ..
     'end)\n')
   local r = run(dir)
   t:expect(r.code):never():equals(0)
   local out = r.stdout .. r.stderr
-  t:expect(out):contains("spec is test-level only")
+  t:expect(out):contains("promises is test-level only")
 end)
 
 prova.test("a bare spec flag is refused — the reason is mandatory", function(t)
