@@ -54,6 +54,14 @@ wording is the contract, and an edit reports STALE instead of passing silently. 
 `[claims] docs = [...]`; absent, the subsystem is inert. If you find things owed in a repo,
 surface them — that is scoped work someone has not finished.
 
+**The run record — never report `0 failed` as "covered".** It is equally true of a suite that
+proved everything and one in which every proof **skipped** for want of a docker daemon, a broker
+or a display. Each run writes `.prova/var/last-run.json` naming — individually, not summed — the
+skipped (with the gate's reason) and the deselected. **Before claiming an obligation is done, run
+`prova attest docs/design.md#id`**: it exits non-zero unless a proof covering that address
+actually executed and passed, so skipped, deselected, absent, red and open-spec all read as what
+they are — no evidence. `--record <path>` also emits it for CI to keep. `prova learn record`.
+
 Prova complements the language's own test harness; it does not replace it. Prove the CONTRACT
 with prova (behavior a real caller observes at the boundary); prove the INTERNALS with native
 unit/integration tests (one function's logic, seams the boundary can't reach). A change often
@@ -73,6 +81,7 @@ Everything below is the crash course; depth is one call away, computed for THIS 
 | The open-spec backlog (proofs ahead of implementation) | `prova specs` · `prova learn specs` |
 | Whether the proofs can actually fail (vacuous-proof hunt) | `prova falsify` · `prova learn falsify` |
 | Everything this package owes, from every origin | `prova owed` · `prova learn claims` |
+| Whether a claim's proof actually RAN (not just "0 failed") | `prova attest <doc.md#id>` · `prova learn record` |
 | A plugin for a technology you need to prove | `prova plugins <term>` (search registries) → `prova plugins add <name>` |
 
 ## Test files, in one screen

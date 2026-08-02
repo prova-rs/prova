@@ -439,6 +439,17 @@ struct IntrospectRequest {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct AttestRequest {
+    /// The obligation's address: a doc-relative path and claim anchor, `"docs/design.md#lease-ttl"`
+    /// — the same string a proof puts in `covers`.
+    address: String,
+    /// A directory or manifest path: attest against THAT package instead of the server's startup
+    /// package. Resolves fresh.
+    package: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct LearnRequest {
     /// A topic key or alias (`"pdd"`, `"doubles"`, `"mocks"`…), or a project context doc
     /// (`"ctx:<stem>"`). Omit to list the catalog.
@@ -797,6 +808,16 @@ impl ProvaMcpServer {
     }
 
     #[tool(
+        name = "attest",
+        description = "Did the proof covering an obligation actually RUN? The question `0 failed` cannot answer — a suite in which every proof skipped reports exactly that, honestly, and establishes nothing. Reads the record the last run wrote and reconciles it against the `covers = \"<doc>#<id>\"` bindings for `address`. Returns compact JSON: { address, attested, verdict, proof?, reason? } where verdict is one of attested | red | no_evidence | unbound. ONLY an executed, passing proof attests: skipped, deselected, absent from the run, failed, and still-an-open-spec all come back attested=false, and the result is marked isError so it cannot be skimmed past. Call this before reporting a doc-anchored obligation as done. Pass `package` (a directory or manifest path) to target ANOTHER package anywhere on disk. See learn { topic = \"record\" }."
+    )]
+    async fn attest(&self, Parameters(req): Parameters<AttestRequest>) -> CallToolResult {
+        let _serialized = self.run_lock.lock().await;
+        let env = self.env.clone();
+        blocking(move || attest_blocking(&env, req)).await
+    }
+
+    #[tool(
         name = "up",
         description = "Provision a named topology (a prova.topology declaration) INSIDE the server and hold it across tool calls — the warm holder. The factory runs exactly once; subsequent run/eval calls with `topology` resolve the held live instance. Returns compact JSON: { name, resources: [{ name, url }] }. Tear it down with `down` (or server shutdown). A held environment accumulates state — down + up when isolation matters. Pass `package` (a directory or manifest path) to target ANOTHER package anywhere on disk — the server's startup package is only the default, and a `package` resolves fresh, so a manifest you just scaffolded works without a restart."
     )]
@@ -997,6 +1018,66 @@ fn run_blocking(env: &McpEnv, req: RunRequest) -> Result<(serde_json::Value, boo
         result["note"] = json!(n);
     }
     Ok((result, summary.failed > 0))
+}
+
+/// `attest` — reconcile one obligation against the last run's record.
+///
+/// Marked `isError` whenever the obligation is not attested. An agent skimming tool results reads
+/// the error marker long before it reads a field, and "not attested" is exactly the outcome that
+/// must not be skimmed past — that is the whole failure mode this atom exists for.
+fn attest_blocking(env: &McpEnv, req: AttestRequest) -> Result<(serde_json::Value, bool), String> {
+    let call = env.resolve_call(None, req.package.as_deref())?;
+    let manifest = std::fs::read_to_string(&call.home.manifest)
+        .map_err(|e| e.to_string())
+        .and_then(|text| crate::manifest::Manifest::parse(&text))?;
+
+    let Some(recorded) = crate::record::load(&call.home) else {
+        return Ok((
+            json!({
+                "address": req.address,
+                "attested": false,
+                "verdict": "no_evidence",
+                "reason": "no run has been recorded for this package — run the suite first",
+            }),
+            true,
+        ));
+    };
+
+    let proofs = crate::collect_obligations(&call.home, &manifest)?;
+    let bindings: Vec<String> = proofs
+        .iter()
+        .filter(|p| {
+            p.covers
+                .iter()
+                .any(|c| crate::claims::split_pin(c).0 == req.address)
+        })
+        .map(|p| p.path.clone())
+        .collect();
+
+    let verdict = crate::record::attest(&recorded, &bindings);
+    let attested = verdict.is_attested();
+    let body = match &verdict {
+        crate::record::Attested::Yes { path } => json!({
+            "address": req.address, "attested": true, "verdict": "attested", "proof": path,
+        }),
+        crate::record::Attested::Red { path, outcome } => json!({
+            "address": req.address, "attested": false, "verdict": "red", "proof": path,
+            "reason": match outcome {
+                crate::record::Executed::Failed => "the covering proof ran and failed",
+                crate::record::Executed::Spec => "the covering proof is an open spec, red by definition",
+                crate::record::Executed::Passed => "unreachable",
+            },
+        }),
+        crate::record::Attested::NoEvidence { path, why } => json!({
+            "address": req.address, "attested": false, "verdict": "no_evidence", "proof": path,
+            "reason": why,
+        }),
+        crate::record::Attested::Unbound => json!({
+            "address": req.address, "attested": false, "verdict": "unbound",
+            "reason": "no proof declares `covers` for this address",
+        }),
+    };
+    Ok((body, !attested))
 }
 
 fn list_blocking(env: &McpEnv, req: SelectionArgs) -> Result<(serde_json::Value, bool), String> {

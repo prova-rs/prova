@@ -30,6 +30,7 @@ mod mcp;
 mod plugins;
 mod registry;
 mod progress;
+mod record;
 mod report;
 mod runstate;
 mod var;
@@ -115,6 +116,12 @@ const VERBS: &[Verb] = &[
         run: falsify_subcommand,
     },
     Verb {
+        name: "attest",
+        help: "  prova attest <address>    did the proof covering this claim actually RUN? Fails when it was\n\
+               \x20                           skipped, deselected or absent — `0 failed` is not evidence",
+        run: attest_subcommand,
+    },
+    Verb {
         name: "mcp",
         help: "  prova mcp                 serve an MCP stdio server whose tools mirror the CLI (run, list, eval)",
         run: mcp::run,
@@ -192,6 +199,8 @@ options:
   -U, --update              force-refresh git plugin sources (skip the freshness cache)
       --offline             never fetch git plugin sources; use only what is already cached
       --list                discover tests without running them (respects selection)
+      --record PATH         also write the run record here (always written to .prova/var/) — what
+                            executed and, named individually, what did NOT: see `prova attest`
   -V, --version             print version
   -h, --help                print this help";
 
@@ -416,6 +425,136 @@ fn owed_subcommand(args: Vec<String>) -> ExitCode {
     println!();
     println!("  {} owed", owed.len());
     ExitCode::SUCCESS
+}
+
+/// `prova attest <address>` — did the proof covering this obligation actually execute?
+///
+/// The question `prova owed` cannot answer. `owed` is static: it reconciles anchors against
+/// `covers` bindings and reports that an obligation *has* a proof. Whether that proof ever RAN is a
+/// fact about a run, and it is the fact an agent gets wrong — a suite that exits 0 having skipped
+/// the only proof for a claim reports covered, honestly, and is wrong.
+///
+/// Exit 1 when the obligation is not attested; exit 2 for a usage error. The distinction matters in
+/// CI: a missing argument is a broken pipeline, an unattested claim is a real finding.
+fn attest_subcommand(args: Vec<String>) -> ExitCode {
+    let mut address: Option<String> = None;
+    for arg in args {
+        match arg.as_str() {
+            "-h" | "--help" => {
+                println!(
+                    "usage: prova attest <doc.md#claim-id>\n\n\
+                     Reports whether the proof covering an obligation actually executed in the last\n\
+                     recorded run. A skipped, deselected or absent proof attests nothing."
+                );
+                return ExitCode::SUCCESS;
+            }
+            other if !other.starts_with('-') && address.is_none() => {
+                address = Some(other.to_string());
+            }
+            other => {
+                eprintln!("prova: attest: unexpected argument {other:?}\nusage: prova attest <doc.md#claim-id>");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let Some(address) = address else {
+        eprintln!("prova: attest: an obligation address is required\nusage: prova attest <doc.md#claim-id>");
+        return ExitCode::from(2);
+    };
+
+    let home = match resolve_home(None) {
+        Ok(h) => h,
+        Err(code) => return code,
+    };
+    let manifest = match std::fs::read_to_string(&home.manifest)
+        .map_err(|e| e.to_string())
+        .and_then(|text| Manifest::parse(&text))
+    {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("prova: {e}");
+            return ExitCode::from(2);
+        }
+    };
+
+    // No record at all is the absence of evidence, not the absence of a problem. Treating it as
+    // fine would make the atom opt-out by simply never running anything.
+    let Some(recorded) = record::load(&home) else {
+        println!("prova: attest {address}");
+        println!("  ↳ no run has been recorded here — run the suite first (`prova`)");
+        return ExitCode::FAILURE;
+    };
+
+    let proofs = match collect_obligations(&home, &manifest) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("prova: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // A binding may carry a pin (`path#id@digest`); the pin records which prose was accepted, not
+    // which proof ran, so it plays no part in matching here.
+    let bindings: Vec<String> = proofs
+        .iter()
+        .filter(|p| {
+            p.covers
+                .iter()
+                .any(|c| claims::split_pin(c).0 == address)
+        })
+        .map(|p| p.path.clone())
+        .collect();
+
+    let verdict = record::attest(&recorded, &bindings);
+    println!("prova: attest {address}");
+    match &verdict {
+        record::Attested::Yes { path } => {
+            println!("  ↳ attested — {path} ran and passed");
+        }
+        record::Attested::Red { path, outcome } => {
+            let what = match outcome {
+                record::Executed::Failed => "failed",
+                record::Executed::Spec => "is an open spec, red by definition",
+                record::Executed::Passed => unreachable!("a passing proof attests"),
+            };
+            println!("  ↳ NOT attested — {path} {what}");
+        }
+        record::Attested::NoEvidence { path, why } => {
+            println!("  ↳ NOT attested — {path} did not execute in the recorded run");
+            println!("    ({why})");
+        }
+        record::Attested::Unbound => {
+            println!("  ↳ NOT attested — no proof declares `covers = \"{address}\"`");
+            println!("    (`prova owed` lists every obligation and its binding)");
+        }
+    }
+    if verdict.is_attested() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// How the run was narrowed, spelled the way it was asked for.
+///
+/// An empty list is the load-bearing case: only a record with no selection at all can speak for the
+/// whole suite. Anything else is a statement about a subset, and the record has to carry enough for
+/// a reader to see which one.
+fn spell_selection(config: &prova_core::RunConfig) -> Vec<String> {
+    let sel = &config.selection;
+    let mut out = Vec::new();
+    out.extend(sel.keywords.iter().map(|k| format!("-k {k}")));
+    out.extend(sel.keyword_excludes.iter().map(|k| format!("-k !{k}")));
+    out.extend(sel.tags.iter().map(|t| format!("--tags {t}")));
+    out.extend(sel.tag_excludes.iter().map(|t| format!("--tags !{t}")));
+    out.extend(sel.nodes.iter().map(|n| format!("--node {n}")));
+    if config.specs_only {
+        out.push("--specs".to_string());
+    }
+    if config.falsify {
+        out.push("--falsify".to_string());
+    }
+    out
 }
 
 /// Collect every proof's `spec`/`covers` WITHOUT running anything. Reconciling prose against
@@ -1480,6 +1619,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     let mut cli_plugins: Vec<String> = Vec::new();
     let mut selection = prova_core::Selection::default();
     let mut last_failed = false;
+    let mut record_to: Option<std::path::PathBuf> = None;
     // `--allow-empty`: opt out of the empty-selection error, for the matrix leg that legitimately
     // selects nothing. Off by default, because a selection matching nothing is nearly always a typo
     // and a typo must not be green.
@@ -1609,6 +1749,12 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         // config without editing a manifest.
         if let Some(v) = value_flag(&arg, &mut args, &["--config"]) {
             cli_config = Some(v);
+            continue;
+        }
+        // `--record <path>`: ALSO emit the run record here. The var/ copy is written either way and
+        // is for the next command; this one is for CI to keep as an artifact, or a human to read.
+        if let Some(v) = value_flag(&arg, &mut args, &["--record"]) {
+            record_to = Some(std::path::PathBuf::from(v));
             continue;
         }
         match arg.as_str() {
@@ -1985,15 +2131,39 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     if gha.enabled() {
         sinks.push(Box::new(report::GitHubReporter::from_env()));
     }
-    // Record failed node paths so the next `--last-failed` can re-run exactly them.
+    // Record failed node paths so the next `--last-failed` can re-run exactly them, and every
+    // leaf's outcome so the run record can say what did NOT run.
     let mut reporter = FailureRecorder {
         inner: Box::new(MultiReporter::new(sinks)),
         failed: Vec::new(),
+        executed: std::collections::BTreeMap::new(),
+        skipped: Vec::new(),
     };
 
     match run_suites(&suites, &mut reporter, &config) {
         Ok(summary) => {
             store_last_failed(&home, &reporter.failed);
+            record::store(
+                &home,
+                &record::Record {
+                    schema: 1,
+                    version: env!("CARGO_PKG_VERSION").to_string(),
+                    binary: record::binary_fingerprint(),
+                    selection: spell_selection(&config),
+                    duration_ms: summary.duration.as_millis() as u64,
+                    summary: record::Counts {
+                        passed: summary.passed,
+                        failed: summary.failed,
+                        skipped: summary.skipped,
+                        spec: summary.spec,
+                        deselected: summary.deselected,
+                    },
+                    executed: std::mem::take(&mut reporter.executed),
+                    skipped: std::mem::take(&mut reporter.skipped),
+                    deselected: summary.deselected_paths.clone(),
+                },
+                record_to.as_deref(),
+            );
 
             // An explicit selection that matched NOTHING is an error, not a green run.
             //
@@ -2875,20 +3045,50 @@ mod tests {
 
 /// Forwards every event and records the paths of failed nodes, so `--last-failed` can select
 /// exactly them next run.
+/// Watches the event stream and remembers what became of every leaf — for `--last-failed` (the
+/// failures alone) and for the run record (all of it, including the skips and their reasons).
+///
+/// A reporter is the right seam: the executor already emits exactly one `NodeFinished` per leaf
+/// that ran, so recording is an observation of the ordinary path rather than a second pass over it.
+/// What never reaches this stream is precisely what never ran — the deselected — and those come
+/// from the summary instead.
 struct FailureRecorder {
     inner: Box<dyn Reporter>,
     failed: Vec<String>,
+    executed: std::collections::BTreeMap<String, record::Executed>,
+    skipped: Vec<record::Skipped>,
 }
 
 impl Reporter for FailureRecorder {
     fn event(&mut self, event: &prova_core::Event) {
         if let prova_core::Event::NodeFinished {
             path,
-            outcome: prova_core::Outcome::Failed,
+            outcome,
+            message,
+            file,
             ..
         } = event
         {
-            self.failed.push(path.to_string());
+            // `--last-failed` re-selects with `--node`, which matches the raw path; the record is
+            // keyed on the file-qualified one, so two files' same-named tests stay distinct.
+            let key = record::qualified(path, *file);
+            match outcome {
+                prova_core::Outcome::Failed => {
+                    self.failed.push(path.to_string());
+                    self.executed.insert(key, record::Executed::Failed);
+                }
+                prova_core::Outcome::Passed => {
+                    self.executed.insert(key, record::Executed::Passed);
+                }
+                prova_core::Outcome::Spec => {
+                    self.executed.insert(key, record::Executed::Spec);
+                }
+                // Verbatim: a reason paraphrased by the recorder is a reason nobody can act on.
+                prova_core::Outcome::Skipped => self.skipped.push(record::Skipped {
+                    path: key,
+                    reason: message.unwrap_or("skipped").to_string(),
+                }),
+            }
         }
         self.inner.event(event);
     }

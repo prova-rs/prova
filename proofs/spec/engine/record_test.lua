@@ -16,8 +16,6 @@
 --- signed: the threat model here is a careless agent, not a malicious one, and a signature would buy
 --- ceremony rather than truth.
 
-local OPEN = { spec = "the run record: not built (docs/plans/agent-reliability.md)" }
-
 --- A package with two anchored claims: one discharged by a proof that runs, one by a proof that
 --- cannot run here. That asymmetry is the whole subject — both proofs are green-by-absence-of-red,
 --- and only one of them is evidence.
@@ -54,7 +52,9 @@ end)
   return proj
 end)
 
-prova.test("a run records what executed, and what did not", OPEN, function(t)
+prova.test("a run records what executed, and what did not", {
+  proves = "the counts are the cheap half; the record exists so the two that mean NO EVIDENCE — skipped and deselected — survive the run that produced them",
+}, function(t)
   local proj = t:use(sandbox)
   shell.run(prova.bin, { cwd = proj, merge_stderr = true })
 
@@ -67,7 +67,9 @@ prova.test("a run records what executed, and what did not", OPEN, function(t)
   t:expect(record.summary.skipped, "and the one that could not"):equals(1)
 end)
 
-prova.test("the skipped are named, with the reason they did not run", OPEN, function(t)
+prova.test("the skipped are named, with the reason they did not run", {
+  proves = "a count cannot be acted on. \"42 skipped\" and \"42 skipped, all of them the thing you just claimed to have proven\" are the same number and different facts",
+}, function(t)
   local proj = t:use(sandbox)
   shell.run(prova.bin, { cwd = proj, merge_stderr = true })
   local record = json.decode(fs.read(proj .. "/.prova/var/last-run.json"))
@@ -79,7 +81,9 @@ prova.test("the skipped are named, with the reason they did not run", OPEN, func
   t:expect(record.skipped[1].reason, "why it did not run"):contains("a-broker-nobody-here-runs")
 end)
 
-prova.test("the deselected are named too — never run is never run", OPEN, function(t)
+prova.test("the deselected are named too — never run is never run", {
+  proves = "deselection and skipping are different causes with one consequence. A selection is the cheapest way there is to report green having tested nothing in particular",
+}, function(t)
   local proj = t:use(sandbox)
   shell.run(prova.bin .. " -k busy", { cwd = proj, merge_stderr = true })
   local record = json.decode(fs.read(proj .. "/.prova/var/last-run.json"))
@@ -90,7 +94,9 @@ prova.test("the deselected are named too — never run is never run", OPEN, func
   t:expect(json.encode(record.deselected)):contains("a drain is not a preemption")
 end)
 
-prova.test("--record also emits where asked, for CI to keep", OPEN, function(t)
+prova.test("--record also emits where asked, for CI to keep", {
+  proves = "the var/ copy is for the next command and is gitignored by design; an artifact a human or a PR bot can read has to be somewhere they can reach",
+}, function(t)
   local proj = t:use(sandbox)
   shell.run(prova.bin .. " --record " .. proj .. "/run.json", { cwd = proj, merge_stderr = true })
 
@@ -101,7 +107,9 @@ prova.test("--record also emits where asked, for CI to keep", OPEN, function(t)
   t:expect(emitted.summary.passed):equals(1)
 end)
 
-prova.test("the record carries provenance, so a stale one is detectable", OPEN, function(t)
+prova.test("the record carries provenance, so a stale one is detectable", {
+  proves = "without provenance a record is an assertion rather than evidence, and re-reading yesterday's is indistinguishable from running today's",
+}, function(t)
   local proj = t:use(sandbox)
   shell.run(prova.bin, { cwd = proj, merge_stderr = true })
   local record = json.decode(fs.read(proj .. "/.prova/var/last-run.json"))
@@ -110,10 +118,12 @@ prova.test("the record carries provenance, so a stale one is detectable", OPEN, 
   -- assertion, and re-reading yesterday's is indistinguishable from running today's.
   t:expect(record.binary, "the binary that produced it"):never():is_empty()
   t:expect(record.version):never():is_empty()
-  t:expect(record.duration_ms):is_number()
+  t:expect(type(record.duration_ms), "how long it took"):equals("number")
 end)
 
-prova.test("attest passes when the covering proof actually executed", OPEN, function(t)
+prova.test("attest passes when the covering proof actually executed", {
+  proves = "the honest case has to stay cheap, or the atom is machinery people route around",
+}, function(t)
   local proj = t:use(sandbox)
   shell.run(prova.bin, { cwd = proj, merge_stderr = true })
   local r = shell.run(prova.bin .. " attest docs/design.md#busy-not-absent",
@@ -124,7 +134,9 @@ prova.test("attest passes when the covering proof actually executed", OPEN, func
   t:expect(r.stdout):contains("busy-not-absent")
 end)
 
-prova.test("attest FAILS when the covering proof was skipped", OPEN, function(t)
+prova.test("attest FAILS when the covering proof was skipped", {
+  proves = "THE reason this exists. The suite exited 0, the anchor is real, the binding is real, the proof is written — and it never ran, so nothing about this obligation was established",
+}, function(t)
   local proj = t:use(sandbox)
   shell.run(prova.bin, { cwd = proj, merge_stderr = true })
   local r = shell.run(prova.bin .. " attest docs/design.md#drain-not-preemption",
@@ -137,7 +149,9 @@ prova.test("attest FAILS when the covering proof was skipped", OPEN, function(t)
   t:expect(r.stdout, "and says why"):contains("a-broker-nobody-here-runs")
 end)
 
-prova.test("attest FAILS when the covering proof was deselected", OPEN, function(t)
+prova.test("attest FAILS when the covering proof was deselected", {
+  proves = "narrowing a selection must narrow what can be claimed, or -k becomes a way to make any obligation green",
+}, function(t)
   local proj = t:use(sandbox)
   shell.run(prova.bin .. " -k busy", { cwd = proj, merge_stderr = true })
   local r = shell.run(prova.bin .. " attest docs/design.md#busy-not-absent",
@@ -151,7 +165,9 @@ prova.test("attest FAILS when the covering proof was deselected", OPEN, function
   t:expect(other.code, "the one filtered out does not"):never():equals(0)
 end)
 
-prova.test("attest FAILS when no run has been recorded at all", OPEN, function(t)
+prova.test("attest FAILS when no run has been recorded at all", {
+  proves = "absence of a record is absence of evidence. Treating it as fine would make the whole atom opt-out by simply never running anything",
+}, function(t)
   local proj = t:use(sandbox)
   fs.remove_all(proj .. "/.prova/var")
   local r = shell.run(prova.bin .. " attest docs/design.md#busy-not-absent",
@@ -163,7 +179,9 @@ prova.test("attest FAILS when no run has been recorded at all", OPEN, function(t
   t:expect(r.stdout):contains("no run")
 end)
 
-prova.test("attest on an address no proof covers is refused, not passed", OPEN, function(t)
+prova.test("attest on an address no proof covers is refused, not passed", {
+  proves = "exiting 0 on \"I found nothing to check\" is the vacuous-pass shape this entire line of work exists to refuse",
+}, function(t)
   local proj = t:use(sandbox)
   shell.run(prova.bin, { cwd = proj, merge_stderr = true })
   local r = shell.run(prova.bin .. " attest docs/design.md#nobody-covers-this",
@@ -188,7 +206,9 @@ prova.test("recording is inert to the ordinary path", {
   t:expect(r.stdout):never():contains("attest")
 end)
 
-prova.test("the binary teaches the record: catalog, topic, and the verb", OPEN, function(t)
+prova.test("the binary teaches the record: catalog, topic, and the verb", {
+  proves = "a capability an agent cannot discover does not exist, and discovery is two steps: the catalog names it, then the topic explains it",
+}, function(t)
   local proj = t:use(sandbox)
 
   -- A capability an agent cannot discover does not exist, and discovery is two steps: the catalog

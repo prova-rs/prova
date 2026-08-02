@@ -109,6 +109,10 @@ pub struct Summary {
     /// Leaves excluded by the run's selection (`-k` / `--tags` / `--node`) — never executed,
     /// distinct from `skipped` (which ran into a gate). Zero when no selection is active.
     pub deselected: usize,
+    /// The reported path of every deselected leaf. The count above answers "how many"; the run
+    /// record needs "which", because a selection is the cheapest way of all to report green having
+    /// tested nothing in particular.
+    pub deselected_paths: Vec<String>,
     pub duration: Duration,
 }
 
@@ -719,6 +723,7 @@ mod tests {
             skipped: 1,
             spec: 1,
             deselected: 0,
+            deselected_paths: Vec::new(),
             duration: Duration::from_millis(6),
         };
         reporter.event(&Event::RunFinished { summary: &summary });

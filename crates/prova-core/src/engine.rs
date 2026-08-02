@@ -3432,9 +3432,9 @@ fn push_leaf(leaves: &mut Vec<Leaf>, unit: PlanUnit, node: &Node, inherited: &In
 /// gate can't be evaluated against a node that never ran) and remapping leaf-id edges. Returns the
 /// surviving plan and how many leaves were deselected. Flows are atomic: a flow is selected if ANY
 /// of its step paths match.
-fn apply_selection(plan: Plan, sel: &Selection) -> (Plan, usize) {
+fn apply_selection(plan: Plan, sel: &Selection) -> (Plan, usize, Vec<(String, usize)>) {
     if sel.is_empty() {
-        return (plan, 0);
+        return (plan, 0, Vec::new());
     }
     let mut keep = vec![false; plan.leaves.len()];
     for (i, leaf) in plan.leaves.iter().enumerate() {
@@ -3450,17 +3450,17 @@ fn apply_selection(plan: Plan, sel: &Selection) -> (Plan, usize) {
 /// unmatched `-k` — the spec surface is precisely what is still open (or wrongly green).
 /// `prova falsify` selects exactly the leaves that declare a mutation. A proof without one is not
 /// a failure — most proofs will never declare one — it is simply not what this pass is about.
-fn apply_falsify_filter(plan: Plan, enabled: bool) -> (Plan, usize) {
+fn apply_falsify_filter(plan: Plan, enabled: bool) -> (Plan, usize, Vec<(String, usize)>) {
     if !enabled {
-        return (plan, 0);
+        return (plan, 0, Vec::new());
     }
     let keep = plan.leaves.iter().map(|l| l.falsifiable).collect();
     narrow_plan(plan, keep)
 }
 
-fn apply_specs_filter(plan: Plan, enabled: bool) -> (Plan, usize) {
+fn apply_specs_filter(plan: Plan, enabled: bool) -> (Plan, usize, Vec<(String, usize)>) {
     if !enabled {
-        return (plan, 0);
+        return (plan, 0, Vec::new());
     }
     let keep = plan.leaves.iter().map(|l| l.spec.is_some()).collect();
     narrow_plan(plan, keep)
@@ -3468,8 +3468,12 @@ fn apply_specs_filter(plan: Plan, enabled: bool) -> (Plan, usize) {
 
 /// Keep exactly the marked leaves plus the dependency closure of every one of them (an outcome
 /// gate can't be evaluated against a node that never ran), remapping leaf-id edges. Returns the
-/// surviving plan and how many leaves were dropped.
-fn narrow_plan(plan: Plan, mut keep: Vec<bool>) -> (Plan, usize) {
+/// surviving plan and the reported path of every leaf that was dropped.
+///
+/// The dropped PATHS, not a count: a run that deselected everything and a run that deselected
+/// nothing relevant report the same number, and the run record has to be able to tell a reader
+/// which proofs produced no evidence. Naming them is the whole point (docs/plans/agent-reliability.md).
+fn narrow_plan(plan: Plan, mut keep: Vec<bool>) -> (Plan, usize, Vec<(String, usize)>) {
     // Dependency closure: selected leaves drag their upstream gates in, transitively.
     let mut work: Vec<usize> = keep
         .iter()
@@ -3484,9 +3488,25 @@ fn narrow_plan(plan: Plan, mut keep: Vec<bool>) -> (Plan, usize) {
             }
         }
     }
+    // The COUNT is leaves, as it has always been — a flow is one schedulable unit however many
+    // steps it has, and `deselected` is a scheduling fact. The PATHS are per leaf-path, because a
+    // reader of the record needs the individual proofs, and a deselected leaf emits no event to
+    // carry its file — this is the only chance to learn which file it came from.
     let deselected = keep.iter().filter(|&&k| !k).count();
+    let dropped: Vec<(String, usize)> = plan
+        .leaves
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !keep[*i])
+        .flat_map(|(_, leaf)| {
+            leaf.unit
+                .items()
+                .into_iter()
+                .map(|item| (item.path.clone(), item.file))
+        })
+        .collect();
     if deselected == 0 {
-        return (plan, 0);
+        return (plan, 0, dropped);
     }
     let mut remap = vec![usize::MAX; plan.leaves.len()];
     let mut kept = Vec::with_capacity(plan.leaves.len() - deselected);
@@ -3499,7 +3519,34 @@ fn narrow_plan(plan: Plan, mut keep: Vec<bool>) -> (Plan, usize) {
     for leaf in &mut kept {
         leaf.deps = leaf.deps.iter().map(|&d| remap[d]).collect();
     }
-    (Plan { leaves: kept }, deselected)
+    (Plan { leaves: kept }, deselected, dropped)
+}
+
+/// A leaf's reported path, prefixed with the stem of the file it was declared in.
+///
+/// The canonical address form for anything that has to name a leaf OUTSIDE a single run's console
+/// output — the run record, `attest`. Two files may each declare a test called "it works", and an
+/// address that cannot tell them apart lets one file's pass vouch for another file's skip.
+///
+/// Idempotent: the engine already prefixes the stem when a suite spans several files, so a path
+/// that carries it is returned untouched.
+pub fn qualify_leaf_path(path: &str, file: Option<&Path>) -> String {
+    let Some(stem) = file.and_then(Path::file_stem).and_then(|s| s.to_str()) else {
+        return path.to_string();
+    };
+    if path.split(" › ").next() == Some(stem) {
+        path.to_string()
+    } else {
+        format!("{stem} › {path}")
+    }
+}
+
+/// Qualify a batch of `(path, file index)` pairs against the collector's file table.
+fn qualify_all(dropped: Vec<(String, usize)>, file_paths: &[PathBuf]) -> Vec<String> {
+    dropped
+        .into_iter()
+        .map(|(path, file)| qualify_leaf_path(&path, file_paths.get(file).map(PathBuf::as_path)))
+        .collect()
 }
 
 /// Turn each leaf's node-level `raw_deps` (which may point at a group) into concrete leaf-id edges,
@@ -4625,14 +4672,16 @@ fn execute_collected(
     reporter: &mut dyn Reporter,
     config: &RunConfig,
 ) -> mlua::Result<Summary> {
-    let (plan, deselected, state) = {
+    let (plan, deselected, dropped, state) = {
         let col = col.borrow();
         let plan = build_plan(&col, &config.capabilities)?;
-        let (plan, deselected) = apply_selection(plan, &config.selection);
-        let (plan, falsify_deselected) = apply_falsify_filter(plan, config.falsify);
-        let (plan, spec_deselected) = apply_specs_filter(plan, config.specs_only);
-        let spec_deselected = spec_deselected + falsify_deselected;
-        let deselected = deselected + spec_deselected;
+        let (plan, mut deselected, mut dropped) = apply_selection(plan, &config.selection);
+        let (plan, falsify_deselected, falsify_dropped) = apply_falsify_filter(plan, config.falsify);
+        let (plan, spec_deselected, spec_dropped) = apply_specs_filter(plan, config.specs_only);
+        deselected += falsify_deselected + spec_deselected;
+        dropped.extend(falsify_dropped);
+        dropped.extend(spec_dropped);
+        let dropped = qualify_all(dropped, &col.file_paths);
         let state = Rc::new(RunState {
             defs: col.fixtures.clone(),
             suite: Rc::new(RefCell::new(ScopeState::default())),
@@ -4642,12 +4691,13 @@ fn execute_collected(
             snapshot_registry: config.snapshot_registry.clone(),
             falsify: config.falsify,
         });
-        (plan, deselected, state)
+        (plan, deselected, dropped, state)
     };
 
     let rt = new_runtime()?;
     let mut summary = Summary {
         deselected,
+        deselected_paths: dropped,
         ..Summary::default()
     };
     block_on_local(&rt, async {
@@ -5324,14 +5374,18 @@ impl HeldTopology {
             load_member_files(&self.lua, &self.col, files)?;
         }
 
-        let (plan, deselected, state) = {
+        let (plan, deselected, dropped, state) = {
             let col = self.col.borrow();
             let plan = build_plan(&col, &self.config.capabilities)?;
-            let (plan, deselected) = apply_selection(plan, selection);
-            let (plan, falsify_deselected) = apply_falsify_filter(plan, self.config.falsify);
-            let (plan, spec_deselected) = apply_specs_filter(plan, self.config.specs_only);
-            let spec_deselected = spec_deselected + falsify_deselected;
-            let deselected = deselected + spec_deselected;
+            let (plan, mut deselected, mut dropped) = apply_selection(plan, selection);
+            let (plan, falsify_deselected, falsify_dropped) =
+                apply_falsify_filter(plan, self.config.falsify);
+            let (plan, spec_deselected, spec_dropped) =
+                apply_specs_filter(plan, self.config.specs_only);
+            deselected += falsify_deselected + spec_deselected;
+            dropped.extend(falsify_dropped);
+            dropped.extend(spec_dropped);
+            let dropped = qualify_all(dropped, &col.file_paths);
 
             // A fresh run state — the run's own scopes, so its teardown reaps only what it built.
             let state = Rc::new(RunState {
@@ -5367,7 +5421,7 @@ impl HeldTopology {
                     .cache
                     .insert(id, self.value.clone());
             }
-            (plan, deselected, state)
+            (plan, deselected, dropped, state)
         };
 
         let mut config = self.config.clone();
@@ -5376,6 +5430,7 @@ impl HeldTopology {
         reporter.event(&Event::RunStarted);
         let mut summary = Summary {
             deselected,
+            deselected_paths: dropped,
             ..Summary::default()
         };
         // The holder's runtime, not a fresh one: held resources may be bound to it.
@@ -5624,10 +5679,10 @@ pub fn obligations_for_suite(
 /// The shared tail of discovery: build the plan (validations included), honor selection and the
 /// `--specs` filter, and return the surviving leaf paths.
 fn list_plan(col: &Collector, config: &RunConfig) -> mlua::Result<Vec<String>> {
-    let (plan, _deselected) =
+    let (plan, _deselected, _dropped) =
         apply_selection(build_plan(col, &config.capabilities)?, &config.selection);
-    let (plan, _falsify_deselected) = apply_falsify_filter(plan, config.falsify);
-    let (plan, _spec_deselected) = apply_specs_filter(plan, config.specs_only);
+    let (plan, _falsify_deselected, _) = apply_falsify_filter(plan, config.falsify);
+    let (plan, _spec_deselected, _) = apply_specs_filter(plan, config.specs_only);
     Ok(plan
         .leaves
         .iter()

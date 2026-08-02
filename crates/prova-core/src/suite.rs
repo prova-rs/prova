@@ -273,6 +273,7 @@ fn run_sequential(suites: &[Suite], reporter: &mut dyn Reporter, config: &RunCon
                 summary.skipped += s.skipped;
                 summary.spec += s.spec;
                 summary.deselected += s.deselected;
+                summary.deselected_paths.extend(s.deselected_paths);
             }
             Err(err) => report_suite_error(reporter, &mut summary, suite, &err.to_string()),
         }
@@ -287,7 +288,7 @@ fn run_pooled(suites: &[Suite], reporter: &mut dyn Reporter, config: &RunConfig)
     let queue: Arc<Mutex<VecDeque<Suite>>> = Arc::new(Mutex::new(suites.iter().cloned().collect()));
     let (tx, rx) = channel::<OwnedEvent>();
     // Deselected leaves emit no node events, so their count travels on a side channel.
-    let (dtx, drx) = channel::<usize>();
+    let (dtx, drx) = channel::<Vec<String>>();
 
     let mut handles = Vec::with_capacity(workers);
     for _ in 0..workers {
@@ -304,8 +305,10 @@ fn run_pooled(suites: &[Suite], reporter: &mut dyn Reporter, config: &RunConfig)
                 match suite.run(&mut sink, &config) {
                     Ok(s) => {
                         // Plan-derived (not event-derived), so it crosses on its own channel:
-                        // `spec` re-tallies from forwarded events, deselection cannot.
-                        let _ = dtx.send(s.deselected);
+                        // `spec` re-tallies from forwarded events, deselection cannot — a leaf that
+                        // never ran emits nothing to re-tally FROM, which is the whole reason the
+                        // run record has to be told about it explicitly.
+                        let _ = dtx.send(s.deselected_paths);
                     }
                     Err(err) => {
                         // Surface a collection/load error as a synthetic failed node for the suite.
@@ -339,7 +342,10 @@ fn run_pooled(suites: &[Suite], reporter: &mut dyn Reporter, config: &RunConfig)
     for handle in handles {
         let _ = handle.join();
     }
-    summary.deselected += drx.iter().sum::<usize>();
+    for paths in drx.iter() {
+        summary.deselected += paths.len();
+        summary.deselected_paths.extend(paths);
+    }
     summary
 }
 
