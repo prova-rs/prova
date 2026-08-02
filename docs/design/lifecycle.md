@@ -18,7 +18,7 @@ Three origins, and the distinction is not decoration — it decides who can reti
 | Origin | Written as | Retired by |
 |---|---|---|
 | **Implicit** — someone wrote a test | `prova.test(name, fn)` | deleting the test |
-| **Deferred** — scoped, not yet built | `spec = "<reason>"` | implementing, then graduating the flag |
+| **Deferred** — scoped, not yet built | `promises = "<reason>"` | keeping the promise, then graduating the flag |
 | **External** — stated in prose or a ticket | `<!-- claim: id -->` + `covers` | a proof that discharges it |
 
 An external obligation is the only one that can outlive everyone who remembers it, which is why
@@ -33,11 +33,15 @@ No stage requires an adjacent one: a proof may declare `covers` without `spec`, 
 | Stage | The artifact | Verb | What its absence lets you say |
 |---|---|---|---|
 | **Claimed** | `<!-- claim: id -->` in prose | — | "the doc says X" — and nothing tracks it |
-| **Bound** | `covers = "doc.md#id"` | `owed` → `UNBOUND` | "I built X" — and nothing links it |
-| **Speced** | `spec = "<reason>"` | `specs` · `burndown` | "I implemented the spec" — never ran it |
+| **Bound** | `covers = "doc.md#id"` | `owed` → `DANGLING` | "I built X" — and nothing links it |
+| **Promised** | `promises = "<reason>"` | `specs` · `burndown` | "I implemented the spec" — never ran it |
 | **Proven** | green, with `proves = "<context>"` | `prova` | — |
 | **Falsifiable** | `falsified_by = fn` | `falsify` → *vacuous* | "the tests pass" — vacuously |
 | **Attested** | executed + passed in the run record | `attest` | "0 failed" — nothing ran |
+
+The middle two stages are one grammar: **`promises` graduates to `proves`** — a tense change,
+demanded by a failure the moment the body goes green. (`spec` is the deprecated spelling of
+`promises`; it warns and will be removed.)
 
 Read the right-hand column as the point. Each row exists because a sentence an agent could say
 was, at that stage, unfalsifiable.
@@ -56,10 +60,10 @@ everything below is additive.
 story lives next to the assertions it explains, where a reviewer cannot miss it and no separate
 doc can drift from it.
 
-**Level 2 — Spec-first.** `spec = "<reason>"` for a contract you can state but are not building
-yet. `prova specs` enumerates the open surface; `prova burndown` is the implementing loop; a spec
-whose body goes green **fails**, demanding graduation to `proves`. The backlog becomes executable:
-`grep TODO` lies, `prova specs` cannot.
+**Level 2 — Spec-first.** `promises = "<reason>"` for a contract you can state but are not
+building yet. `prova specs` enumerates the open surface; `prova burndown` is the implementing
+loop; a promise whose body goes green **fails**, demanding graduation to `proves`. The backlog
+becomes executable: `grep TODO` lies, `prova specs` cannot.
 
 **Level 3 — Falsification.** `falsified_by` declares the mutation a body must catch. `prova falsify`
 applies it and inverts the verdict. This is the level that distinguishes a proof from a green
@@ -88,34 +92,36 @@ The runs are already principled: each is sugar over composable primitives (`burn
 `--specs --strict-specs`, `falsify` is `--falsify --allow-empty`), so the verb is a shorthand and
 never a second code path.
 
-The queries are not. `prova specs` lists **nodes** and is a run-with-`--list`; `owed` and `attest`
-list **obligations**. Two object types wearing one apparent family, with parts of speech drawn
-from three different grammars — a plural noun (`specs`), a past participle (`owed`), an imperative
-(`attest`).
+The queries were not. `prova specs` lists **nodes** and is a run-with-`--list`; `owed` and
+`attest` list **obligations**. Two object types wearing one apparent family. The resolution keeps
+every convenient spelling and names the family after its object:
 
-### The proposal: name the family after its object
+### The decision: the whole account is `prova evidence`
 
-<!-- claim: ledger-is-the-account -->
-The obligation query family is one object — the ledger — and its verbs must be narrowings of it,
-not siblings to it.
+`evidence` sits in the register the rest of the vocabulary already speaks (proof, prove, attest,
+claim, vacuous — measured at roughly ten evidentiary words to one of anything else), and it is
+already load-bearing in the machine surface as the `no_evidence` attest verdict.
+
+<!-- claim: evidence-is-the-account -->
+`prova evidence` reports the whole account — every anchored claim with how far it has travelled,
+and the open promised surface — in one command that executes no proof body.
 
 ```
-prova ledger                    every obligation, its origin, and how far it travelled
-prova ledger --owed             ≡ prova owed      the actionable debts
-prova ledger --attest <addr>    ≡ prova attest    one obligation, against the last run
-prova specs                     unchanged — a NODE listing, on the run axis
+prova evidence                  the whole account, stages and debts
+prova owed                      the actionable narrowing: only what is owed
+prova attest <addr>             one obligation, against the recorded run
+prova specs                     a NODE listing, on the run axis (= list --specs)
 ```
 
-`owed` and `attest` survive as sugar exactly as `burndown` and `falsify` do. What changes is that
-there is finally a command that answers "where does this project stand", which today no verb does:
-`owed` shows only the debts, and `attest` answers for one address at a time.
+`owed`, `attest`, `specs` and `burndown` all survive as conveniences — the same pattern as
+`falsify`: the verb is sugar over a composable primitive, never a second code path.
 
 <!-- claim: ci-can-ask-for-everything -->
-There must be one exit-code answer to "is every stated obligation attested", or CI cannot gate on
-the lifecycle at all.
+`prova attest` with no address reconciles every anchored claim against the recorded run and exits
+non-zero unless each one is attested — one exit-code answer for a pipeline.
 
-That is the gap `--attest <addr>` leaves: an address at a time is a developer's question, not a
-pipeline's.
+An address at a time is a developer's question; the pipeline's question is "is everything this
+project claims actually evidenced", and it has to be one exit code or CI cannot gate on it.
 
 ## Prova must be its own exemplar
 
@@ -137,11 +143,16 @@ in one line:
 - The MCP surface has **no test coverage at all**, so a capability wired to it is unproven by
   construction — the same vacuous green one level out from the suite.
 
-## Open questions
+## Decided, and open
 
-- **Naming.** `ledger` is the accounting metaphor already used for `owed` ("one ledger over every
-  origin"). `status` reads friendlier but collides with `ps`. Decide before it ships, because the
-  skill and the topics both name these verbs.
+- **Naming: decided.** `evidence` over `ledger` (`ledger` is purely financial — outside the
+  law-and-evidence register everything else shares) and over `status` (already an MCP tool for
+  held topologies, and the most common field in the HTTP driver vocabulary). The attribute is
+  `promises` — grammatically parallel with proves/covers/requires, graduating by tense change.
+  Status words conjugate from the stages: DANGLING, UNPROVEN, PROMISED, STALE.
+- **`attest` vs the supply-chain sense.** in-toto, sigstore and SLSA all use *attestation* to
+  mean a cryptographically signed statement. Prova's attestation is deliberately unsigned — the
+  threat model is a careless agent, not a malicious one — and the record topic says so plainly.
 - **`--since`, parked.** Labelling a failure *introduced* vs *pre-existing* needs either records
   kept per revision (a growing state footprint with a retention policy) or checking out an old
   ref and rebuilding (VCS manipulation, and prova has no concept of a build). Both are more

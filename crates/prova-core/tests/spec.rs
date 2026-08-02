@@ -91,7 +91,7 @@ fn group_level_spec_is_an_error() {
         .expect_err("a group-level spec flag must refuse to run");
     let msg = err.to_string();
     assert!(
-        msg.contains("spec is test-level only"),
+        msg.contains("promises is test-level only"),
         "states the rule: {msg}"
     );
     assert!(

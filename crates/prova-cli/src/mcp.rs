@@ -355,7 +355,7 @@ struct SelectionArgs {
     nodes: Option<Vec<String>>,
     /// Also select the nodes that failed in the previous run (CLI `--last-failed`).
     last_failed: Option<bool>,
-    /// Select ONLY spec-flagged tests — the open-spec backlog (CLI `--specs`). Composes with
+    /// Select ONLY promised tests — the open backlog (CLI `--specs`). Composes with
     /// `list` to enumerate the surface without running; an empty selection there means the
     /// burndown is complete. See `learn { topic = "specs" }`.
     specs: Option<bool>,
@@ -376,7 +376,7 @@ struct SelectionArgs {
 struct RunRequest {
     #[serde(flatten)]
     selection: SelectionArgs,
-    /// Driver mode for a spec burndown (CLI `--strict-specs`): open specs report as REAL
+    /// Driver mode for a burndown (CLI `--strict-specs`): open promises report as REAL
     /// failures with full detail instead of the CI-green `spec` outcome. The implementing
     /// agent's inner loop is `specs = true, strict_specs = true`.
     strict_specs: Option<bool>,
@@ -713,7 +713,7 @@ impl ProvaMcpServer {
 
     #[tool(
         name = "run",
-        description = "Run the package's test suite with an optional selection (the MCP mirror of the CLI's -k/--tags/--node/--last-failed/--specs/--strict-specs/--profile/--jobs flags). Spec burndown: specs=true selects only spec-flagged tests (proofs authored ahead of implementation); with strict_specs=true open specs fail loud — the implementing agent's inner loop (see learn { topic = \"specs\" }). Vacuity hunt: falsify=true selects only tests declaring `falsified_by`, applies each mutation and INVERTS the verdict — a body that still passes with its falsifier applied is asserting nothing and fails as vacuous (see learn { topic = \"falsify\" }). With `topology`, run WARM against a topology held by a prior `up`: t:use resolves the held live instance instead of provisioning (never provisions implicitly — an un-held topology is an error). Returns compact JSON: { passed, failed, skipped, spec, deselected, duration_ms, failures: [{ path, message, file?, line? }] } (spec = open specs — red-by-definition proofs awaiting implementation) (file/line = the failing test's declaration site, when known). The result is marked isError when any node failed, and a selection that matches NOTHING is an error (usually a typo — mirror of the CLI's default; the CLI's --allow-empty has no MCP counterpart). Also records the failed nodes so a later run with last_failed=true (or CLI --last-failed) re-runs exactly them; last_failed with no recorded state runs everything and says so in a `note` field. Pass `package` (a directory or manifest path) to target ANOTHER package anywhere on disk — the server's startup package is only the default, and a `package` resolves fresh, so a manifest you just scaffolded works without a restart."
+        description = "Run the package's test suite with an optional selection (the MCP mirror of the CLI's -k/--tags/--node/--last-failed/--specs/--strict-specs/--profile/--jobs flags). Burndown: specs=true selects only promised tests (proofs authored ahead of implementation); with strict_specs=true open promises fail loud — the implementing agent's inner loop (see learn { topic = \"specs\" }). Vacuity hunt: falsify=true selects only tests declaring `falsified_by`, applies each mutation and INVERTS the verdict — a body that still passes with its falsifier applied is asserting nothing and fails as vacuous (see learn { topic = \"falsify\" }). With `topology`, run WARM against a topology held by a prior `up`: t:use resolves the held live instance instead of provisioning (never provisions implicitly — an un-held topology is an error). Returns compact JSON: { passed, failed, skipped, spec, deselected, duration_ms, failures: [{ path, message, file?, line? }] } (spec = open promises — red-by-definition proofs awaiting implementation; field name frozen) (file/line = the failing test's declaration site, when known). The result is marked isError when any node failed, and a selection that matches NOTHING is an error (usually a typo — mirror of the CLI's default; the CLI's --allow-empty has no MCP counterpart). Also records the failed nodes so a later run with last_failed=true (or CLI --last-failed) re-runs exactly them; last_failed with no recorded state runs everything and says so in a `note` field. Pass `package` (a directory or manifest path) to target ANOTHER package anywhere on disk — the server's startup package is only the default, and a `package` resolves fresh, so a manifest you just scaffolded works without a restart."
     )]
     async fn run(&self, Parameters(req): Parameters<RunRequest>) -> CallToolResult {
         let _serialized = self.run_lock.lock().await;
@@ -809,7 +809,7 @@ impl ProvaMcpServer {
 
     #[tool(
         name = "attest",
-        description = "Did the proof covering an obligation actually RUN? The question `0 failed` cannot answer — a suite in which every proof skipped reports exactly that, honestly, and establishes nothing. Reads the record the last run wrote and reconciles it against the `covers = \"<doc>#<id>\"` bindings for `address`. Returns compact JSON: { address, attested, verdict, proof?, reason? } where verdict is one of attested | red | no_evidence | unbound. ONLY an executed, passing proof attests: skipped, deselected, absent from the run, failed, and still-an-open-spec all come back attested=false, and the result is marked isError so it cannot be skimmed past. Call this before reporting a doc-anchored obligation as done. Pass `package` (a directory or manifest path) to target ANOTHER package anywhere on disk. See learn { topic = \"record\" }."
+        description = "Did the proof covering an obligation actually RUN? The question `0 failed` cannot answer — a suite in which every proof skipped reports exactly that, honestly, and establishes nothing. Reads the record the last run wrote and reconciles it against the `covers = \"<doc>#<id>\"` bindings for `address`. Returns compact JSON: { address, attested, verdict, proof?, reason? } where verdict is one of attested | red | no_evidence | unbound. ONLY an executed, passing proof attests: skipped, deselected, absent from the run, failed, and still-promised all come back attested=false, and the result is marked isError so it cannot be skimmed past. Call this before reporting a doc-anchored obligation as done. Pass `package` (a directory or manifest path) to target ANOTHER package anywhere on disk. See learn { topic = \"record\" }."
     )]
     async fn attest(&self, Parameters(req): Parameters<AttestRequest>) -> CallToolResult {
         let _serialized = self.run_lock.lock().await;
@@ -1064,7 +1064,7 @@ fn attest_blocking(env: &McpEnv, req: AttestRequest) -> Result<(serde_json::Valu
             "address": req.address, "attested": false, "verdict": "red", "proof": path,
             "reason": match outcome {
                 crate::record::Executed::Failed => "the covering proof ran and failed",
-                crate::record::Executed::Spec => "the covering proof is an open spec, red by definition",
+                crate::record::Executed::Spec => "the covering proof is an open promise, red by definition",
                 crate::record::Executed::Passed => "unreachable",
             },
         }),

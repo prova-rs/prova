@@ -93,19 +93,19 @@ const VERBS: &[Verb] = &[
     },
     Verb {
         name: "specs",
-        help: "  prova specs               list the open spec surface — proofs authored ahead of implementation\n\
+        help: "  prova specs               list the open promises — proofs authored ahead of implementation\n\
                \x20                           (same as `--specs --list`; composes with selection)",
         run: specs_subcommand,
     },
     Verb {
         name: "burndown",
-        help: "  prova burndown [<sel>]    the implementing loop: run only spec-flagged tests, open specs fail\n\
+        help: "  prova burndown [<sel>]    the implementing loop: run only promised tests, open promises fail\n\
                \x20                           loud with full detail (same as `--specs --strict-specs`)",
         run: burndown_subcommand,
     },
     Verb {
         name: "owed",
-        help: "  prova owed                what this package still owes: open specs, unproven claims,\n\
+        help: "  prova owed                what this package still owes: open promises, unproven claims,\n\
                \x20                           and covers pointing at prose that is not there",
         run: owed_subcommand,
     },
@@ -117,9 +117,21 @@ const VERBS: &[Verb] = &[
     },
     Verb {
         name: "attest",
-        help: "  prova attest <address>    did the proof covering this claim actually RUN? Fails when it was\n\
-               \x20                           skipped, deselected or absent — `0 failed` is not evidence",
+        help: "  prova attest [<address>]  did the proof covering this claim actually RUN? Fails when it was\n\
+               \x20                           skipped, deselected or absent; no address gates EVERY claim (CI)",
         run: attest_subcommand,
+    },
+    Verb {
+        name: "evidence",
+        help: "  prova evidence            the whole account: CLAIMED / BOUND / PROMISED / ATTESTED with\n\
+               \x20                           counts, then what is owed — where does this project stand?",
+        run: evidence_subcommand,
+    },
+    Verb {
+        name: "list",
+        help: "  prova list [<sel>]        discover tests without running them (same as `--list`; respects\n\
+               \x20                           selection — `prova specs` is `list --specs`)",
+        run: list_subcommand,
     },
     Verb {
         name: "mcp",
@@ -191,8 +203,8 @@ options:
       --tags a,b            select nodes tagged with any listed tag (repeatable; !tag excludes)
       --node PATH           select an exact node path (repeatable) — re-run what a report named
       --last-failed         select only the nodes that failed in the previous run
-      --specs               select only spec-flagged tests — the open spec surface (composes with --list)
-      --strict-specs        driver mode: open specs report as real failures (the implementing loop)
+      --specs               select only promised tests — the open surface (composes with --list)
+      --strict-specs        driver mode: open promises report as real failures (the implementing loop)
       --allow-empty         a selection matching no tests is OK (default: that is an error)
   -u, --update-snapshots    (re)write snapshots instead of comparing (matches_snapshot)
       --unreferenced M      snapshots no test used: ignore (default) | warn | delete (full runs only)
@@ -325,7 +337,7 @@ fn plugin_subcommand(args: Vec<String>) -> ExitCode {
     }
 }
 
-/// `prova specs` — the no-flags spelling of `--specs --list`: enumerate the open spec surface
+/// `prova specs` — the no-flags spelling of `--specs --list`: enumerate the open promises
 /// without running anything. The flags remain the composable primitives; this is the verb an
 /// agent remembers (activities are subcommands, and the no-arg form lists its domain, like
 /// `prova up` / `prova plugin`). Extra args pass through, so selection still composes.
@@ -335,7 +347,16 @@ fn specs_subcommand(args: Vec<String>) -> ExitCode {
     run(full)
 }
 
-/// `prova burndown` — the implementing inner loop: `--specs --strict-specs`, so open specs fail
+/// `prova list` — the run-axis discovery head. `specs` is this plus `--specs`: both list NODES,
+/// which is what separates them from the evidence family (`evidence`/`owed`/`attest` list
+/// OBLIGATIONS and never load a selection).
+fn list_subcommand(args: Vec<String>) -> ExitCode {
+    let mut full = vec!["--list".to_string()];
+    full.extend(args);
+    run(full)
+}
+
+/// `prova burndown` — the implementing inner loop: `--specs --strict-specs`, so open promises fail
 /// loud with full detail and honored specs demand their flag's removal. `--allow-empty` rides
 /// along because an empty surface here means the burndown is COMPLETE — exit 0, not a
 /// selection error.
@@ -351,7 +372,7 @@ fn burndown_subcommand(args: Vec<String>) -> ExitCode {
 
 /// `prova owed` — the obligation ledger: everything this package owes, from every origin.
 ///
-/// An agent orienting in a repo should ask ONE question — what is owed here? — so open specs
+/// An agent orienting in a repo should ask ONE question — what is owed here? — so open promises
 /// (in-repo deferrals) and unproven claims (obligations that entered from prose) land in one list
 /// with origin as a column. An answer that lives in two places has one that goes stale.
 ///
@@ -369,7 +390,7 @@ fn owed_subcommand(args: Vec<String>) -> ExitCode {
     };
 
     // The manifest entry IS the opt-in. No `[claims]` means no scan, no cost, and no lecture about
-    // a subsystem this package never asked for — but open specs are still owed, so the ledger still
+    // a subsystem this package never asked for — but open promises are still owed, so the ledger still
     // has something to say.
     let docs = manifest.claims.as_ref().map(|c| c.docs.clone()).unwrap_or_default();
 
@@ -409,7 +430,7 @@ fn owed_subcommand(args: Vec<String>) -> ExitCode {
 
     let owed = claims::reconcile(&claims, &proofs);
     if owed.is_empty() {
-        println!("prova: nothing owed — no open specs, and every claim is covered");
+        println!("prova: nothing owed — no open promises, and every claim is covered");
         return ExitCode::SUCCESS;
     }
     for row in &owed {
@@ -436,9 +457,11 @@ fn attest_subcommand(args: Vec<String>) -> ExitCode {
         match arg.as_str() {
             "-h" | "--help" => {
                 println!(
-                    "usage: prova attest <doc.md#claim-id>\n\n\
+                    "usage: prova attest [<doc.md#claim-id>]\n\n\
                      Reports whether the proof covering an obligation actually executed in the last\n\
-                     recorded run. A skipped, deselected or absent proof attests nothing."
+                     recorded run. A skipped, deselected or absent proof attests nothing.\n\n\
+                     With no address: reconcile EVERY anchored claim and exit non-zero unless each\n\
+                     one is attested — the one-exit-code answer a CI gate needs."
                 );
                 return ExitCode::SUCCESS;
             }
@@ -446,15 +469,11 @@ fn attest_subcommand(args: Vec<String>) -> ExitCode {
                 address = Some(other.to_string());
             }
             other => {
-                eprintln!("prova: attest: unexpected argument {other:?}\nusage: prova attest <doc.md#claim-id>");
+                eprintln!("prova: attest: unexpected argument {other:?}\nusage: prova attest [<doc.md#claim-id>]");
                 return ExitCode::from(2);
             }
         }
     }
-    let Some(address) = address else {
-        eprintln!("prova: attest: an obligation address is required\nusage: prova attest <doc.md#claim-id>");
-        return ExitCode::from(2);
-    };
 
     let home = match resolve_home(None) {
         Ok(h) => h,
@@ -463,6 +482,11 @@ fn attest_subcommand(args: Vec<String>) -> ExitCode {
     let (manifest, plugins_resolved) = match resolve_for_obligations(&home) {
         Ok(pair) => pair,
         Err(code) => return code,
+    };
+
+    // No address: the pipeline's question. Reconcile the whole account into one exit code.
+    let Some(address) = address else {
+        return attest_all(&home, &manifest, &plugins_resolved);
     };
 
     // No record at all is the absence of evidence, not the absence of a problem. Treating it as
@@ -502,7 +526,7 @@ fn attest_subcommand(args: Vec<String>) -> ExitCode {
         record::Attested::Red { path, outcome } => {
             let what = match outcome {
                 record::Executed::Failed => "failed",
-                record::Executed::Spec => "is an open spec, red by definition",
+                record::Executed::Spec => "is an open promise, red by definition",
                 record::Executed::Passed => unreachable!("a passing proof attests"),
             };
             println!("  ↳ NOT attested — {path} {what}");
@@ -573,6 +597,179 @@ fn spell_selection(config: &prova_core::RunConfig) -> Vec<String> {
         out.push("--falsify".to_string());
     }
     out
+}
+
+/// `prova attest` with no address — every anchored claim, one exit code.
+///
+/// The developer's question is one address; the pipeline's question is "is everything this
+/// project claims actually evidenced", and it has to be a single exit code or CI cannot gate on
+/// it. Any claim that is unbound, or whose covering proof did not execute and pass in the
+/// recorded run, fails the gate. A package with no claims exits 0 with a stated reason — a
+/// pipeline wiring the gate before declaring `[claims]` should learn it is gating nothing, and a
+/// package that never opted in must not fail for it.
+fn attest_all(
+    home: &home::Home,
+    manifest: &Manifest,
+    plugins_resolved: &plugins::ResolvedPlugins,
+) -> ExitCode {
+    let docs = manifest.claims.as_ref().map(|c| c.docs.clone()).unwrap_or_default();
+    let claims = match claims::scan(&home.dir, &docs) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("prova: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if claims.is_empty() {
+        println!(
+            "prova: attest — no claims declared here (no `[claims]` docs, or no `<!-- claim: id -->` anchors); nothing to gate on"
+        );
+        return ExitCode::SUCCESS;
+    }
+    let Some(recorded) = record::load(home) else {
+        println!("prova: attest — no run has been recorded here; run the suite first (`prova`)");
+        println!("  {} claim(s) declared, none attested", claims.len());
+        return ExitCode::FAILURE;
+    };
+    let proofs = match collect_obligations(home, manifest, plugins_resolved) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("prova: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut attested = 0usize;
+    println!("prova: attest — {} claim(s)", claims.len());
+    for claim in &claims {
+        let bindings: Vec<String> = proofs
+            .iter()
+            .filter(|p| p.covers.iter().any(|c| claims::split_pin(c).0 == claim.address))
+            .map(|p| p.path.clone())
+            .collect();
+        let verdict = record::attest(&recorded, &bindings);
+        match &verdict {
+            record::Attested::Yes { path } => {
+                attested += 1;
+                println!("  ATTESTED  {}  — {path}", claim.address);
+            }
+            record::Attested::Red { path, .. } => {
+                println!("  NOT       {}  — {path} did not pass", claim.address);
+            }
+            record::Attested::NoEvidence { path, why } => {
+                println!("  NOT       {}  — {path} did not execute ({why})", claim.address);
+            }
+            record::Attested::Unbound => {
+                println!("  NOT       {}  — no proof declares `covers` for it", claim.address);
+            }
+        }
+    }
+    println!("\n  {attested} of {} attested", claims.len());
+    if attested == claims.len() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// `prova evidence` — the whole account: every stage of the obligation lifecycle with its count,
+/// then the debts. The command the lifecycle was missing: `owed` shows only what is owed and
+/// `attest` answers one address, so no verb could say where a project stands.
+///
+/// A report, never a gate — exit 0 belongs to the query family's contract, and the gate is
+/// `prova attest`. Executes no proof body, like every query verb.
+fn evidence_subcommand(args: Vec<String>) -> ExitCode {
+    for arg in args {
+        match arg.as_str() {
+            "-h" | "--help" => {
+                println!(
+                    "usage: prova evidence\n\n\
+                     The whole account: CLAIMED / BOUND / PROMISED / ATTESTED with counts, then\n\
+                     what is owed. `prova owed` lists each debt; `prova attest` gates on the account."
+                );
+                return ExitCode::SUCCESS;
+            }
+            other => {
+                eprintln!("prova: evidence: unexpected argument {other:?}\nusage: prova evidence");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let home = match resolve_home(None) {
+        Ok(h) => h,
+        Err(code) => return code,
+    };
+    let (manifest, plugins_resolved) = match resolve_for_obligations(&home) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+    let docs = manifest.claims.as_ref().map(|c| c.docs.clone()).unwrap_or_default();
+    let claims = match claims::scan(&home.dir, &docs) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("prova: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let proofs = match collect_obligations(&home, &manifest, &plugins_resolved) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("prova: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let recorded = record::load(&home);
+
+    // The stages, statically: a claim is BOUND when at least one proof covers it. PROMISED is the
+    // open surface across every origin (claim-covering or not — an open promise is owed either
+    // way). ATTESTED needs the record, and its absence is a stated fact, not a zero.
+    let bindings_for = |address: &str| -> Vec<String> {
+        proofs
+            .iter()
+            .filter(|p| p.covers.iter().any(|c| claims::split_pin(c).0 == address))
+            .map(|p| p.path.clone())
+            .collect()
+    };
+    let bound = claims.iter().filter(|c| !bindings_for(&c.address).is_empty()).count();
+    let promised = proofs.iter().filter(|p| p.spec.is_some()).count();
+    let attested = recorded.as_ref().map(|r| {
+        claims
+            .iter()
+            .filter(|c| record::attest(r, &bindings_for(&c.address)).is_attested())
+            .count()
+    });
+
+    println!("prova: evidence for {}", home.dir.display());
+    println!();
+    println!("  CLAIMED   {:>4}   anchored claims in the declared docs", claims.len());
+    println!("  BOUND     {:>4}   covered by at least one proof", bound);
+    println!("  PROMISED  {:>4}   proofs authored ahead of implementation", promised);
+    match attested {
+        Some(n) => println!(
+            "  ATTESTED  {:>4}   covering proof executed and passed in the recorded run",
+            n
+        ),
+        None => println!("  ATTESTED     —   no run recorded — run the suite first (`prova`)"),
+    }
+
+    // The debts, so the account is actionable rather than a scoreboard. Same reconciliation the
+    // `owed` verb prints in full.
+    let owed = claims::reconcile(&claims, &proofs);
+    if owed.is_empty() {
+        println!("\n  nothing owed");
+    } else {
+        use std::collections::BTreeMap;
+        let mut by_status: BTreeMap<&'static str, usize> = BTreeMap::new();
+        for o in &owed {
+            *by_status.entry(o.status.tag()).or_default() += 1;
+        }
+        println!("\nowed:");
+        for (tag, count) in by_status {
+            println!("  {tag:<9} {count:>4}");
+        }
+        println!("  (`prova owed` lists each one; `prova attest` gates on the account)");
+    }
+    ExitCode::SUCCESS
 }
 
 /// Collect every proof's `spec`/`covers` WITHOUT running anything. Reconciling prose against

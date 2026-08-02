@@ -60,7 +60,7 @@ implementation can, it deserves a unit test.
 | Whole system must exist first (render, build, boot) | That IS the fixture — see `prova learn doubles` for the dependency side |
 | The bug lives in one function's logic | Unit-test it natively; keep the proof at the boundary that exposed it |
 | Contract known, implementation deferred (design doc, out-of-scope gap) | Author it NOW as a spec: `{ spec = "reason" }` — executable backlog, not a TODO comment |
-| `prova specs` shows open specs in this repo | That is scoped, unclaimed work — offer to burn it down (`prova learn specs`) |
+| `prova specs` shows open promises in this repo | That is scoped, unclaimed work — offer to burn it down (`prova learn specs`) |
 
 Go deeper: `prova learn specs` (proofs ahead of implementation) · `prova learn project` (where
 things live here) · `prova learn init` (scaffolding) · `prova learn doubles` (mocks and

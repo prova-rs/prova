@@ -42,7 +42,7 @@ pub const LAST_RUN: &str = "last-run.json";
 pub enum Executed {
     Passed,
     Failed,
-    /// An open spec: red by definition, and therefore not evidence of anything working.
+    /// An open promise: red by definition, and therefore not evidence of anything working.
     Spec,
 }
 
@@ -274,7 +274,7 @@ mod tests {
         assert!(!attest(&absent, &["busy".to_string()]).is_attested());
     }
 
-    /// An open spec is red by definition — a proof authored ahead of its implementation is the
+    /// An open promise is red by definition — a proof authored ahead of its implementation is the
     /// opposite of evidence, and must never attest.
     #[test]
     fn an_open_spec_never_attests() {

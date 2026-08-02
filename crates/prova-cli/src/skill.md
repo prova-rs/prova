@@ -56,12 +56,18 @@ wording is the contract, and an edit reports STALE instead of passing silently. 
 `[claims] docs = [...]`; absent, the subsystem is inert. If you find things owed in a repo,
 surface them — that is scoped work someone has not finished.
 
+**Evidence — where does this project stand?** `prova evidence` is the whole account: CLAIMED /
+BOUND / PROMISED / ATTESTED with counts, then what is owed. Start here when orienting in a repo
+that declares `[claims]`; `prova owed` is the actionable narrowing. In CI, **bare `prova attest`
+gates**: it reconciles every anchored claim against the recorded run and exits non-zero unless
+each is attested. `prova learn evidence` carries the family.
+
 **The run record — never report `0 failed` as "covered".** It is equally true of a suite that
 proved everything and one in which every proof **skipped** for want of a docker daemon, a broker
 or a display. Each run writes `.prova/var/last-run.json` naming — individually, not summed — the
 skipped (with the gate's reason) and the deselected. **Before claiming an obligation is done, run
 `prova attest docs/design.md#id`**: it exits non-zero unless a proof covering that address
-actually executed and passed, so skipped, deselected, absent, red and open-spec all read as what
+actually executed and passed, so skipped, deselected, absent, red and still-promised all read as what
 they are — no evidence. `--record <path>` also emits it for CI to keep. `prova learn record`.
 
 Prova complements the language's own test harness; it does not replace it. Prove the CONTRACT
@@ -80,8 +86,9 @@ Everything below is the crash course; depth is one call away, computed for THIS 
 | An API's shape: what to call, what comes back | `prova.help("<filter>")` in any test/eval · MCP `introspect { filter }` |
 | Which archetypes `init` can scaffold | `prova init --list` (or `prova learn init`) |
 | A live value's shape | probe it with `eval` |
-| The open-spec backlog (proofs ahead of implementation) | `prova specs` · `prova learn specs` |
+| The open promises (proofs ahead of implementation) | `prova specs` · `prova learn specs` |
 | Whether the proofs can actually fail (vacuous-proof hunt) | `prova falsify` · `prova learn falsify` |
+| Where the project stands — the whole account | `prova evidence` · `prova learn evidence` |
 | Everything this package owes, from every origin | `prova owed` · `prova learn claims` |
 | Whether a claim's proof actually RAN (not just "0 failed") | `prova attest <doc.md#id>` · `prova learn record` |
 | A plugin for a technology you need to prove | `prova plugins <term>` (search registries) → `prova plugins add <name>` |
@@ -231,7 +238,7 @@ prova -k MySQL              # only nodes whose path mentions MySQL (repeatable; 
 prova --tags '!build'       # skip a tier by tag (own or inherited from groups)
 prova --node "exact › path" # precisely the node a report named
 prova --last-failed         # exactly what was red last run — your main iteration verb
-prova --list                # discover without running (respects selection)
+prova list                  # discover without running (respects selection; = --list)
 prova specs                 # list the open backlog · `prova burndown` drives it red-loud
 prova --specs               # the composable selector underneath (only promise-flagged tests)
 prova eval 'return require("postgres").container(ctx).url'   # one-shot probe, auto-teardown

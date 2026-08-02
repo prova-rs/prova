@@ -6,9 +6,9 @@
 --- the drift the claims subsystem exists to catch, so the doc's normative statements are anchored
 --- and discharged here.
 ---
---- Two of its claims are deliberately NOT covered — `ledger-is-the-account` and
---- `ci-can-ask-for-everything` describe a verb that does not exist yet. They report UNPROVEN in
---- `prova owed`, which is the ledger doing its job on its own design doc.
+--- Its claims are discharged across two suites: the stage/level/family contracts here, and the
+--- whole-account verb (`evidence-is-the-account`, `ci-can-ask-for-everything`) in
+--- evidence_test.lua — which existed as UNPROVEN rows in `prova owed` until the verb shipped.
 
 local sandbox = prova.fixture("lifecycle-sandbox", Scope.File, function(ctx)
   local proj = ctx:tempdir() .. "/pkg"
