@@ -1043,7 +1043,7 @@ fn attest_blocking(env: &McpEnv, req: AttestRequest) -> Result<(serde_json::Valu
         ));
     };
 
-    let proofs = crate::collect_obligations(&call.home, &manifest)?;
+    let proofs = crate::collect_obligations(&call.home, &manifest, &call.plugins)?;
     let bindings: Vec<String> = proofs
         .iter()
         .filter(|p| {

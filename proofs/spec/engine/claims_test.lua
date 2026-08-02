@@ -277,3 +277,51 @@ prova.test("the binary teaches claims: catalog, topic, and the pin", {
   t:expect(topic.stdout, "the opt-in"):contains("[claims]")
   t:expect(topic.stdout, "pinning"):contains("--pin")
 end)
+
+--- A package that uses its own local plugins — the shape every real project has, and the one the
+--- obligation path did not resolve. `owed` and `attest` collect obligations through their own
+--- slice of manifest resolution rather than the one a run uses; a `require("<local>")` in any proof
+--- therefore failed to resolve and took the whole ledger down with it.
+local with_plugin = prova.fixture("claims-plugin-sandbox", Scope.File, function(ctx)
+  local proj = ctx:tempdir() .. "/pkg"
+  fs.mkdir(proj .. "/proofs")
+  fs.mkdir(proj .. "/docs")
+  fs.mkdir(proj .. "/.prova/plugins/helper")
+  fs.write(proj .. "/prova.toml",
+    '[run]\nproofs = ["proofs"]\nplugin_root = ".prova/plugins"\n\n[claims]\ndocs = ["docs"]\n')
+  fs.write(proj .. "/.prova/plugins/helper/init.lua", "return { greet = function() return 1 end }\n")
+  fs.write(proj .. "/docs/design.md",
+    "# Design\n\n<!-- claim: helper-works -->\nThe helper answers.\n")
+  fs.write(proj .. "/proofs/helper_test.lua", [[
+local helper = require("helper")
+
+prova.test("the helper answers", { covers = "docs/design.md#helper-works" }, function(t)
+  t:expect(helper.greet()):equals(1)
+end)
+]])
+  return proj
+end)
+
+prova.test("the ledger works in a package that uses its own plugins", {
+  proves = "the obligation path must resolve a package exactly as a run does. Collecting obligations through a second, thinner slice of manifest resolution meant any proof that required a local plugin took `owed` and `attest` down with it — and every real project has local plugins",
+}, function(t)
+  local proj = t:use(with_plugin)
+  local r = shell.run(prova.bin .. " owed", { cwd = proj, merge_stderr = true })
+
+  -- Not a stack traceback, and not a false UNBOUND either: the binding is real and discharged.
+  t:expect(r.stdout, "no Lua error escapes"):never():contains("stack traceback")
+  t:expect(r.stdout):never():contains("no plugin root declared")
+  t:expect(r.code):equals(0)
+end)
+
+prova.test("attest resolves a package that uses its own plugins", {
+  proves = "attest reads bindings through the same collection path as owed, so the same defect silently made every attestation in a plugin-using package unanswerable",
+}, function(t)
+  local proj = t:use(with_plugin)
+  shell.run(prova.bin, { cwd = proj, merge_stderr = true })
+  local r = shell.run(prova.bin .. " attest docs/design.md#helper-works",
+    { cwd = proj, merge_stderr = true })
+
+  t:expect(r.stdout):never():contains("stack traceback")
+  t:expect(r.code, "the proof ran and passed, so the claim attests"):equals(0)
+end)

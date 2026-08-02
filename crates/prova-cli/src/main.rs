@@ -363,15 +363,9 @@ fn owed_subcommand(args: Vec<String>) -> ExitCode {
         Ok(h) => h,
         Err(code) => return code,
     };
-    let manifest = match std::fs::read_to_string(&home.manifest)
-        .map_err(|e| e.to_string())
-        .and_then(|text| Manifest::parse(&text))
-    {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("prova: {e}");
-            return ExitCode::from(2);
-        }
+    let (manifest, plugins_resolved) = match resolve_for_obligations(&home) {
+        Ok(pair) => pair,
+        Err(code) => return code,
     };
 
     // The manifest entry IS the opt-in. No `[claims]` means no scan, no cost, and no lecture about
@@ -387,7 +381,7 @@ fn owed_subcommand(args: Vec<String>) -> ExitCode {
         }
     };
 
-    let proofs = match collect_obligations(&home, &manifest) {
+    let proofs = match collect_obligations(&home, &manifest, &plugins_resolved) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("prova: {e}");
@@ -466,15 +460,9 @@ fn attest_subcommand(args: Vec<String>) -> ExitCode {
         Ok(h) => h,
         Err(code) => return code,
     };
-    let manifest = match std::fs::read_to_string(&home.manifest)
-        .map_err(|e| e.to_string())
-        .and_then(|text| Manifest::parse(&text))
-    {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("prova: {e}");
-            return ExitCode::from(2);
-        }
+    let (manifest, plugins_resolved) = match resolve_for_obligations(&home) {
+        Ok(pair) => pair,
+        Err(code) => return code,
     };
 
     // No record at all is the absence of evidence, not the absence of a problem. Treating it as
@@ -485,7 +473,7 @@ fn attest_subcommand(args: Vec<String>) -> ExitCode {
         return ExitCode::FAILURE;
     };
 
-    let proofs = match collect_obligations(&home, &manifest) {
+    let proofs = match collect_obligations(&home, &manifest, &plugins_resolved) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("prova: {e}");
@@ -535,6 +523,36 @@ fn attest_subcommand(args: Vec<String>) -> ExitCode {
     }
 }
 
+/// Resolve a package the way a RUN resolves it, for the verbs that only read obligations
+/// (`owed`, `attest`). One door, so the ledger can never disagree with the suite about what a
+/// package is — the divergence that made both verbs crash on any package with local plugins.
+///
+/// `require_proofs = false`: these verbs read whatever proofs exist and have nothing to select, so
+/// a plugins-only manifest is legitimate here where it would be a config error for a run.
+fn resolve_for_obligations(
+    home: &home::Home,
+) -> Result<(Manifest, plugins::ResolvedPlugins), ExitCode> {
+    let manifest = match std::fs::read_to_string(&home.manifest)
+        .map_err(|e| e.to_string())
+        .and_then(|text| Manifest::parse(&text))
+    {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("prova: {e}");
+            return Err(ExitCode::from(2));
+        }
+    };
+    let layout = match XdgSystemLayout::new() {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("prova: {e}");
+            return Err(ExitCode::from(2));
+        }
+    };
+    let run = resolve_from_manifest(home, None, None, None, None, &layout, false, false, false)?;
+    Ok((manifest, run.plugins))
+}
+
 /// How the run was narrowed, spelled the way it was asked for.
 ///
 /// An empty list is the load-bearing case: only a record with no selection at all can speak for the
@@ -559,12 +577,24 @@ fn spell_selection(config: &prova_core::RunConfig) -> Vec<String> {
 
 /// Collect every proof's `spec`/`covers` WITHOUT running anything. Reconciling prose against
 /// proofs is a static question: it must not need a green suite, a docker daemon, or a broker.
+///
+/// **Takes the package's resolved plugins**, because collection LOADS every proof file and a proof
+/// is entitled to `require("<a-local-plugin>")`. Building a bare `RunConfig` here — a second,
+/// thinner slice of manifest resolution than a run uses — meant the first such `require` took the
+/// whole ledger down with a Lua traceback. Every real package has local plugins, so `owed` and
+/// `attest` were unusable on exactly the projects they are for.
 fn collect_obligations(
     home: &home::Home,
     manifest: &Manifest,
+    plugins_resolved: &plugins::ResolvedPlugins,
 ) -> Result<Vec<prova_core::ProofObligation>, String> {
     let resolved = manifest.resolve(None)?;
-    let config = prova_core::RunConfig::new(1);
+    let config = engine_config(
+        1,
+        plugins_resolved,
+        Some(home),
+        prova_core::progress::null(),
+    );
     let mut out = Vec::new();
     for dir in find_proof_dirs(&home.dir, &resolved.proofs) {
         let suites = discover_suites(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
