@@ -12,6 +12,13 @@ plugin_root  = ".prova/plugins"      # this project's own plugins (root-relative
 [plugins]
 parallels = { git = "https://github.com/prova-rs/prova-parallels", tag = "v1" }
 
+# Prova's own claims. The point of declaring this is not bookkeeping — it is that prova must be
+# the exemplar of a proven application, and a lifecycle nobody has run end-to-end on a real
+# project is a design rather than a practice. Anchors live in the design docs; `prova owed` says
+# what is still owed against them. See docs/design/lifecycle.md.
+[claims]
+docs = ["docs/design"]
+
 # This repo's /.luarc.json is deliberately COMMITTED and hand-maintained (it points at library/ —
 # the hand-written stub sources, because prova is where they come from). prova's own managed
 # entries are machine-local absolute paths, which would keep the tracked file dirty on every
