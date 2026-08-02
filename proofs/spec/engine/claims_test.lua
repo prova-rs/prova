@@ -13,7 +13,8 @@
 local sandbox = prova.fixture("claims-sandbox", Scope.File, function(ctx)
   local root = ctx:tempdir()
   local proj = root .. "/pkg"
-  shell.run("mkdir -p " .. proj .. "/proofs " .. proj .. "/docs", { check = true })
+  fs.mkdir(proj .. "/proofs")
+  fs.mkdir(proj .. "/docs")
   fs.write(proj .. "/prova.toml", '[run]\nproofs = ["proofs"]\n\n[claims]\ndocs = ["docs"]\n')
   fs.write(proj .. "/docs/design.md", [[
 # Design
@@ -123,7 +124,7 @@ prova.test("no [claims] section means the whole subsystem is inert", {
 }, function(t)
   local proj = t:use(sandbox)
   local bare = proj .. "/../bare"
-  shell.run("mkdir -p " .. bare .. "/proofs", { check = true })
+  fs.mkdir(bare .. "/proofs")
   fs.write(bare .. "/prova.toml", '[run]\nproofs = ["proofs"]\n')
   fs.write(bare .. "/proofs/x_test.lua", 'prova.test("x", function(t) t:expect(1):equals(1) end)\n')
 
@@ -159,7 +160,8 @@ end)
 
 local pinned = prova.fixture("claims-pin-sandbox", Scope.File, function(ctx)
   local proj = ctx:tempdir() .. "/pkg"
-  shell.run("mkdir -p " .. proj .. "/proofs " .. proj .. "/docs", { check = true })
+  fs.mkdir(proj .. "/proofs")
+  fs.mkdir(proj .. "/docs")
   fs.write(proj .. "/prova.toml", '[run]\nproofs = ["proofs"]\n\n[claims]\ndocs = ["docs"]\n')
   fs.write(proj .. "/docs/design.md", [[
 <!-- claim: pinned-claim -->
