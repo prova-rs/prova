@@ -85,5 +85,4 @@ catch; `prova falsify` applies it and INVERTS the verdict, so a body that surviv
 and fails the run. Its own screen: `prova learn falsify`.
 
 Obligations also arrive from outside: `<!-- claim: id -->` in prose is one, `covers = "path#id"`
-discharges it, and `prova owed` reconciles every origin — unbound claims, unproven bindings, open
-specs — into one list. Opt in with `[claims] docs`.
+discharges it, and `prova owed` reconciles every origin into one list: `prova learn claims`.

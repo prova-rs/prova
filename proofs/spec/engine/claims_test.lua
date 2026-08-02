@@ -54,7 +54,7 @@ prova.test("`prova owed` reports an anchored claim with no covering proof", {
   proves = "the intake half: writing an anchor admits an obligation from outside prova entirely, so work scoped in prose stops being invisible until someone remembers it",
 }, function(t)
   local proj = t:use(sandbox)
-  local r = shell.run(prova.bin .. " owed 2>&1", { cwd = proj })
+  local r = shell.run(prova.bin .. " owed", { cwd = proj, merge_stderr = true })
 
   -- The intake half: writing an anchor admits an obligation from outside prova entirely, and it
   -- shows up as work owed rather than being invisible until someone remembers it.
@@ -66,7 +66,7 @@ prova.test("a covered claim is not reported as owed", {
   proves = "discharged obligations must leave the list, or the list stops being read",
 }, function(t)
   local proj = t:use(sandbox)
-  local r = shell.run(prova.bin .. " owed 2>&1", { cwd = proj })
+  local r = shell.run(prova.bin .. " owed", { cwd = proj, merge_stderr = true })
 
   -- Discharged obligations must leave the list, or the list stops being read.
   t:expect(r.stdout):never():contains("busy-not-absent")
@@ -76,7 +76,7 @@ prova.test("a covers pointing at no anchor is UNBOUND, and not fatal", {
   proves = "prose-not-yet-written and prose-deleted produce the same state and want different remedies; both are unfinished work and neither is a broken build",
 }, function(t)
   local proj = t:use(sandbox)
-  local r = shell.run(prova.bin .. " owed 2>&1", { cwd = proj })
+  local r = shell.run(prova.bin .. " owed", { cwd = proj, merge_stderr = true })
 
   -- Two situations produce this identical state — prose not written yet, and prose deleted after
   -- the proof captured the contract. Both are unfinished work, neither is a broken build, and the
@@ -90,7 +90,7 @@ prova.test("open specs and unproven claims share one list", {
   proves = "an agent orienting in a repo asks one question — what is owed here? An answer living in two places has one that goes stale",
 }, function(t)
   local proj = t:use(sandbox)
-  local r = shell.run(prova.bin .. " owed 2>&1", { cwd = proj })
+  local r = shell.run(prova.bin .. " owed", { cwd = proj, merge_stderr = true })
 
   -- An agent orienting in a repo asks ONE question — what is owed here? Origin is a column, not a
   -- separate concept, or the answer lives in two places and one of them goes stale.
@@ -109,7 +109,7 @@ First.
 <!-- claim: twice -->
 Second.
 ]])
-  local r = shell.run(prova.bin .. " owed 2>&1", { cwd = proj })
+  local r = shell.run(prova.bin .. " owed", { cwd = proj, merge_stderr = true })
   fs.remove_all(proj .. "/docs/dupe.md")
 
   -- Unlike everything else here, this is a real defect: an ambiguous address cannot be discharged
@@ -127,7 +127,7 @@ prova.test("no [claims] section means the whole subsystem is inert", {
   fs.write(bare .. "/prova.toml", '[run]\nproofs = ["proofs"]\n')
   fs.write(bare .. "/proofs/x_test.lua", 'prova.test("x", function(t) t:expect(1):equals(1) end)\n')
 
-  local r = shell.run(prova.bin .. " owed 2>&1", { cwd = bare })
+  local r = shell.run(prova.bin .. " owed", { cwd = bare, merge_stderr = true })
 
   -- The manifest entry IS the opt-in. A package that never asked for claims pays nothing and is
   -- never told about a subsystem it does not use.
@@ -139,7 +139,7 @@ prova.test("a normal run ignores claims entirely", {
   proves = "prova must not parse markdown to run a test, and an unproven claim must never turn a green suite red",
 }, function(t)
   local proj = t:use(sandbox)
-  local r = shell.run(prova.bin .. " 2>&1", { cwd = proj })
+  local r = shell.run(prova.bin, { cwd = proj, merge_stderr = true })
 
   -- Reconciliation belongs to the verb that asks for it. `prova` must not parse markdown to run a
   -- test, and an unproven claim must never turn a green suite red.
@@ -180,7 +180,7 @@ prova.test("covered", { covers = "docs/design.md#pinned-claim" }, function(t)
   t:expect(1):equals(1)
 end)
 ]])
-  local r = shell.run(prova.bin .. " owed --pin 2>&1", { cwd = proj })
+  local r = shell.run(prova.bin .. " owed --pin", { cwd = proj, merge_stderr = true })
   t:expect(r.code):equals(0)
 
   local source = fs.read(proj .. "/proofs/pin_test.lua")
@@ -205,7 +205,7 @@ Contention and absence are different answers, and quota exhaustion is contention
 <!-- claim: loose-claim -->
 A held lease is never revoked.
 ]])
-  local r = shell.run(prova.bin .. " owed 2>&1", { cwd = proj })
+  local r = shell.run(prova.bin .. " owed", { cwd = proj, merge_stderr = true })
 
   t:expect(r.stdout, "the edit surfaces"):contains("STALE")
   t:expect(r.stdout):contains("pinned-claim")
@@ -227,7 +227,7 @@ Contention and absence are different answers.
 <!-- claim: loose-claim -->
 A held lease is never revoked, ever, under any circumstances whatsoever.
 ]])
-  local r = shell.run(prova.bin .. " owed 2>&1", { cwd = proj })
+  local r = shell.run(prova.bin .. " owed", { cwd = proj, merge_stderr = true })
   fs.remove_all(proj .. "/proofs/loose_test.lua")
 
   t:expect(r.stdout):never():contains("STALE")
@@ -253,7 +253,7 @@ are different answers.
 <!-- claim: loose-claim -->
 A held lease is never revoked.
 ]])
-  local r = shell.run(prova.bin .. " owed 2>&1", { cwd = proj })
+  local r = shell.run(prova.bin .. " owed", { cwd = proj, merge_stderr = true })
   fs.remove_all(proj .. "/proofs/ws_test.lua")
 
   t:expect(r.stdout):never():contains("STALE")
@@ -264,10 +264,10 @@ prova.test("the binary teaches claims: catalog, topic, and the pin", {
 }, function(t)
   local proj = t:use(pinned)
 
-  local catalog = shell.run(prova.bin .. " learn 2>&1", { cwd = proj })
+  local catalog = shell.run(prova.bin .. " learn", { cwd = proj, merge_stderr = true })
   t:expect(catalog.stdout, "the catalog names the topic"):contains("claims")
 
-  local topic = shell.run(prova.bin .. " learn claims 2>&1", { cwd = proj })
+  local topic = shell.run(prova.bin .. " learn claims", { cwd = proj, merge_stderr = true })
   t:expect(topic.code):equals(0)
   t:expect(topic.stdout, "the anchor form"):contains("<!-- claim:")
   t:expect(topic.stdout, "the attribute"):contains("covers")
