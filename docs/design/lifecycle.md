@@ -7,9 +7,10 @@
 
 ## One line
 
-**Every capability Prova has added answers one question about one obligation: *has this
-travelled far enough to be believed?*** The atoms were built one at a time; this doc is the
-map they turned out to form.
+**The doc *claims* it; a proof *promises* it; the implementation *proves* it; the run *attests*
+it.** Every capability Prova has added answers one question about one obligation — has this
+travelled far enough to be believed? — and the whole journey is four verbs in one grammar. The
+atoms were built one at a time; this doc is the map they turned out to form.
 
 ## Where an obligation comes from
 
@@ -34,14 +35,14 @@ No stage requires an adjacent one: a proof may declare `covers` without `spec`, 
 |---|---|---|---|
 | **Claimed** | `<!-- claim: id -->` in prose | — | "the doc says X" — and nothing tracks it |
 | **Bound** | `covers = "doc.md#id"` | `owed` → `DANGLING` | "I built X" — and nothing links it |
-| **Promised** | `promises = "<reason>"` | `specs` · `burndown` | "I implemented the spec" — never ran it |
+| **Promised** | `promises = "<reason>"` | `promises` · `burndown` | "I implemented the spec" — never ran it |
 | **Proven** | green, with `proves = "<context>"` | `prova` | — |
 | **Falsifiable** | `falsified_by = fn` | `falsify` → *vacuous* | "the tests pass" — vacuously |
 | **Attested** | executed + passed in the run record | `attest` | "0 failed" — nothing ran |
 
 The middle two stages are one grammar: **`promises` graduates to `proves`** — a tense change,
-demanded by a failure the moment the body goes green. (`spec` is the deprecated spelling of
-`promises`; it warns and will be removed.)
+demanded by a failure the moment the body goes green. (`spec`/`specs`/`--specs`/`--strict-specs` are the deprecated
+spellings; they warn and retire at 1.0 — machine field names move in the same release.)
 
 Read the right-hand column as the point. Each row exists because a sentence an agent could say
 was, at that stage, unfalsifiable.
@@ -61,9 +62,9 @@ story lives next to the assertions it explains, where a reviewer cannot miss it 
 doc can drift from it.
 
 **Level 2 — Spec-first.** `promises = "<reason>"` for a contract you can state but are not
-building yet. `prova specs` enumerates the open surface; `prova burndown` is the implementing
+building yet. `prova promises` enumerates the open surface; `prova burndown` is the implementing
 loop; a promise whose body goes green **fails**, demanding graduation to `proves`. The backlog
-becomes executable: `grep TODO` lies, `prova specs` cannot.
+becomes executable: `grep TODO` lies, `prova promises` cannot.
 
 **Level 3 — Falsification.** `falsified_by` declares the mutation a body must catch. `prova falsify`
 applies it and inverts the verdict. This is the level that distinguishes a proof from a green
@@ -82,17 +83,17 @@ execute? Everything above it can be satisfied by a suite that never ran.
 The verbs split cleanly into two families, and the naming marks neither.
 
 <!-- claim: two-verb-families -->
-A query verb — `specs`, `owed`, `attest` — never executes a proof body. Reading what a package
-owes must be safe on any machine, whatever the proofs would do if run.
+A query verb — `promises`, `owed`, `attest`, `evidence` — never executes a proof body. Reading
+what a package owes must be safe on any machine, whatever the proofs would do if run.
 
 - **Runs** — execute proofs: `prova`, `prova burndown`, `prova falsify`.
-- **Queries** — execute nothing: `prova specs`, `prova owed`, `prova attest`.
+- **Queries** — execute nothing: `prova promises`, `prova owed`, `prova attest`, `prova evidence`.
 
 The runs are already principled: each is sugar over composable primitives (`burndown` is
 `--specs --strict-specs`, `falsify` is `--falsify --allow-empty`), so the verb is a shorthand and
 never a second code path.
 
-The queries were not. `prova specs` lists **nodes** and is a run-with-`--list`; `owed` and
+The queries were not. `prova promises` lists **nodes** and is a run-with-`--list`; `owed` and
 `attest` list **obligations**. Two object types wearing one apparent family. The resolution keeps
 every convenient spelling and names the family after its object:
 
@@ -110,10 +111,10 @@ and the open promised surface — in one command that executes no proof body.
 prova evidence                  the whole account, stages and debts
 prova owed                      the actionable narrowing: only what is owed
 prova attest <addr>             one obligation, against the recorded run
-prova specs                     a NODE listing, on the run axis (= list --specs)
+prova promises                  a NODE listing, on the run axis (= list --promises)
 ```
 
-`owed`, `attest`, `specs` and `burndown` all survive as conveniences — the same pattern as
+`owed`, `attest`, `promises` and `burndown` all survive as conveniences — the same pattern as
 `falsify`: the verb is sugar over a composable primitive, never a second code path.
 
 <!-- claim: ci-can-ask-for-everything -->

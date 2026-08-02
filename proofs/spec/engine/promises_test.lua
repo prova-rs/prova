@@ -141,3 +141,25 @@ end)
   t:expect(r.stdout, "the tally speaks it"):contains("1 promised")
   t:expect(r.stdout):never():contains("spec open")
 end)
+
+prova.test("the specs verb and --specs flags still work, and teach their successors", {
+  proves = "retirement at 1.0 is survivable only if every deprecated spelling keeps working while naming its replacement — a break with no bridge just pins users to the old binary",
+}, function(t)
+  local proj = t:use(sandbox)
+  fs.write(proj .. "/proofs/open_test.lua", [[
+prova.test("still open", { promises = "not built yet" }, function(t)
+  t:expect(1):equals(2)
+end)
+]])
+  -- The deprecated verb: same listing, plus the pointer at the new spelling.
+  local verb = shell.run(prova.bin .. " specs", { cwd = proj, merge_stderr = true })
+  t:expect(verb.code):equals(0)
+  t:expect(verb.stdout, "still lists the surface"):contains("still open")
+  t:expect(verb.stdout, "and names its successor"):contains("prova promises")
+
+  -- The deprecated flags: same semantics, one teaching line.
+  local flags = shell.run(prova.bin .. " --specs --strict-specs", { cwd = proj, merge_stderr = true })
+  fs.remove_all(proj .. "/proofs/open_test.lua")
+  t:expect(flags.code, "due semantics under the old spelling"):never():equals(0)
+  t:expect(flags.stdout, "the warning names the new flags"):contains("--due")
+end)

@@ -92,15 +92,20 @@ const VERBS: &[Verb] = &[
         run: learn::run,
     },
     Verb {
+        name: "promises",
+        help: "  prova promises            list the open promises — proofs authored ahead of implementation\n\
+               \x20                           (same as `list --promises`; composes with selection)",
+        run: promises_subcommand,
+    },
+    Verb {
         name: "specs",
-        help: "  prova specs               list the open promises — proofs authored ahead of implementation\n\
-               \x20                           (same as `--specs --list`; composes with selection)",
+        help: "  prova specs               deprecated spelling of `prova promises` (retires at 1.0)",
         run: specs_subcommand,
     },
     Verb {
         name: "burndown",
         help: "  prova burndown [<sel>]    the implementing loop: run only promised tests, open promises fail\n\
-               \x20                           loud with full detail (same as `--specs --strict-specs`)",
+               \x20                           loud with full detail (same as `--promises --due`)",
         run: burndown_subcommand,
     },
     Verb {
@@ -203,8 +208,9 @@ options:
       --tags a,b            select nodes tagged with any listed tag (repeatable; !tag excludes)
       --node PATH           select an exact node path (repeatable) — re-run what a report named
       --last-failed         select only the nodes that failed in the previous run
-      --specs               select only promised tests — the open surface (composes with --list)
-      --strict-specs        driver mode: open promises report as real failures (the implementing loop)
+      --promises            select only promised tests — the open surface (composes with --list)
+      --due                 promises fall due: open promises report as real failures (burndown's mode;
+                            alone, the whole suite tolerates no open promise)
       --allow-empty         a selection matching no tests is OK (default: that is an error)
   -u, --update-snapshots    (re)write snapshots instead of comparing (matches_snapshot)
       --unreferenced M      snapshots no test used: ignore (default) | warn | delete (full runs only)
@@ -337,17 +343,31 @@ fn plugin_subcommand(args: Vec<String>) -> ExitCode {
     }
 }
 
-/// `prova specs` — the no-flags spelling of `--specs --list`: enumerate the open promises
+/// `prova promises` — the no-flags spelling of `--promises --list`: enumerate the open promises
 /// without running anything. The flags remain the composable primitives; this is the verb an
 /// agent remembers (activities are subcommands, and the no-arg form lists its domain, like
 /// `prova up` / `prova plugin`). Extra args pass through, so selection still composes.
-fn specs_subcommand(args: Vec<String>) -> ExitCode {
-    let mut full = vec!["--specs".to_string(), "--list".to_string()];
+fn promises_subcommand(args: Vec<String>) -> ExitCode {
+    let mut full = vec!["--promises".to_string(), "--list".to_string()];
     full.extend(args);
     run(full)
 }
 
-/// `prova list` — the run-axis discovery head. `specs` is this plus `--specs`: both list NODES,
+/// The deprecated flag spellings teach once, like the `spec` attribute does.
+fn warn_specs_flag_deprecated() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        eprintln!("prova: `--specs`/`--strict-specs` are deprecated — use `--promises`/`--due` (retire at 1.0)");
+    });
+}
+
+/// The deprecated spelling — one release's bridge, retired at 1.0. Delegates after teaching.
+fn specs_subcommand(args: Vec<String>) -> ExitCode {
+    eprintln!("prova: `specs` is deprecated — use `prova promises` (retires at 1.0)");
+    promises_subcommand(args)
+}
+
+/// `prova list` — the run-axis discovery head. `promises` is this plus `--promises`: both list NODES,
 /// which is what separates them from the evidence family (`evidence`/`owed`/`attest` list
 /// OBLIGATIONS and never load a selection).
 fn list_subcommand(args: Vec<String>) -> ExitCode {
@@ -356,14 +376,14 @@ fn list_subcommand(args: Vec<String>) -> ExitCode {
     run(full)
 }
 
-/// `prova burndown` — the implementing inner loop: `--specs --strict-specs`, so open promises fail
-/// loud with full detail and honored specs demand their flag's removal. `--allow-empty` rides
-/// along because an empty surface here means the burndown is COMPLETE — exit 0, not a
+/// `prova burndown` — the implementing inner loop: `--promises --due`, so open
+/// promises fail loud with full detail and kept promises demand graduation. `--allow-empty`
+/// rides along because an empty surface here means the burndown is COMPLETE — exit 0, not a
 /// selection error.
 fn burndown_subcommand(args: Vec<String>) -> ExitCode {
     let mut full = vec![
-        "--specs".to_string(),
-        "--strict-specs".to_string(),
+        "--promises".to_string(),
+        "--due".to_string(),
         "--allow-empty".to_string(),
     ];
     full.extend(args);
@@ -591,7 +611,7 @@ fn spell_selection(config: &prova_core::RunConfig) -> Vec<String> {
     out.extend(sel.tag_excludes.iter().map(|t| format!("--tags !{t}")));
     out.extend(sel.nodes.iter().map(|n| format!("--node {n}")));
     if config.specs_only {
-        out.push("--specs".to_string());
+        out.push("--promises".to_string());
     }
     if config.falsify {
         out.push("--falsify".to_string());
@@ -1989,8 +2009,16 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             "--quiet" | "-q" => cli_quiet = true,
             "--last-failed" => last_failed = true,
             "--falsify" => falsify = true,
-            "--specs" => specs_only = true,
-            "--strict-specs" => strict_specs = true,
+            "--promises" => specs_only = true,
+            "--due" => strict_specs = true,
+            "--specs" => {
+                warn_specs_flag_deprecated();
+                specs_only = true;
+            }
+            "--strict-specs" => {
+                warn_specs_flag_deprecated();
+                strict_specs = true;
+            }
             "--allow-empty" => allow_empty = true,
             "--update-snapshots" | "-u" => update_snapshots = true,
             "--update" | "-U" => update_force = true,

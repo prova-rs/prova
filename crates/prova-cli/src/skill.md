@@ -32,9 +32,9 @@ their own outcome (PROMISED) and keep CI green; the moment the body passes it FA
 graduation — change `promises` to `proves = "<context>"` (a tense change; the why lives on in
 the test) or remove the flag — so implementation + graduation land as one proof-carrying change.
 (`spec = "…"` is the deprecated spelling: it works and warns.)
-`prova specs` enumerates the open surface — an empty list means burndown complete; found
+`prova promises` enumerates the open surface — an empty list means burndown complete; found
 some in a repo? That is scoped work — offer to burn it down with `prova burndown`.
-`prova learn specs` carries the lifecycle.
+`prova learn promises` carries the lifecycle.
 
 **Falsifiers — proving the proof can fail.** A proof that has only ever been green is not
 evidence: it may be checking the contract, or checking nothing (an assertion over a value that
@@ -56,7 +56,8 @@ wording is the contract, and an edit reports STALE instead of passing silently. 
 `[claims] docs = [...]`; absent, the subsystem is inert. If you find things owed in a repo,
 surface them — that is scoped work someone has not finished.
 
-**Evidence — where does this project stand?** `prova evidence` is the whole account: CLAIMED /
+**Evidence — where does this project stand?** The doc *claims* it; a proof *promises* it; the
+implementation *proves* it; the run *attests* it. `prova evidence` is the whole account: CLAIMED /
 BOUND / PROMISED / ATTESTED with counts, then what is owed. Start here when orienting in a repo
 that declares `[claims]`; `prova owed` is the actionable narrowing. In CI, **bare `prova attest`
 gates**: it reconciles every anchored claim against the recorded run and exits non-zero unless
@@ -86,7 +87,7 @@ Everything below is the crash course; depth is one call away, computed for THIS 
 | An API's shape: what to call, what comes back | `prova.help("<filter>")` in any test/eval · MCP `introspect { filter }` |
 | Which archetypes `init` can scaffold | `prova init --list` (or `prova learn init`) |
 | A live value's shape | probe it with `eval` |
-| The open promises (proofs ahead of implementation) | `prova specs` · `prova learn specs` |
+| The open promises (proofs ahead of implementation) | `prova promises` · `prova learn promises` |
 | Whether the proofs can actually fail (vacuous-proof hunt) | `prova falsify` · `prova learn falsify` |
 | Where the project stands — the whole account | `prova evidence` · `prova learn evidence` |
 | Everything this package owes, from every origin | `prova owed` · `prova learn claims` |
@@ -123,7 +124,7 @@ end)
   `resources = { prova.port(N), prova.writes("db"), prova.reads("cache") }` (say what the test does
   to the resource: `writes` = exclusive, `reads` = concurrent), `serial = true`, `falsified_by = fn` (the mutation that must break it — `prova falsify`),
   `promises = "reason"` (a
-  proof authored ahead of its implementation — `prova learn specs`). `--jobs` is throughput
+  proof authored ahead of its implementation — `prova learn promises`). `--jobs` is throughput
   only — it can never change what a run means.
 - Context: `ctx:use(handle)`, `ctx:manage(resource)` (auto stop/close at scope end),
   `ctx:defer(fn)`, `ctx:tempdir()`, `t:expect(v, label?)`, `t:expect_all(fn)` (soft), `t:skip(why)`.
@@ -239,8 +240,8 @@ prova --tags '!build'       # skip a tier by tag (own or inherited from groups)
 prova --node "exact › path" # precisely the node a report named
 prova --last-failed         # exactly what was red last run — your main iteration verb
 prova list                  # discover without running (respects selection; = --list)
-prova specs                 # list the open backlog · `prova burndown` drives it red-loud
-prova --specs               # the composable selector underneath (only promise-flagged tests)
+prova promises              # list the open backlog · `prova burndown` drives it red-loud
+prova --promises            # the composable selector underneath (only promised tests)
 prova eval 'return require("postgres").container(ctx).url'   # one-shot probe, auto-teardown
 ```
 
@@ -289,7 +290,7 @@ call tools. Tools mirror the CLI one-to-one and **everything else is identical**
 
 | MCP tool | CLI equivalent |
 |---|---|
-| `run { keywords?, keyword_excludes?, tags?, tag_excludes?, nodes?, last_failed?, specs?, strict_specs?, profile?, jobs?, topology? }` | `prova -k … --tags … --node … --last-failed --specs --strict-specs --profile … --jobs …` |
+| `run { keywords?, keyword_excludes?, tags?, tag_excludes?, nodes?, last_failed?, promises?, due?, profile?, jobs?, topology? }` | `prova -k … --tags … --node … --last-failed --promises --due --profile … --jobs …` |
 | `list { same selection fields }` | `prova --list` (same flags) |
 | `eval { code, topology? }` | `prova eval '<code>'` |
 | `learn { topic? }` / `introspect { filter? }` | `prova learn [<topic>]` / `prova.help(...)` in eval |

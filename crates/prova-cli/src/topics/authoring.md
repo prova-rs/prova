@@ -33,7 +33,7 @@ end)
   bare token or a ref the other made (`prova.reads(prova.port(5432))`). A bare string and
   `prova.port` are writers by default. Groups' `tags`/`requires` are inherited.
   Tests and flows also take `spec = "reason"` — a proof authored ahead of its implementation
-  (`prova learn specs`); never on a group or in `suite.config`.
+  (`prova learn promises`); never on a group or in `suite.config`.
 - Matchers on `t:expect(v, label?)` — negate any with `:never()`. Grouped by what the SUBJECT is,
   because a flat list hides which ones ask the filesystem:
   - **any value**: `equals is is_true is_falsy is_nil contains matches has_length is_one_of exists`

@@ -16,7 +16,7 @@
 ---   * `proves` demands a non-empty string: the context IS the point; a bare flag says nothing.
 ---   * `promises` demands its reason from day one, for the same reason — no bare flag.
 ---   * test-level only, like `promises`: no group/suite inheritance ceremony.
----   * `prova specs` still enumerates only the OPEN surface — proves-annotated tests are done.
+---   * `prova promises` still enumerates only the OPEN surface — proves-annotated tests are done.
 
 local PROVES = "graduation used to force bare deletion, discarding the context the moment it "
   .. "was earned; proves is where it lives on — in the test itself, not a doc that drifts"
@@ -103,7 +103,7 @@ prova.test("proves is test-level only — a group-level attribute is refused",
   t:expect(out):contains("proves is test-level only")
 end)
 
-prova.test("`prova specs` enumerates only the open surface — proven tests are done",
+prova.test("`prova promises` enumerates only the open surface — proven tests are done",
   { proves = PROVES }, function(t)
   local proj = pkg(
     'prova.test("finished", { proves = "context lives here" }, function(t)\n' ..
@@ -112,7 +112,7 @@ prova.test("`prova specs` enumerates only the open surface — proven tests are 
     'prova.test("still open", { promises = "not built yet" }, function(t)\n' ..
     '  t:expect(1):equals(2)\n' ..
     'end)\n')
-  local r = shell.run(prova.bin .. " specs", { cwd = proj, merge_stderr = true })
+  local r = shell.run(prova.bin .. " promises", { cwd = proj, merge_stderr = true })
   t:expect(r.code):equals(0)
   t:expect(r.stdout):contains("still open")
   t:expect(r.stdout):never():contains("finished")
@@ -133,9 +133,9 @@ prova.test("promises demands its reason from day one — a bare or empty flag is
   end
 end)
 
-prova.test("the binary teaches the lifecycle: `prova learn specs` names proves",
+prova.test("the binary teaches the lifecycle: `prova learn promises` names proves",
   { proves = PROVES }, function(t)
-  local r = shell.run(prova.bin .. " learn specs", { merge_stderr = true })
+  local r = shell.run(prova.bin .. " learn promises", { merge_stderr = true })
   t:expect(r.code):equals(0)
   t:expect(r.stdout):contains("proves")
 end)

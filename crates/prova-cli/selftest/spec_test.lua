@@ -37,14 +37,14 @@ prova.test("an honored spec fails demanding graduation — convert to proves, or
   t:expect(r.stdout):contains('change `promises` to proves = "oops"')
 end)
 
-prova.test("--strict-specs turns open specs into failures", function(t)
-  local r = run("--strict-specs " .. open_suite)
+prova.test("--due turns open promises into failures", function(t)
+  local r = run("--due " .. open_suite)
   t:expect(r.code):equals(1)
   t:expect(r.stdout):contains("1 failed")
 end)
 
-prova.test("--specs selects only the spec surface", function(t)
-  local r = run("--specs " .. open_suite)
+prova.test("--promises selects only the promised surface", function(t)
+  local r = run("--promises " .. open_suite)
   t:expect(r.code):equals(0)
   t:expect(r.stdout):contains("1 promised")
   -- the ordinary test is deselected, not run
@@ -52,8 +52,8 @@ prova.test("--specs selects only the spec surface", function(t)
   t:expect(r.stdout:find("PASS", 1, true)):is_falsy()
 end)
 
-prova.test("--specs --list enumerates the open surface without running", function(t)
-  local r = run("--specs --list " .. open_suite)
+prova.test("--promises --list enumerates the open surface without running", function(t)
+  local r = run("--promises --list " .. open_suite)
   t:expect(r.code):equals(0)
   t:expect(r.stdout):contains("json round-trips")
   t:expect(r.stdout:find("ordinary", 1, true)):is_falsy()
@@ -78,10 +78,10 @@ prova.test("an open spec renders reason + first error line, without the tracebac
   t:expect(r.stdout:find("stack traceback", 1, true)):is_falsy()
 end)
 
-prova.test("--strict-specs keeps the full failure detail, traceback included", function(t)
+prova.test("--due keeps the full failure detail, traceback included", function(t)
   local dir = write_suite(
     'prova.test("todo", { promises = "gap-7" }, function(t) error("json.encode is not built") end)\n')
-  local r = run("--strict-specs " .. dir)
+  local r = run("--due " .. dir)
   t:expect(r.code):equals(1)
   t:expect(r.stdout):contains("stack traceback")
 end)

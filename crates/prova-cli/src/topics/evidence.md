@@ -1,8 +1,7 @@
 # evidence — the whole account: where does this project stand?
 
-Every obligation in a package travels the same road: **claimed** in prose, **bound** to a proof,
-**promised** ahead of implementation, **proven** green, **attested** by actually executing in a
-recorded run. Each verb below answers one part; `prova evidence` answers all of it at once:
+The doc **claims** it; a proof **promises** it; the implementation **proves** it; the run
+**attests** it. Every obligation travels that road — claimed, bound, promised, proven, attested. Each verb below answers one part; `prova evidence` answers all of it at once:
 
 ```
 $ prova evidence
@@ -27,15 +26,15 @@ A report, never a gate: exit 0, executes no proof body, safe on any machine. The
 | `prova attest <addr>` | one obligation | did the proof for THIS claim actually run? |
 | `prova attest` | every claim | is everything we claim evidenced? **The CI gate.** |
 
-These list **obligations** and never execute a proof. `prova specs` looks similar but lists
-**nodes** — it is `prova list --specs`, on the run axis.
+These list **obligations** and never execute a proof. `prova promises` looks similar but lists
+**nodes** — it is `prova list --promises`, on the run axis.
 
 ## The stages, one line each
 
 - **CLAIMED** — `<!-- claim: id -->` in a doc under `[claims] docs`. Prose became an obligation.
 - **BOUND** — some proof declares `covers = "doc.md#id"`. The claim has an owner.
 - **PROMISED** — flagged `promises = "<reason>"`: authored ahead, red by design, graduates to
-  `proves` the moment it goes green (`prova learn specs`).
+  `proves` the moment it goes green (`prova learn promises`).
 - **ATTESTED** — the covering proof executed and passed in the recorded run
   (`prova learn record`). Everything above it can be satisfied by a suite that never ran.
 

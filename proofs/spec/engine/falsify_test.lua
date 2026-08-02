@@ -111,8 +111,8 @@ prova.test("the binary teaches the verb, catalog and topic alike", {
   t:expect(topic.stdout, "the attribute"):contains("falsified_by")
 
   -- And the spec lifecycle points at it, so an agent reading about specs finds the next step.
-  local specs = shell.run(prova.bin .. " learn specs", { cwd = proj, merge_stderr = true })
-  t:expect(specs.stdout, "specs points onward"):contains("learn falsify")
+  local specs = shell.run(prova.bin .. " learn promises", { cwd = proj, merge_stderr = true })
+  t:expect(specs.stdout, "promises points onward"):contains("learn falsify")
 end)
 
 prova.test("a falsifier must be a function", {

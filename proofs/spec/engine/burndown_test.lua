@@ -1,11 +1,11 @@
 --- Black-box surface of the spec engine itself, driven through a sandbox child package that
 --- carries one normal test, one open spec, and one honored spec. Two layers under proof here:
 ---
----   primitives : `--specs` the composable selector, `--specs --list` enumeration —
+---   primitives : `--promises` the composable selector, `--promises --list` enumeration —
 ---                bootstrapped without proofs ("implemented first, spec'd by hand"); the
 ---                guardrail below closes that gap.
----   verbs      : `prova specs` and `prova burndown` — the memorable entry points, subsuming
----                `--specs --list` / `--specs --strict-specs`. Activities are subcommands in
+---   verbs      : `prova promises` and `prova burndown` — the memorable entry points, subsuming
+---                `--promises --list` / `--promises --due`. Activities are subcommands in
 ---                prova's grammar (`prova up`, `prova plugin`), and no-arg subcommands list
 ---                their domain; the spec lifecycle gets the same ergonomics. An empty surface
 ---                under `burndown` means COMPLETE (exit 0), not a selection error.
@@ -33,10 +33,10 @@ end)
 
 -- ── the primitive, proven (guardrail — this works today and must keep working) ───────────────
 
-prova.test("`prova --specs --list` enumerates the open surface without running anything",
+prova.test("`prova --promises --list` enumerates the open surface without running anything",
   function(t)
   local proj = t:use(sandbox)
-  local r = shell.run(prova.bin .. " --specs --list", { cwd = proj, merge_stderr = true })
+  local r = shell.run(prova.bin .. " --promises --list", { cwd = proj, merge_stderr = true })
   t:expect(r.code):equals(0)
   t:expect(r.stdout):contains("frobnicates")            -- both flagged tests are the surface
   t:expect(r.stdout):contains("already exists")
@@ -46,9 +46,9 @@ end)
 
 -- ── the verbs, spec'd ────────────────────────────────────────────────────────────────────────
 
-prova.test("`prova specs` enumerates the open surface — the no-flags spelling", function(t)
+prova.test("`prova promises` enumerates the open surface — the no-flags spelling", function(t)
   local proj = t:use(sandbox)
-  local r = shell.run(prova.bin .. " specs", { cwd = proj, merge_stderr = true })
+  local r = shell.run(prova.bin .. " promises", { cwd = proj, merge_stderr = true })
   t:expect(r.code):equals(0)
   t:expect(r.stdout):contains("frobnicates")
   t:expect(r.stdout):contains("already exists")
@@ -65,10 +65,10 @@ prova.test("`prova burndown` is the inner loop: spec-selected, open specs fail l
   t:expect(r.stdout):never():contains("arithmetic holds")  -- unflagged tests are not selected
 end)
 
-prova.test("the binary teaches the verbs: `prova learn specs` names them", function(t)
+prova.test("the binary teaches the verbs: `prova learn promises` names them", function(t)
   local proj = t:use(sandbox)
-  local r = shell.run(prova.bin .. " learn specs", { cwd = proj, merge_stderr = true })
+  local r = shell.run(prova.bin .. " learn promises", { cwd = proj, merge_stderr = true })
   t:expect(r.code):equals(0)
-  t:expect(r.stdout):contains("prova specs")
+  t:expect(r.stdout):contains("prova promises")
   t:expect(r.stdout):contains("prova burndown")
 end)

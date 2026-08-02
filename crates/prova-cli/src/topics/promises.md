@@ -1,4 +1,4 @@
-# specs — proofs authored ahead of implementation
+# promises — proofs authored ahead of implementation
 
 A **spec** is a proof written before the behavior exists: in PDD vocabulary a proof not yet
 kept *is* the specification. The attribute that marks one is **`promises`** — the test states,
@@ -37,7 +37,7 @@ it explains — read at every review, no doc to drift.
 - `proves` is runtime-inert: the test is a full proof — pass is pass, fail is fail.
 - Its value must be a **non-empty string**: the context is the point; a bare flag says nothing.
 - `promises` and `proves` never share a test — open work keeps its context in the promise.
-- Test/flow-level only; and invisible to `prova specs` (kept ≠ open).
+- Test/flow-level only; and invisible to `prova promises` (kept ≠ open).
 - **Retrofitting is welcome**: any existing test can gain `proves` to capture its context
   after the fact.
 
@@ -51,27 +51,29 @@ Whenever you can state a contract the system does not honor yet, **promise it no
 - A whole feature is being designed — author the suite ahead as the definition of done, one
   promise per behavior, each carrying its own reason.
 
-The open surface is the executable backlog: `git grep TODO` lies, `prova specs` cannot.
+The open surface is the executable backlog: `git grep TODO` lies, `prova promises` cannot.
 
 ## The burndown loop
 
 ```
-prova specs        # enumerate the open surface (nothing runs)
-prova burndown     # YOUR INNER LOOP: open promises fail loud, full detail
+prova promises     # enumerate the open surface (nothing runs)
+prova burndown     # YOUR INNER LOOP: promises fall due — open ones fail loud, full detail
   ...implement...
 # each promise that turns green now FAILS with "promise kept — change `promises` to
 # proves = \"…\" (keep the context) or remove the flag"
 # graduate in the same commit as the implementation: a proof-carrying change
-prova specs        # empty ⇒ burndown complete
+prova promises     # empty ⇒ burndown complete
 # push: the same proofs — flags graduated — now hold the line in CI (prova-rs/run-action@v1)
 ```
 
-The verbs are sugar over composable primitives: `prova specs` = `--specs --list`, and
-`prova burndown` = `--specs --strict-specs` (with an empty surface meaning complete, exit 0).
-`--specs` is a selector (composes like `--last-failed`); `--strict-specs` is driver mode. CI's
-gate runs neither: open promises report, they never break the build. Over MCP:
-`run { specs = true, strict_specs = true }` / `list { specs = true }`; the run result carries a
-`spec` count (the machine field name is frozen).
+The verbs are sugar over composable primitives: `prova promises` = `--promises --list`, and
+`prova burndown` = `--promises --due` (with an empty surface meaning complete, exit 0).
+`--promises` is a selector (composes like `--last-failed`); `--due` makes promises fall due —
+open ones fail; alone it refuses any open promise in the whole run. CI's ordinary gate runs
+neither: open promises report, they never break the build. Over MCP:
+`run { promises = true, due = true }` / `list { promises = true }`; the run result carries a
+`spec` count (machine field names are frozen until 1.0, when the deprecated `spec`/`specs`
+spellings retire everywhere).
 
 If you find open promises in a repo, surface them: they are work someone already scoped. Offer
 to burn them down.

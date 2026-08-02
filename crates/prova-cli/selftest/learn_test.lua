@@ -64,7 +64,7 @@ prova.group("prova learn", function(g)
 
   g:test("the full taxonomy is served, one screen each", function(t)
     local listing = learn("")
-    for _, topic in ipairs({ "pdd", "specs", "project", "init", "authoring", "fixtures", "doubles",
+    for _, topic in ipairs({ "pdd", "promises", "project", "init", "authoring", "fixtures", "doubles",
                              "proxies", "drivers", "topologies", "plugins", "plugin-authoring",
                              "running", "mcp" }) do
       t:expect(listing.stdout, "listed: " .. topic):contains(topic)
@@ -81,17 +81,17 @@ prova.group("prova learn", function(g)
     t:expect(r.stdout):contains("not a shipped surface")
   end)
 
-  g:test("specs teaches the burndown loop, and pdd routes to it", function(t)
+  g:test("promises teaches the burndown loop, and pdd routes to it", function(t)
     -- The lifecycle an agent must know without reading a plan doc: author ahead, flagged;
     -- enumerate; drive strict; graduation is forced.
-    local r = learn("specs")
+    local r = learn("promises")
     t:expect(r.code):equals(0)
-    t:expect(r.stdout):contains("--specs --list")
-    t:expect(r.stdout):contains("--strict-specs")
+    t:expect(r.stdout):contains("--promises --list")
+    t:expect(r.stdout):contains("--due")
     t:expect(r.stdout):contains("change `promises` to")
     t:expect(r.stdout):contains("proves")
     -- The practice topic routes here: sensing an unimplemented contract should lead to a spec.
-    t:expect(learn("pdd").stdout):contains("prova learn specs")
+    t:expect(learn("pdd").stdout):contains("prova learn promises")
     -- Intuitive names resolve: what other harnesses call this lands on our doctrine.
     for _, alias in ipairs({ "burndown", "xfail", "pending", "backlog" }) do
       t:expect(learn(alias).stdout, alias .. " → specs"):equals(r.stdout)
@@ -178,8 +178,8 @@ prova.group("prova skill routes to learn", function(g)
     -- the executable-backlog move and its verbs.
     local r = shell.run(prova_bin .. " skill")
     t:expect(r.stdout):contains('promises = "reason')
-    t:expect(r.stdout):contains("prova specs")
+    t:expect(r.stdout):contains("prova promises")
     t:expect(r.stdout):contains("prova burndown")
-    t:expect(r.stdout):contains("prova learn specs")
+    t:expect(r.stdout):contains("prova learn promises")
   end)
 end)

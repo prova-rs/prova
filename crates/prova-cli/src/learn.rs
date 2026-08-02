@@ -80,6 +80,7 @@ impl Topic {
         ("tdd", Topic::Pdd),
         ("proof-driven-development", Topic::Pdd),
         ("spec", Topic::Specs),
+        ("specs", Topic::Specs),
         ("burndown", Topic::Specs),
         ("xfail", Topic::Specs),
         ("pending", Topic::Specs),
@@ -97,7 +98,6 @@ impl Topic {
         ("ledger", Topic::Evidence),
         ("account", Topic::Evidence),
         ("lifecycle", Topic::Evidence),
-        ("promises", Topic::Specs),
         ("promise", Topic::Specs),
         ("run-record", Topic::Record),
         ("skipped", Topic::Record),
@@ -125,7 +125,7 @@ impl Topic {
     pub fn key(self) -> &'static str {
         match self {
             Topic::Pdd => "pdd",
-            Topic::Specs => "specs",
+            Topic::Specs => "promises",
             Topic::Falsify => "falsify",
             Topic::Claims => "claims",
             Topic::Record => "record",
@@ -150,7 +150,7 @@ impl Topic {
     fn source(self) -> &'static str {
         match self {
             Topic::Pdd => include_str!("topics/pdd.md"),
-            Topic::Specs => include_str!("topics/specs.md"),
+            Topic::Specs => include_str!("topics/promises.md"),
             Topic::Falsify => include_str!("topics/falsify.md"),
             Topic::Claims => include_str!("topics/claims.md"),
             Topic::Record => include_str!("topics/record.md"),

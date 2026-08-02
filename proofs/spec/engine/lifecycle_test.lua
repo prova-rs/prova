@@ -92,7 +92,7 @@ prova.test("has a side effect", { covers = "docs/d.md#watched" }, function(t)
 end)
 ]]):format(witness))
 
-  for _, verb in ipairs({ "owed", "specs", "attest docs/d.md#watched" }) do
+  for _, verb in ipairs({ "owed", "promises", "attest docs/d.md#watched" }) do
     fs.remove_all(witness)
     shell.run(prova.bin .. " " .. verb, { cwd = proj, merge_stderr = true })
     t:expect(fs.exists(witness), verb .. " must not run the body"):equals(false)

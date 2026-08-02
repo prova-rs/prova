@@ -81,7 +81,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
                      \n\
                      serve Prova as an MCP stdio server. Tools mirror the CLI one-to-one:\n\
                      \x20 run   {{ keywords?, keyword_excludes?, tags?, tag_excludes?, nodes?,\n\
-                     \x20         last_failed?, specs?, strict_specs?, profile?, jobs?,\n\
+                     \x20         last_failed?, promises?, due?, profile?, jobs?,\n\
                      \x20         topology?, package? }}\n\
                      \x20                                            ↔  prova + selection flags\n\
                      \x20 list  {{ same selection fields, package? }}  ↔  prova --list\n\
@@ -355,10 +355,12 @@ struct SelectionArgs {
     nodes: Option<Vec<String>>,
     /// Also select the nodes that failed in the previous run (CLI `--last-failed`).
     last_failed: Option<bool>,
-    /// Select ONLY promised tests — the open backlog (CLI `--specs`). Composes with
+    /// Select ONLY promised tests — the open backlog (CLI `--promises`). Composes with
     /// `list` to enumerate the surface without running; an empty selection there means the
-    /// burndown is complete. See `learn { topic = "specs" }`.
-    specs: Option<bool>,
+    /// burndown is complete. `specs` is the deprecated spelling (retires at 1.0). See
+    /// `learn { topic = "promises" }`.
+    #[serde(alias = "specs")]
+    promises: Option<bool>,
     /// Run the falsification pass: select only tests declaring `falsified_by`, apply the mutation,
     /// and invert the verdict — a body that survives its own falsifier is vacuous and fails. The
     /// CLI's `prova falsify`.
@@ -376,10 +378,12 @@ struct SelectionArgs {
 struct RunRequest {
     #[serde(flatten)]
     selection: SelectionArgs,
-    /// Driver mode for a burndown (CLI `--strict-specs`): open promises report as REAL
-    /// failures with full detail instead of the CI-green `spec` outcome. The implementing
-    /// agent's inner loop is `specs = true, strict_specs = true`.
-    strict_specs: Option<bool>,
+    /// Promises fall due (CLI `--due`): open promises report as REAL failures with full
+    /// detail instead of the CI-green `spec` outcome. The implementing agent's inner loop is
+    /// `promises = true, due = true`; `due` alone refuses any open promise in the whole run.
+    /// `strict_specs` is the deprecated spelling (retires at 1.0).
+    #[serde(alias = "strict_specs")]
+    due: Option<bool>,
     /// Run up to N suites concurrently (CLI `--jobs N`). Ignored for warm runs (one held state).
     jobs: Option<u32>,
     /// Run WARM against a topology held by a prior `up`: `t:use(<topology>)` resolves the held
@@ -713,7 +717,7 @@ impl ProvaMcpServer {
 
     #[tool(
         name = "run",
-        description = "Run the package's test suite with an optional selection (the MCP mirror of the CLI's -k/--tags/--node/--last-failed/--specs/--strict-specs/--profile/--jobs flags). Burndown: specs=true selects only promised tests (proofs authored ahead of implementation); with strict_specs=true open promises fail loud — the implementing agent's inner loop (see learn { topic = \"specs\" }). Vacuity hunt: falsify=true selects only tests declaring `falsified_by`, applies each mutation and INVERTS the verdict — a body that still passes with its falsifier applied is asserting nothing and fails as vacuous (see learn { topic = \"falsify\" }). With `topology`, run WARM against a topology held by a prior `up`: t:use resolves the held live instance instead of provisioning (never provisions implicitly — an un-held topology is an error). Returns compact JSON: { passed, failed, skipped, spec, deselected, duration_ms, failures: [{ path, message, file?, line? }] } (spec = open promises — red-by-definition proofs awaiting implementation; field name frozen) (file/line = the failing test's declaration site, when known). The result is marked isError when any node failed, and a selection that matches NOTHING is an error (usually a typo — mirror of the CLI's default; the CLI's --allow-empty has no MCP counterpart). Also records the failed nodes so a later run with last_failed=true (or CLI --last-failed) re-runs exactly them; last_failed with no recorded state runs everything and says so in a `note` field. Pass `package` (a directory or manifest path) to target ANOTHER package anywhere on disk — the server's startup package is only the default, and a `package` resolves fresh, so a manifest you just scaffolded works without a restart."
+        description = "Run the package's test suite with an optional selection (the MCP mirror of the CLI's -k/--tags/--node/--last-failed/--promises/--due/--profile/--jobs flags). Burndown: promises=true selects only promised tests (proofs authored ahead of implementation); with due=true they fall due and fail loud — the implementing agent's inner loop (specs/strict_specs are deprecated aliases; see learn { topic = \"promises\" }). Vacuity hunt: falsify=true selects only tests declaring `falsified_by`, applies each mutation and INVERTS the verdict — a body that still passes with its falsifier applied is asserting nothing and fails as vacuous (see learn { topic = \"falsify\" }). With `topology`, run WARM against a topology held by a prior `up`: t:use resolves the held live instance instead of provisioning (never provisions implicitly — an un-held topology is an error). Returns compact JSON: { passed, failed, skipped, spec, deselected, duration_ms, failures: [{ path, message, file?, line? }] } (spec = open promises — red-by-definition proofs awaiting implementation; field name frozen) (file/line = the failing test's declaration site, when known). The result is marked isError when any node failed, and a selection that matches NOTHING is an error (usually a typo — mirror of the CLI's default; the CLI's --allow-empty has no MCP counterpart). Also records the failed nodes so a later run with last_failed=true (or CLI --last-failed) re-runs exactly them; last_failed with no recorded state runs everything and says so in a `note` field. Pass `package` (a directory or manifest path) to target ANOTHER package anywhere on disk — the server's startup package is only the default, and a `package` resolves fresh, so a manifest you just scaffolded works without a restart."
     )]
     async fn run(&self, Parameters(req): Parameters<RunRequest>) -> CallToolResult {
         let _serialized = self.run_lock.lock().await;
@@ -981,9 +985,9 @@ fn run_blocking(env: &McpEnv, req: RunRequest) -> Result<(serde_json::Value, boo
     let jobs = req.jobs.map(|n| (n as usize).max(1)).unwrap_or(call.jobs);
     let mut config = crate::engine_config(jobs, &call.plugins, Some(&call.home), prova_core::progress::null())
         .with_capabilities(call.capabilities.clone())
-        .with_specs_only(req.selection.specs.unwrap_or(false))
+        .with_specs_only(req.selection.promises.unwrap_or(false))
         .with_falsify(req.selection.falsify.unwrap_or(false))
-        .with_strict_specs(req.strict_specs.unwrap_or(false));
+        .with_strict_specs(req.due.unwrap_or(false));
     config.selection = selection;
 
     let mut reporter = FailureCollector::default();
@@ -1093,7 +1097,7 @@ fn list_blocking(env: &McpEnv, req: SelectionArgs) -> Result<(serde_json::Value,
     let suites = crate::collect_suites(&call.base_dir, &call.declared, &call.proofs, true)?;
     let mut config = crate::engine_config(1, &call.plugins, Some(&call.home), prova_core::progress::null())
         .with_capabilities(call.capabilities.clone())
-        .with_specs_only(req.specs.unwrap_or(false));
+        .with_specs_only(req.promises.unwrap_or(false));
     config.selection = selection;
 
     let mut nodes: Vec<serde_json::Value> = Vec::new();
@@ -1230,9 +1234,9 @@ fn warm_run_blocking(
 
     // The warm holder's engine config is fixed at `up`; per-run spec modes would silently not
     // apply. The burndown loop is a cold loop anyway (implement → recompile → re-run).
-    if req.selection.specs.unwrap_or(false) || req.strict_specs.unwrap_or(false) {
+    if req.selection.promises.unwrap_or(false) || req.due.unwrap_or(false) {
         return Err(
-            "specs/strict_specs are not supported on warm runs — omit `topology` to run the \
+            "promises/due are not supported on warm runs — omit `topology` to run the \
              spec burndown cold"
                 .to_string(),
         );
