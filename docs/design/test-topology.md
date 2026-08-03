@@ -135,7 +135,7 @@ The second conflation. Today the home answers two questions it should not:
 
 `ide-and-layout.md` already defines home precisely — the project **root**: the directory holding a
 flat `prova.toml`, or the **parent** of a `prova/`/`.prova/` nook. Everything (`proofs`, `config`,
-`plugin_root`, `.luarc.json`) resolves from that one root; `prova.root` / `prova.home` surface it to
+`packages`, `.luarc.json`) resolves from that one root; `prova.root` / `prova.home` surface it to
 authors. What is missing is only that **home also
 decides what runs**, so `cd crates/prova-cli && prova` runs the entire repo. Splitting them is the
 cargo/pytest idiom and needs no new concept — just a default:
@@ -147,7 +147,7 @@ $ prova                      # THIS subtree's suites; config still from the one 
 $ prova --all                # override: the whole package from anywhere
 ```
 
-**Exactly one home per package.** Not a nested-manifest workspace: one `[plugins]` table, one
+**Exactly one home per package.** Not a nested-manifest workspace: one `[dependencies]` table, one
 set of annotations, one `.luarc.json` question, one place to look. Module autonomy is expressed by
 **suites**, which are already directory-aligned — not by a second manifest.
 
@@ -158,9 +158,9 @@ Nothing here is new machinery; it is the existing pieces, named:
 ```
 <repo>/                          ← THE home: the project root (LuaLS binds here)
 ├── .luarc.json                  ← written at home, beside everything it resolves
-├── prova/                       ← the nook: prova's OWN files (manifest, config, plugins)
-│   ├── prova.toml               #   [plugins], [profiles.*] + must_run, [run] proofs
-│   ├── plugins/ourthing.lua     #   locally-authored plugins
+├── prova/                       ← the nook: prova's OWN files (manifest, config, packages)
+│   ├── prova.toml               #   [dependencies], [profiles.*] + must_run, [run] proofs
+│   ├── packages/ourthing.lua     #   locally-authored packages
 │   └── suites/                  #   project-level suites (cross-cutting)
 ├── crates/prova-cli/
 │   └── prova/
@@ -225,7 +225,7 @@ local svc = minion.service(ctx)     -- { client, url, handle } — handle:stop()
 
 It is `containerized`'s body with `shell.spawn` where `docker.run` was, which is the doc's own test
 for a new constructor ("a shape proves to carry recurring boilerplate"). **Implementation still
-waits for the second local-daemon plugin** — one case is a shape, two is a pattern — but the *shape*
+waits for the second local-daemon package** — one case is a shape, two is a pattern — but the *shape*
 is designed now, because a skip/fail contract drafted against Docker alone would fit only Docker.
 
 Third-slot naming (`{ client, url, handle }` with `container` kept as the Docker-case alias) is
@@ -256,7 +256,7 @@ A skip is an unanswered question; an unattributable skip is a vacuous green wear
 `"dotnet >= 9"` reports as *"dotnet 8.0.421 does not satisfy >= 9"* — actionable. An anonymous
 closure reports as `function: 0x7f9a…`. It also cannot be memoized by identity (probes shell out —
 `resolve_requires` caches per expression string), cannot appear in a CLI flag or an MCP argument, and
-cannot be validated by a plugin browser.
+cannot be validated by a package browser.
 
 ### So an arbitrary predicate gets a NAME — in `prova.lua`
 
@@ -288,7 +288,7 @@ removes the primitive.
    ```
 
 **The split stays the one this codebase already keeps: TOML declares, Lua computes.** TOML keeps the
-properties the registry/plugin-browser arc needs — an agent can add a plugin with `toml_edit`
+properties the registry/package-browser arc needs — an agent can add a package with `toml_edit`
 (comments preserved), and CI can read what a package runs without executing it. Lua gets only what
 TOML structurally cannot hold. It is the same pairing as `archetype.yaml` + `archetype.lua`, so it is
 one fewer idiom to learn.
@@ -309,7 +309,7 @@ and `runtime.capability()` deepens the Lua side rather than shrinking it.
   silently forever. Measured: a typo'd capability skips, exit 0. `must_run` covers the capabilities a
   context cares about; whether typos deserve more (a warned-on known-name set) is deferred — the open
   vocabulary is worth more than the typo protection.
-- **Registry + plugin browser + `prova init` placement** — a companion arc, not this doc: a
-  user-level registry config, `prova plugin search/add`, and MCP tools so an agent can do it. One
-  constraint up front: an agent adding a plugin is a **supply-chain action**, so user consent is part
+- **Registry + package browser + `prova init` placement** — a companion arc, not this doc: a
+  user-level registry config, `prova package search/add`, and MCP tools so an agent can do it. One
+  constraint up front: an agent adding a package is a **supply-chain action**, so user consent is part
   of the design, not a nicety.

@@ -29,7 +29,7 @@ the argument.
 
 We did **not** invent black-box testing. Hurl, Bats, Venom, Robot Framework, and goss already
 own that category, and [`foundations.md`](foundations.md) says so plainly. Single static
-binary, cross-platform install, a clean plugin surface — that's engineering, not a paradigm.
+binary, cross-platform install, a clean package surface — that's engineering, not a paradigm.
 Planting a flag on "another language-agnostic test runner" earns a correct shrug.
 
 What we **are** naming is a shift in *practice* that is already happening, unnamed, in the way
@@ -114,7 +114,7 @@ built for it on purpose:
   a proof.
 - **Machine formats + rich diffs.** The feedback is legible to the thing iterating on it,
   whether that's a person or a loop.
-- **A plugin surface.** The long tail of "how do I bring *this* kind of system into existence"
+- **A package surface.** The long tail of "how do I bring *this* kind of system into existence"
   (archetype rendering, protocols, harnesses) is filled without forking — the same reason
   pytest won.
 

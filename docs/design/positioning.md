@@ -84,7 +84,7 @@ completion signal to be the same artifact.
 ### 5. The autodidact surface
 
 `learn` renders one screen per topic *for the current package* — proof locations, declared
-plugins, topologies computed at call time. `introspect` serves the full API surface from the
+packages, topologies computed at call time. `introspect` serves the full API surface from the
 same LuaCATS stubs that drive editor completion, so documentation cannot drift from what an
 author sees. The MCP server ships its skill as `instructions`, so a connected agent starts
 knowing the loop. Headless errors name the missing answer — the error message *is* the
@@ -119,8 +119,8 @@ undersells prova into a crowded category it does not actually compete in.
   enforcement-by-design; most of PDD is still enforcement-by-instruction (prompt-strength,
   not mechanism-strength). Every piece of doctrine that moves into mechanism — the way the
   spec flag did — compounds the value.
-- **Plugin ecosystem gravity.** The facet grammar (`client` / `container` / `wait_for` /
-  `mock`) means knowing one plugin is knowing all — but only if plugins exist for what
+- **Package ecosystem gravity.** The facet grammar (`client` / `container` / `wait_for` /
+  `mock`) means knowing one package is knowing all — but only if packages exist for what
   people actually run. `docker.run` + `prova.containerized` is the escape hatch; breadth is
   the classic make-or-break for this shape of tool.
 - **Inner-loop speed at real-repo scale.** PDD routes the definition of done through booted

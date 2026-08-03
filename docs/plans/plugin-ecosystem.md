@@ -1,6 +1,6 @@
 # Plan: plugin ecosystem — LANDED (2026-07)
 
-**Folded into [`docs/design/plugin-system.md`](../design/plugin-system.md),
+**Folded into [`docs/design/package-system.md`](../design/package-system.md),
 [`docs/design/ecosystem.md`](../design/ecosystem.md), and
 [`docs/design/namespacing.md`](../design/namespacing.md).** The extraction shipped: server
 databases/brokers left core for pinned plugins (`require("postgres")` …, the

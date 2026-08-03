@@ -1,7 +1,7 @@
 # Module Namespacing
 
 Decided 2026-07-13. This document records the naming grammar for Prova's Lua module surface —
-the rule every existing module follows and every future module (first-party or plugin) must follow.
+the rule every existing module follows and every future module (first-party or package) must follow.
 
 ## The grammar
 
@@ -22,7 +22,7 @@ section in `library/modules.lua`, one reference page in the docs.
 Facets are optional per namespace: `sqlite` has no `container` (nothing to provision);
 `http`/`grpc`/`graphql` are protocol namespaces with no `container` either — and `mock`
 is the mirror case, meaningful only where a *protocol* can be served (`http`, `grpc`) or
-where a plugin virtualizes a specific SaaS (a `stripe` plugin's `stripe.mock(ctx)`). You
+where a package virtualizes a specific SaaS (a `stripe` package's `stripe.mock(ctx)`). You
 would never mock `postgres`; you would run it.
 
 The pairing is the teachable part: **`client` attaches to a real one, `container` provisions
@@ -66,7 +66,7 @@ so `postgres.client("mysql://…")` fails with a clear message instead of a driv
 - **Growth**: a new tech (mongo, nats, elasticsearch, rabbitmq…) never poses a "which module does
   it belong to?" question — it gets its own namespace with the standard facets, and readers already
   know its shape before opening the docs.
-- **Plugins**: `archetect` already works this way (a plugin = a namespace). Third-party plugins
+- **Packages**: `archetect` already works this way (a package = a namespace). Third-party packages
   inherit the grammar for free.
 
 ## Rules for new modules

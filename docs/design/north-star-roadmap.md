@@ -41,7 +41,7 @@ p6m-archetypes is the impetus, **not the ceiling**. The goal is a general-purpos
 acceptance / integration** framework people reach for in a **cloud-oriented, polyglot world** — where
 today they fall back to bash/Python/Go glue. Not a unit-test framework (pytest/JUnit win there); the
 wedge is out-of-process, environment-level testing where the batteries (`docker`, `http`,
-`grpc`, `graphql`, `yaml`, `sqlite`, DB/broker plugins, fixtures, resources, `requires`-gating) and the single-binary polyglot-agnostic
+`grpc`, `graphql`, `yaml`, `sqlite`, DB/broker packages, fixtures, resources, `requires`-gating) and the single-binary polyglot-agnostic
 packaging are the differentiator. Every DX decision serves *easy stuff easy, hard stuff possible* for
 that general audience.
 
@@ -73,7 +73,7 @@ The **spine and most capabilities are done**. Twelve+ increments, each with prov
   (`get/post/put/delete/wait_for`, `:json()`), **`docker`** (typed **bollard** client — pull/run/
   port-map/logs/exec/stop, `requires`-gated), the DB layer (originally a `db` module — sqlx `Any`,
   one API by URL scheme — since **extracted**: `sqlite` stays built in, server DBs are the
-  `postgres`/`mysql` plugins; see `namespacing.md`), and the **`archetect`** plugin (in-process
+  `postgres`/`mysql` packages; see `namespacing.md`), and the **`archetect`** package (in-process
   render, `prova-archetect` crate).
 - Product surface: `prova.toml` **suite manifest** (profiles + env) + composite **GitHub Action**;
   **self-tests** (prova acceptance-tests its own CLI — caught a real `--format` bug).
@@ -194,10 +194,10 @@ exactly the "batteries-included, no capability ceilings" pitch. Implemented in `
 ### Phase 2 — Compose the North Star (the capstone)
 
 **3. Ephemeral-infra recipes** — Postgres/MySQL/Pulsar as reusable fixtures. Landed as the
-   plugin ecosystem (`prova-postgres`/`prova-mysql`/… over `prova.containerized`), which captures
+   package ecosystem (`prova-postgres`/`prova-mysql`/… over `prova.containerized`), which captures
    the readiness patterns:
    - Postgres/MySQL: **connect-retry readiness** (they restart once at init — `pg_isready`/port are
-     false-positives; retry the real connect until it holds — the plugins' `container()` does this).
+     false-positives; retry the real connect until it holds — the packages' `container()` does this).
    - **Pulsar:** `docker.run{ image = "apachepulsar/pulsar", ... }` running `bin/pulsar standalone`;
      readiness via `wait.log` (e.g. "messaging service is ready") or HTTP admin `:8080/admin/v2/...`.
      Producing/consuming: either (a) a small **`pulsar` module** (Rust `pulsar` crate) with
@@ -302,6 +302,6 @@ exactly the "batteries-included, no capability ceilings" pitch. Implemented in `
 
 1. Read auto-memory `prova-test-framework`; skim this file + `architecture.md` "Current status".
 2. `cd /Users/jimmie/personal/prova-rs/prova-agents && cargo xtask test && cargo xtask clippy` — green baseline.
-3. Confirm Docker: `docker info`. If up, the `docker`/postgres-plugin tests run for real.
+3. Confirm Docker: `docker info`. If up, the `docker`/postgres-package tests run for real.
 4. Pick the next increment (Phase 1 → `grpc`). Make the invocation-strategy decision, build, verify,
    commit with the established message style, update memory + `architecture.md`.

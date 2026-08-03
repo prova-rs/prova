@@ -138,9 +138,9 @@ claims and attestation halves had never been exercised on a real project, includ
 Two defects fell out of the first attempt to use them here, which is the argument for dogfooding
 in one line:
 
-- `prova owed` and `prova attest` **crashed** on any package with local plugins — they resolved a
+- `prova owed` and `prova attest` **crashed** on any package with local packages — they resolved a
   package through a thinner slice of manifest resolution than a run uses. Prova's own repo has
-  local plugins, so both verbs were dead on the flagship project and nobody knew.
+  local packages, so both verbs were dead on the flagship project and nobody knew.
 - The MCP surface has **no test coverage at all**, so a capability wired to it is unproven by
   construction — the same vacuous green one level out from the suite.
 

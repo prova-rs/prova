@@ -19,7 +19,7 @@ axis* and then cannot cleanly express the others.
 
 | Framework      | Nails                                   | Hard-codes / weak at                          |
 |----------------|-----------------------------------------|-----------------------------------------------|
-| pytest         | fixtures (lifecycle), markers           | ordering/deps are a plugin; parallelism not resource-aware |
+| pytest         | fixtures (lifecycle), markers           | ordering/deps are a package; parallelism not resource-aware |
 | TestNG         | groups + `dependsOn` + data providers   | fixture composition; JVM-bound                |
 | Go `testing`   | hermetic, parallel, single binary, seed | intentionally minimal (no fixtures/deps/params)|
 | Jest/Playwright| DX (watch/`.only`), tracing, `serial`   | JS-bound; weak dependency graph               |
@@ -48,8 +48,8 @@ concerns. Get the axes right and independent, and the rest is expressible.
   output, per-test captured logs/stdout/attachments, value-bearing assertion diffs.
 - **Environments & config** — run the same suite against dev/staging/prod targets.
 - **Determinism** — seeded randomization, reproducible failing runs.
-- **Extensibility** — a plugin surface (Lua-first, Rust for protocols) so the long tail is
-  filled without forking. *This is how pytest actually won — not features, plugins.*
+- **Extensibility** — a package surface (Lua-first, Rust for protocols) so the long tail is
+  filled without forking. *This is how pytest actually won — not features, packages.*
 
 **Design rule:** these are separate dimensions. Scope ≠ tag ≠ dependency ≠ resource. A test
 has a scope for its fixtures, tags for selection, optional dependency edges, and declared
@@ -72,7 +72,7 @@ prova --tags smoke,regression,!offline  # full boolean expressions remain the as
 
 - **Tags attach at every level** (suite/file/`describe`/test) and **inherit downward**: tag
   a `describe` "slow" and every test inside is slow.
-- **Built-in dynamic selectors** that plugins-elsewhere charge for:
+- **Built-in dynamic selectors** that packages-elsewhere charge for:
   - `--last-failed` / `--failed-first` — rerun/prioritize the previous failures (pytest `--lf/--ff`).
   - `--changed` — only tests whose inputs changed (test-impact analysis) — huge for big suites.
   - `--shard k/n` — deterministic CI sharding.
@@ -161,22 +161,22 @@ via provisioning modules behind the fixture boundary:
   the single most-requested integration primitive of the last decade.
 - **compose / stack** — bring up a multi-service topology, tear down as a unit.
 - **mock** — a stub/record server for external dependencies. **Landed as a core facet, not a
-  plugin — this bullet's original framing was wrong**; see below.
+  package — this bullet's original framing was wrong**; see below.
 
-These are first-party *plugins*, not built-ins — same boundary the `archetect` render module
+These are first-party *packages*, not built-ins — same boundary the `archetect` render module
 sits behind — so the agnostic core never grows a Docker dependency.
 
 > **Correction (2026-07-16), on `mock`.** It shipped as `http.mock` / `grpc.mock`: a **core
-> primitive** and the fourth facet in the grammar (`namespacing.md`), not a plugin. Two things
+> primitive** and the fourth facet in the grammar (`namespacing.md`), not a package. Two things
 > this document could not have known at the time forced it. First, the reason given above for
-> plugin-ness — *"so the agnostic core never grows a Docker dependency"* — **does not apply**: an
+> package-ness — *"so the agnostic core never grows a Docker dependency"* — **does not apply**: an
 > in-process mock server needs no Docker at all. Second, `ecosystem.md` later settled that native
-> code is always first-party and bundled (*"a plugin author writes Lua + Docker, never native
-> code"*), and you cannot write a server in Lua — so the only plugin-shaped option was a WireMock
+> code is always first-party and bundled (*"a package author writes Lua + Docker, never native
+> code"*), and you cannot write a server in Lua — so the only package-shaped option was a WireMock
 > container, paying an image pull and an admin-API round-trip to put a JSON DSL between the author
 > and their assertions. Being in-process is what buys the two properties that matter: a stub's
 > reply can be a **Lua function** (no templating mini-language, ever), and readiness is a real
-> contract (the listener is bound before the call returns). Plugins still compose it —
+> contract (the listener is bound before the call returns). Packages still compose it —
 > `stripe.mock(ctx)` is Lua over the core primitive, exactly as `prova.containerized` is Lua over
 > `docker.run`. See `docs/plans/mocks.md`.
 
@@ -242,21 +242,21 @@ process's memory, it's out of scope; if it observes the system from outside, it'
 
 ---
 
-## Minimal core vs. plugins (how "subsume" stays buildable)
+## Minimal core vs. packages (how "subsume" stays buildable)
 
 `prova-core` implements only the axes and cross-cutting engine:
 
 - collection, tag-expression selection, the dependency DAG + flows, the resource scheduler,
   the fixture/scope/teardown machine, `expect`, reporters (pluggable), config/environments,
-  seeded determinism, the plugin/hook API.
+  seeded determinism, the package/hook API.
 
-Everything domain-specific is a **plugin** (Lua-first for matchers/reporters/fixtures;
+Everything domain-specific is a **package** (Lua-first for matchers/reporters/fixtures;
 Rust for protocols/perf): `fs`, `shell`/`process`, `http`, `container`, `compose`, and
 `grpc`, and `archetect`. (`mock` was listed here too; it landed as a **core facet** on the
 protocol namespaces instead — a server cannot be written in Lua, and native code is always
-first-party. See the correction above.) New capability = new plugin, never a core fork. That plugin surface
+first-party. See the correction above.) New capability = new package, never a core fork. That package surface
 — not a bigger feature list — is what lets Prova grow to cover the landscape the way
-pytest's plugin ecosystem did, while the core stays small and correct.
+pytest's package ecosystem did, while the core stays small and correct.
 
 ---
 
@@ -272,7 +272,7 @@ pytest's plugin ecosystem did, while the core stays small and correct.
    construction; `--shuffle[=seed]` is opt-in hardening (not yet shipped), never the default. (See api.md →
    Execution model.)
 4. **Capability registry** — how `requires = {"docker"}` resolves to a probe; are capabilities
-   first-party-only or plugin-registerable?
+   first-party-only or package-registerable?
 5. **Hermeticism depth** — how far the per-test sandbox goes (cwd/env always; temp HOME opt-in?).
-6. **Plugin API shape** — the hook points (collection, before/after each scope, reporter,
-   selector, matcher) and whether v1 exposes Lua plugins only or Rust too.
+6. **Package API shape** — the hook points (collection, before/after each scope, reporter,
+   selector, matcher) and whether v1 exposes Lua packages only or Rust too.

@@ -1,11 +1,11 @@
-# Plugin Ecosystem
+# Package Ecosystem
 
 Drafted 2026-07-13. The north-star for how Prova's capability surface grows — the strategy layer
-above the mechanics in [plugin-system.md](plugin-system.md) and the grammar in
-[namespacing.md](namespacing.md). Where plugin-system.md answers *how a plugin loads*, this answers
+above the mechanics in [package-system.md](package-system.md) and the grammar in
+[namespacing.md](namespacing.md). Where package-system.md answers *how a package loads*, this answers
 *what the ecosystem is, how capabilities are tiered, and how they progress.*
 
-> Why this matters for the *practice*: an open plugin ecosystem is what lets a proof bring
+> Why this matters for the *practice*: an open package ecosystem is what lets a proof bring
 > **any** kind of system into existence and exercise it from the outside — the
 > "black-box shrinks native to a convenience" idea below is exactly what makes a proof
 > self-provisioning and reproducible. See
@@ -14,7 +14,7 @@ above the mechanics in [plugin-system.md](plugin-system.md) and the grammar in
 ## The thesis: batteries **and** an ecosystem
 
 "Batteries included" alone can never match pytest's flexibility — a fixed binary is a ceiling. A pure
-plugin ecosystem alone loses the thing that makes Prova pleasant: a small, consistent, fast, curated
+package ecosystem alone loses the thing that makes Prova pleasant: a small, consistent, fast, curated
 core. So Prova is **both**, cleanly separated: a curated core of first-class integrations *plus* an
 open ecosystem the core cannot bound. The rest of this doc is the machinery that keeps those two from
 fighting.
@@ -35,13 +35,13 @@ A test references a **name**, never a source:
 
 ```lua
 local redis  = require("redis")     -- bundled battery, or overridden in prova.toml
-local rabbit = require("rabbitmq")  -- resolved via [plugins] / the registry
+local rabbit = require("rabbitmq")  -- resolved via [dependencies] / the registry
 ```
 
 You never write a git URL in `require`. The name→source mapping lives in `prova.toml` (or a registry),
-so plugins are swappable, pinnable, and mockable without touching test code. `require` returns the
+so packages are swappable, pinnable, and mockable without touching test code. `require` returns the
 **namespace table**; a bundled namespace is also injected as a global (no `require` needed) for
-backward compatibility, and a declared plugin can opt into global injection (`global = true`) to feel
+backward compatibility, and a declared package can opt into global injection (`global = true`) to feel
 first-party.
 
 ### Resolution ladder (source model, mirrors archetect)
@@ -55,9 +55,9 @@ first-party.
 | Registry / catalog | `redis = "^1.2"` | an index repo maps name → canonical repo + version |
 
 Build 1–3 first, 4 when a second org appears, 5 (the `prova-rs/package-registry` index — designed in
-[registry.md](registry.md)) when the plugin count earns it. `prova.toml [plugins]` is the **canonical, committed, pinned** source of truth; the GitHub
-Action just runs `prova` (reading it) and adds value by **caching `~/.cache/prova/plugins`** keyed on
-the manifest hash, plus an optional `plugins:` input for CI-only extras.
+[registry.md](registry.md)) when the package count earns it. `prova.toml [dependencies]` is the **canonical, committed, pinned** source of truth; the GitHub
+Action just runs `prova` (reading it) and adds value by **caching `~/.cache/prova/packages`** keyed on
+the manifest hash, plus an optional `packages:` input for CI-only extras.
 
 ---
 
@@ -67,23 +67,23 @@ the manifest hash, plus an optional `plugins:` input for CI-only extras.
 > weighed native clients (Layer 1, "bundled by distribution") against docker-exec Lua. §3–4 showed
 > docker-exec covers every resource with zero native code, and keeping any resource client compiled
 > in *privileges some technologies over others* for a throughput benefit we don't sell. So **every
-> containerized resource client was extracted to an external docker-exec plugin** (`prova-rs/prova-<name>`:
+> containerized resource client was extracted to an external docker-exec package** (`prova-rs/prova-<name>`:
 > redis, postgres, mysql, s3, kafka, pulsar, rabbitmq, …). Native code in core is now **only** the
 > substrate (`docker`) and the **network-drive primitives** (`http`/`grpc`/`graphql`) — which are how
 > you *drive the app under test*, not resource clients — plus `yaml` and the one embedded, no-docker
 > database, `sqlite`. Read "Layer 1" below as the reasoning that led here, not the current state: the
 > only surviving Layer-1 clients are the network-drive trio + sqlite; resource clients live at Layer 2.
 
-A capability is never "a plugin" or "a battery" as a whole — it is split across layers, and the split
+A capability is never "a package" or "a battery" as a whole — it is split across layers, and the split
 is where the confusion dissolves. `postgres` is the worked example:
 
 | Layer | What | Distribution | `postgres` piece |
 |---|---|---|---|
 | **0. Primitives** | `docker`, `shell`, `fs`, `net`, `http`, `prova.retry`, `ctx:manage` | Always bundled — the substrate | — |
 | **1. Native clients** | sqlx, redis, kafka, pulsar, grpc, s3, future amqp/nats/mongo | **Feature-gated; bundled by distribution** | `postgres.client` (native, must compile in) |
-| **2. Recipes** | `postgres.container`, `redis.container`, … | Lua — common bundled, long tail external | `postgres.container` (a plugin — nothing magical) |
+| **2. Recipes** | `postgres.container`, `redis.container`, … | Lua — common bundled, long tail external | `postgres.container` (a package — nothing magical) |
 
-So "is postgres a plugin or a battery?" is malformed: the **recipe is a plugin (Layer 2)**, the
+So "is postgres a package or a battery?" is malformed: the **recipe is a package (Layer 2)**, the
 **client is a native capability (Layer 1)**. The native boundary is a law of physics (you cannot
 `git clone` a Rust crate into a static binary), so Layer 1 is compile-time by necessity — the only
 choice is *one fat default binary vs. modular distributions* (see Distributions).
@@ -133,7 +133,7 @@ db.container:exec('psql -tAc "select count(*) from orders"')   -- psql is IN the
 `redis`→`redis-cli`, `rabbitmq`→`rabbitmqadmin`, kafka→`kafka-console-*`. Direct assertion with **zero
 native code, zero extra image, no networking to arrange** (you exec inside the container you started —
 sidestepping the `host.docker.internal` wrinkle a *separate* client container would hit). A `rabbitmq`
-plugin doing exactly this is writable today over existing primitives.
+package doing exactly this is writable today over existing primitives.
 
 This retracts native (A) to the genuinely small set that needs **throughput or typed streaming** (load
 tests; hot typed paths like sql/redis/grpc). Kafka illustrates: **B** (`kafka-console-producer` exec)
@@ -151,7 +151,7 @@ free-for-all pile would lose. So the ecosystem is tiered:
 - **Tier 1 — first-class native integrations.** Beautiful, consistent, fast, typed. Curated by us,
   designed in **families** (messaging: kafka/pulsar/nats · sql: postgres/mysql/sqlite · object-store:
   s3/gcs/azure) so within a family the API is the same API with a different backend.
-- **Tier 2 — pure Lua plugins** (docker-exec or through-app). Open, long-tail, cross-platform free.
+- **Tier 2 — pure Lua packages** (docker-exec or through-app). Open, long-tail, cross-platform free.
 
 **The grammar is the tier-agnostic interface — and that is the trick.** At the call site you cannot
 tell native from docker-wrapper:
@@ -180,8 +180,8 @@ return prova.containerized{
 ```
 
 The *same helper* yields a conformant namespace whether `client` is native, a `container:exec`
-wrapper, or absent — so native-vs-docker collapses to "what does `client` do," and every plugin comes
-out grammar-shaped by construction. An optional `prova plugin lint` (checks facets/trio) keeps the
+wrapper, or absent — so native-vs-docker collapses to "what does `client` do," and every package comes
+out grammar-shaped by construction. An optional `prova package lint` (checks facets/trio) keeps the
 ecosystem coherent without a gatekeeper. When the beautiful thing is the default thing, consistency is
 emergent, not enforced. **First-party recipes are authored through this same helper** — the dogfood
 proof that the seam is real.
@@ -190,36 +190,36 @@ proof that the seam is real.
 
 `prova.containerized` is the SDK for the *server* half (provision + wait + lifecycle). The **exec-CLI
 SDK** is the *client* half — driving the CLI already in the image — extracted from a deliberate
-5-plugin spread across every resource category (redis · postgres · minio · kafka · rabbitmq), so the
+5-package spread across every resource category (redis · postgres · minio · kafka · rabbitmq), so the
 commonality was earned, not guessed:
 
 - **`container:run(cmd, opts?)`** — the one primitive. An **argv table** runs the CLI directly (no
   shell, no quoting); a **string** runs under `sh -c` (pipes/globs); `opts.stdin` pipes input; it
-  raises on non-zero exit and returns stdout. This absorbs the two footguns every early plugin
+  raises on non-zero exit and returns stdout. This absorbs the two footguns every early package
   hand-rolled — shell-quoting and `printf | …` stdin piping — so neither is public surface.
 - **`prova.parse.{lines, rows, table, json}`** — the output toolkit, covering the shapes the spread
   produced: line-oriented (redis), delimited/`table`-by-header (postgres `|`, rabbitmq TSV), and JSON
-  (minio `--json`). Lives at the root because parsing is broadly useful, not plugin-only.
+  (minio `--json`). Lives at the root because parsing is broadly useful, not package-only.
 - **`containerized` extras from the spread**: a `{ container, host }` ports entry for a **fixed** host
   port (kafka's advertised listener), and an **`extra`** hook for resource fields beyond the trio
   (s3 credentials).
 
-Net: a docker-exec plugin writes only the tech-specific bits — image, port, which CLI commands. The
-5 plugins each shed ~30 lines of plumbing onto this SDK; rabbitmq collapsed to a single file.
+Net: a docker-exec package writes only the tech-specific bits — image, port, which CLI commands. The
+5 packages each shed ~30 lines of plumbing onto this SDK; rabbitmq collapsed to a single file.
 
 ### Tiers are a maturity gradient, not a caste
 
-Because the interface is identical, a capability can **start** as a Tier-2 docker-exec plugin (ship in
+Because the interface is identical, a capability can **start** as a Tier-2 docker-exec package (ship in
 a day) and be **promoted** to a Tier-1 native family member once it earns it by frequency or
 throughput. Nothing at the call site changes on promotion — only the hidden strategy. That pipeline is
 what lets "batteries + ecosystem" stay consistent instead of sprawling.
 
 ---
 
-## Plugin shapes
+## Package shapes
 
 Everything above (facets, the trio, Docker) describes the **resource** shape — but that is one shape,
-not the definition of a plugin. **The only universal contract is: a plugin is a Lua module that
+not the definition of a package. **The only universal contract is: a package is a Lua module that
 `return`s a table.** `prova.containerized` is a *constructor* for the resource shape; it sits at one
 row of this table, not at the root.
 
@@ -230,20 +230,20 @@ row of this table, not at the root.
 | **Library** | an arbitrary table of functions | no | — (none needed) | JWT/token DSL, data builders, custom matchers, a company auth-flow helper |
 | **Composite** | a higher-level flow over several resources | via its parts | — | "spin up the whole stack" |
 
-Consequences that follow from "a plugin is any namespace":
+Consequences that follow from "a package is any namespace":
 
-- **`requires = { "docker" }` is a property of the *resource* shape, not of plugins.** A library
-  plugin needs nothing — it is just Lua the searcher resolves and `require` returns.
-- **`prova plugin lint` classifies; it does not prescribe.** It fails only on what is wrong for *any*
-  plugin — a non-table return, or a resource facet (`client`/`container`/`wait_for`) that is present
-  but not a function. "No resource facets" is not an error; it is the signal for a **library** plugin.
+- **`requires = { "docker" }` is a property of the *resource* shape, not of packages.** A library
+  package needs nothing — it is just Lua the searcher resolves and `require` returns.
+- **`prova package lint` classifies; it does not prescribe.** It fails only on what is wrong for *any*
+  package — a non-table return, or a resource facet (`client`/`container`/`wait_for`) that is present
+  but not a function. "No resource facets" is not an error; it is the signal for a **library** package.
   Lint reports the shape (`resource` / `library`), never rejects a valid library.
 - **Restraint on constructors.** Libraries need no constructor (nothing to abstract); `prova.containerized`
   earns its place because the resource shape has real boilerplate (provision + wait + manage + trio).
   A second constructor is added only if a shape proves to carry recurring boilerplate — client-only
   (attach + readiness) is the likeliest future candidate, but not yet.
 
-So the plugin *system* is **Lua**; **Docker is the substrate for the resource shape specifically**,
+So the package *system* is **Lua**; **Docker is the substrate for the resource shape specifically**,
 which is the most common shape but not the only one.
 
 ---
@@ -259,7 +259,7 @@ with a different detector. A capability is a name resolved through a registry of
 | `github` | `GITHUB_TOKEN` set |
 | `git`, `cargo`, `kubectl` | binary on `PATH` |
 | `kafka`, `postgres`, `amqp` | **compiled into this build** (`cfg!`-assembled set) |
-| *(future)* `acme.thing` | the plugin resolved/loaded |
+| *(future)* `acme.thing` | the package resolved/loaded |
 
 `requires = { "kafka" }` skips in a `prova-min` build exactly as `requires = { "docker" }` skips
 without a daemon — same code path, same cascade, same reason. When a native capability is absent, a
@@ -283,35 +283,35 @@ everyone's binary.
 ## The `prova-rs` org
 
 - `prova-rs/prova` — the binary (ships bundled batteries).
-- `prova-rs/prova-<name>` — official plugins (`prova-redis`, `prova-postgres`, …): both bundled *and*
+- `prova-rs/prova-<name>` — official packages (`prova-redis`, `prova-postgres`, …): both bundled *and*
   published standalone, so they are the canonical authoring examples and are pin/override-able.
-- `prova-rs/package-registry` — the plugin index (name → repo → recommended pin), one TOML entry
-  per plugin, maintained by CI — see [registry.md](registry.md).
-- `prova-rs/run-action` — the GitHub Action (manifest-canonical + plugin cache).
-- Community plugins live anywhere, referenced by shorthand or listed in the index.
+- `prova-rs/package-registry` — the package index (name → repo → recommended pin), one TOML entry
+  per package, maintained by CI — see [registry.md](registry.md).
+- `prova-rs/run-action` — the GitHub Action (manifest-canonical + package cache).
+- Community packages live anywhere, referenced by shorthand or listed in the index.
 
 ## Non-goals
 
-Two things Prova's plugin system deliberately does **not** do — each avoids a tar pit that would
+Two things Prova's package system deliberately does **not** do — each avoids a tar pit that would
 outweigh its benefit:
 
-- **No plugin dependency resolver.** A plugin's `prova.toml [plugins]` names direct, pinned deps and stops there — no version-solving `[dependencies]` graph, and won't. A
+- **No package dependency resolver.** A package's `prova.toml [dependencies]` names direct, pinned deps and stops there — no version-solving `[dependencies]` graph, and won't. A
   dependency graph would drag in transitive resolution, version-conflict resolution, and a lockfile —
-  and it is *unsatisfiable* here anyway: all plugins share one Lua state where `require("x")` is a
-  global singleton, so two plugins wanting different versions of `x` could never both be honored.
-  **Plugins are self-contained**: a plugin depends on **prova and its primitives, nothing else**
-  (gated by `requires.prova`). The two real needs are met without a resolver — a plugin **vendors**
+  and it is *unsatisfiable* here anyway: all packages share one Lua state where `require("x")` is a
+  global singleton, so two packages wanting different versions of `x` could never both be honored.
+  **Packages are self-contained**: a package depends on **prova and its primitives, nothing else**
+  (gated by `requires.prova`). The two real needs are met without a resolver — a package **vendors**
   its own helpers in its repo and requires them via its canonical namespace
-  (`require("rabbitmq.helpers")`); a capability wanted by *many* plugins gets **promoted into prova's
-  primitives** (bundled, versioned by `requires.prova`), not passed plugin-to-plugin. A shared
-  community helper library is a valid plugin, but a consumer wires it into their **own `prova.toml`**
+  (`require("rabbitmq.helpers")`); a capability wanted by *many* packages gets **promoted into prova's
+  primitives** (bundled, versioned by `requires.prova`), not passed package-to-package. A shared
+  community helper library is a valid package, but a consumer wires it into their **own `prova.toml`**
   — dependencies are declared once, at the top level, by whoever sees the whole picture, never
   discovered transitively. That keeps resolution flat, visible, and reproducible.
 
-- **No third-party native/binary plugins.** Native code is always **first-party and bundled** — the
+- **No third-party native/binary packages.** Native code is always **first-party and bundled** — the
   network-drive primitives (`http`/`grpc`/`graphql`) plus the small curated native-client set for
-  throughput/attach-external. A plugin author writes **Lua + Docker**, never native code, so there is
-  no cross-platform release matrix to maintain per plugin. (A dynamic native-extension hatch, à la
+  throughput/attach-external. A package author writes **Lua + Docker**, never native code, so there is
+  no cross-platform release matrix to maintain per package. (A dynamic native-extension hatch, à la
   Substrate's extension system, remains conceivable for a truly exceptional case, but it is *not
   planned* — the Lua+Docker surface plus black-box-through-app covers the space.)
 
@@ -324,29 +324,29 @@ outweigh its benefit:
    `requires = { "kafka" }` skips in a lean build exactly as `requires = { "docker" }` skips without
    a daemon; an absent namespace is a stub raising a clear "not compiled into this build" error.
 3. Org/repo shorthand resolution (reusing the git fetch) → registered orgs. **(done)** — a string
-   plugin source is classified: a git URL, a `host:org/repo[@ref]` shorthand (`github`/`gh`,
+   package source is classified: a git URL, a `host:org/repo[@ref]` shorthand (`github`/`gh`,
    `gitlab`/`gl`, or a `[sources]` alias), or a bare `org/repo@ref` (defaults to github; the `@ref`
    is required so a plain path is never a surprise fetch) → a git source; anything else → a local
    path. `[sources]` registers aliases (`acme = "github:acme"` → `acme:redis` = github.com/acme/redis).
-4. Action: plugin cache + `plugins:` input. **(done)** — `prova-rs/run-action` caches
-   `~/.cache/prova/plugins` (keyed on the manifest) so pinned plugins clone once, and its `plugins:`
-   input (one `name = source` per line) expands to prova's repeatable `--plugin name=source` flag,
+4. Action: package cache + `packages:` input. **(done)** — `prova-rs/run-action` caches
+   `~/.cache/prova/packages` (keyed on the manifest) so pinned packages clone once, and its `packages:`
+   input (one `name = source` per line) expands to prova's repeatable `--package name=source` flag,
    layered over the manifest.
-5. Stand up an external plugin (dogfood the round-trip); `prova plugin lint`. **(done)** —
-   `prova-rs/prova-rabbitmq` is the first standalone plugin: a **zero-native-code** RabbitMQ resource
+5. Stand up an external package (dogfood the round-trip); `prova package lint`. **(done)** —
+   `prova-rs/prova-rabbitmq` is the first standalone package: a **zero-native-code** RabbitMQ resource
    (docker-exec over `rabbitmqadmin`, authored through `prova.containerized`), self-testing through
-   Prova against a live daemon. `prova plugin lint <file>` checks a plugin returns a namespace with
+   Prova against a live daemon. `prova package lint <file>` checks a package returns a namespace with
    grammar facets (`client`/`container`/`wait_for`, each a function). *(Chose rabbitmq over redis: a
    true external technology Prova doesn't bundle, so it exercises the real docker-exec path — a
    stronger dogfood than re-exposing a bundled recipe.)* Also: `prova.containerized`'s `client`
    factory now receives the `container` (`client(url, opts, container)`) so docker-exec clients can
-   `exec` into it — the "fix the starter first" change this plugin surfaced.
-6. **Plugin section (`prova.toml [plugin]`)** — entry declaration (fixes alias↔filename frailty),
-   `requires.prova` compatibility gate, intra-plugin `require` by canonical namespace. **(done)** —
-   see [plugin-system.md](plugin-system.md). Plugins are self-contained (no dependency resolver — see
+   `exec` into it — the "fix the starter first" change this package surfaced.
+6. **Package section (`prova.toml [package]`)** — entry declaration (fixes alias↔filename frailty),
+   `requires.prova` compatibility gate, intra-package `require` by canonical namespace. **(done)** —
+   see [package-system.md](package-system.md). Packages are self-contained (no dependency resolver — see
    Non-goals).
 7. The `prova-rs/package-registry` index — **designed** ([registry.md](registry.md): git repo of
-   per-plugin TOML entries, `[[registries]]` in user config, `prova plugins` search/add,
+   per-package TOML entries, `[[registries]]` in user config, `prova packages` search/add,
    CI-driven registration); distributions (`prova-min`/`prova-full`) + tap variants.
-8. *(not planned)* Third-party native-plugin hatch — see Non-goals. The Lua+Docker surface plus
+8. *(not planned)* Third-party native-package hatch — see Non-goals. The Lua+Docker surface plus
    black-box-through-app covers the space; native code stays first-party and bundled.

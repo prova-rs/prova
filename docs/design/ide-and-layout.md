@@ -1,7 +1,7 @@
 # Project Layout & IDE Integration
 
 How a prova package is laid out on disk, and how editor completion + type-checking "just work" for
-test authors and plugin authors alike — with zero manual wiring.
+test authors and package authors alike — with zero manual wiring.
 
 ## The insight this is built on
 
@@ -16,13 +16,13 @@ Two facts drive the whole design:
 1. **LuaLS binds to the workspace root you open**, and reads a `.luarc.json` there. prova writes that
    pointer into the **home directory** — which is the package root an editor attaches to.
 2. **`---@meta <name>` makes `require("<name>")` resolve by module name** — decoupled from the file's
-   path. That's what lets a plugin cached under a ref-hashed directory still be found as
+   path. That's what lets a package cached under a ref-hashed directory still be found as
    `require("postgres")`.
 
 ## The "prova home"
 
 **Home = the project ROOT — the directory an editor opens and where `proofs/` live — and it is the
-base for everything.** Every manifest-relative key (`proofs`, `config`, `plugin_root`) and every
+base for everything.** Every manifest-relative key (`proofs`, `config`, `packages`) and every
 generated artifact (`.luarc.json`, the `.prova/var/` state directory) resolves against it. A package
 picks one of four manifest locations:
 
@@ -33,14 +33,14 @@ picks one of four manifest locations:
 | `prova/prova.toml` | the dir **above** `prova/` | visible nested — config tucked in `prova/` |
 | `.prova/prova.toml` | the dir **above** `.prova/` | hidden nested — config tucked in `.prova/` |
 
-The nested forms are how a package hides prova's own files — the manifest, `config.lua`, `plugins/` —
+The nested forms are how a package hides prova's own files — the manifest, `config.lua`, `packages/` —
 inside a `prova/` or `.prova/` **nook**, while the ROOT stays the parent: where `proofs/` live in the
 open, and where an editor attaches. So `config = ".prova/config.lua"` and `proofs = ["proofs"]` in a
 `.prova/prova.toml` resolve to `<root>/.prova/config.lua` and (via discovery) `<root>/proofs` — both
 relative to the root, never to the manifest's own directory. One base, one mental model, a layout an
 agent reads off a single file. A package stays a **relocatable unit**: home is the root whether the
 manifest sits flat at the root or tucked into a nook — the only difference is that `config`/
-`plugin_root` point *into* the nook for the nested form.
+`packages` point *into* the nook for the nested form.
 
 Discovery walks **up** from the current directory (like git finding `.git`), so `prova` runs from
 anywhere inside a package — including from inside the nook itself. Two rules:
@@ -73,9 +73,9 @@ myproject/
 ├── .prova.toml          ← the manifest — home IS the root
 ├── .luarc.json          ← the editor pointer, at the root LuaLS binds to
 ├── proofs/              ← visible tests (proofs = ["proofs"], the default)
-└── .prova/              ← just a nook for config + plugins the manifest points into
+└── .prova/              ← just a nook for config + packages the manifest points into
     ├── config.lua       #   config = ".prova/config.lua"
-    ├── plugins/         #   plugin_root = ".prova/plugins"
+    ├── packages/         #   packages = ".prova/packages"
     └── var/             ← generated state; self-ignoring, never tracked
 ```
 
@@ -89,7 +89,7 @@ gets added later — lives under `<home>/.prova/var/`, created on the first stat
 accidentally commit, and no ignore entry for anyone to hand-maintain.
 
 Note where the ignore file sits: **inside `var/`, not at `.prova/` level.** That is what lets `.prova/`
-keep holding *tracked* content (the manifest, `config.lua`, `plugins/`) — an ignore one level up would
+keep holding *tracked* content (the manifest, `config.lua`, `packages/`) — an ignore one level up would
 hide the very files a nested-layout package commits. Two properties follow:
 
 - **`.prova/` exists in every package; the only variable is whether it holds tracked content.** The
@@ -98,7 +98,7 @@ hide the very files a nested-layout package commits. Two properties follow:
 <!-- claim: state-self-ignore-composes -->
 - **The self-ignore composes recursively, with no coordination.** Every package ignores its own state
   and nobody else's, at any nesting depth, because home resolution stops at the nearest manifest. A
-  local plugin under `plugin_root` that is run standalone gets its own `var/`; a parent run never
+  local package under `packages` that is run standalone gets its own `var/`; a parent run never
   creates one for it, because state is written against the *resolved* home and lazily at that. This is
   the property an "append to the root `.gitignore`" approach cannot have: at depth it would need to
   enumerate every nested package and maintain an entry per package.
@@ -140,7 +140,7 @@ myproject/                ← still the home (root)
 └── .prova/
     ├── prova.toml       ← the manifest now lives in the nook
     ├── config.lua       #   config = ".prova/config.lua"
-    └── plugins/         #   plugin_root = ".prova/plugins"
+    └── packages/         #   packages = ".prova/packages"
 ```
 
 Nothing else is generated inside the package. `.luarc.json` names its annotation sources directly:
@@ -148,7 +148,7 @@ Nothing else is generated inside the package. `.luarc.json` names its annotation
 ```json
 "workspace.library": [
   "~/.local/share/prova/lua/annotations",                     // core stubs: ONE stable dir, .version-stamped
-  "~/.cache/prova/plugins/…prova-postgres/tag-main/library"   // the checkout itself
+  "~/.cache/prova/packages/…prova-postgres/tag-main/library"   // the checkout itself
 ]
 ```
 
@@ -159,19 +159,19 @@ Nothing else is generated inside the package. `.luarc.json` names its annotation
     ├── modules.lua                    `.luarc.json` entry is written once and never churns
     └── .version
 ~/.cache/prova/
-└── plugins/<url>/<ref>/library/     ← the plugin checkout, fetched once, shared by all projects
+└── packages/<url>/<ref>/library/     ← the package checkout, fetched once, shared by all projects
 ```
 
 ## No per-project state outside the project
 
 This is the load-bearing property. Look at what a project's annotations consist of: core stubs that
-are byte-identical for a given prova version, and plugin stubs that live in checkouts shared by every
-project using them. **The only project-specific fact is *which* plugins are used — and `prova.toml`
+are byte-identical for a given prova version, and package stubs that live in checkouts shared by every
+project using them. **The only project-specific fact is *which* packages are used — and `prova.toml`
 already records that, inside the repo.**
 
 So prova stores nothing per-project outside the project. Both cache directories are keyed by things
-that aren't projects (a version, a plugin ref), and both are bounded accordingly: by how many prova
-versions you've installed, and by how many distinct plugin refs you've fetched — never by how many
+that aren't projects (a version, a package ref), and both are bounded accordingly: by how many prova
+versions you've installed, and by how many distinct package refs you've fetched — never by how many
 projects you have.
 
 That kills an entire class of problem rather than managing it. An earlier iteration bundled each
@@ -187,12 +187,12 @@ Two consequences worth stating:
   `.luarc.json`. It holds machine-local absolute paths, so it isn't shareable and shouldn't be
   committed — `prova init` says so once and leaves the `.gitignore` decision to the user. prova never
   edits a user's `.gitignore`.
-- **Plugin stubs are referenced, not copied.** Editing a plugin's `library/` is visible to the editor
+- **Package stubs are referenced, not copied.** Editing a package's `library/` is visible to the editor
   immediately, with no re-sync step.
 
-### The cost: the entry list tracks the plugin set
+### The cost: the entry list tracks the package set
 
-The direct list isn't free. Because the entries *are* the plugin set, adding or removing a plugin
+The direct list isn't free. Because the entries *are* the package set, adding or removing a package
 changes the list — so `.luarc.json` has to be rewritten, where the old design could leave a single
 stable pointer alone forever. prova handles that per ownership:
 
@@ -204,7 +204,7 @@ stable pointer alone forever. prova handles that per ownership:
 
 Ownership is decided by exact key-set match, which errs toward "not ours": add a single setting of
 your own and prova treats the file as yours from then on. The sweep only reclaims entries under
-prova's own cache roots — a plugin resolved from a **local path** is indistinguishable from a
+prova's own cache roots — a package resolved from a **local path** is indistinguishable from a
 hand-added entry, so dropping one leaves its (still valid) path in the list for the user to remove.
 That asymmetry is deliberate: leaving a stale entry is a much cheaper mistake than deleting one the
 user added.
@@ -248,29 +248,29 @@ package has opted into prova:
 Renders a catalog archetype into the current directory, then wires IDE support as a finishing step.
 The archetype (not a flag) owns the layout — where `prova.toml` lands, what the proof dir is named —
 so `prova init <key>` scaffolds whatever that entry produces; `--no-ide` (alias `--no-luals`) skips
-the wiring. The catalog is prova's built-ins `project` and `plugin` plus `[init.*]` from `~/.config/prova/config.toml`;
+the wiring. The catalog is prova's built-ins `project` and `package` plus `[init.*]` from `~/.config/prova/config.toml`;
 `prova init` with no key picks from it interactively, `prova init --list` prints it. It refuses to run
 if any manifest location already exists — it never clobbers an existing layout — unless the entry
-declares `in_package = "allow"` (the built-in `plugin` entry does: it scaffolds a local plugin INTO
+declares `in_package = "allow"` (the built-in `package` entry does: it scaffolds a local package INTO
 an existing package). For in-package renders, prova injects package state at lowest precedence: the
-answers `prova_package_root` (relative to cwd) and `prova_plugin_root` (from `[run] plugin_root`),
+answers `prova_package_root` (relative to cwd) and `prova_plugin_root` (from `[run] packages`),
 plus the switch `prova:in-package`. Automation renders headlessly — `prova init <key> --headless
 -a k=v … --defaults` — where an unanswered, undefaulted prompt is an ERROR, never a hang; answer
 precedence is CLI `--answer` > the entry's baked answers > prompt (or archetype default with
 `--defaults`). IDE wiring itself is also available on its own as `prova ide setup` (see above).
 
-## The plugin side
+## The package side
 
-A plugin ships a **`library/<name>.lua`** file — a `---@meta <name>` stub declaring
+A package ships a **`library/<name>.lua`** file — a `---@meta <name>` stub declaring
 `<name>.container(ctx, opts)`, the resource shape, and the client's methods. It's the consumer-facing
 contract, separate from the implementation (mirroring how prova's own core stubs are separate from
-the Rust engine). The plugin archetype generates it from the same prompts that generate the client,
-so every plugin is IDE-ready by construction; `prova plugin lint` warns (non-fatally) when a plugin
+the Rust engine). The package archetype generates it from the same prompts that generate the client,
+so every package is IDE-ready by construction; `prova package lint` warns (non-fatally) when a package
 ships without one.
 
-A plugin author gets IDE support for their *own* source the same way a consumer does: running the
-plugin's self-test (`prova` against its `prova.toml`) writes a `.luarc.json` listing the core stubs
-plus the plugin's own `library/`. Only `.luarc.json` lands in the repo (and should be gitignored); the
+A package author gets IDE support for their *own* source the same way a consumer does: running the
+package's self-test (`prova` against its `prova.toml`) writes a `.luarc.json` listing the core stubs
+plus the package's own `library/`. Only `.luarc.json` lands in the repo (and should be gitignored); the
 shipped `library/<name>.lua` is committed.
 
 ## The end-to-end "just works" flow
@@ -280,12 +280,12 @@ shipped `library/<name>.lua` is committed.
 prova init                                   # (or just run prova with a hand-written prova.toml)
 
 # prova.toml:
-[plugins]
+[dependencies]
 postgres = "prova-rs/prova-postgres@v0.2.0"
 
-prova                                        # fetches the plugin, syncs its stub, runs tests
+prova                                        # fetches the package, syncs its stub, runs tests
 ```
 
 Open the package in any LuaLS-backed editor, and `require("postgres")` completes — `pg.client:
 query_value(...)` is typed, wrong argument counts are flagged. The test author did nothing but
-declare the plugin.
+declare the package.

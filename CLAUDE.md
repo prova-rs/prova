@@ -11,14 +11,14 @@ assertions, with fixtures holding setup and teardown together. Tests are `*_test
 `prova.toml` manifest declares what to run and how.
 
 See `README.md` for the pitch and `docs/design/` for the durable design docs (foundations,
-architecture, plugin system, topologies, mocks/proxies/drivers, agent ergonomics).
+architecture, package system, topologies, mocks/proxies/drivers, agent ergonomics).
 
 ## Workspace Structure
 
 ```
-crates/prova-core       # the engine: Lua DSL, fixtures/scopes, runner, reporters, plugin system
+crates/prova-core       # the engine: Lua DSL, fixtures/scopes, runner, reporters, package system
 crates/prova-cli        # the `prova` binary — CLI, `prova init`/`ide setup`, and MCP mode
-crates/prova-archetect  # the `archetect` render plugin (archetect-core embedded in-process)
+crates/prova-archetect  # the `archetect` render package (archetect-core embedded in-process)
 xtask                   # build/install automation (this is the `cargo xtask` front door)
 proofs/                 # prova's own black-box proofs — prova, proven by prova (dogfooding)
 docs/design/            # durable design docs        docs/plans/  # in-flight plans
@@ -61,7 +61,7 @@ not a step in the test loop.
 
 Inside a proof, drive prova recursively through `prova.bin` (the runtime injects its own executable),
 never a bare `prova`. `proofs/hermeticity/binary_identity_test.lua` fails the suite if one reappears.
-Consumer repos are the opposite and correctly so: an archetype or plugin proves a *released* prova via
+Consumer repos are the opposite and correctly so: an archetype or package proves a *released* prova via
 `prova-rs/run-action` at a pinned version, because what they must test is what users get.
 
 **Formatting:** this tree is **not** blanket-`rustfmt`-clean — a repo-wide `cargo fmt` churns

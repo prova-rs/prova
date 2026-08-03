@@ -43,7 +43,7 @@ lands, its outcome is folded into the design docs and the plan trimmed to a `LAN
 ## Landed (pointer stubs; content folded into docs/design/)
 
 - [topology.md](topology.md) → [`topologies.md`](../design/topologies.md)
-- [plugin-ecosystem.md](plugin-ecosystem.md) → [`plugin-system.md`](../design/plugin-system.md) /
+- [plugin-ecosystem.md](plugin-ecosystem.md) → [`package-system.md`](../design/package-system.md) /
   [`ecosystem.md`](../design/ecosystem.md) / [`namespacing.md`](../design/namespacing.md)
 - [snapshots.md](snapshots.md) → [`architecture.md`](../design/architecture.md) §Snapshots
 - [phase1-ergonomics.md](phase1-ergonomics.md) → [`api.md`](../design/api.md) §Decision record

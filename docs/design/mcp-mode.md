@@ -23,10 +23,10 @@ one embedded skill document served everywhere.
 
 ```
 prova mcp                 # stdio MCP server (rmcp, like archetect-mcp), resolved against the
-                          # prova home exactly as the CLI is — same manifest, same plugins
+                          # prova home exactly as the CLI is — same manifest, same packages
 ```
 
-The server process owns a live engine (Lua state, plugin set, annotation-synced API). Held
+The server process owns a live engine (Lua state, package set, annotation-synced API). Held
 topologies live **in the server's own scope machinery** — the same `ctx:manage` lifecycle as
 `prova up`, with the server playing the role the attached `up` process plays today.
 
@@ -46,9 +46,9 @@ doors: `up` stands up a `[topologies]` registration on both transports, and noth
 |---|---|---|---|
 | Run a selection | `prova -k … --tags … --node … --last-failed` | `run { keywords?, tags?, nodes?, last_failed?, profile?, jobs?, topology?, package? }` | Same `Selection` struct; returns one compact JSON summary `{ passed, failed, skipped, deselected, duration_ms, failures: [{ path, message, file?, line? }] }` |
 | Discover | `prova --list` | `list { selection? }` | MCP returns nodes with path/tags/requires/file |
-| One-shot code | `prova eval '<lua>'` *(new, ships with this work)* | `eval { code, topology? }` | Full environment (modules + plugins). In MCP, `topology:` runs the snippet **inside a held env** — interactive queries against live seeded state |
+| One-shot code | `prova eval '<lua>'` *(new, ships with this work)* | `eval { code, topology? }` | Full environment (modules + packages). In MCP, `topology:` runs the snippet **inside a held env** — interactive queries against live seeded state |
 | Hold an env | `prova up <name>` / `start` / `down` / `ps` | `up { name, fixed?, package? }` / `down { name }` / `status {}` | Server-held; endpoints in the result |
-| API shape | `prova.help("<filter>")` in eval | `introspect { filter?, package? }` | `{ entries: [{ name, signature, summary }] }`, parsed from the LuaCATS stubs — core + declared plugins |
+| API shape | `prova.help("<filter>")` in eval | `introspect { filter?, package? }` | `{ entries: [{ name, signature, summary }] }`, parsed from the LuaCATS stubs — core + declared packages |
 | The topic catalog | `prova learn [<topic>]` | `learn { topic?, package? }` | Markdown, computed for the package at call time |
 | **Warm re-run** | — (CLI runs are cold by design) | `run { …, topology: name }` | **The MCP-only capability**: tests resolve the named topology against the held instance — milliseconds, not provisioning |
 | Failure detail | console/JSONL + `proc:output()` | failures carry attached output tails | Failure bundles ride the structured results |
@@ -94,7 +94,7 @@ Structure (universal-first, transport notes last — avoiding duplicated skills)
 - **What Prova is for you (the agent):** write proofs, not just tests — executable black-box
   definitions of done; lean on Prova for verification instead of claiming success. The PDD loop.
 - **The idiom, compressed:** fixtures + scopes, the resource grammar (`{ client, url, container,
-  host, port }`), plugins (`[plugins]` + `require`), topologies (one definition, test/up/eval all
+  host, port }`), packages (`[dependencies]` + `require`), topologies (one definition, test/up/eval all
   consume it), quiet primitives (`check = true`, scalar env, `proc:output()`), selection
   (`-k`/`--tags`/`--node`/`--last-failed`), snapshots, the variant-loop pattern for matrices.
 - **The loop:** scaffold with `prova init`; probe with `eval`; write the proof; run; implement;

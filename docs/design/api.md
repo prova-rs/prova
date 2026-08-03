@@ -20,10 +20,10 @@ filesystem, containers — with fixtures holding setup and teardown together. Pr
 
 ## Test files, and the globals in them
 
-Everything is a global — no imports except plugins via `require`:
+Everything is a global — no imports except packages via `require`:
 
 ```lua
-local postgres = require("postgres")            -- declared in prova.toml [plugins]
+local postgres = require("postgres")            -- declared in prova.toml [dependencies]
 
 local db = prova.fixture("db", Scope.File, function(ctx)
   return postgres.container(ctx)                -- { client, url, container, host, port }
@@ -121,7 +121,7 @@ means a typo'd name silently skips: read skip reasons. A profile's `must_run = [
 other half — **policy about the environment**: same expressions, but unmet ⇒ the run FAILS
 (exit 2) before anything executes. See [`test-topology.md`](test-topology.md).
 
-## Modules (built-ins) and plugins
+## Modules (built-ins) and packages
 
 Built-ins, one line each: `shell.run(cmd, {cwd, env, timeout, check})` + `shell.spawn` (managed
 process) · `fs` (read/write/exists/glob/tempdir/remove_all) · `net.free_port()` ·
@@ -130,14 +130,14 @@ process) · `fs` (read/write/exists/glob/tempdir/remove_all) · `net.free_port()
 `graphql.client{ url }` · `yaml.decode/decode_all` · `sqlite.client(url)` ·
 `docker.run{...}`/`build`/`network` · mock facets: `http.mock`/`grpc.mock` (stubs with Lua reply
 handlers + a request journal; see [`mocks-proxies-drivers.md`](mocks-proxies-drivers.md)) —
-plus `archetect.render{...}`/`verify{...}`, a bundled plugin (always present in the standalone
+plus `archetect.render{...}`/`verify{...}`, a bundled package (always present in the standalone
 binary).
 
-**There is no `db` module.** Server databases are plugins — `require("postgres")`,
+**There is no `db` module.** Server databases are packages — `require("postgres")`,
 `require("mysql")` — following the resource grammar: `X.client(...)` attaches to something
 running; `X.container(ctx, opts?)` provisions ephemerally and returns
 `{ client, url, container, host, port }` (see [`namespacing.md`](namespacing.md)). The full,
-current surface — core and every plugin this package declares — is one call away:
+current surface — core and every package this package declares — is one call away:
 `prova.help()` / MCP `introspect`.
 
 ## Files that aren't tests
@@ -148,7 +148,7 @@ current surface — core and every plugin this package declares — is one call 
 - **`prova.lua`** (or the manifest's `config` path) — the package **companion**, loaded once
   with the manifest, *before* any suite: `runtime.capability(name, fn)` registrations live
   here. It is NOT a conftest — shared fixtures belong in `suite.lua`; shared helpers in a
-  `require`d plugin under `plugin_root`.
+  `require`d package under `packages`.
 
 ## Running (pointer)
 

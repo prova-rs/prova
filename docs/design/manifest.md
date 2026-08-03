@@ -2,7 +2,7 @@
 
 > The authoritative schema reference for the manifest and its resolution rules. The live,
 > package-specific rendering of this material is `prova learn project` — that topic computes YOUR
-> package's actual proof locations, plugins, and topologies at call time; this doc is the durable
+> package's actual proof locations, packages, and topologies at call time; this doc is the durable
 > contract behind it. Source of truth in code: `crates/prova-cli/src/manifest.rs` (schema) and
 > `crates/prova-cli/src/home.rs` (discovery).
 
@@ -21,7 +21,7 @@ Four layouts; the **home** is the project ROOT in every case:
 | `.prova/prova.toml` | the dir **above** `.prova/` | nested hidden |
 
 <!-- claim: paths-resolve-against-home -->
-Every manifest-relative path (`proofs`, `config`, `plugin_root`) and generated artifact
+Every manifest-relative path (`proofs`, `config`, `packages`) and generated artifact
 (`.luarc.json`, the `.prova/var/` state directory) resolves against the home, never against the
 manifest's own directory.
 
@@ -42,9 +42,9 @@ crosses into it.
 <!-- claim: profile-overlay-semantics -->
 `[run]` is the default profile; `[profiles.<name>]` (selected with `--profile <name>`) overlays
 it. Every field is optional. Overlay semantics: a profile field **replaces** the base's when
-present — except `env` (base then profile, profile wins per key), `plugins` (overlaid per name,
-profile wins), and `must_run` (**union**, strictly additive: a profile promises *more* than the
-package baseline, never less).
+present — except `env` (base then profile, profile wins per key), `dependencies` (overlaid per
+name, profile wins), and `must_run` (**union**, strictly additive: a profile promises *more* than
+the package baseline, never less).
 
 <!-- claim: knob-precedence -->
 Where a CLI flag or environment variable exists for the same knob, precedence is uniformly
@@ -53,7 +53,7 @@ Where a CLI flag or environment variable exists for the same knob, precedence is
 | Key | Default | Meaning |
 |---|---|---|
 | `proofs = ["proofs"]` | `["proofs"]` | Directory-**NAME** patterns (basename globs, NOT paths): every matching directory anywhere below the root holds `*_test.lua` / `*.test.lua` proofs. A matched directory owns its whole subtree (no re-matching inside). Discovery skips hidden dirs, `prova`, `target`, `node_modules`, `vendor`, `dist`, `build`, `testdata`, and nested packages. The pattern `"."` is the flat escape hatch: the root itself is a proof dir. |
-| `plugin_root` | *none* | THE directory of this package's own plugins, root-relative. Deliberately singular, and no default — undeclared means nothing is scanned. Anything from elsewhere gets a name and a pinned source in `[plugins]`. A profile's value replaces (never adds). |
+| `packages` | *none* | THE directory of this package's own packages, root-relative. Deliberately singular, and no default — undeclared means nothing is scanned. Anything from elsewhere gets a name and a pinned source in `[dependencies]`. A profile's value replaces (never adds). |
 | `config` | `prova.lua` | The Lua companion loaded once, pre-suite, with the manifest — where `runtime.capability(name, fn)` registers package-wide capability predicates. Path is home-relative. Override per run: `--config PATH` > `PROVA_CONFIG` env > this key. |
 | `jobs` | `1` | Concurrent **suites** (`-j/--jobs` wins). Throughput only — it can never change what a run means. |
 | `format` | `console` | `"console"` \| `"json"` (JSONL event stream) \| `"tap"`. `--format`/`--json` win. Never auto-switched when piped. |
@@ -63,7 +63,7 @@ Where a CLI flag or environment variable exists for the same knob, precedence is
 | `github` | `auto` | The GitHub Actions sink: `::error file=,line=` PR annotations + a `$GITHUB_STEP_SUMMARY` table, composing with any `format`. `"auto"` turns on exactly when `GITHUB_ACTIONS=true`. `--gha` > `PROVA_GHA` > this key. |
 | `junit` | *none* | Also write a JUnit XML report to this home-relative path (suite named after the package; file/line/timestamp/assertions attributes). `--junit PATH` wins. |
 | `[run.env]` | `{}` | Environment applied before the run — the same suite targets ephemeral containers locally and real endpoints in CI by profile-swapping this table. |
-| `[profiles.X.plugins]` | `{}` | Profile-scoped plugins overlaid on package `[plugins]` (profile wins on a name). The principled home for CI-only capabilities: pinned in-repo, so `--profile ci` resolves identically everywhere. |
+| `[profiles.X.packages]` | `{}` | Profile-scoped packages overlaid on package `[dependencies]` (profile wins on a name). The principled home for CI-only capabilities: pinned in-repo, so `--profile ci` resolves identically everywhere. |
 | `must_run = ["docker", "dotnet >= 9"]` | `[]` | Capabilities this context **GUARANTEES**, checked as a precondition before anything runs. Same expression grammar as a test's `requires` — but where an unmet `requires` skips, an unmet guarantee **fails the run** (exit 2): a broken environment must not read as a green suite. Unions across base + profile. |
 
 ## The other tables
@@ -71,11 +71,11 @@ Where a CLI flag or environment variable exists for the same knob, precedence is
 | Table | Meaning |
 |---|---|
 | `[suites.<name>]` | An explicit suite: `paths = [...]` (dirs/files whose test files all share ONE Lua state — live `Scope.Suite` fixtures) plus optional `setup = "path/suite.lua"`. The zero-config alternative is a directory's own `suite.lua`, which groups that directory's test files (directory-scoped, not the subtree). |
-| `[plugins]` | `name → source`, package-wide. Source forms: a local path string; `"owner/repo@ref"`; or `{ git\|path, tag\|branch\|rev, module }` (`module` defaults to `<name>.lua` then `init.lua`). `require(name)` in any proof resolves through this. |
-| `[sources]` | `alias → base` (`github:acme` or a base URL) so plugins can say `"acme:prova-redis@v1"`. |
-| `[topologies.<name>]` | `plugin` (required) + exactly one of `topology` (the plugin's advertised name) or `factory` (dotted path), optional `requires` and `options` (passed to the factory). Sugar for `prova.topology(name, require(plugin).<factory>)` — the name `prova up <name>` and proofs both address. |
+| `[dependencies]` | `name → source`, package-wide. Source forms: a local path string; `"owner/repo@ref"`; or `{ git\|path, tag\|branch\|rev, module }` (`module` defaults to `<name>.lua` then `init.lua`). `require(name)` in any proof resolves through this. |
+| `[sources]` | `alias → base` (`github:acme` or a base URL) so packages can say `"acme:prova-redis@v1"`. |
+| `[topologies.<name>]` | `package` (required) + exactly one of `topology` (the package's advertised name) or `factory` (dotted path), optional `requires` and `options` (passed to the factory). Sugar for `prova.topology(name, require(package).<factory>)` — the name `prova up <name>` and proofs both address. |
 | `[luals]` | `manage = "auto"` (default) \| `"always"` \| `"never"` — the `.luarc.json` pointer policy. `auto` creates when absent and reconciles non-destructively when present (silent in the steady state; a JSONC file it can't parse gets a hint). `never` is the right setting when a repo deliberately commits a hand-maintained `.luarc.json`. Annotations themselves always sync to the shared machine cache. |
-| `[updates]` | Git-source freshness for `[plugins]`: `interval` (default `"1d"`; `"12h"`/`"30m"`/bare seconds), `force` (also `-U/--update`), `retention` (default 90 days for unused materialized trees). `--offline` forbids the network entirely. |
+| `[updates]` | Git-source freshness for `[dependencies]`: `interval` (default `"1d"`; `"12h"`/`"30m"`/bare seconds), `force` (also `-U/--update`), `retention` (default 90 days for unused materialized trees). `--offline` forbids the network entirely. |
 | `context = ["docs/agent.md"]` | **Top-level**, not under `[run]`: team docs (home-relative, `~/` expands) served by `prova learn` as `ctx:<stem>` topics — the project's own doctrine on the same discovery rail. A declared-but-missing file is reported loudly. |
 
 ## Worked example
@@ -96,7 +96,7 @@ must_run = ["docker", "dotnet >= 9"]   # CI guarantees these: unmet → FAIL, ne
 [profiles.ci.env]
 CI = "true"
 
-[plugins]
+[dependencies]
 postgres = "prova-rs/prova-postgres@main"
 
 [suites.grpc]
@@ -104,7 +104,7 @@ paths = ["services/grpc"]
 setup = "services/grpc/suite.lua"
 
 [topologies]
-stack = { plugin = "compose", topology = "stack", options = { file = "docker-compose.yml" } }
+stack = { package = "compose", topology = "stack", options = { file = "docker-compose.yml" } }
 ```
 
 <!-- claim: empty-resolution-is-an-error -->
@@ -121,8 +121,8 @@ places: `[package]` is the package declaring itself, `[dependencies]` the packag
 `package` providing its factory.
 
 <!-- claim: deprecated-spellings-teach -->
-The `plugin` spellings those replaced — `[plugin]`, `[plugins]`, `plugin_root`, `plugin =` in a
-`[topologies]` entry, and the `prova plugin`/`prova plugins` verbs — are deprecated, not dead:
+The `package` spellings those replaced — `[package]`, `[dependencies]`, `packages`, `package =` in a
+`[topologies]` entry, and the `prova package`/`prova packages` verbs — are deprecated, not dead:
 each still works for one release and warns once per process naming its successor (the
 `spec` → `promises` pattern), and all of them retire together at 1.0. The canonical spellings
 warn nothing.

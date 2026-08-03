@@ -4,12 +4,12 @@ Drafted 2026-07-23. A deliberate stress test of Prova's *intrinsics*, prompted b
 first reaction to Prova from a Kubernetes team: "can this replace [Chainsaw](https://kyverno.github.io/chainsaw/)?"
 
 The question is not "can we wrap `kubectl`" (trivially yes) but the sharp one: **can a team supplant
-Chainsaw for *all* of their acceptance testing with a pure Tier-2 Lua plugin, no engine fork, no
-native code?** If a Kubernetes plugin needs three new native primitives, that is a finding about
+Chainsaw for *all* of their acceptance testing with a pure Tier-2 Lua package, no engine fork, no
+native code?** If a Kubernetes package needs three new native primitives, that is a finding about
 Prova, not about Kubernetes.
 
-This doc records the audit and the verdict. It builds on [ecosystem.md](ecosystem.md) (the plugin is
-a docker-exec / drive-the-CLI Tier-2 plugin) and [plugin-system.md](plugin-system.md).
+This doc records the audit and the verdict. It builds on [ecosystem.md](ecosystem.md) (the package is
+a docker-exec / drive-the-CLI Tier-2 package) and [package-system.md](package-system.md).
 
 ## What Chainsaw actually is
 
@@ -31,9 +31,9 @@ to replace. That cross-boundary test is exactly Prova's north star, so the strat
 parity; it is the superset test Chainsaw structurally cannot write. But to *earn* the migration we
 have to clear the parity bar first.
 
-## The mapping: what the plugin looks like
+## The mapping: what the package looks like
 
-The plugin decomposes the way the ecosystem doc predicts — `prova-kind` (a resource plugin) and
+The package decomposes the way the ecosystem doc predicts — `prova-kind` (a resource package) and
 `prova-kubernetes` (drives the `kubectl` CLI, parses with `json.decode` / `yaml.decode_all`). Both
 are **pure Lua**. `kubectl` is already a registered capability detector (binary on PATH), so
 `requires = { "kubectl" }` gives graceful skip for free.
@@ -78,13 +78,13 @@ Everything in that sketch except `:matches({...})` maps onto an intrinsic that *
 | `prova up k8s-dev` (reusable env) | `prova.topology` | ✅ exists, *beyond* Chainsaw |
 
 So the structural bones — lifecycle, fixtures/scopes, retry, CLI-driving, background processes — are
-**all present and idiomatic.** The plugin stays Tier-2 Lua. That is the headline: Prova's intrinsics
+**all present and idiomatic.** The package stays Tier-2 Lua. That is the headline: Prova's intrinsics
 carry ~90% of Chainsaw with zero core changes.
 
 ## The gaps — and why they are the *right* gaps
 
-Three things a kubectl-driving plugin cannot fake. The important property: **none of them are
-Kubernetes-specific.** Each is a general-purpose intrinsic that many plugins want; Kubernetes is
+Three things a kubectl-driving package cannot fake. The important property: **none of them are
+Kubernetes-specific.** Each is a general-purpose intrinsic that many packages want; Kubernetes is
 merely the forcing function that surfaces them. That is the best possible outcome for a stress test —
 it asks the engine to get *more general*, not to grow a K8s-shaped bump.
 
@@ -122,12 +122,12 @@ not the event stream (`engine.rs:1081`, explicitly "will become a Log event late
 (console/GHA/JUnit/TAP/JSONL), and an engine interception point in the failure path
 (`engine.rs:3360`) where a scope-registered `on_failure(ctx)` handler contributes output. This is
 more surface than Gap 1 (touches `model.rs` + reporters + `engine.rs`) but is again **fully general**
-— every resource plugin wants "show me the container logs when the assert against this service
+— every resource package wants "show me the container logs when the assert against this service
 fails." The postgres/docker recipes already fake a weak version by packing diagnostics into the
 raised error string (`shell.run{check=true}`, container-exit reporting); this promotes that pattern
 to a real seam.
 
-*Partial-credit path:* the plugin can ship *today* by having its own assertion helpers pack
+*Partial-credit path:* the package can ship *today* by having its own assertion helpers pack
 `kubectl describe`/events into the raised error string, exactly as `shell.run` does. Ugly, but it
 unblocks a v0 before Gap 2 lands.
 
@@ -148,17 +148,17 @@ critical path for Chainsaw parity — defer to that doc's roadmap.
 
 ## Verdict
 
-**Yes — Prova has the right intrinsics.** A Chainsaw-supplanting plugin is a pure Tier-2 Lua plugin
+**Yes — Prova has the right intrinsics.** A Chainsaw-supplanting package is a pure Tier-2 Lua package
 (`prova-kind` + `prova-kubernetes`) driving `kubectl`, and the lifecycle / fixture / scope / retry /
 background-process / topology machinery it needs **already exists and is idiomatic**. The stress test
 surfaced exactly **one non-negotiable engine addition** (a subset matcher + table diff), **one strong
 debuggability seam** (on-failure diagnostic attachments), and **one triviality** (structured encode).
 
 The decisive result is that **all three gaps are general intrinsics, not Kubernetes special-casing.**
-A subset matcher, failure attachments, and an encoder make *every* plugin and *every* API-shaped
+A subset matcher, failure attachments, and an encoder make *every* package and *every* API-shaped
 assertion better; Kubernetes was just the forcing function sharp enough to expose them. That is the
 signature of a healthy stress test: it pushes the core toward generality it wanted anyway, and the
-domain stays entirely in a plugin.
+domain stays entirely in a package.
 
 ## Build order
 
@@ -167,9 +167,9 @@ domain stays entirely in a plugin.
    `yaml.decode_all` fixtures — no cluster required.
 2. **`yaml.encode` / `json.encode`** (`modules.rs`). Trivial; enables table-first manifest authoring.
 3. **On-failure diagnostic attachments** (`model.rs` + reporters + `engine.rs`). The debuggability
-   seam that closes the *pleasant-to-use* gap with Chainsaw. Ship the plugin's v0 on the
+   seam that closes the *pleasant-to-use* gap with Chainsaw. Ship the package's v0 on the
    error-string workaround before this lands.
-4. **`prova-kind` + `prova-kubernetes` plugins** (external, `prova-rs/prova-kubernetes`), authored
+4. **`prova-kind` + `prova-kubernetes` packages** (external, `prova-rs/prova-kubernetes`), authored
    through `prova.containerized` where the resource shape fits, self-proven in their own `proofs/`.
 5. *(deferred)* streaming `:expect` — via the `terminal` transport, on the mocks-proxies-drivers
    roadmap, not the parity path.

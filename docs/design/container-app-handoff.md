@@ -13,7 +13,7 @@ The networked-topology arc is **4 of 4 proofs done**, all proof-first and CI-gua
   dual-homed; `container:network_alias()`.
 - **Proof 2 — resource vantage** (`testdata/containerized_network.lua`, `tests/containerized_network.rs`):
   a resource on a network gains `resource.network = { url, host, port, alias }` — alias + CONTAINER
-  port for in-network consumers. Zero plugin changes.
+  port for in-network consumers. Zero package changes.
 - **Proof 3 — topology convenience** (`testdata/topology_network.lua`, `tests/topology_network.rs`):
   `ctx.network` is a lazily-minted scope-managed network; resources auto-join aliased by recipe name.
   **Hard invariant: `ctx.network` is non-nil ONLY in a topology factory.**

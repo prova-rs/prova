@@ -12,7 +12,7 @@ Prova is two platforms welded together:
 2. **A resource-orchestration layer** — provision ephemeral infra, wire it, drive it, tear it down.
 
 The weld is **the grammar** (`{ client, url, container }`, `ctx:manage`, `requires`, `prova.retry`):
-every resource — bundled or plugin, native or docker-exec, a database or a whole Kubernetes topology
+every resource — bundled or package, native or docker-exec, a database or a whole Kubernetes topology
 — presents the same shape, so there is *one* pattern to learn, not N integrations. That is the moat
 versus pytest, where resources are bring-your-own and inconsistent.
 
@@ -39,7 +39,7 @@ test fixtures are four separate descriptions of "the same" environment that sile
 collapses them to one. No existing tool does this, because they are separate tools.
 
 ```lua
--- The factory, exported from a plugin so both doors can reach it (see §Two doors below).
+-- The factory, exported from a package so both doors can reach it (see §Two doors below).
 function kitchen.orders(ctx)
   local db  = require("postgres").container(ctx)
   local mq  = require("kafka").container(ctx)
@@ -61,7 +61,7 @@ end)
 
 ```toml
 [topologies]
-orders = { plugin = "kitchen", topology = "orders" }
+orders = { package = "kitchen", topology = "orders" }
 ```
 
 ```
@@ -101,7 +101,7 @@ in-process (`prova.topology(...)`); the **inhabited verbs** stand up a **registe
 A test-local fixture became silently addressable as a shared environment, which is not what
 declaring a fixture inside a test file means. And the two sources collided: registering a topology
 in `[topologies]` *and* declaring it in a proof — the natural thing when one package is both a
-plugin and its own suite, which is exactly the reference kitchen sink — aborted with
+package and its own suite, which is exactly the reference kitchen sink — aborted with
 `topology "x" is already defined`, an error that never mentioned that one registration came from
 the manifest. The only way to have both verbs work was to pick one and lose the other.
 
@@ -110,7 +110,7 @@ the manifest. The only way to have both verbs work was to pick one and lose the 
 doors stop competing, so a package can register a topology for `prova up` and build the same
 factory as a fixture in its proofs — one definition, addressed twice, unable to drift. The
 `requires` gate also becomes universal: a code-declared topology carried no advertisement and so
-stood up ungated, where a registered one inherits the environment requirements its plugin
+stood up ungated, where a registered one inherits the environment requirements its package
 advertises.
 
 <!-- claim: test-only-topology-is-not-addressable -->
@@ -165,7 +165,7 @@ Mechanism: `RunConfig::ports: PortMode` (`Auto`/`Fixed`), exposed to Lua as `pro
 (`"auto"`/`"fixed"`). `prova.containerized` upgrades random ports to fixed bindings under `--fixed`,
 leaving author-declared `{ container, host }` entries as-is. Verified live: `up --fixed` binds and is
 reachable on `5432`/`6379`; default `up` uses random ports. This settles the **external reachability**
-question for the common case; the Kafka advertised-listener recipe is a plugin-side follow-up that
+question for the common case; the Kafka advertised-listener recipe is a package-side follow-up that
 now has the core signal it needs.
 
 ## `prova watch` — the inhabited dev loop (done)
@@ -232,10 +232,10 @@ Desktop's proxy accepts it before the server inside is listening (measured: the 
 
 - **Per-resource addressing** — whole-topology addressing across the verbs is done; standing up or
   referencing an *individual* resource (`prova up orders.db`) is speculative, likely a non-goal.
-- **Advertised-listener recipe (Kafka)** — plugin-side follow-up; the core port-mode signal is in
+- **Advertised-listener recipe (Kafka)** — package-side follow-up; the core port-mode signal is in
   place. Dual-homing is free for every resource *except* Kafka, which must advertise the network alias
   to in-network clients and the host address to host clients (`INTERNAL://kafka:9092`,
-  `EXTERNAL://127.0.0.1:<host_port>`) — the one place the containerized SUT needs plugin help.
+  `EXTERNAL://127.0.0.1:<host_port>`) — the one place the containerized SUT needs package help.
 - **The archetype acceptance bar** — the mechanism is proved, but the bar named in the arc's hand-off
   is converting a *real* archetype (`dotnet-rest-service-archetype`): render → build its own
   Dockerfile → run on the topology network against `postgres.container`'s `network.url` → drive CRUD
@@ -274,7 +274,7 @@ is real rather than a differently-shaped guess.
 ## The discipline this imposes now
 
 The immediate substrate work — `container:run`, `prova.parse.*`, the `prova.containerized`
-enhancements, the plugin registry — serves **both** verbs, so it is foundation, not detour. The single
+enhancements, the package registry — serves **both** verbs, so it is foundation, not detour. The single
 rule it adds: **keep the topology *definition* decoupled from the terminal *verb*.** A resource/topology
 must be expressible independent of a test scope, so `up` can consume it without a rewrite. Get that seam
 right and `prova up` slots in cleanly; blur it and env-mode becomes a fork.

@@ -2,7 +2,7 @@
 
 > Companion to [`api.md`](api.md) (authoring surface) and [`foundations.md`](foundations.md)
 > (the thesis). This doc is the *engine*: async model, the definition→plan→execute pipeline,
-> output as a plugin surface, and the frontend protocol that lets a GUI/IDE drive the same core
+> output as a package surface, and the frontend protocol that lets a GUI/IDE drive the same core
 > the CLI does. Status: **early implementation** (`crates/prova-core`). Not all of this is built
 > yet; what is built is noted, and everything here is a decision the built parts already respect.
 > For live, package-computed facts prefer the autodidact rails: `prova learn` (topics),
@@ -18,7 +18,7 @@
    property-based shrinking, and load-loops. *(Built: `run_one` builds a fresh `t` per invocation.)*
 3. **Async from the ground up.** Bodies are driven with `call_async`, so a body can `await` I/O
    without blocking a thread. *(Built.)*
-4. **Output is a plugin surface, never a hardcoded printer.** Execution emits a structured event
+4. **Output is a package surface, never a hardcoded printer.** Execution emits a structured event
    stream; sinks consume it. *(Built: `Event` + `Reporter` + `MultiReporter` + `JsonReporter`.)*
 5. **The CLI is just one frontend.** Discovery + a streaming event protocol let a GUI/IDE drive
    the identical core. *(Built: `discover_path`, JSONL event protocol.)*
@@ -77,7 +77,7 @@ You cannot safely kill a running Lua VM mid-instruction, so timeouts are layered
 Budgets nest: effective deadline = min(step, flow, suite, global). Teardown still runs after a
 timeout (best-effort, itself bounded).
 
-## Output as a plugin surface
+## Output as a package surface
 
 - **`Event`** — the structured stream: `RunStarted`, `NodeStarted{path}`,
   `NodeFinished{path, outcome, duration, assertions, message, file, line}`, `RunFinished{summary}`.
@@ -125,13 +125,13 @@ So the split is: **`prova-core`** (engine) → **`prova` CLI** (one frontend) an
 **Prova GUI** (another frontend) — both speaking discovery + events. LuaCATS annotations already
 give the authoring/completion half of the IDE story; this gives the run/report half.
 
-## Plugin surfaces (how "comprehensive without capability ceilings" stays true)
+## Package surfaces (how "comprehensive without capability ceilings" stays true)
 
 The core stays small; capability grows at the edges:
 
 | Surface | Extends by | Examples |
 |---|---|---|
-| **Modules** | async Lua modules registered into the runtime (via `RunConfig::with_module`) | `fs`, `net`, `shell`, `http`, `grpc`, `graphql`, `docker`, `sqlite`, `yaml`, `archetect` (resource clients are external plugins) |
+| **Modules** | async Lua modules registered into the runtime (via `RunConfig::with_module`) | `fs`, `net`, `shell`, `http`, `grpc`, `graphql`, `docker`, `sqlite`, `yaml`, `archetect` (resource clients are external packages) |
 | **Matchers** | new terminal checks on the matcher | domain assertions, snapshots |
 | **Reporters** | new `Reporter` sinks | JUnit, TAP, GUI socket, load metrics |
 | **Selectors** | plan filters | tag expressions, `--changed`, `--last-failed`, sharding |
@@ -185,14 +185,14 @@ left open by good architecture; we are not walking through it.
   returns truthy (a raise = "not yet") or the deadline elapses, returning the value — replacing the
   hand-rolled `for _=1,N do pcall(...) sleep end` loop (`local conn = prova.retry(function() return
   sqlite.client(url) end)`). *(`testdata/ergonomics.lua`.)*
-- **Resource clients are external plugins** *(as of the 2026-07-15 extraction)*. Databases, caches,
+- **Resource clients are external packages** *(as of the 2026-07-15 extraction)*. Databases, caches,
   brokers, object stores, and streams — every *containerized* resource — live as **external docker-exec
-  plugins** under `prova-rs/prova-<name>` (redis, postgres, mysql, s3, kafka, pulsar, rabbitmq, …),
+  packages** under `prova-rs/prova-<name>` (redis, postgres, mysql, s3, kafka, pulsar, rabbitmq, …),
   authored through `prova.containerized` + `container:run` and fetched via `prova.toml`. Core compiles
   **none** of them in (no sqlx-for-servers / rdkafka / pulsar / rust-s3), so the binary is lean and no
   technology is privileged over another. Each drives the CLI already in the image (`redis-cli`, `psql`,
   the `mysql` CLI, `mc`, the kafka console tools, `pulsar-client`) and self-tests in its own repo.
-  Generated from `prova-rs/prova-plugin-archetype`. See [ecosystem.md](ecosystem.md).
+  Generated from `prova-rs/prova-package-archetype`. See [ecosystem.md](ecosystem.md).
 - **`sqlite` stays embedded** — the one bundled resource client, because it is *not* a container:
   `sqlite.client(url)` (`sqlite::memory:` or a file) over sqlx, no docker needed — the fast in-process
   database for tests that don't want a container.
@@ -200,10 +200,10 @@ left open by good architecture; we are not walking through it.
   by images like Pulsar's (`bin/pulsar standalone`). **`docker.run{ ports = { { container, host } } }`**
   — a *fixed* host port (else random), needed by Kafka (its advertised listener). Both surface through
   `prova.containerized` (`spec.command`, a `{ container, host }` ports entry), which every resource
-  plugin is built on.
+  package is built on.
 - **Deferred: attach-to-secured-external / TLS+auth.** Everything connects **plaintext** in v1 — right
   for the local/CI ephemeral-container mission, but a secured *remote* endpoint (a dev k8s cluster /
-  cloud broker with TLS + tokens) needs auth. In the plugin model this is a per-plugin concern (a
+  cloud broker with TLS + tokens) needs auth. In the package model this is a per-package concern (a
   client-container or a native option) plus the network-drive primitives growing an `https`/TLS
   feature — additive, for when the "point at a dev cluster" environment-testing variation lands.
 - **Capability modules** (`modules.rs`), injected as their own globals: **`shell.run(cmd, {cwd,
@@ -233,7 +233,7 @@ left open by good architecture; we are not walking through it.
   fallback for computed columns like `count(*)`), `:query_value` (scalar), `:close`. `?`-placeholder
   params bind Lua int/float/bool/string/nil. Needs no docker — the fast in-process database. Feature
   `sqlite` (default on). *(`tests/sqlite.rs`.)* (Server databases — postgres/mysql — are external
-  docker-exec plugins; only sqlite is embedded.)
+  docker-exec packages; only sqlite is embedded.)
 - **`yaml` module** — `yaml.decode(text)` (single document) and `yaml.decode_all(text)` (multi-document
   `---` stream, as in k8s manifests) → Lua values, the counterpart to `http`'s `:json()`. General
   black-box machinery for a cloud-oriented, polyglot world (k8s/CI/compose are all YAML). serde_yaml_ng,
@@ -257,28 +257,28 @@ left open by good architecture; we are not walking through it.
   single-self-contained-binary promise. *(`proofs/grpc/grpc_test.lua` + `tests/grpc.rs` run the three
   round-trips — unary, field echo, and a `NotFound` status — against a real reflection-enabled server
   (`moul/grpcbin`) in an ephemeral container, gated by `requires` so it skips without a daemon.)*
-- **Plugin system** — `require("name")` resolves Lua plugins through a custom `package.searchers`
-  entry (`plugins.rs`), in order: **bundled** first-party modules embedded in the binary (`prova.*`),
-  **manifest-declared** plugins (`prova.toml` `[plugins]`, authoritative + pinned), then disk — every
-  **declared** plugin root from the manifest's `[run] plugin_root` (root-relative; `<a/b>.lua` or
+- **Package system** — `require("name")` resolves Lua packages through a custom `package.searchers`
+  entry (`packages.rs`), in order: **bundled** first-party modules embedded in the binary (`prova.*`),
+  **manifest-declared** packages (`prova.toml` `[dependencies]`, authoritative + pinned), then disk — every
+  **declared** package root from the manifest's `[run] packages` (root-relative; `<a/b>.lua` or
   `<a/b>/init.lua`). **Everything is declared**: no default root, no `PROVA_PLUGIN_PATH`, no
   cwd-relative fallback, no machine-global dir — discovery finds `prova.toml`, and from there the file
-  names every place a plugin may come from, so a clean clone resolves what the author's machine does
-  and one file answers "where could this require have come from?". A plugin may also declare **private dependencies** in its own `prova.toml` (`[plugins]`)
-  (`[plugins]`), which resolve for that plugin's code alone — the "bundled + isolated" model that
-  lets a library depend on something without exposing it to consumers. A plugin is authored exactly
+  names every place a package may come from, so a clean clone resolves what the author's machine does
+  and one file answers "where could this require have come from?". A package may also declare **private dependencies** in its own `prova.toml` (`[dependencies]`)
+  (`[dependencies]`), which resolve for that package's code alone — the "bundled + isolated" model that
+  lets a library depend on something without exposing it to consumers. A package is authored exactly
   like a first-party recipe: one namespace table following the grammar, composing primitives,
   `return`ed. **XDG `SystemLayout`**
   (`layout.rs`: `config_dir`/`cache_dir`/`data_dir`, XDG on macOS too like archetect;
-  `XdgSystemLayout` + `RootedSystemLayout` for tests). **`[plugins]`** maps a name to a local path or
+  `XdgSystemLayout` + `RootedSystemLayout` for tests). **`[dependencies]`** maps a name to a local path or
   a git source (`{ git, tag/branch/rev, module }`); git sources are **fetched (shelling to `git`) into
-  `cache_dir/plugins`, pinned by ref and cached** (CLI `plugins.rs::resolve_plugins`). Ships one
+  `cache_dir/packages`, pinned by ref and cached** (CLI `packages.rs::resolve_plugins`). Ships one
   bundled loadable namespace, **`prova.workspace`** (`workspace.create(ctx)` → a scratch dir tied to
   the scope via `ctx:manage`, composing `fs`), proving the loadable path first-party recipes will
-  migrate onto. *(`proofs/shared/shared_plugin_test.lua`; `tests/plugins.rs` = bundled + disk + clean
-  miss; `crates/prova-cli/tests/plugin_git.rs` fetches a git plugin end-to-end through the real
-  binary.)* Design: **[plugin-system.md](plugin-system.md)**. Next: migrate a real recipe (e.g.
-  `redis`) onto the loadable path; `prova plugin add`; read `~/.config/prova`.
+  migrate onto. *(`proofs/shared/shared_plugin_test.lua`; `tests/packages.rs` = bundled + disk + clean
+  miss; `crates/prova-cli/tests/plugin_git.rs` fetches a git package end-to-end through the real
+  binary.)* Design: **[package-system.md](package-system.md)**. Next: migrate a real recipe (e.g.
+  `redis`) onto the loadable path; `prova package add`; read `~/.config/prova`.
 - **`requires` capability gating**: `opts.requires = { "docker", ... }` skips (does not fail) a unit
   when a capability is unavailable, with a reason; the skip cascades to dependents. Detection:
   `docker` → `docker info` succeeds, `github` → `GITHUB_TOKEN` set, else a tool of that name on
@@ -287,11 +287,11 @@ left open by good architecture; we are not walking through it.
   what lets a docker suite degrade gracefully where Docker is absent. *(`tests/requires.rs`,
   `tests/docker.rs` — the docker test runs a real container where docker is present, skips where
   not; verified: 2 skipped, 0 failed with no daemon.)*
-- **Plugin-module hook**: `RunConfig::with_module(Fn(&Lua) -> Result)` registers extra globals into
+- **Package-module hook**: `RunConfig::with_module(Fn(&Lua) -> Result)` registers extra globals into
   every Lua state the run creates (built-ins `shell`/`fs` are always installed). This keeps
-  `prova-core` domain-agnostic while letting the host inject capabilities — the plugin boundary the
+  `prova-core` domain-agnostic while letting the host inject capabilities — the package boundary the
   design calls for.
-- **`archetect` plugin** (`prova-archetect` crate, kept out of the core): `archetect.render{source,
+- **`archetect` package** (`prova-archetect` crate, kept out of the core): `archetect.render{source,
   answers, switches, defaults, destination}` renders an archetype **in-process** via archetect-core
   — the justifying use case. Headless (never prompts): a `CapturingIoHandle` (a `ScriptIoHandle`)
   writes files, Acks in lockstep, and records the ordered write list; render runs on a dedicated OS
@@ -375,7 +375,7 @@ prova useful beyond testing itself:
 1. **Resource modules** — Redis (`cache`), Kafka/Pulsar (`messaging`), S3/Azure-blob (object storage):
    the remaining archetype resource types, as `docker`-provisioned ephemeral deps + thin client
    modules. *(The network-interface trio `http`/`grpc`/`graphql` is done; server databases are
-   plugins — `require("postgres")`/`require("mysql")` over the extracted `db` core, `sqlite` stays
+   packages — `require("postgres")`/`require("mysql")` over the extracted `db` core, `sqlite` stays
    built in (see [`namespacing.md`](namespacing.md)); `net.free_port` and `http.client` landed.)*
 2. **Snapshots** — `matches_snapshot`, `.snap` files + `--update-snapshots`.
 5. **Flow ergonomics — resolved.** `test_each` + `describe` shipped. `f:use(fixture)` builder sugar
@@ -393,9 +393,9 @@ prova useful beyond testing itself:
 Generate a Rust gRPC service (Postgres + Pulsar producer) and a Go REST service (MySQL + Pulsar
 consumer) from archetypes; provision the DBs, a Pulsar cluster/topic, and dynamic ports as ephemeral
 containers; boot both apps wired to those endpoints; then drive gRPC + REST and query both databases
-to assert cross-service state. Every ingredient is a module behind the plugin boundary — `archetect`
+to assert cross-service state. Every ingredient is a module behind the package boundary — `archetect`
 (generate, or generate scaffolding on the fly), `docker` (ephemeral deps), `shell.spawn` (boot),
-`http`/`grpc` (drive), the `postgres`/`mysql` plugins (assert state) — composed by fixtures and
+`http`/`grpc` (drive), the `postgres`/`mysql` packages (assert state) — composed by fixtures and
 gated by `requires`. The same
 suite can instead point at a **dev Kubernetes cluster** (skip the containers, set endpoints via a
 manifest profile's `env`) — local, CI, and environment testing from one description.
@@ -406,6 +406,6 @@ and driven over gRPC (`grpc.call_status`) while a Postgres client cross-checks t
 31.8s, green, leak-free. It also demonstrates prova's forcing-function value: *running* the service
 exposed that the archetype is a scaffold (methods `Unimplemented`, empty migration) — something
 "renders + compiles" hides. (This capstone predates the resource-client extraction; it is being
-updated to `require("postgres")` + a `prova.toml` plugin declaration — the new external-plugin model.)
+updated to `require("postgres")` + a `prova.toml` package declaration — the new external-package model.)
 The remaining gap to the full North Star is the second service + a stream + cross-service assertions,
 which are more of the same composition.

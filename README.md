@@ -83,7 +83,7 @@ The engine is built and released (single static binary, no runtime to install):
   and `must_run` environment guarantees (fail, never silently skip).
 - **Batteries**: `shell`, `fs`, `net`, `http`, `grpc`, `graphql`, `yaml`, `docker`, `sqlite`
   built in; `http.mock`/`grpc.mock` doubles with request journals; server databases and
-  brokers as pinned **plugins** (`require("postgres")`); snapshots with orphan reconciliation.
+  brokers as pinned **packages** (`require("postgres")`); snapshots with orphan reconciliation.
 - **Suites & topologies**: multi-file suites sharing one Lua state (`suite.lua`), whole
   environments addressable by name (`prova up <name>`, warm re-runs while you iterate).
 - **Product surface**: `prova.toml` manifest with profiles ([schema](docs/design/manifest.md)),
@@ -111,7 +111,7 @@ Deep docs, in reading order:
 
 Prova is a sibling to [archetect](https://github.com/archetect), sharing its Lua runtime
 and philosophy. The core runner is **domain-agnostic**; archetype rendering is a bundled
-**plugin** (`archetect.render` renders in-process via `archetect-core`, no subprocess). It
+**package** (`archetect.render` renders in-process via `archetect-core`, no subprocess). It
 is both the justifying use case and a dogfooding target: prova renders an archetype, boots
 the generated service against ephemeral containers, and holds it to its contract.
 

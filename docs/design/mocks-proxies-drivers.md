@@ -3,7 +3,7 @@
 Drafted 2026-07-19. Names the three roles Prova plays around a system under test, and the single
 transport substrate they share. Supersedes the ad-hoc "mocking" framing that `examples/aspirational`
 grew up under (that directory predates this model and is being subsumed). Builds on
-[plugin-system.md](plugin-system.md), [namespacing.md](namespacing.md), and
+[package-system.md](package-system.md), [namespacing.md](namespacing.md), and
 [topologies.md](topologies.md).
 
 ## The insight this is built on
@@ -27,8 +27,8 @@ are three postures on that one substrate:
 Mocks and Proxies are the *world around the SUT* (they `listen`); Drivers are the *SUT side* (they
 `originate`). The Proxy is the only one that touches both — which is exactly why it is the most
 powerful and the most kernel-bound: it needs the listen substrate, the client substrate, and the
-observation model at once, and no plugin can assemble that from another plugin (see
-[plugin-composition.md](plugin-composition.md)).
+observation model at once, and no package can assemble that from another package (see
+[package-composition.md](package-composition.md)).
 
 ## The three roles
 
@@ -69,12 +69,12 @@ default, not a special case. Every transport advertises the same three verbs whe
 | transport             | Mock (terminate)  | Proxy (interpose)              | Driver (originate)          | layer  |
 |-----------------------|-------------------|--------------------------------|-----------------------------|--------|
 | `http`                | `http.mock`       | `http.proxy`                   | `http.get/post/wait_for`    | kernel |
-| `grpc`                | `grpc.mock`       | `grpc.proxy`                   | `grpc.call`                 | plugin |
+| `grpc`                | `grpc.mock`       | `grpc.proxy`                   | `grpc.call`                 | package |
 | `socket` (tcp + uds)  | `socket.mock`     | `socket.proxy`                 | `socket.connect/listen`     | kernel |
 | `websocket`           | `websocket.mock`  | `websocket.proxy`              | `websocket.connect`         | kernel |
 | `process`             | —                 | `shell.proxy` (shim on PATH)   | `shell.run/spawn`           | kernel |
 | **`terminal` (pty)**  | `terminal.mock`   | `terminal.proxy`               | `terminal.spawn` → session  | kernel |
-| `postgres`/`redis`/…  | resource/container| capture/replay                 | native client               | plugin |
+| `postgres`/`redis`/…  | resource/container| capture/replay                 | native client               | package |
 
 Two consequences worth stating:
 
@@ -191,12 +191,12 @@ must_run = ["windows"]
 Record-replay makes this cheap to keep green: record a ConPTY cassette on the Windows runner, commit
 it, and every other platform replays it deterministically without a Windows box.
 
-## Kernel vs plugin
+## Kernel vs package
 
-- **Kernel:** the transports whose *substrate* multiple plugins must share and therefore cannot live
-  in any one plugin — `http`, `socket`/`pipe`, `process` (`shell`), and the new `terminal`; plus the
+- **Kernel:** the transports whose *substrate* multiple packages must share and therefore cannot live
+  in any one package — `http`, `socket`/`pipe`, `process` (`shell`), and the new `terminal`; plus the
   two shared facilities Proxies introduce: the **cassette** engine and the **fault** vocabulary.
-- **Plugin:** everything opinionated or dependency-specific — `grpc`/db/queue roles, framework-specific
+- **Package:** everything opinionated or dependency-specific — `grpc`/db/queue roles, framework-specific
   TUI helpers, and the `terminal.mock` conveniences — *because* the raw `terminal` primitive is in the
   kernel for them to build on.
 

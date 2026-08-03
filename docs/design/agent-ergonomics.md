@@ -12,8 +12,8 @@ Ordered by cost. Every claim below is an observation from the session, not a hyp
 ## 0. The meta-friction: Prova is not self-discoverable
 
 **An agent learning Prova today must read Prova's source.** In this session, learning enough to
-write one plugin required: `crates/prova-core/src/modules.rs` (to learn the `shell`/`fs`/`docker`
-shapes), `plugins.rs` (resolution order), four `docs/design/*.md` (doctrine), and `library/*.lua`
+write one package required: `crates/prova-core/src/modules.rs` (to learn the `shell`/`fs`/`docker`
+shapes), `packages.rs` (resolution order), four `docs/design/*.md` (doctrine), and `library/*.lua`
 (the LuaCATS stubs). **None of that is reachable from inside the environment being driven.**
 
 Evidence, in the order it cost round-trips:
@@ -78,12 +78,12 @@ expose `__pairs` so `for k,v in pairs(r)` enumerates fields. Cheap; removes a wh
 
 `container:run{ "env", "PGPASSWORD=…", "psql", "-tAc", sql }` takes **argv** — the ecosystem doc
 sells this explicitly: *"no shell, no quoting."* The **local** `shell.run(command, opts)` takes only
-a command **string**, so the same plugin, doing the same job against a local binary instead of a
+a command **string**, so the same package, doing the same job against a local binary instead of a
 containerized one, must hand-quote.
 
 This bit immediately: passing arbitrary Lua source to `minion eval "<lua>"` is unquotable in
 general (quotes, newlines, `$`). The workaround was to write the payload to a temp file and pass a
-path — i.e. **route around the API**. Any plugin driving a local CLI with user content (SQL, JSON,
+path — i.e. **route around the API**. Any package driving a local CLI with user content (SQL, JSON,
 scripts) hits this.
 
 **Fix:** accept an argv table in `shell.run`/`shell.spawn`, exactly as `container:run` does — same
@@ -95,7 +95,7 @@ containerized halves of one SDK, and the containerized half is right.*
 
 ## 2. No project/manifest root primitive
 
-A repo-local plugin must locate repo artifacts — `target/debug/miniond`, fixtures, testdata. There
+A repo-local package must locate repo artifacts — `target/debug/miniond`, fixtures, testdata. There
 is no primitive for "where is the manifest / project root". The options were: hardcode an absolute
 path (unshippable), or depend on the process cwd (worked — the MCP runs at the repo root — but it
 is an undocumented coincidence, and CI or a nested run breaks it).
@@ -103,7 +103,7 @@ is an undocumented coincidence, and CI or a nested run breaks it).
 `prova.workspace` exists and, by name, looked like the answer; it exposes only `create`.
 
 **Fix:** expose the resolved package root (home) (e.g. `prova.root`, or `ctx.root`) — the directory
-everything resolves against. One field. It is the anchor every path in a repo plugin needs, and the
+everything resolves against. One field. It is the anchor every path in a repo package needs, and the
 runtime already knows it (it resolved the manifest to get here).
 
 ---
@@ -111,7 +111,7 @@ runtime already knows it (it resolved the manifest to get here).
 ## 3. The Resource shape assumes Docker; a local daemon is a real shape
 
 `prova.containerized` is the only constructor, and `ecosystem.md` is careful that the Resource shape
-is "one shape, not the definition of a plugin". But **Minion is a Resource in every way that
+is "one shape, not the definition of a package". But **Minion is a Resource in every way that
 matters** — provision → wait for readiness → manage teardown → return a client — and it **cannot be
 containerized** (it needs macOS, TCC grants, and real HID devices). So `containerized` cannot help,
 and the boilerplate comes back by hand:
@@ -125,7 +125,7 @@ return { client = client, sock = …, proc = proc }
 
 That is `containerized`'s body with `shell.spawn` where `docker.run` was. The doc's own test for a
 new constructor — *"a shape proves to carry recurring boilerplate"* — is met the moment a second
-local-daemon plugin exists.
+local-daemon package exists.
 
 **Fix (proposed, smallest first):**
 - **(a)** Generalise the trio's third slot: `{ client, url, handle }` where `handle` is a container
@@ -148,7 +148,7 @@ because the thing under test **is** the local machine's integration.*
 > `prova.toml` sits in the root itself or tucked in its `prova/` / `.prova/` child. Verified empirically: a tree containing only
 > `prova/prova.toml` + `prova/tests/` is discovered and run from the repo root.
 >
-> **How the error happened, because it is the thesis in miniature.** I read `plugin-system.md`
+> **How the error happened, because it is the thesis in miniature.** I read `package-system.md`
 > ("found by walking up"), inferred a limitation, and filed it — without testing. I could not *ask*
 > the system what it did, so I guessed from prose, and guessed wrong. **A false bug report is the
 > same failure mode as a wasted probe**: both are what an agent does when the surface cannot answer
@@ -163,12 +163,12 @@ cwd looking for `prova.toml`, so `<repo>/prova/prova.toml` is invisible.~~ **Fal
 
 
 The emerging convention (principal, 2026-07-16) is a **`prova/` directory as a project standard**:
-local plugins, the manifest, suites, and topologies in one place —
+local packages, the manifest, suites, and topologies in one place —
 
 ```
 <repo>/prova/
   prova.toml
-  plugins/<name>.lua
+  packages/<name>.lua
   tests/*_test.lua
   topologies/
 ```
@@ -179,7 +179,7 @@ all solved this the same way.)
 
 **Fix:** during the walk, at each level check `./prova.toml` **then `./prova/prova.toml`**. Keeps
 the root-manifest layout working, makes the directory standard discoverable, and lets `[run] proofs`
-and `[plugins]` resolve from the package root (home) (which they already do).
+and `[dependencies]` resolve from the package root (home) (which they already do).
 
 ---
 
@@ -198,7 +198,7 @@ and `[plugins]` resolve from the package root (home) (which they already do).
   `help()` a second sink off it (`CORE_STUBS` moved to `prova_core::help`, embedded once, consumed by
   both). That is better than the proposed registry: a registry would have been a second place to
   write every summary.
-- **Remaining: 3** (`local_service`) — deferred until a second local-daemon plugin proves the
+- **Remaining: 3** (`local_service`) — deferred until a second local-daemon package proves the
   boilerplate recurs, which is the doc's own bar for a new constructor.
 
 ---
@@ -242,28 +242,28 @@ Proofs: `proofs/spec/utilities/retry_test.lua`.
 different reasons, saying only "it failed" makes the caller debug the wrong one. Prova is already
 excellent at this in its assertion messages; its *polling* primitives were not.
 
-## 6. `learn` told a package with three plugins that it had none — **FIXED**
+## 6. `learn` told a package with three packages that it had none — **FIXED**
 
 `prova learn project` and `learn doubles` both rendered:
 
-> **Declared plugins**: none — add them under `[plugins]` in the manifest.
+> **Declared packages**: none — add them under `[dependencies]` in the manifest.
 
-while `require("minion")`, `require("policy")` and `require("lib")` all worked — three local plugins
-under the declared `[run] plugin_root`. The line reads `[plugins]` (external sources) only.
+while `require("minion")`, `require("policy")` and `require("lib")` all worked — three local packages
+under the declared `[run] packages`. The line reads `[dependencies]` (external sources) only.
 
 It is a true statement about one manifest key and a **false answer to the question being asked**.
 `learn` exists so an agent need not read the source; for a package whose entire vocabulary is local
-plugins, it actively denied that vocabulary existed. Worse in `doubles`, where the sentence lands
-directly under "Plugins declared in this package add their facets to the vocabulary" — the local
+packages, it actively denied that vocabulary existed. Worse in `doubles`, where the sentence lands
+directly under "Packages declared in this package add their facets to the vocabulary" — the local
 `minion.daemon(ctx)` *is* such a facet.
 
 **Fixed here.** Both kinds are listed, because `require("<name>")` does not distinguish them:
 
 ```
-**Plugins** (`require("<name>")` in any proof):
-  lib     local (.prova/plugins/lib)
-  minion  local (.prova/plugins/minion)
-  policy  local (.prova/plugins/policy)
+**Packages** (`require("<name>")` in any proof):
+  lib     local (.prova/packages/lib)
+  minion  local (.prova/packages/minion)
+  policy  local (.prova/packages/policy)
 ```
 
 ## 7. The MCP surface cannot select by path, and swallows `t:log`
@@ -289,9 +289,9 @@ asked for them by writing `t:log`).
 Prova can stand up `http.mock` and `grpc.mock`, and `http.client` drives a real service. There is no
 equivalent for **WebSocket**, and localhost-WS is how a growing class of desktop integrations talk:
 this target has two of them (a browser extension bridge and an in-Photoshop UXP panel), both
-daemon-as-server / plugin-as-client.
+daemon-as-server / package-as-client.
 
-The concrete loss: a proof cannot stand in as the panel, so the full chain — Lua plugin chooses the
+The concrete loss: a proof cannot stand in as the panel, so the full chain — Lua package chooses the
 bridge → daemon → extension → WS → panel → reply — is provable only in Rust unit tests, one process
 at a time. The black-box proof stops at the process boundary, which is exactly the boundary Prova
 exists to cross.
@@ -313,7 +313,7 @@ like `http.mock`) is the natural sibling but strictly less urgent: the SUT is us
   have let this session prove its most interesting claim end-to-end instead of at a seam.
 - Round one's remaining item (**3**, `local_service`) is *still* unresolved and now has its second
   data point: this session provisioned the same hermetic daemon the same way. That is two local-daemon
-  plugins' worth of identical boilerplate — the doc's own bar for a constructor is met, if the second
+  packages' worth of identical boilerplate — the doc's own bar for a constructor is met, if the second
   witness counts.
 
 ---
@@ -321,8 +321,8 @@ like `http.mock`) is the natural sibling but strictly less urgent: the SUT is us
 # Round three — 2026-07-24 (cross-repo integration: Minion consuming Aegis)
 
 Driving a genuine two-repo integration: Minion's proofs reuse the sibling **Aegis** repo's own
-`aegis` prova plugin (a hermetic Gate Authority + its CLI), declared cross-repo via
-`[plugins] aegis = { path = "../aegis/.prova/plugins/aegis" }`. This is exactly the "plugins compose
+`aegis` prova package (a hermetic Gate Authority + its CLI), declared cross-repo via
+`[dependencies] aegis = { path = "../aegis/.prova/packages/aegis" }`. This is exactly the "packages compose
 across projects" story, exercised for real for the first time.
 
 **The cross-repo MCP flow itself was frictionless** — worth stating, since the concern was that it
@@ -330,28 +330,28 @@ might not be. The Prova MCP was started in the Minion repo; `run` / `learn` / `i
 the *Aegis* package cleanly via the `package` parameter (resolved fresh, ran the other repo's suite).
 Nothing about targeting a second package by path got in the way.
 
-## 9. A plugin could not locate ITS OWN repo — **FIXED (`plugin.dir`)**
+## 9. A package could not locate ITS OWN repo — **FIXED (`plugin.dir`)**
 
-The one real friction, and a sharp one. The `aegis` plugin needs to spawn `<aegis>/target/debug/aegis`.
+The one real friction, and a sharp one. The `aegis` package needs to spawn `<aegis>/target/debug/aegis`.
 It resolved that as `prova.root .. "/target/debug/aegis"` — correct when Aegis runs its own suite, but
-**`prova.root` is the *consuming* package's root**, so the moment Minion consumed the plugin it
-resolved `<minion>/target/debug/aegis`, which does not exist. A plugin reused cross-repo had *no
+**`prova.root` is the *consuming* package's root**, so the moment Minion consumed the package it
+resolved `<minion>/target/debug/aegis`, which does not exist. A package reused cross-repo had *no
 anchor on its own location* — only on the consumer's.
 
 The workaround was ugly (pass `bin_dir` explicitly, computed from a `prova.root .. "/../aegis"`
 sibling-layout guess — unshippable and repo-arrangement-dependent). The right fix is a primitive: a
-plugin must be able to find itself.
+package must be able to find itself.
 
-**Fixed here.** Every plugin chunk now runs in a per-plugin environment carrying **`plugin.dir`** —
-the directory its own file lives in (`plugins.rs`, `plugin_env`). So the `aegis` plugin resolves its
+**Fixed here.** Every package chunk now runs in a per-package environment carrying **`plugin.dir`** —
+the directory its own file lives in (`packages.rs`, `plugin_env`). So the `aegis` package resolves its
 binary as `plugin.dir .. "/../../../target/debug/aegis"` and works **wherever it is consumed**, its
 own suite or another repo's. The Minion integration proof then needs *zero* configuration:
-`aegis.daemon(t)` just works. Proof: `proofs/plugins/plugin_dir_test.lua` (own dir is the plugin's
+`aegis.daemon(t)` just works. Proof: `proofs/packages/plugin_dir_test.lua` (own dir is the package's
 home, distinct from `prova.root`); verified end-to-end by Minion's `gate_attach_test` running with no
 `bin_dir`.
 
-Design note: it's a *per-plugin* binding, not a global, set the same way the private-dependency
+Design note: it's a *per-package* binding, not a global, set the same way the private-dependency
 `require` is (raw-set into the chunk env whose metatable falls through to the real globals) — so it
-cannot leak to consumers, and a plugin without private deps now still gets its own env (previously
-only plugins *with* private deps did). `plugin.dir` is the minimal primitive: the plugin's repo root,
+cannot leak to consumers, and a package without private deps now still gets its own env (previously
+only packages *with* private deps did). `plugin.dir` is the minimal primitive: the package's repo root,
 fixtures, or binaries are all `plugin.dir .. "/…"` from there.
