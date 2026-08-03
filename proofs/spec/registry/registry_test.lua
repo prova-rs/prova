@@ -169,7 +169,8 @@ end)
 
 -- ── entry tolerance (graceful extensibility) ─────────────────────────────────────────────────
 
-prova.test("unknown keys in an entry are ignored, never fatal", function(t)
+prova.test("unknown keys in an entry are ignored, never fatal",
+  { covers = "docs/design/registry.md#registry-entry-tolerance" }, function(t)
   local sb = t:use(sandbox)
   -- rabbitmq's entry carries `from_the_future`; it must list like any other entry.
   local r = plugins(sb, "rabbitmq")
@@ -177,7 +178,8 @@ prova.test("unknown keys in an entry are ignored, never fatal", function(t)
   t:expect(r.stdout):contains("rabbitmq")
 end)
 
-prova.test("an entry with an unrecognized schema is skipped per-entry, with a warning", function(t)
+prova.test("an entry with an unrecognized schema is skipped per-entry, with a warning",
+  { covers = "docs/design/registry.md#registry-entry-tolerance" }, function(t)
   local sb = t:use(sandbox)
   local rows = plugins(sb, "")
   t:expect(rows.code):equals(0)                        -- the registry still serves
@@ -187,7 +189,8 @@ prova.test("an entry with an unrecognized schema is skipped per-entry, with a wa
   t:expect(warned.stdout):contains("futuristic")       -- the skip names the entry
 end)
 
-prova.test("an entry missing a required field is skipped with a warning, not fatal", function(t)
+prova.test("an entry missing a required field is skipped with a warning, not fatal",
+  { covers = "docs/design/registry.md#registry-entry-tolerance" }, function(t)
   local sb = t:use(sandbox)
   local rows = plugins(sb, "")
   t:expect(rows.code):equals(0)
@@ -218,7 +221,8 @@ end)
 
 -- ── add: search-to-pinned in one motion ──────────────────────────────────────────────────────
 
-prova.test("add writes a pinned [plugins] entry using the recommended pin", function(t)
+prova.test("add writes a pinned [plugins] entry using the recommended pin",
+  { covers = "docs/design/registry.md#add-materializes-a-pin" }, function(t)
   local sb = t:use(sandbox)
   local proj = project(sb, "add-latest")
   local r = plugins(sb, "add postgres", { cwd = proj })
@@ -228,7 +232,8 @@ prova.test("add writes a pinned [plugins] entry using the recommended pin", func
   t:expect(manifest):contains("v2")                    -- latest, materialized as the pin
 end)
 
-prova.test("add name@ref pins the explicit ref over latest", function(t)
+prova.test("add name@ref pins the explicit ref over latest",
+  { covers = "docs/design/registry.md#add-materializes-a-pin" }, function(t)
   local sb = t:use(sandbox)
   local proj = project(sb, "add-ref")
   local r = plugins(sb, "add postgres@v1", { cwd = proj })
@@ -238,7 +243,8 @@ prova.test("add name@ref pins the explicit ref over latest", function(t)
   t:expect(manifest):never():contains("v2")
 end)
 
-prova.test("a name in two registries demands registry:name disambiguation", function(t)
+prova.test("a name in two registries demands registry:name disambiguation",
+  { covers = "docs/design/registry.md#registry-name-disambiguation" }, function(t)
   local sb = t:use(sandbox)
   local proj = project(sb, "add-ambiguous")
   local ambiguous = plugins(sb, "add dupe", { cwd = proj, merge = true })
@@ -265,7 +271,7 @@ end)
 -- lands — this is the discovery-only guardrail, so it runs unflagged and holds the line
 -- throughout the burndown.
 prova.test("a registry-known name never resolves via require until the manifest declares it",
-  function(t)
+  { covers = "docs/design/registry.md#registry-is-discovery-only" }, function(t)
   local sb = t:use(sandbox)
   -- `dupe` exists in the configured registries but not in this package's [plugins]; the
   -- searcher must not consult the registry (require's no-network safety boundary).
@@ -282,7 +288,8 @@ end)
 
 -- ── the learn system announces the surface ───────────────────────────────────────────────────
 
-prova.test("`prova learn plugins` teaches the registries and the search-first move", function(t)
+prova.test("`prova learn plugins` teaches the registries and the search-first move",
+  { covers = "docs/design/registry.md#learn-teaches-search-first" }, function(t)
   local sb = t:use(sandbox)
   local proj = project(sb, "learn-slot")
   local r = shell.run(prova.bin .. " learn plugins", { cwd = proj, env = sb.env(), merge_stderr = true })

@@ -72,6 +72,7 @@ The format was chosen for three properties, in priority order:
    self-describing, reviewable diff. A single JSON/TOML index file fails this — every writer
    contends on one file; a sqlite database fails it completely — binary blobs cannot be diffed,
    reviewed, or written by a `sed`-grade CI step.
+<!-- claim: registry-entry-tolerance -->
 2. **Gracefully extensible.** Readers ignore unknown keys (the same tolerance `UserConfig`
    already practices), so entries can grow fields without breaking older binaries. Each entry
    carries `schema = 1`; a reader skips entries whose major schema it does not understand — with
@@ -129,6 +130,7 @@ the archetype knows whether it creates a package (`deny` — refuse to render ov
 or augments one (`allow` — e.g. scaffolding a local plugin into `plugin_root`). A consumer who declares
 the key in their own config can still override it, but they should not have to know it.
 
+<!-- claim: archetype-key-resolution -->
 **The key does not encode the repo.** `prova init acme-api` resolves `acme-api` through this table; it
 does not derive a URL from the key's spelling. That distinction is the point of the indirection — an
 archetype can live at any host under any repo name and still be reachable by a short, memorable key.
@@ -147,8 +149,10 @@ drift.
 prova presents things … it may never change what prova resolves."* Registries are listed in that
 config — so the registry must sit entirely on the presentation side of the line, and it does:
 
+<!-- claim: registry-is-discovery-only -->
 - **Search and list read the registry.** `require` never does. No name resolves through a
   registry at run time; the searcher's no-network safety boundary is untouched.
+<!-- claim: add-materializes-a-pin -->
 - **Adding a plugin materializes a pin.** `prova plugins add postgres` looks the name up across
   configured registries and writes the ordinary, explicit entry into `prova.toml`:
 
@@ -188,11 +192,13 @@ prova plugins add postgres       # write pinned [plugins] entry (latest) into pr
 prova plugins add postgres@v1    # explicit ref wins over latest
 ```
 
+<!-- claim: registry-name-disambiguation -->
 Search is a dumb in-memory match over a few hundred entries — no query language, no ranking
 beyond name-hit-first. Output is the same key-column `name  description` rows the init catalog
 prints, with the registry name shown when more than one registry is configured (a name present in
 two registries lists both; `add` requires disambiguation as `registry:name`).
 
+<!-- claim: registry-mcp-mirror -->
 The MCP surface mirrors the verbs (the same shared implementation, `Transport::{Cli,Mcp}`
 changing only the spelling of suggested next moves, per the learn system's rule).
 
@@ -201,6 +207,7 @@ changing only the spelling of suggested next moves, per the learn system's rule)
 Discovery that agents don't know about doesn't exist. The autodidact system is the delivery
 vehicle (this is the registry slot [autodidact.md](../plans/autodidact.md) deferred):
 
+<!-- claim: learn-teaches-search-first -->
 - A `Slot::Registries` renders the configured registries and entry counts into the relevant
   topics (`plugins`, `project`), with the standing instruction: **before hand-writing a
   capability, search the registries** — `prova plugins <term>`.

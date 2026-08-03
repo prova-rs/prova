@@ -90,7 +90,7 @@ what a package owes must be safe on any machine, whatever the proofs would do if
 - **Queries** — execute nothing: `prova promises`, `prova owed`, `prova attest`, `prova evidence`.
 
 The runs are already principled: each is sugar over composable primitives (`burndown` is
-`--specs --strict-specs`, `falsify` is `--falsify --allow-empty`), so the verb is a shorthand and
+`--promises --due`, `falsify` is `--falsify --allow-empty`), so the verb is a shorthand and
 never a second code path.
 
 The queries were not. `prova promises` lists **nodes** and is a run-with-`--list`; `owed` and

@@ -235,5 +235,6 @@ itself against, including the reference one. Point it at a broker and run:
 PROVA_PLACEMENT_BROKER=unix:///tmp/broker.sock cargo xtask proofs -- -k placement
 ```
 
-The specs are open (`prova specs`) until a broker exists. A spec that starts passing fails
-demanding graduation, so an implementation and its promotion land as one proof-carrying change.
+The promises are open (`prova promises`) until a broker exists. A promise that starts passing
+fails demanding graduation, so an implementation and its promotion land as one proof-carrying
+change.

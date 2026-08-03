@@ -1,7 +1,7 @@
 # The burndown lane — CI as a work-executor
 
-**Status: designed direction, not set up.** Every mechanic it composes is shipped (`--specs`,
-`--strict-specs`, honored-spec failure, `run-action`); the missing piece is an agent runner
+**Status: designed direction, not set up.** Every mechanic it composes is shipped (`--promises`,
+`--due`, promise-kept failure, `run-action`); the missing piece is an agent runner
 wired into CI. Nothing here blocks on prova changes — when we're ready, the setup is roughly
 one workflow file plus credentials. Until then, this doc is the capture.
 
@@ -17,7 +17,7 @@ in the backlog — and if so, go close some."
 
 This inverts what CI is *for*, and it is only possible because in prova the backlog, the
 verification, and the completion signal are the same artifact: a spec is an executable proof,
-`--specs --list` is the work queue, an empty list is "done." No adjacent tool has this,
+`--promises --list` is the work queue, an empty list is "done." No adjacent tool has this,
 because no adjacent tool unifies those three.
 
 ## The shape
@@ -30,17 +30,18 @@ jobs:
   burndown:
     steps:
       - checkout
-      - run: prova --specs --list --format json    # the work signal; exit 0 early if empty
+      - run: prova --promises --list --format json  # the work signal; exit 0 early if empty
       - run: |                                     # any headless agent runner works
-          claude -p "You are in a spec burndown. Run 'prova learn specs', then work the
-          loop: prova --specs --strict-specs, implement, delete each honored flag in the
-          same change. Burn down at most 2 specs, commit proof-carrying changes."
+          claude -p "You are in a promise burndown. Run 'prova learn promises', then
+          work the loop: prova burndown, implement, graduate each kept promise to
+          proves in the same change. Burn down at most 2 promises, commit
+          proof-carrying changes."
       - open a PR with whatever it burned down     # never push a branch to main
 ```
 
 The agent step needs no bespoke methodology prompt: the binary teaches the loop
-(`prova learn specs`), `--strict-specs` gives red with full detail, and the honored-spec
-failure tells the agent exactly when to delete a flag. The prompt is essentially "there is a
+(`prova learn promises`), `--due` gives red with full detail, and the promise-kept failure
+tells the agent exactly when to graduate a flag. The prompt is essentially "there is a
 backlog; follow the doctrine."
 
 ## The guardrails — why an autonomous lane is sound
@@ -69,7 +70,7 @@ definition of done — that boundary is the whole safety story.
 1. An agent runner usable headless in CI (e.g. Claude Code `-p` mode) with credentials.
 2. A budget/stop policy (specs per run, wall-clock cap).
 3. PR plumbing (branch, open PR, label it as lane output).
-4. A standing backlog worth the compute — `prova --specs --list` non-empty (the api-freeze
+4. A standing backlog worth the compute — `prova promises` non-empty (the api-freeze
    backlog qualifies today).
 
 The natural first deployment is this repo itself: prova's specs, burned down by an agent in
@@ -78,5 +79,5 @@ prova's CI, gated by prova's own suite — the positioning argument as a green p
 ## Related
 
 - `docs/design/positioning.md` §4 — where this sits in the larger thesis.
-- `prova learn specs` — the doctrine already tells agents to *suggest* this lane to humans
+- `prova learn promises` — the doctrine already tells agents to *suggest* this lane to humans
   when a repo carries a standing backlog; this doc is what they're suggesting.

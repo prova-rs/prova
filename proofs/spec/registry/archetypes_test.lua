@@ -97,7 +97,8 @@ end
 
 -- ── rung 4: the open namespace ───────────────────────────────────────────────────────────────
 
-prova.test("a key nobody declared resolves through the registry and renders", function(t)
+prova.test("a key nobody declared resolves through the registry and renders",
+  { covers = "docs/design/registry.md#archetype-key-resolution" }, function(t)
   local sb = t:use(sandbox)
   sb.configure()
   local r, dest = init(t, sb, "acme-api")
@@ -108,7 +109,8 @@ prova.test("a key nobody declared resolves through the registry and renders", fu
   t:expect(dest .. "/proofs/acme_test.lua"):exists()   -- and it really rendered
 end)
 
-prova.test("the resolved key never had to encode a repo name", function(t)
+prova.test("the resolved key never had to encode a repo name",
+  { covers = "docs/design/registry.md#archetype-key-resolution" }, function(t)
   local sb = t:use(sandbox)
   sb.configure()
   local r = init(t, sb, "acme-api")
@@ -119,7 +121,8 @@ end)
 
 -- ── rung 3 vs 4: a built-in is not shadowed by a registry entry ──────────────────────────────
 
-prova.test("a registry entry cannot silently redefine a built-in key", function(t)
+prova.test("a registry entry cannot silently redefine a built-in key",
+  { covers = "docs/design/registry.md#archetype-key-resolution" }, function(t)
   local sb = t:use(sandbox)
   sb.configure()
   local r = init(t, sb, "project")
@@ -204,7 +207,8 @@ end)
 
 -- ── tolerance and diagnostics ────────────────────────────────────────────────────────────────
 
-prova.test("an entry from a newer schema is skipped without sinking its siblings", function(t)
+prova.test("an entry from a newer schema is skipped without sinking its siblings",
+  { covers = "docs/design/registry.md#registry-entry-tolerance" }, function(t)
   local sb = t:use(sandbox)
   sb.configure()
   -- `futuristic` carries schema 99. Resolving a sibling must still work, which is the whole

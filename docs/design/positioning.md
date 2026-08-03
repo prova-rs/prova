@@ -38,7 +38,7 @@ with better evidence.
 The quietly brilliant piece. The spec flag gives agents what the field badly lacks: a
 machine-legible work queue that cannot drift.
 
-- `prova --specs --list` is a backlog that cannot lie (`git grep TODO` can).
+- `prova promises` is a backlog that cannot lie (`git grep TODO` can).
 - xfail-strict semantics: an open spec reports distinctly and keeps CI green; the moment a
   spec's body passes, it **fails** until the flag is deleted — so implementation and
   bookkeeping land atomically as one commit. There is no cleanup chore and no drift window.
@@ -53,7 +53,7 @@ a test annotation.
 The full lifecycle runs end to end with no translation step anywhere:
 
 1. A contract is stated as a **spec** — executable, flagged, reasoned.
-2. An agent drives it in the burndown loop (`--specs --strict-specs`), implements, and
+2. An agent drives it in the burndown loop (`prova burndown`), implements, and
    deletes the flag in the same commit — a proof-carrying change.
 3. The change is pushed, and **the exact same proofs run in CI** via
    `prova-rs/run-action@v1` — same static binary, same suite, byte-identical to the local
@@ -67,7 +67,7 @@ artifact and one binary at every stage, so the gaps do not exist.
 ### 4. CI as a work-executor: the deliberate burndown pipeline
 
 The same mechanics invert what a pipeline is *for*. A conventional pipeline gates work a
-human already did. A **burndown pipeline** runs `--specs --strict-specs`, hands the red
+human already did. A **burndown pipeline** runs `prova burndown`, hands the red
 output to an agent, and lets it implement until the backlog shrinks — merging
 proof-carrying changes as it goes.
 
