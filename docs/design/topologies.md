@@ -105,6 +105,7 @@ plugin and its own suite, which is exactly the reference kitchen sink — aborte
 `topology "x" is already defined`, an error that never mentioned that one registration came from
 the manifest. The only way to have both verbs work was to pick one and lose the other.
 
+<!-- claim: registration-is-the-only-door -->
 `[topologies]` is now the whole surface for the inhabited verbs; **no files are loaded**. The two
 doors stop competing, so a package can register a topology for `prova up` and build the same
 factory as a fixture in its proofs — one definition, addressed twice, unable to drift. The
@@ -112,6 +113,7 @@ factory as a fixture in its proofs — one definition, addressed twice, unable t
 stood up ungated, where a registered one inherits the environment requirements its plugin
 advertises.
 
+<!-- claim: test-only-topology-is-not-addressable -->
 Breaking, deliberately, and pre-1.0: a topology declared *only* in a test file is no longer
 visible to `up`. The failure says so and prints the `[topologies]` entry to add, rather than
 reporting "no topologies defined".
@@ -129,6 +131,7 @@ reporting "no topologies defined".
 - **`prova.topology(name, [scope,] fn)`** — **done.** A named, verb-agnostic fixture (default
   `Scope.File`), registered so verbs can address it by name. In test mode it is used exactly like any
   fixture (`t:use(handle)`).
+<!-- claim: up-self-registers -->
 - **`prova up <name>` (attached)** — **done.** Resolves the named topology from `[topologies]`
   (see §Two doors — it does **not** load proof files), provisions it under a held File scope,
   prints each resource's `url`, and blocks until **SIGINT or SIGTERM**, then runs the existing
@@ -136,6 +139,7 @@ reporting "no topologies defined".
   (endpoint on a live host port; container reaped on Ctrl-C). A running `up` **self-registers** a
   record under `<home>/.prova/var/running/<name>.json` (pid + endpoints; self-gitignored) and removes it on
   clean teardown.
+<!-- claim: detached-supervises-attached -->
 - **Detached mode** (`prova start` / `prova down` / `prova ps`) — **done**, and exactly the thin
   **supervisor over attached `prova up`** the design predicted: `start` spawns `prova up <name>` in
   its own process group (stdio → `<home>/.prova/var/running/<name>.log`), waits for it to self-register, prints
