@@ -794,7 +794,7 @@ pub(crate) fn evidence_account(
 /// A report, never a gate — exit 0 belongs to the query family's contract, and the gate is
 /// `prova attest`. Executes no proof body, like every query verb.
 fn evidence_subcommand(args: Vec<String>) -> ExitCode {
-    for arg in args {
+    if let Some(arg) = args.first() {
         match arg.as_str() {
             "-h" | "--help" => {
                 println!(
