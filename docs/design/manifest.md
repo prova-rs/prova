@@ -20,22 +20,33 @@ Four layouts; the **home** is the project ROOT in every case:
 | `prova/prova.toml` | the dir **above** `prova/` | nested visible — config tucked in a nook |
 | `.prova/prova.toml` | the dir **above** `.prova/` | nested hidden |
 
+<!-- claim: paths-resolve-against-home -->
 Every manifest-relative path (`proofs`, `config`, `plugin_root`) and generated artifact
 (`.luarc.json`, the `.prova/var/` state directory) resolves against the home, never against the
-manifest's own directory. Discovery walks **up** from the working directory and the **nearest manifest wins**,
-so `prova` runs correctly from anywhere inside the package — including from inside the nook (a
-bare `prova.toml` found in a directory named `prova`/`.prova` roots at the parent). Two manifest
-variants in one directory is an error ("keep exactly one"). A nested manifest deeper in the tree
-is its own independent package; proof discovery never crosses into it.
+manifest's own directory.
+
+<!-- claim: nearest-manifest-wins -->
+Discovery walks **up** from the working directory and the **nearest manifest wins**, so `prova`
+runs correctly from anywhere inside the package — including from inside the nook (a bare
+`prova.toml` found in a directory named `prova`/`.prova` roots at the parent).
+
+<!-- claim: one-manifest-per-directory -->
+Two manifest variants in one directory is an error ("keep exactly one").
+
+<!-- claim: nested-package-isolation -->
+A nested manifest deeper in the tree is its own independent package; proof discovery never
+crosses into it.
 
 ## `[run]` and `[profiles.<name>]`
 
+<!-- claim: profile-overlay-semantics -->
 `[run]` is the default profile; `[profiles.<name>]` (selected with `--profile <name>`) overlays
 it. Every field is optional. Overlay semantics: a profile field **replaces** the base's when
 present — except `env` (base then profile, profile wins per key), `plugins` (overlaid per name,
 profile wins), and `must_run` (**union**, strictly additive: a profile promises *more* than the
 package baseline, never less).
 
+<!-- claim: knob-precedence -->
 Where a CLI flag or environment variable exists for the same knob, precedence is uniformly
 **CLI flag > env var > manifest > auto-detect**.
 
@@ -96,6 +107,7 @@ setup = "services/grpc/suite.lua"
 stack = { plugin = "compose", topology = "stack", options = { file = "docker-compose.yml" } }
 ```
 
+<!-- claim: empty-resolution-is-an-error -->
 An empty resolution (no `proofs` matches and no `[suites]`) is an error, not a silent green run
 — as is a `--profile` name that doesn't exist, or a selection that matches nothing (see
 `--allow-empty`).
