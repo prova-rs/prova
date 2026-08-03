@@ -99,7 +99,7 @@ end
 -- ── location: state lands in prova's own directory, not the user's tree ──────────────────────
 
 prova.test("a failing run records its state under .prova/var/, nothing at the package root",
-  function(t)
+  { covers = "docs/design/ide-and-layout.md#state-dir-self-owning" }, function(t)
   local pkg = t:use(sandbox) .. "/pkg"
   local r = run(pkg)
   t:expect(r.stdout):contains("finished")                        -- the run really did fail
@@ -108,7 +108,8 @@ prova.test("a failing run records its state under .prova/var/, nothing at the pa
   t:expect(fs.exists(pkg .. "/.last-failed.json"), "no state at the package root"):equals(false)
 end)
 
-prova.test("the state directory ignores itself, so the tracked tree stays clean", function(t)
+prova.test("the state directory ignores itself, so the tracked tree stays clean",
+  { covers = "docs/design/ide-and-layout.md#state-dir-self-owning" }, function(t)
   local pkg = t:use(sandbox) .. "/pkg"
   run(pkg)
   t:expect(pkg .. "/.prova/var/.gitignore"):exists()
@@ -143,14 +144,16 @@ end)
 
 -- ── lazy + recursive: one state dir per package actually RUN, ignoring itself at any depth ────
 
-prova.test("a read-only invocation never creates a state directory", function(t)
+prova.test("a read-only invocation never creates a state directory",
+  { covers = "docs/design/ide-and-layout.md#state-dir-self-owning" }, function(t)
   local pkg = t:use(sandbox) .. "/pkg"
   local r = run(pkg, "specs")
   t:expect(r.code):equals(0)
   t:expect(fs.exists(pkg .. "/.prova/var"), "nothing written by an enumeration"):equals(false)
 end)
 
-prova.test("a nested package's state is its own, and a parent run never creates it", function(t)
+prova.test("a nested package's state is its own, and a parent run never creates it",
+  { covers = "docs/design/ide-and-layout.md#state-self-ignore-composes" }, function(t)
   local root = t:use(sandbox)
   local outer, inner = root .. "/nested", root .. "/nested/inner"
 
@@ -167,7 +170,8 @@ end)
 
 -- ── the escape hatch: relocation without divergence ──────────────────────────────────────────
 
-prova.test("PROVA_VAR_DIR relocates state wholesale, leaving the package untouched", function(t)
+prova.test("PROVA_VAR_DIR relocates state wholesale, leaving the package untouched",
+  { covers = "docs/design/ide-and-layout.md#var-dir-escape-hatch-rules" }, function(t)
   local root = t:use(sandbox)
   local pkg, elsewhere = root .. "/pkg", root .. "/state-root"
 
@@ -183,7 +187,7 @@ prova.test("PROVA_VAR_DIR relocates state wholesale, leaving the package untouch
 end)
 
 prova.test("PROVA_VAR_DIR changes where state lives and nothing else — same outcomes either way",
-  function(t)
+  { covers = "docs/design/ide-and-layout.md#var-dir-escape-hatch-rules" }, function(t)
   local root = t:use(sandbox)
   local pkg = root .. "/pkg"
 
@@ -197,7 +201,8 @@ prova.test("PROVA_VAR_DIR changes where state lives and nothing else — same ou
   t:expect(tally(moved.stdout)):equals(tally(plain.stdout))
 end)
 
-prova.test("PROVA_VAR_DIR is a state ROOT: two packages sharing it never collide", function(t)
+prova.test("PROVA_VAR_DIR is a state ROOT: two packages sharing it never collide",
+  { covers = "docs/design/ide-and-layout.md#var-dir-escape-hatch-rules" }, function(t)
   local root = t:use(sandbox)
   local shared = root .. "/shared-state"
 
@@ -214,7 +219,8 @@ prova.test("PROVA_VAR_DIR is a state ROOT: two packages sharing it never collide
   t:expect(r.stdout):never():contains("other fails")
 end)
 
-prova.test("a relative PROVA_VAR_DIR is refused, not resolved against the cwd", function(t)
+prova.test("a relative PROVA_VAR_DIR is refused, not resolved against the cwd",
+  { covers = "docs/design/ide-and-layout.md#var-dir-escape-hatch-rules" }, function(t)
   local pkg = t:use(sandbox) .. "/pkg"
   -- prova runs from anywhere inside a package (discovery walks up), so a relative override would
   -- put state in a different place depending on where you invoked it. That is exactly the
@@ -226,7 +232,7 @@ prova.test("a relative PROVA_VAR_DIR is refused, not resolved against the cwd", 
 end)
 
 prova.test("an overridden state root announces itself, so it is never an invisible difference",
-  function(t)
+  { covers = "docs/design/ide-and-layout.md#var-dir-escape-hatch-rules" }, function(t)
   local root = t:use(sandbox)
   local plain = run(root .. "/pkg")
   local moved = run(root .. "/pkg", nil, root .. "/state-root-3")

@@ -81,6 +81,7 @@ myproject/
 
 ### Generated state: `.prova/var/`
 
+<!-- claim: state-dir-self-owning -->
 **Prova writes generated state only into a directory it owns, and that directory ignores itself.** All
 variable state — the `--last-failed` record, held-topology run-state from `up`/`start`, and whatever
 gets added later — lives under `<home>/.prova/var/`, created on the first state **write** with a
@@ -94,6 +95,7 @@ hide the very files a nested-layout package commits. Two properties follow:
 - **`.prova/` exists in every package; the only variable is whether it holds tracked content.** The
   flat layouts get a `.prova/` containing only `var/`; the nested layouts get the manifest and config
   alongside it. That is a cleaner invariant than "does `.prova/` exist at all".
+<!-- claim: state-self-ignore-composes -->
 - **The self-ignore composes recursively, with no coordination.** Every package ignores its own state
   and nobody else's, at any nesting depth, because home resolution stops at the nearest manifest. A
   local plugin under `plugin_root` that is run standalone gets its own `var/`; a parent run never
@@ -108,6 +110,7 @@ Some source trees cannot be written to at all: read-only checkouts, Nix and Baze
 project shape, gets committed, and would drift into a per-project preference) and no CLI flag (that
 invites casual use). It is not advertised in the `learn` topics for the same reason.
 
+<!-- claim: var-dir-escape-hatch-rules -->
 Prova's pitch is reliable, consistent runs — no "works on my machine". An environment knob is in
 tension with that, so the hatch is fenced by four rules, each of them proven in
 `proofs/layout/state_dir_test.lua`:
