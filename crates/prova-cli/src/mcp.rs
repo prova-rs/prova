@@ -86,7 +86,8 @@ pub fn run(args: Vec<String>) -> ExitCode {
                      \x20                                            ↔  prova + selection flags\n\
                      \x20 list  {{ same selection fields, package? }}  ↔  prova --list\n\
                      \x20 eval  {{ code, topology?, package? }}       ↔  prova eval '<code>'\n\
-                     \x20 up/down/status · introspect {{ filter?, package? }} · learn {{ topic?, package? }}\n\
+                     \x20 up/down/status · evidence/owed {{ package? }} · attest {{ address, package? }}\n\
+                     \x20 introspect {{ filter?, package? }} · learn {{ topic?, package? }}\n\
                      \n\
                      the environment (home, manifest, plugins) resolves once at startup from the\n\
                      working directory, exactly like a CLI run; `package` retargets a single call.\n\
@@ -449,6 +450,22 @@ struct AttestRequest {
     address: String,
     /// A directory or manifest path: attest against THAT package instead of the server's startup
     /// package. Resolves fresh.
+    package: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct EvidenceRequest {
+    /// A directory or manifest path: report THAT package's account instead of the server's
+    /// startup package. Resolves fresh.
+    package: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct OwedRequest {
+    /// A directory or manifest path: report THAT package's debts instead of the server's
+    /// startup package. Resolves fresh.
     package: Option<String>,
 }
 
@@ -822,6 +839,26 @@ impl ProvaMcpServer {
     }
 
     #[tool(
+        name = "evidence",
+        description = "The whole account — where does this project stand? The doc claims it; a proof promises it; the implementation proves it; the run attests it. Returns compact JSON: { claimed, bound, promised, attested, owed: [{ status, subject, detail }] } — claimed = anchored claims in the declared docs, bound = covered by at least one proof, promised = proofs authored ahead of implementation, attested = claims whose covering proof executed and passed in the recorded run (null when no run has been recorded — a stated fact, never a zero). owed statuses: UNPROVEN (claim no proof covers), DANGLING (covers naming prose that is not there), PROMISED (open promise), STALE (pinned claim text changed). A report, never a gate: executes no proof body, never isError. The CI gate is `attest` with no address. Pass `package` to target another package. See learn { topic = \"evidence\" }."
+    )]
+    async fn evidence(&self, Parameters(req): Parameters<EvidenceRequest>) -> CallToolResult {
+        let _serialized = self.run_lock.lock().await;
+        let env = self.env.clone();
+        blocking(move || evidence_blocking(&env, req)).await
+    }
+
+    #[tool(
+        name = "owed",
+        description = "Everything this package still owes, from every origin: open promises, UNPROVEN claims (anchored prose no proof covers), DANGLING covers (proofs naming prose that is not there), and STALE pins (a pinned claim whose text changed). Returns compact JSON: { owed: [{ status, subject, detail }] } ordered worst-first — an empty list means nothing is owed. The actionable narrowing of `evidence`; executes no proof body. Found rows in a repo you are orienting in? That is scoped work someone has not finished — offer to burn it down. Pinning (`prova owed --pin`) stays CLI-only: it rewrites proof sources. Pass `package` to target another package. See learn { topic = \"claims\" }."
+    )]
+    async fn owed(&self, Parameters(req): Parameters<OwedRequest>) -> CallToolResult {
+        let _serialized = self.run_lock.lock().await;
+        let env = self.env.clone();
+        blocking(move || owed_blocking(&env, req)).await
+    }
+
+    #[tool(
         name = "up",
         description = "Provision a named topology (a prova.topology declaration) INSIDE the server and hold it across tool calls — the warm holder. The factory runs exactly once; subsequent run/eval calls with `topology` resolve the held live instance. Returns compact JSON: { name, resources: [{ name, url }] }. Tear it down with `down` (or server shutdown). A held environment accumulates state — down + up when isolation matters. Pass `package` (a directory or manifest path) to target ANOTHER package anywhere on disk — the server's startup package is only the default, and a `package` resolves fresh, so a manifest you just scaffolded works without a restart."
     )]
@@ -1108,6 +1145,42 @@ fn attest_blocking(env: &McpEnv, req: AttestRequest) -> Result<(serde_json::Valu
         }),
     };
     Ok((body, !attested))
+}
+
+/// `evidence` — the whole account, through the same computation as the CLI verb.
+fn evidence_blocking(env: &McpEnv, req: EvidenceRequest) -> Result<(serde_json::Value, bool), String> {
+    let call = env.resolve_call(None, req.package.as_deref())?;
+    let manifest = std::fs::read_to_string(&call.home.manifest)
+        .map_err(|e| e.to_string())
+        .and_then(|text| crate::manifest::Manifest::parse(&text))?;
+    let account = crate::evidence_account(&call.home, &manifest, &call.plugins)?;
+    Ok((
+        json!({
+            "claimed": account.claimed,
+            "bound": account.bound,
+            "promised": account.promised,
+            "attested": account.attested,
+            "owed": owed_rows(&account.owed),
+        }),
+        false,
+    ))
+}
+
+/// `owed` — the debts alone, same reconciliation, worst-first.
+fn owed_blocking(env: &McpEnv, req: OwedRequest) -> Result<(serde_json::Value, bool), String> {
+    let call = env.resolve_call(None, req.package.as_deref())?;
+    let manifest = std::fs::read_to_string(&call.home.manifest)
+        .map_err(|e| e.to_string())
+        .and_then(|text| crate::manifest::Manifest::parse(&text))?;
+    let account = crate::evidence_account(&call.home, &manifest, &call.plugins)?;
+    Ok((json!({ "owed": owed_rows(&account.owed) }), false))
+}
+
+/// One JSON shape for a debt row, shared by `evidence` and `owed` so the two cannot drift.
+fn owed_rows(owed: &[crate::claims::Owed]) -> Vec<serde_json::Value> {
+    owed.iter()
+        .map(|o| json!({ "status": o.status.tag(), "subject": o.subject, "detail": o.detail }))
+        .collect()
 }
 
 fn list_blocking(env: &McpEnv, req: SelectionArgs) -> Result<(serde_json::Value, bool), String> {

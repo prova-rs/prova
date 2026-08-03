@@ -723,6 +723,56 @@ fn attest_all(
     }
 }
 
+/// The whole account, computed once — every stage of the lifecycle with its count, plus the
+/// debts. ONE function, because the CLI's `evidence` and the MCP `evidence` tool must be the same
+/// arithmetic or the two surfaces will eventually disagree about where a project stands.
+///
+/// The stages, statically: a claim is BOUND when at least one proof covers it. PROMISED is the
+/// open surface across every origin (claim-covering or not — an open promise is owed either way).
+/// ATTESTED needs the record, and its absence is `None` — a stated fact, never a zero.
+pub(crate) struct Account {
+    pub claimed: usize,
+    pub bound: usize,
+    pub promised: usize,
+    pub attested: Option<usize>,
+    pub owed: Vec<claims::Owed>,
+}
+
+pub(crate) fn evidence_account(
+    home: &home::Home,
+    manifest: &Manifest,
+    plugins_resolved: &plugins::ResolvedPlugins,
+) -> Result<Account, String> {
+    let docs = manifest.claims.as_ref().map(|c| c.docs.clone()).unwrap_or_default();
+    let claims = claims::scan(&home.dir, &docs).map_err(|e| e.to_string())?;
+    let proofs = collect_obligations(home, manifest, plugins_resolved)?;
+    let recorded = record::load(home);
+
+    let bindings_for = |address: &str| -> Vec<String> {
+        proofs
+            .iter()
+            .filter(|p| p.covers.iter().any(|c| claims::split_pin(c).0 == address))
+            .map(|p| p.path.clone())
+            .collect()
+    };
+    let bound = claims.iter().filter(|c| !bindings_for(&c.address).is_empty()).count();
+    let promised = proofs.iter().filter(|p| p.spec.is_some()).count();
+    let attested = recorded.as_ref().map(|r| {
+        claims
+            .iter()
+            .filter(|c| record::attest(r, &bindings_for(&c.address)).is_attested())
+            .count()
+    });
+    let owed = claims::reconcile(&claims, &proofs);
+    Ok(Account {
+        claimed: claims.len(),
+        bound,
+        promised,
+        attested,
+        owed,
+    })
+}
+
 /// `prova evidence` — the whole account: every stage of the obligation lifecycle with its count,
 /// then the debts. The command the lifecycle was missing: `owed` shows only what is owed and
 /// `attest` answers one address, so no verb could say where a project stands.
@@ -754,48 +804,20 @@ fn evidence_subcommand(args: Vec<String>) -> ExitCode {
         Ok(pair) => pair,
         Err(code) => return code,
     };
-    let docs = manifest.claims.as_ref().map(|c| c.docs.clone()).unwrap_or_default();
-    let claims = match claims::scan(&home.dir, &docs) {
-        Ok(c) => c,
+    let account = match evidence_account(&home, &manifest, &plugins_resolved) {
+        Ok(a) => a,
         Err(e) => {
             eprintln!("prova: {e}");
             return ExitCode::FAILURE;
         }
     };
-    let proofs = match collect_obligations(&home, &manifest, &plugins_resolved) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("prova: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let recorded = record::load(&home);
-
-    // The stages, statically: a claim is BOUND when at least one proof covers it. PROMISED is the
-    // open surface across every origin (claim-covering or not — an open promise is owed either
-    // way). ATTESTED needs the record, and its absence is a stated fact, not a zero.
-    let bindings_for = |address: &str| -> Vec<String> {
-        proofs
-            .iter()
-            .filter(|p| p.covers.iter().any(|c| claims::split_pin(c).0 == address))
-            .map(|p| p.path.clone())
-            .collect()
-    };
-    let bound = claims.iter().filter(|c| !bindings_for(&c.address).is_empty()).count();
-    let promised = proofs.iter().filter(|p| p.spec.is_some()).count();
-    let attested = recorded.as_ref().map(|r| {
-        claims
-            .iter()
-            .filter(|c| record::attest(r, &bindings_for(&c.address)).is_attested())
-            .count()
-    });
 
     println!("prova: evidence for {}", home.dir.display());
     println!();
-    println!("  CLAIMED   {:>4}   anchored claims in the declared docs", claims.len());
-    println!("  BOUND     {:>4}   covered by at least one proof", bound);
-    println!("  PROMISED  {:>4}   proofs authored ahead of implementation", promised);
-    match attested {
+    println!("  CLAIMED   {:>4}   anchored claims in the declared docs", account.claimed);
+    println!("  BOUND     {:>4}   covered by at least one proof", account.bound);
+    println!("  PROMISED  {:>4}   proofs authored ahead of implementation", account.promised);
+    match account.attested {
         Some(n) => println!(
             "  ATTESTED  {:>4}   covering proof executed and passed in the recorded run",
             n
@@ -803,9 +825,7 @@ fn evidence_subcommand(args: Vec<String>) -> ExitCode {
         None => println!("  ATTESTED     —   no run recorded — run the suite first (`prova`)"),
     }
 
-    // The debts, so the account is actionable rather than a scoreboard. Same reconciliation the
-    // `owed` verb prints in full.
-    let owed = claims::reconcile(&claims, &proofs);
+    let owed = account.owed;
     if owed.is_empty() {
         println!("\n  nothing owed");
     } else {

@@ -293,6 +293,8 @@ call tools. Tools mirror the CLI one-to-one and **everything else is identical**
 | `run { keywords?, keyword_excludes?, tags?, tag_excludes?, nodes?, last_failed?, promises?, due?, profile?, jobs?, topology? }` | `prova -k … --tags … --node … --last-failed --promises --due --profile … --jobs …` |
 | `list { same selection fields }` | `prova --list` (same flags) |
 | `eval { code, topology? }` | `prova eval '<code>'` |
+| `evidence { package? }` / `owed { package? }` | `prova evidence` / `prova owed` — the account and its debts |
+| `attest { address, package? }` | `prova attest <addr|id>` — bare `prova attest` (the CI gate) is CLI-only |
 | `learn { topic? }` / `introspect { filter? }` | `prova learn [<topic>]` / `prova.help(...)` in eval |
 | `up { name }` / `down { name }` / `status {}` | `prova up <name>` — but held *inside* the server |
 
