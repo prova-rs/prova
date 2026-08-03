@@ -47,7 +47,7 @@ description = "An Acme API package"
 in_package = "deny"
 ]], root))
   -- The same archetype, but the entry also recommends a pin. A registry may serve a local-path repo
-  -- (the classification plugins use), and `path#ref` is not a path — so the pin must be dropped rather
+  -- (the classification packages use), and `path#ref` is not a path — so the pin must be dropped rather
   -- than concatenated, and said out loud.
   fs.write(root .. "/registry/archetypes/pinned-path.toml", string.format([[
 schema = 1
@@ -171,7 +171,7 @@ prova.test("--list shows the catalog and says the registries hold more", functio
 
   t:expect(r.code):equals(0)
   t:expect(r.stdout):contains("project")
-  t:expect(r.stdout):contains("plugin")
+  t:expect(r.stdout):contains("package")
   -- Undeclared registry archetypes are reachable but NOT listed: the list is the curated, offline,
   -- render-right-now set. Saying so is what stops it reading as the only options.
   t:expect(r.stdout):never():contains("acme-api")

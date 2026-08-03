@@ -160,7 +160,7 @@ impl Catalog {
                 // the archetype's `main` moves. (The repo is being renamed prova-init-package-\
                 // archetype; GitHub redirects the old name until the pin moves.)
                 source: Some(
-                    "https://github.com/prova-rs/prova-init-plugin-archetype.git#v1".to_string(),
+                    "https://github.com/prova-rs/prova-init-package-archetype.git#v1".to_string(),
                 ),
                 switches: Vec::new(),
                 defaults: false,
