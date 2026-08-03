@@ -5414,6 +5414,19 @@ impl HeldTopology {
             load_member_files(&self.lua, &self.col, files)?;
         }
 
+        // Re-exec the `[topologies]` registrations the config carries, for names the files did
+        // NOT declare — a registered-only topology (no code declaration anywhere) stays
+        // warm-runnable after the collector reset. Names the files DID declare are left alone:
+        // that is the both-doors package, and `prova.topology` refuses duplicates by design.
+        {
+            let declared: std::collections::HashSet<String> =
+                self.col.borrow().topologies.keys().cloned().collect();
+            let mut cfg = self.config.clone();
+            cfg.topology_registrations
+                .retain(|r| !declared.contains(&r.alias));
+            exec_topology_registrations(&self.lua, &cfg)?;
+        }
+
         let (plan, deselected, dropped, state) = {
             let col = self.col.borrow();
             let plan = build_plan(&col, &self.config.capabilities)?;

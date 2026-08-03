@@ -46,7 +46,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::home::Home;
-use crate::manifest::SuiteDecl;
+use crate::manifest::{SuiteDecl, TopologyDecl};
 use crate::plugins;
 use prova_core::{
     discover_files, discover_path_with, eval_snippet, hold_topology, run_suites, Endpoint, Event,
@@ -125,31 +125,34 @@ pub fn run(args: Vec<String>) -> ExitCode {
         }
     };
 
-    let (mut plugins_resolved, sources, proofs, declared, jobs, capabilities) = match &home {
-        Some(home) => {
-            match crate::resolve_from_manifest(
-                home, profile, None, None, None, &layout, false, false, true,
-            ) {
-                Ok(r) => (
-                    r.plugins,
-                    r.sources,
-                    r.proofs,
-                    r.suites,
-                    r.jobs,
-                    r.capabilities,
-                ),
-                Err(code) => return code,
+    let (mut plugins_resolved, sources, proofs, declared, jobs, capabilities, topologies) =
+        match &home {
+            Some(home) => {
+                match crate::resolve_from_manifest(
+                    home, profile, None, None, None, &layout, false, false, true,
+                ) {
+                    Ok(r) => (
+                        r.plugins,
+                        r.sources,
+                        r.proofs,
+                        r.suites,
+                        r.jobs,
+                        r.capabilities,
+                        r.topologies,
+                    ),
+                    Err(code) => return code,
+                }
             }
-        }
-        None => (
-            plugins::ResolvedPlugins::default(),
-            BTreeMap::new(),
-            Vec::new(),
-            BTreeMap::new(),
-            1,
-            prova_core::Capabilities::default(),
-        ),
-    };
+            None => (
+                plugins::ResolvedPlugins::default(),
+                BTreeMap::new(),
+                Vec::new(),
+                BTreeMap::new(),
+                1,
+                prova_core::Capabilities::default(),
+                BTreeMap::new(),
+            ),
+        };
     if let Err(code) =
         crate::layer_cli_plugins(&cli_plugins, &layout, &sources, &mut plugins_resolved)
     {
@@ -165,6 +168,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
         jobs,
         plugins: plugins_resolved,
         capabilities,
+        topologies,
     });
 
     // A current-thread runtime, deliberately: warm tools are stateful (up → run → down), so tool
@@ -234,6 +238,8 @@ struct McpEnv {
     /// Capabilities the startup package's `prova.lua` registered. Per-package calls re-resolve their
     /// own (see `CallEnv`), so two packages served by one warm server never share a vocabulary.
     capabilities: prova_core::Capabilities,
+    /// Manifest `[topologies]` registrations — the only door the inhabited `up` resolves through.
+    topologies: BTreeMap<String, TopologyDecl>,
 }
 
 /// The manifest-resolved inputs one tool call runs with.
@@ -249,6 +255,8 @@ struct CallEnv {
     /// This call's registered capabilities — the startup set, or the package's own on a `package`
     /// re-resolve. Never the process's: capabilities are per-resolve, not global.
     capabilities: prova_core::Capabilities,
+    /// The call's `[topologies]` registrations — what `up` may stand up (and nothing else).
+    topologies: BTreeMap<String, TopologyDecl>,
 }
 
 impl McpEnv {
@@ -301,6 +309,7 @@ impl McpEnv {
                 jobs: self.jobs,
                 plugins: self.plugins.clone(),
                 capabilities: self.capabilities.clone(),
+                topologies: self.topologies.clone(),
             }),
             Some(p) => {
                 let p = if p.is_empty() {
@@ -334,6 +343,7 @@ impl McpEnv {
                     jobs: run.jobs,
                     plugins: run.plugins,
                     capabilities: run.capabilities,
+                    topologies: run.topologies,
                 })
             }
         }
@@ -411,8 +421,9 @@ struct EvalRequest {
 
 #[derive(Deserialize, JsonSchema)]
 struct UpRequest {
-    /// The topology to provision and hold (a `prova.topology(<name>, ...)` declared in the
-    /// package's test files).
+    /// The topology to provision and hold — a `[topologies]` registration in the package's
+    /// manifest. Registration is the only door: a topology declared only in a test file is a
+    /// fixture, not an addressable environment.
     name: String,
     /// Manifest profile to resolve for this provisioning (CLI `--profile NAME`).
     profile: Option<String>,
@@ -535,6 +546,10 @@ struct WarmRunOutcome {
 /// The holder thread's whole life: provision the topology (reporting readiness or the error over
 /// `ready`), then serve warm commands until `Down` arrives or every sender hangs up (server
 /// shutdown) — either way the held scope's teardown runs HERE, on the thread that owns the Lua.
+///
+/// Provisioning loads NO files — the topology comes from the `[topologies]` registrations the
+/// config carries (the registration door). `files` are the package's test files, read only by
+/// warm runs.
 fn warm_holder(
     files: Vec<PathBuf>,
     name: String,
@@ -542,7 +557,7 @@ fn warm_holder(
     ready: std::sync::mpsc::Sender<Result<Vec<Endpoint>, String>>,
     cmds: std::sync::mpsc::Receiver<WarmCmd>,
 ) {
-    let held = match hold_topology(&files, &name, &config) {
+    let held = match hold_topology(&[], &name, &config) {
         Ok(held) => held,
         Err(err) => {
             let _ = ready.send(Err(err.to_string()));
@@ -585,10 +600,11 @@ fn warm_holder(
     }
 }
 
-/// The files that may declare topologies: every test file under the manifest's run paths and any
-/// explicit suite paths — the exact discovery `prova up` uses (`build_topology_run` in main.rs),
-/// so the two holders consume one definition the same way. Warm runs re-run this same set.
-fn topology_files(call: &CallEnv) -> Result<Vec<PathBuf>, String> {
+/// The package's test files — every test file under the manifest's run paths and any explicit
+/// suite paths. Warm runs (`run { topology }`) re-read this set on each call so edits since `up`
+/// take effect. Provisioning never loads them: `up` resolves `[topologies]` registrations only.
+/// An empty set is fine — a package can hold a topology it has no proofs for yet.
+fn package_test_files(call: &CallEnv) -> Result<Vec<PathBuf>, String> {
     let mut files: Vec<PathBuf> = Vec::new();
     let mut discover = |rel: &str| -> Result<(), String> {
         let found = discover_files(&call.base_dir.join(rel)).map_err(|e| format!("{rel}: {e}"))?;
@@ -605,11 +621,6 @@ fn topology_files(call: &CallEnv) -> Result<Vec<PathBuf>, String> {
     }
     files.sort();
     files.dedup();
-    if files.is_empty() {
-        return Err(
-            "no files found to search for topologies (looked for *_test.lua / *.test.lua)".into(),
-        );
-    }
     Ok(files)
 }
 
@@ -860,7 +871,7 @@ impl ProvaMcpServer {
 
     #[tool(
         name = "up",
-        description = "Provision a named topology (a prova.topology declaration) INSIDE the server and hold it across tool calls — the warm holder. The factory runs exactly once; subsequent run/eval calls with `topology` resolve the held live instance. Returns compact JSON: { name, resources: [{ name, url }] }. Tear it down with `down` (or server shutdown). A held environment accumulates state — down + up when isolation matters. Pass `package` (a directory or manifest path) to target ANOTHER package anywhere on disk — the server's startup package is only the default, and a `package` resolves fresh, so a manifest you just scaffolded works without a restart."
+        description = "Provision a named topology (a [topologies] registration in the manifest — the same door CLI `prova up` uses) INSIDE the server and hold it across tool calls — the warm holder. The factory runs exactly once; subsequent run/eval calls with `topology` resolve the held live instance. Returns compact JSON: { name, resources: [{ name, url }] }. Tear it down with `down` (or server shutdown). A held environment accumulates state — down + up when isolation matters. Pass `package` (a directory or manifest path) to target ANOTHER package anywhere on disk — the server's startup package is only the default, and a `package` resolves fresh, so a manifest you just scaffolded works without a restart."
     )]
     async fn up(&self, Parameters(req): Parameters<UpRequest>) -> CallToolResult {
         let _serialized = self.run_lock.lock().await;
@@ -1250,14 +1261,61 @@ fn up_blocking(
     }
 
     let call = env.resolve_call(req.profile.as_deref(), req.package.as_deref())?;
-    let files = topology_files(&call)?;
-    let config = crate::engine_config(1, &call.plugins, Some(&call.home), prova_core::progress::null())
+
+    // The registration door, and no other (the same rule as CLI `up` — `build_topology_run` in
+    // main.rs): the inhabited verbs stand up `[topologies]` registrations ONLY, never a topology
+    // scanned out of test files. A test-local declaration is a fixture, not an environment.
+    if call.topologies.is_empty() {
+        return Err(format!(
+            "up {name:?}: no topologies registered — add it to [topologies] in prova.toml, e.g.\n  \
+             [topologies]\n  {name} = {{ plugin = \"<plugin>\", topology = \"<advertised>\" }}"
+        ));
+    }
+    if !call.topologies.contains_key(&name) {
+        let known: Vec<&str> = call.topologies.keys().map(String::as_str).collect();
+        return Err(format!(
+            "up {name:?}: not in [topologies] (registered: {})",
+            known.join(", ")
+        ));
+    }
+
+    let mut config = crate::engine_config(1, &call.plugins, Some(&call.home), prova_core::progress::null())
         .with_capabilities(call.capabilities.clone())
         .with_ports(if req.fixed.unwrap_or(false) {
             PortMode::Fixed
         } else {
             PortMode::Auto
         });
+    let mut requested_requires: Vec<String> = Vec::new();
+    for (alias, decl) in &call.topologies {
+        let resolved = plugins::resolve_topology(alias, decl, &call.plugins)
+            .map_err(|e| format!("up {name:?}: {e}"))?;
+        let options = crate::topology_options_to_lua(&decl.options);
+        config = config.with_topology_registration(alias, &decl.plugin, resolved.factory, options);
+        if alias == &name {
+            requested_requires = resolved.requires;
+        }
+    }
+    // The universal `requires` gate: every registration carries its advertisement's environment
+    // requirements, checked before anything is provisioned.
+    for req_expr in &requested_requires {
+        match call.capabilities.expr_status(req_expr) {
+            Ok(None) => {}
+            Ok(Some(reason)) => {
+                return Err(format!(
+                    "up {name:?}: cannot stand up: it requires {reason}"
+                ));
+            }
+            Err(e) => {
+                return Err(format!(
+                    "up {name:?}: invalid requires {req_expr:?}: {e}"
+                ));
+            }
+        }
+    }
+
+    // Warm runs re-read the package's test files; provisioning itself loads none.
+    let files = package_test_files(&call)?;
 
     // Spawn the holder thread; it owns the Lua state for this topology's whole held life.
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();

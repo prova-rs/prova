@@ -1,2 +1,10 @@
 [run]
 proofs = ["tests"]
+
+[plugins]
+warmtop = { path = "./warmtop.lua" }
+
+# The registration door: what the MCP server's `up` (and CLI `prova up`) may stand up. The test
+# file declares the SAME factory as a fixture — one definition, addressed through both doors.
+[topologies]
+warmtop = { plugin = "warmtop", factory = "make" }
