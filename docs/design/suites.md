@@ -29,17 +29,20 @@ cross-core anyway).
 
 ## Backward compatibility: every file is a singleton suite
 
+<!-- claim: singleton-suite-compat -->
 **A file not assigned to any declared suite is its own one-file suite.** That preserves today's
 behaviour exactly — files parallelize, and within a one-file suite `Scope.Suite` == `Scope.File`
 (which is *correct*, not a lie: the suite *is* the file). Nothing existing changes.
 
 ## Defining suites — three layers (elegant defaults, explicit control)
 
+<!-- claim: suite-lua-convention -->
 1. **`suite.lua` convention (zero config).** A `suite.lua` in a directory declares a suite whose
    members are its sibling `*_test.lua` files (recursively, until a nested `suite.lua`). `suite.lua`
    runs **once, first, in the suite's state** — it's where suite-scoped fixtures and shared config
    live, colocated with the files that use them. This is the blessed, discoverable form.
 
+<!-- claim: manifest-suites-explicit -->
 2. **`prova.toml` manifest (explicit / cross-cutting).** For grouping that doesn't match the directory
    tree — the declared `paths` are discovered into one suite, sharing an optional `setup` file. (A
    suite's `requires` live in its `setup` via `suite.config`; run-wide `env` in `[run.env]`.)
@@ -82,6 +85,7 @@ chunk boundaries — but a name can, and the value is one shared instance in the
 
 ## Scope semantics inside a suite
 
+<!-- claim: suite-scope-semantics -->
 | Scope | Lifetime within a suite |
 |---|---|
 | `Scope.Test` | rebuilt per test |
@@ -99,7 +103,9 @@ file changes.
   scheduler still overlaps I/O-bound tests cooperatively on one core; across suites is true multi-core.
 - **Teardown** runs once per suite: `Scope.Suite` teardown (containers stopped, connections closed)
   fires after the suite's last test, in the suite state — no leaks, no double-provisioning.
-- A suite that `requires` an unmet capability skips **all** its files (cascade), reported once.
+<!-- claim: suite-requires-cascade -->
+- A suite that `requires` an unmet capability skips **all** its files (cascade), each skip
+  naming the unmet requirement.
 
 ## Status (2026-07-13)
 
