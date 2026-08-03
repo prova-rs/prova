@@ -19,7 +19,7 @@ use camino::Utf8PathBuf;
 use prova_core::SystemLayout;
 use serde::Deserialize;
 
-use crate::manifest::{PluginDetail, PluginSource, TopologyDecl};
+use crate::manifest::{PackageDetail, PackageSource, TopologyDecl};
 
 /// How git plugin sources should be refreshed on this run — the caller (the run flow) derives these
 /// from `[updates]` in the manifest and the `-U`/`--offline` flags, and threads them to `fetch_git`.
@@ -47,7 +47,7 @@ impl Default for GitFetchOptions {
 /// its entry file; `namespaces` maps each plugin's canonical name to its root dir (for intra-plugin
 /// `require`s).
 #[derive(Debug, Default, Clone)]
-pub struct ResolvedPlugins {
+pub struct ResolvedPackages {
     pub named: BTreeMap<String, PathBuf>,
     pub namespaces: BTreeMap<String, PathBuf>,
     /// Each plugin's root directory (the checkout dir, or a local dir/file's parent) keyed by
@@ -64,7 +64,7 @@ pub struct ResolvedPlugins {
     pub advertised: BTreeMap<String, Vec<AdvertisedTopology>>,
     /// Session leases on the content-addressed source trees of git plugins, held for the whole run so
     /// the cache reaper can't reclaim a tree while its plugin is being `require`d. `Arc` so cloning
-    /// `ResolvedPlugins` shares (not drops) the leases; nothing reads this field directly.
+    /// `ResolvedPackages` shares (not drops) the leases; nothing reads this field directly.
     pub leases: Arc<Vec<Lease>>,
 }
 
@@ -74,9 +74,9 @@ pub struct ResolvedPlugins {
 /// Remaining sections (`[run]`, `[topologies]`, …) are ignored; the manifest is one file wearing
 /// whichever hats it declares.
 #[derive(Debug, Deserialize, Default)]
-struct PluginManifest {
-    #[serde(default)]
-    plugin: PluginMeta,
+struct PackageManifest {
+    #[serde(default, alias = "plugin")]
+    package: PackageMeta,
     #[serde(default)]
     requires: PluginRequires,
     /// The plugin's OWN dependencies, resolved transitively (see `resolve_plugins`).
@@ -86,12 +86,12 @@ struct PluginManifest {
     /// happens to `require`. That leaks implementation detail into every consumer's manifest and
     /// breaks the moment the plugin changes what it composes. A plugin already states its needs
     /// here; the resolver simply reads them now.
-    #[serde(default)]
-    plugins: BTreeMap<String, PluginSource>,
+    #[serde(default, alias = "plugins")]
+    dependencies: BTreeMap<String, PackageSource>,
 }
 
 #[derive(Debug, Deserialize, Default)]
-struct PluginMeta {
+struct PackageMeta {
     /// Canonical name — the namespace for intra-plugin `require`s. Defaults to the consumer's key.
     name: Option<String>,
     /// The entry file, relative to the plugin root (e.g. `rabbitmq.lua` or `src/rabbitmq.lua`).
@@ -127,14 +127,14 @@ struct PluginRequires {
 /// it); `sources` are the `[sources]` aliases; `prova_version` is the running version, checked
 /// against each plugin's `requires.prova`. Errors name the plugin that failed.
 pub fn resolve_plugins(
-    plugins: &BTreeMap<String, PluginSource>,
+    plugins: &BTreeMap<String, PackageSource>,
     base_dir: &Path,
     layout: &dyn SystemLayout,
     sources: &BTreeMap<String, String>,
     prova_version: &str,
     git_opts: &GitFetchOptions,
-) -> Result<ResolvedPlugins, String> {
-    let mut resolved = ResolvedPlugins::default();
+) -> Result<ResolvedPackages, String> {
+    let mut resolved = ResolvedPackages::default();
     let mut leases: Vec<Lease> = Vec::new();
 
     // Breadth-first from the consumer's own `[plugins]`, then each resolved plugin's, and so on.
@@ -148,7 +148,7 @@ pub fn resolve_plugins(
     // `queued` also terminates cycles (A needs B needs A): a name is enqueued at most once, so a
     // loop is simply a plugin already seen rather than an error to report — nothing about a cycle
     // makes an environment wrong, it only needs to stop.
-    let mut queue: std::collections::VecDeque<(String, PluginSource, PathBuf, Option<String>)> =
+    let mut queue: std::collections::VecDeque<(String, PackageSource, PathBuf, Option<String>)> =
         plugins
             .iter()
             .map(|(n, s)| (n.clone(), s.clone(), base_dir.to_path_buf(), None))
@@ -166,8 +166,8 @@ pub fn resolve_plugins(
         let detail = match &source {
             // A bare string is classified: a git URL or org/repo shorthand becomes a git source; a
             // path stays a path. (The table form is already explicit.)
-            PluginSource::Path(s) => classify_string_source(s, sources).map_err(blame)?,
-            PluginSource::Detailed(d) => d.clone(),
+            PackageSource::Path(s) => classify_string_source(s, sources).map_err(blame)?,
+            PackageSource::Detailed(d) => d.clone(),
         };
         let one =
             resolve_one(&name, &detail, &dir, layout, prova_version, git_opts).map_err(blame)?;
@@ -224,11 +224,11 @@ pub struct ResolvedTopology {
 pub fn resolve_topology(
     alias: &str,
     decl: &TopologyDecl,
-    plugins: &ResolvedPlugins,
+    plugins: &ResolvedPackages,
 ) -> Result<ResolvedTopology, String> {
     let (factory, mut requires) = match (&decl.factory, &decl.topology) {
         (Some(f), None) => (f.clone(), Vec::new()),
-        (None, Some(t)) => advertised(&decl.plugin, t, plugins)?,
+        (None, Some(t)) => advertised(&decl.package, t, plugins)?,
         (Some(_), Some(_)) => {
             return Err(format!(
                 "topology {alias:?}: give either `factory` or `topology`, not both"
@@ -250,14 +250,14 @@ pub fn resolve_topology(
 fn advertised(
     plugin: &str,
     topology: &str,
-    plugins: &ResolvedPlugins,
+    plugins: &ResolvedPackages,
 ) -> Result<(String, Vec<String>), String> {
     let advertised: Vec<AdvertisedTopology> = if let Some(adv) = plugins.advertised.get(plugin) {
         adv.clone()
     } else if let Some(root) = &plugins.search_root {
         read_plugin_manifest(&root.join(plugin))
             .map_err(|e| format!("plugin {plugin:?}: {e}"))?
-            .map(|m| m.plugin.topologies)
+            .map(|m| m.package.topologies)
             .unwrap_or_default()
     } else {
         Vec::new()
@@ -299,7 +299,7 @@ pub fn is_git_source(s: &str) -> bool {
 /// resolved plugins (so `require(<name>)` works), and the topologies it advertises.
 pub struct GitTopologySource {
     pub require_name: String,
-    pub plugins: ResolvedPlugins,
+    pub dependencies: ResolvedPackages,
     pub advertised: Vec<AdvertisedTopology>,
 }
 
@@ -315,7 +315,7 @@ pub fn fetch_topology_source(
 ) -> Result<GitTopologySource, String> {
     let require_name = url_require_name(url);
     let mut one = BTreeMap::new();
-    one.insert(require_name.clone(), PluginSource::Path(url.to_string()));
+    one.insert(require_name.clone(), PackageSource::Path(url.to_string()));
     // base_dir is irrelevant for a git source (only local `path` sources use it).
     let plugins = resolve_plugins(
         &one,
@@ -332,7 +332,7 @@ pub fn fetch_topology_source(
         .unwrap_or_default();
     Ok(GitTopologySource {
         require_name,
-        plugins,
+        dependencies: plugins,
         advertised,
     })
 }
@@ -373,14 +373,14 @@ struct ResolvedOne {
     /// The git source's session lease (`None` for local sources) — kept alive for the run.
     lease: Option<Lease>,
     /// This plugin's own `[plugins]`, to be resolved transitively.
-    deps: BTreeMap<String, PluginSource>,
+    deps: BTreeMap<String, PackageSource>,
     /// The directory its manifest was read from — the base a dependency's relative `path` resolves
     /// against. A transitive path is written relative to the plugin that declares it, never to the
     /// consumer that happens to be pulling it in.
     manifest_dir: Option<PathBuf>,
 }
 
-/// Classify a bare string plugin source into a `PluginDetail`:
+/// Classify a bare string plugin source into a `PackageDetail`:
 /// - a git URL (`https://…`, `git@…`, `….git`) → a `git` source (with an optional trailing `@ref`);
 /// - `host:org/repo[@ref]` where `host` is `github`/`gh`/`gitlab`/`gl` or a registered `[sources]`
 ///   alias → the expanded `git` source;
@@ -393,7 +393,7 @@ struct ResolvedOne {
 fn classify_string_source(
     s: &str,
     sources: &BTreeMap<String, String>,
-) -> Result<PluginDetail, String> {
+) -> Result<PackageDetail, String> {
     if is_git_url(s) {
         let (url, reference) = split_ref(s);
         return Ok(git_detail(url.to_string(), reference));
@@ -412,14 +412,14 @@ fn classify_string_source(
             ));
         }
     }
-    Ok(PluginDetail {
+    Ok(PackageDetail {
         path: Some(s.to_string()),
         ..Default::default()
     })
 }
 
-fn git_detail(url: String, reference: Option<String>) -> PluginDetail {
-    PluginDetail {
+fn git_detail(url: String, reference: Option<String>) -> PackageDetail {
+    PackageDetail {
         git: Some(url),
         tag: reference,
         ..Default::default()
@@ -494,7 +494,7 @@ fn is_org_repo(s: &str) -> bool {
 
 fn resolve_one(
     name: &str,
-    detail: &PluginDetail,
+    detail: &PackageDetail,
     base_dir: &Path,
     layout: &dyn SystemLayout,
     prova_version: &str,
@@ -531,13 +531,13 @@ fn resolve_one(
     }
 
     // Entry precedence: consumer `module=` override → manifest `entry` → filename conventions.
-    let manifest_entry = manifest.as_ref().and_then(|m| m.plugin.entry.as_deref());
+    let manifest_entry = manifest.as_ref().and_then(|m| m.package.entry.as_deref());
     let entry = module_file(&root, name, detail.module.as_deref(), manifest_entry)?;
 
     // Canonical namespace: manifest `[plugin] name`, else the consumer's key.
     let canonical = manifest
         .as_ref()
-        .and_then(|m| m.plugin.name.clone())
+        .and_then(|m| m.package.name.clone())
         .unwrap_or_else(|| name.to_string());
 
     // Plugin root: where `prova.toml` and `library/` live (the dir for a directory source, a
@@ -547,7 +547,7 @@ fn resolve_one(
     // The topologies the plugin advertises (`[[plugin.topologies]]`) — its public topology contract —
     // and the dependencies it needs to honour them.
     let (advertised, deps) = manifest
-        .map(|m| (m.plugin.topologies, m.plugins))
+        .map(|m| (m.package.topologies, m.dependencies))
         .unwrap_or_default();
 
     Ok(ResolvedOne {
@@ -569,7 +569,7 @@ pub fn namespace_for_file(file: &Path) -> Option<(String, PathBuf)> {
     let canonical = read_plugin_manifest(dir)
         .ok()
         .flatten()
-        .and_then(|m| m.plugin.name)
+        .and_then(|m| m.package.name)
         .or_else(|| {
             file.file_stem()
                 .and_then(|s| s.to_str())
@@ -579,13 +579,13 @@ pub fn namespace_for_file(file: &Path) -> Option<(String, PathBuf)> {
 }
 
 /// Read a `dir/prova.toml`'s plugin view if present. `Ok(None)` when absent; `Err` on malformed TOML.
-fn read_plugin_manifest(dir: &Path) -> Result<Option<PluginManifest>, String> {
+fn read_plugin_manifest(dir: &Path) -> Result<Option<PackageManifest>, String> {
     // A plugin's manifest IS a `prova.toml` — the same file a project uses. It reads the `[plugin]`
     // (and `[requires]`) sections and ignores the rest (`[run]`, `[plugins]`, …), so one manifest can
     // be a plugin, a suite, or both. There is no separate `prova-plugin.toml`.
     let path = dir.join("prova.toml");
     match std::fs::read_to_string(&path) {
-        Ok(text) => toml::from_str::<PluginManifest>(&text)
+        Ok(text) => toml::from_str::<PackageManifest>(&text)
             .map(Some)
             .map_err(|e| format!("invalid prova.toml [plugin]: {e}")),
         Err(_) => Ok(None),
@@ -676,7 +676,7 @@ fn module_file(
 /// floating major (`@v1`) follows its releases automatically. Pin a `rev` for reproducibility.
 pub(crate) fn fetch_git(
     url: &str,
-    detail: &PluginDetail,
+    detail: &PackageDetail,
     layout: &dyn SystemLayout,
     git_opts: &GitFetchOptions,
 ) -> Result<(PathBuf, Lease), String> {
@@ -749,7 +749,7 @@ mod tests {
         std::fs::write(&file, "return {}").unwrap();
 
         let mut plugins = BTreeMap::new();
-        plugins.insert("greet".to_string(), PluginSource::Path("greet.lua".into()));
+        plugins.insert("greet".to_string(), PackageSource::Path("greet.lua".into()));
         let layout = RootedSystemLayout::new(dir.join("home"));
 
         let resolved = resolve_plugins(
@@ -769,7 +769,7 @@ mod tests {
     fn missing_local_plugin_is_an_error() {
         let dir = std::env::temp_dir().join("prova-plugin-missing-test");
         let mut plugins = BTreeMap::new();
-        plugins.insert("nope".to_string(), PluginSource::Path("nope.lua".into()));
+        plugins.insert("nope".to_string(), PackageSource::Path("nope.lua".into()));
         let layout = RootedSystemLayout::new(&dir);
         let err = resolve_plugins(
             &plugins,
@@ -803,7 +803,7 @@ mod tests {
         .unwrap();
 
         let mut plugins = BTreeMap::new();
-        plugins.insert("mq".to_string(), PluginSource::Path("repo".into()));
+        plugins.insert("mq".to_string(), PackageSource::Path("repo".into()));
         let layout = RootedSystemLayout::new(dir.join("home"));
 
         let resolved = resolve_plugins(
@@ -828,7 +828,7 @@ mod tests {
         assert!(check_compat("^0.1", "0.1.5").is_ok());
     }
 
-    fn git(detail: &PluginDetail) -> (&str, Option<&str>) {
+    fn git(detail: &PackageDetail) -> (&str, Option<&str>) {
         (detail.git.as_deref().unwrap(), detail.tag.as_deref())
     }
 

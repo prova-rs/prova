@@ -35,7 +35,7 @@ down { name = "orders" }                -- the ONE place teardown happens
 | Do over MCP | Shell out to the CLI |
 |---|---|
 | iterate: run/eval, warm topologies | `prova init` (scaffolding), `prova ide setup` |
-| discovery: learn, introspect | `prova plugin lint`, `prova skill --install` |
+| discovery: learn, introspect | `prova package lint`, `prova skill --install` |
 | targeting other packages via `package` | anything CI runs (CI is always the CLI) |
 
 Topics are also protocol-native resources: `prova://learn/<topic>` and `prova://skill`, same

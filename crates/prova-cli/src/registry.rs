@@ -14,8 +14,8 @@ use prova_core::{SystemLayout, XdgSystemLayout};
 use serde::Deserialize;
 
 use crate::home;
-use crate::manifest::PluginDetail;
-use crate::plugins::{is_git_source, GitFetchOptions};
+use crate::manifest::PackageDetail;
+use crate::packages::{is_git_source, GitFetchOptions};
 
 /// The registry entry schema this binary understands. Entries carrying another major are skipped
 /// per-entry with a warning — old binary, newer registry: degraded, never broken.
@@ -111,7 +111,7 @@ fn registry_dir(
     git_opts: &GitFetchOptions,
 ) -> Result<(PathBuf, Option<archetect_git_cache::Lease>), String> {
     if is_git_source(&reg.source) {
-        let detail = PluginDetail {
+        let detail = PackageDetail {
             path: None,
             git: Some(reg.source.clone()),
             tag: None,
@@ -119,7 +119,7 @@ fn registry_dir(
             rev: None,
             module: None,
         };
-        let (dir, lease) = crate::plugins::fetch_git(&reg.source, &detail, layout, git_opts)
+        let (dir, lease) = crate::packages::fetch_git(&reg.source, &detail, layout, git_opts)
             .map_err(|e| format!("registry {}: {e}", reg.name))?;
         return Ok((dir, Some(lease)));
     }
@@ -529,9 +529,9 @@ fn add(spec: &str, entries: &[Entry]) -> Result<String, String> {
     let entry = match candidates.as_slice() {
         [] => {
             return Err(match registry {
-                Some(r) => format!("no plugin \"{name}\" in registry {r}"),
+                Some(r) => format!("no package \"{name}\" in registry {r}"),
                 None => format!(
-                    "no plugin \"{name}\" in any configured registry — search first: \
+                    "no package \"{name}\" in any configured registry — search first: \
                      `prova plugins {name}`"
                 ),
             })
@@ -540,7 +540,7 @@ fn add(spec: &str, entries: &[Entry]) -> Result<String, String> {
         many => {
             let regs: Vec<&str> = many.iter().map(|e| e.registry.as_str()).collect();
             return Err(format!(
-                "plugin \"{name}\" exists in multiple registries: {} — disambiguate as \
+                "package \"{name}\" exists in multiple registries: {} — disambiguate as \
                  registry:name (e.g. `prova plugins add {}:{name}`)",
                 regs.join(", "),
                 regs[0]
@@ -571,13 +571,13 @@ fn add(spec: &str, entries: &[Entry]) -> Result<String, String> {
 }
 
 const USAGE: &str = "usage:
-  prova plugins                     list every entry across configured registries
-  prova plugins <query>             search (name, description, capabilities)
-  prova plugins info <name>         one entry, full detail
-  prova plugins add <name>[@ref]    pin into this package's [plugins] (registry:name to disambiguate)
+  prova packages                    list every entry across configured registries
+  prova packages <query>            search (name, description, capabilities)
+  prova packages info <name>        one entry, full detail
+  prova packages add <name>[@ref]   pin into this package's [dependencies] (registry:name to disambiguate)
 options: --offline (cache only) · -U/--update (force-refresh registry sources)";
 
-/// The `prova plugins` verb. Discovery works without a manifest on purpose — like
+/// The `prova packages` verb. Discovery works without a manifest on purpose — like
 /// `prova init --list`, an agent explores before a package exists.
 pub fn run(args: Vec<String>) -> ExitCode {
     let mut offline = false;
@@ -592,7 +592,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
                 return ExitCode::SUCCESS;
             }
             _ if a.starts_with('-') => {
-                eprintln!("prova: plugins: unknown flag {a}\n{USAGE}");
+                eprintln!("prova: packages: unknown flag {a}\n{USAGE}");
                 return ExitCode::from(2);
             }
             _ => words.push(a),
@@ -602,7 +602,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
     let layout = match XdgSystemLayout::new() {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("prova: plugins: {e}");
+            eprintln!("prova: packages: {e}");
             return ExitCode::FAILURE;
         }
     };
@@ -614,13 +614,13 @@ pub fn run(args: Vec<String>) -> ExitCode {
     let loaded = match load_all(&layout, &git_opts) {
         Ok(loaded) => loaded,
         Err(e) => {
-            eprintln!("prova: plugins: {e}");
+            eprintln!("prova: packages: {e}");
             return ExitCode::FAILURE;
         }
     };
     let Loaded { entries, warnings, errors, registry_count } = loaded;
     for w in &warnings {
-        eprintln!("prova: plugins: {w}");
+        eprintln!("prova: packages: {w}");
     }
     let multi = registry_count > 1;
 
@@ -631,14 +631,14 @@ pub fn run(args: Vec<String>) -> ExitCode {
         }
         Some("info") => match words.get(1) {
             None => {
-                eprintln!("prova: plugins: info needs a name\n{USAGE}");
+                eprintln!("prova: packages: info needs a name\n{USAGE}");
                 ExitCode::from(2)
             }
             Some(name) => {
                 let hits: Vec<&Entry> = entries.iter().filter(|e| &e.name == name).collect();
                 if hits.is_empty() {
                     eprintln!(
-                        "prova: plugins: no plugin \"{name}\" in any configured registry — \
+                        "prova: packages: no package \"{name}\" in any configured registry — \
                          search first: `prova plugins {name}`"
                     );
                     ExitCode::FAILURE
@@ -652,7 +652,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
         },
         Some("add") => match words.get(1) {
             None => {
-                eprintln!("prova: plugins: add needs a name\n{USAGE}");
+                eprintln!("prova: packages: add needs a name\n{USAGE}");
                 ExitCode::from(2)
             }
             Some(spec) => match add(spec, &entries) {
@@ -661,7 +661,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
                     ExitCode::SUCCESS
                 }
                 Err(e) => {
-                    eprintln!("prova: plugins: {e}");
+                    eprintln!("prova: packages: {e}");
                     ExitCode::FAILURE
                 }
             },
@@ -670,7 +670,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
             let query = words.join(" ");
             let hits: Vec<Entry> = entries.iter().filter(|e| matches(e, &query)).cloned().collect();
             if hits.is_empty() {
-                println!("no plugins matching \"{query}\" — `prova plugins` lists everything");
+                println!("no packages matching \"{query}\" — `prova packages` lists everything");
             } else {
                 print_rows(&hits, multi);
             }
@@ -682,7 +682,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
     // load, so a partial outage never silently narrows discovery.
     if !errors.is_empty() {
         for e in &errors {
-            eprintln!("prova: plugins: {e}");
+            eprintln!("prova: packages: {e}");
         }
         return ExitCode::FAILURE;
     }
@@ -707,13 +707,13 @@ pub fn learn_lines(cli: bool) -> String {
             out.push(String::new());
             out.push(if cli {
                 "Before hand-writing a capability, SEARCH: `prova plugins <term>` — then \
-                 `prova plugins add <name>` pins it into `[plugins]` and `require(\"<name>\")` \
+                 `prova packages add <name>` pins it into `[dependencies]` and `require(\"<name>\")` \
                  works immediately. Add registries in `~/.config/prova/config.toml` \
                  (`[[registries]]` with `name` + `source`)."
                     .into()
             } else {
                 "Before hand-writing a capability, SEARCH by shelling out: `prova plugins <term>` \
-                 — then `prova plugins add <name>` pins it into `[plugins]` and \
+                 — then `prova packages add <name>` pins it into `[dependencies]` and \
                  `require(\"<name>\")` works immediately."
                     .into()
             });

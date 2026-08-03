@@ -111,3 +111,18 @@ stack = { plugin = "compose", topology = "stack", options = { file = "docker-com
 An empty resolution (no `proofs` matches and no `[suites]`) is an error, not a silent green run
 — as is a `--profile` name that doesn't exist, or a selection that matches nothing (see
 `--allow-empty`).
+
+## The package vocabulary, and the spellings it retired
+
+Everything is a package: the project under proof, the libraries it depends on, the topologies
+they advertise — one `prova.toml` shape, worn different ways. The manifest says it in four
+places: `[package]` is the package declaring itself, `[dependencies]` the packages it consumes,
+`[run] packages` the directory of its own local packages, and a `[topologies]` entry names the
+`package` providing its factory.
+
+<!-- claim: deprecated-spellings-teach -->
+The `plugin` spellings those replaced — `[plugin]`, `[plugins]`, `plugin_root`, `plugin =` in a
+`[topologies]` entry, and the `prova plugin`/`prova plugins` verbs — are deprecated, not dead:
+each still works for one release and warns once per process naming its successor (the
+`spec` → `promises` pattern), and all of them retire together at 1.0. The canonical spellings
+warn nothing.

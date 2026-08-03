@@ -7,7 +7,7 @@
 ---   2. declared injection — `[globals] inject = [...]` binds the listed names as unqualified ambient
 ---      globals (the DSL sugar). Bundled and plugin names inject by the SAME one line. Only injected
 ---      names are write-protected; every other name is the user's.
----   3. reserved-name registry — a `[plugins]` entry or plugin-root file bearing a bundled module
+---   3. reserved-name registry — a `[dependencies]` entry or plugin-root file bearing a bundled module
 ---      name is a MANIFEST VALIDATION error, never a silent shadow.
 ---   4. injection is sugar over `require` — an un-injected module is still `require`-able by name and
 ---      still `prova.<name>`; injection never adds or removes a capability.
@@ -96,7 +96,7 @@ end)
 prova.test("a declared plugin injects by the same [globals] inject line — but does NOT join prova.*",
   { proves = "api-injection-model: a plugin injects like a bundled module; prova.* stays first-party" }, function(t)
   local proj = child(t, "inject-plugin",
-    '[run]\nproofs = ["proofs"]\n\n[plugins]\ngreet = "./greet"\n\n[globals]\ninject = ["fs", "greet"]\n',
+    '[run]\nproofs = ["proofs"]\n\n[dependencies]\ngreet = "./greet"\n\n[globals]\ninject = ["fs", "greet"]\n',
     {
       ["greet/init.lua"] = 'return { hello = function() return "hi" end }\n',
       ["proofs/probe_test.lua"] = [[
@@ -112,10 +112,10 @@ end)
 
 -- ── 5. reserved-name registry — a plugin may not claim a bundled module name ───────────────────
 
-prova.test("a [plugins] entry bearing a bundled module name is a manifest validation error",
+prova.test("a [dependencies] entry bearing a bundled module name is a manifest validation error",
   { proves = "api-injection-model: a bundled name is a validation error, never a silent shadow" }, function(t)
   local proj = child(t, "reserved-plugin",
-    '[run]\nproofs = ["proofs"]\n\n[plugins]\nfs = "./fsplug"\n',
+    '[run]\nproofs = ["proofs"]\n\n[dependencies]\nfs = "./fsplug"\n',
     { ["fsplug/init.lua"] = "return {}\n" })
   local r = shell.run(prova.bin, { cwd = proj })
   t:expect(r.code):never():equals(0)

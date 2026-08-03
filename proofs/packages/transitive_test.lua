@@ -1,8 +1,8 @@
---- A plugin's own `[plugins]` are resolved for its consumer — transitive dependencies.
+--- A plugin's own `[dependencies]` are resolved for its consumer — transitive dependencies.
 ---
 --- The gap this closes was hit building the reference kitchen sink, a plugin whose whole purpose is
 --- to COMPOSE others (a topology over postgres + mysql + pulsar). A consumer that pinned only that
---- plugin died with `no prova plugin "postgres"`, because a plugin's own `[plugins]` were read and
+--- plugin died with `no prova plugin "postgres"`, because a plugin's own `[dependencies]` were read and
 --- discarded. Every consumer therefore had to re-declare internals it never mentions and cannot be
 --- expected to know — leaking implementation detail into their manifests and breaking the moment the
 --- plugin changed what it composes. The information was always there; it simply was not followed.
@@ -24,16 +24,16 @@ local function nested(t, extra_plugins)
 
   -- The transitive dependency the consumer never names. Deliberately NOT at the project root.
   fs.write(root .. "/vendor/leaf/init.lua", 'return { who = "vendored-leaf" }\n')
-  fs.write(root .. "/vendor/leaf/prova.toml", '[plugin]\nname = "leaf"\n')
+  fs.write(root .. "/vendor/leaf/prova.toml", '[package]\nname = "leaf"\n')
 
   -- mid declares leaf by a path relative to ITSELF (`../vendor/leaf`), which is meaningless
   -- relative to the consumer.
   fs.write(root .. "/mid/init.lua", 'return { who = "mid", leaf = require("leaf").who }\n')
   fs.write(root .. "/mid/prova.toml",
-    '[plugin]\nname = "mid"\n\n[plugins]\nleaf = { path = "../vendor/leaf" }\n')
+    '[package]\nname = "mid"\n\n[dependencies]\nleaf = { path = "../vendor/leaf" }\n')
 
   fs.write(root .. "/prova.toml",
-    '[run]\nproofs = ["proofs"]\n\n[plugins]\nmid = { path = "./mid" }\n' .. (extra_plugins or ""))
+    '[run]\nproofs = ["proofs"]\n\n[dependencies]\nmid = { path = "./mid" }\n' .. (extra_plugins or ""))
   return root
 end
 
@@ -71,7 +71,7 @@ prova.test("an explicit declaration beats a transitive one", function(t)
   -- environment: a dependency cannot quietly substitute a different source.
   local root = nested(t, 'leaf = { path = "./mine" }\n')
   fs.write(root .. "/mine/init.lua", 'return { who = "consumer-leaf" }\n')
-  fs.write(root .. "/mine/prova.toml", '[plugin]\nname = "leaf"\n')
+  fs.write(root .. "/mine/prova.toml", '[package]\nname = "leaf"\n')
   fs.write(root .. "/proofs/t_test.lua", [[
     prova.test("the consumer's leaf wins", function(t)
       t:expect(require("leaf").who):equals("consumer-leaf")
@@ -86,12 +86,12 @@ prova.test("a dependency cycle terminates instead of looping", function(t)
   local root = t:tempdir()
   fs.write(root .. "/vendor/a/init.lua", 'return { who = "a" }\n')
   fs.write(root .. "/vendor/a/prova.toml",
-    '[plugin]\nname = "a"\n\n[plugins]\nb = { path = "../b" }\n')
+    '[package]\nname = "a"\n\n[dependencies]\nb = { path = "../b" }\n')
   fs.write(root .. "/vendor/b/init.lua", 'return { who = "b" }\n')
   fs.write(root .. "/vendor/b/prova.toml",
-    '[plugin]\nname = "b"\n\n[plugins]\na = { path = "../a" }\n')
+    '[package]\nname = "b"\n\n[dependencies]\na = { path = "../a" }\n')
   fs.write(root .. "/prova.toml",
-    '[run]\nproofs = ["proofs"]\n\n[plugins]\na = { path = "./vendor/a" }\n')
+    '[run]\nproofs = ["proofs"]\n\n[dependencies]\na = { path = "./vendor/a" }\n')
   fs.write(root .. "/proofs/t_test.lua", [[
     prova.test("both sides of the cycle resolve", function(t)
       t:expect(require("a").who):equals("a")

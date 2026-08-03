@@ -82,7 +82,7 @@ Everything below is the crash course; depth is one call away, computed for THIS 
 
 | You need | Move |
 |---|---|
-| The topic catalog (patterns, doubles, topologies, plugin authoring…) | `prova learn` · MCP `learn {}` |
+| The topic catalog (patterns, doubles, topologies, package authoring…) | `prova learn` · MCP `learn {}` |
 | One topic (aliases work: `mocks` → `doubles`) | `prova learn <topic>` · `learn { topic }` |
 | An API's shape: what to call, what comes back | `prova.help("<filter>")` in any test/eval · MCP `introspect { filter }` |
 | Which archetypes `init` can scaffold | `prova init --list` (or `prova learn init`) |
@@ -92,14 +92,14 @@ Everything below is the crash course; depth is one call away, computed for THIS 
 | Where the project stands — the whole account | `prova evidence` · `prova learn evidence` |
 | Everything this package owes, from every origin | `prova owed` · `prova learn claims` |
 | Whether a claim's proof actually RAN (not just "0 failed") | `prova attest <doc.md#id>` · `prova learn record` |
-| A plugin for a technology you need to prove | `prova plugins <term>` (search registries) → `prova plugins add <name>` |
+| A package for a technology you need to prove | `prova packages <term>` (search registries) → `prova packages add <name>` |
 
 ## Test files, in one screen
 
-Files match `*_test.lua` (or `*.test.lua`). Everything is a global — no imports except plugins.
+Files match `*_test.lua` (or `*.test.lua`). Everything is a global — no imports except packages.
 
 ```lua
-local postgres = require("postgres")          -- plugin, declared in prova.toml [plugins]
+local postgres = require("postgres")          -- a dependency, declared in prova.toml [dependencies]
 
 -- Fixtures: named, scoped, lazy, cached; teardown is guaranteed and LIFO.
 -- Scopes: Scope.Test (default) | Scope.Flow | Scope.File | Scope.Suite
@@ -147,20 +147,20 @@ end)
 
 ## Resources: the grammar
 
-Every service resource — plugin or hand-rolled — is the same shape: **`X.client(...)` attaches to
+Every service resource — package or hand-rolled — is the same shape: **`X.client(...)` attaches to
 something running; `X.container(ctx, opts?)` provisions ephemerally and returns
 `{ client, url, container, host, port }`**. `url` is what you inject into the app under test;
-`host`/`port` split it for discrete env vars. Declare plugins in `prova.toml`:
+`host`/`port` split it for discrete env vars. Declare dependencies in `prova.toml`:
 
 ```toml
-[plugins]
+[dependencies]
 postgres = "prova-rs/prova-postgres@main"   # owner/repo@ref | local path | { git|path, tag|branch|rev, module }
 ```
 
-Official plugins: postgres, mysql, redis, kafka, pulsar, rabbitmq, s3. Built-ins: `fs`, `shell`,
+Official packages: postgres, mysql, redis, kafka, pulsar, rabbitmq, s3. Built-ins: `fs`, `shell`,
 `net`, `http`, `grpc` (needs server reflection), `graphql`, `yaml`, `docker`, `sqlite` — plus
-`archetect`, a bundled plugin (always present in the standalone binary). No plugin for it? Compose `docker.run{ image, env, ports, wait }` +
-`container:run(argv)` + `prova.retry` — or author a plugin via `prova.containerized`.
+`archetect`, bundled (always present in the standalone binary). No package for it? Compose `docker.run{ image, env, ports, wait }` +
+`container:run(argv)` + `prova.retry` — or author a package via `prova.containerized`.
 
 ## Built-ins, one line each
 
@@ -298,11 +298,11 @@ call tools. Tools mirror the CLI one-to-one and **everything else is identical**
 | `learn { topic? }` / `introspect { filter? }` | `prova learn [<topic>]` / `prova.help(...)` in eval |
 | `up { name }` / `down { name }` / `status {}` | `prova up <name>` — but held *inside* the server |
 
-Scaffolding stays CLI-only: `prova init`, `prova ide setup`, `prova plugin lint` — shell out for
+Scaffolding stays CLI-only: `prova init`, `prova ide setup`, `prova package lint` — shell out for
 those even when driving the MCP. Prefer the MCP tools for iteration (warm topologies, structured
 JSON); the CLI is the bootstrap surface and what CI runs.
 
-The server resolves the manifest and plugins from its working directory exactly like the CLI,
+The server resolves the manifest and dependencies from its working directory exactly like the CLI,
 serves this document as its `instructions`, and returns compact JSON results.
 
 **Warm re-runs — the MCP-only capability.** `up { name }` provisions a named topology once and

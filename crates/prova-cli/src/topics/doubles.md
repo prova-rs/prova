@@ -7,11 +7,11 @@ where it earns its place:
 
 | Situation | Reach for |
 |---|---|
-| The app needs postgres/redis/kafka/... | The real thing: `X.container(ctx)` (a plugin), or `docker.run{...}` + `prova.retry` |
+| The app needs postgres/redis/kafka/... | The real thing: `X.container(ctx)` (a package), or `docker.run{...}` + `prova.retry` |
 | The dependency can't run here (3rd-party SaaS, paid API, flaky upstream) | `http.mock` / `grpc.mock` — virtualize it |
 | The assertion IS the interaction ("did the app call billing exactly once, in order?") | a mock's journal — only a mock can see it |
 | Fault injection (500s, timeouts, malformed replies) | a mock stub returning the fault |
-| An in-process, function-shaped seam (a plugin effector, an injected Lua dependency) | `require("prova.double")` |
+| An in-process, function-shaped seam (a package effector, an injected Lua dependency) | `require("prova.double")` |
 
 Mocking what you could run for real trades away exactly the evidence a proof exists to produce.
 
@@ -43,9 +43,9 @@ Every resource namespace has the same facets: `X.client` attaches to something r
 `X.container` provisions the real thing · `X.wait_for` probes readiness · `X.mock` provisions a
 fake one. Plugins declared in this package add their facets to the vocabulary:
 
-{{plugins}}
+{{packages}}
 
 Not yet shipped (do not reach for them): standalone interposing proxies as a facet of their own,
 `net.mock` (raw TCP/unix), `graphql.mock`. `prova.help("mock")` lists what exists in this build.
 
-Go deeper: `prova learn project` (where plugins are declared) · `prova learn pdd` (why real-first).
+Go deeper: `prova learn project` (where dependencies are declared) · `prova learn pdd` (why real-first).

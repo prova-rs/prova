@@ -1,4 +1,4 @@
-//! End-to-end: a `[plugins]` git source is fetched into the cache and resolved by `require`, driven
+//! End-to-end: a `[dependencies]` git source is fetched into the cache and resolved by `require`, driven
 //! through the real `prova` binary. Proves the whole path — manifest parse → git clone/checkout into
 //! the XDG cache → searcher resolves the named plugin → the test that `require`s it passes.
 
@@ -62,7 +62,7 @@ fn manifest_git_plugin_is_fetched_and_required() {
     std::fs::write(
         project.join("prova.toml"),
         format!(
-            "[run]\nproofs = [\"tests\"]\n\n[plugins]\ngreet = {{ git = \"{}\", rev = \"{}\" }}\n",
+            "[run]\nproofs = [\"tests\"]\n\n[dependencies]\ngreet = {{ git = \"{}\", rev = \"{}\" }}\n",
             remote.to_string_lossy().replace('\\', "/"),
             rev
         ),

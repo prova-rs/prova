@@ -1,6 +1,6 @@
 //! End-to-end (hermetic — no docker, no network): explicit path arguments select WHAT to run but
 //! must not strip the package environment. `prova tests/x_test.lua` discovers the prova home from
-//! the named path (not just the cwd), resolves the manifest's `[plugins]` so `require(...)` works
+//! the named path (not just the cwd), resolves the manifest's `[dependencies]` so `require(...)` works
 //! exactly as in a manifest run, and keeps a named file's suite membership (a sibling `suite.lua`
 //! still wraps it). Paths outside any package still run bare, and paths spanning two packages are
 //! refused rather than guessed at.
@@ -40,11 +40,11 @@ impl Drop for Tmp {
     }
 }
 
-/// A minimal package: a path plugin under `[plugins]` and one test file that `require`s it.
+/// A minimal package: a path plugin under `[dependencies]` and one test file that `require`s it.
 fn plugin_package(root: &Path) {
     write(
         &root.join("plugin/prova.toml"),
-        "[plugin]\nname = \"greeter\"\nentry = \"impl.lua\"\n\n[requires]\nprova = \">=0.1\"\n",
+        "[package]\nname = \"greeter\"\nentry = \"impl.lua\"\n\n[requires]\nprova = \">=0.1\"\n",
     );
     write(
         &root.join("plugin/impl.lua"),
@@ -52,7 +52,7 @@ fn plugin_package(root: &Path) {
     );
     write(
         &root.join("project/prova.toml"),
-        "[run]\nproofs = [\"tests\"]\n\n[plugins]\ngreet = { path = \"../plugin\" }\n",
+        "[run]\nproofs = [\"tests\"]\n\n[dependencies]\ngreet = { path = \"../plugin\" }\n",
     );
     write(
         &root.join("project/tests/greet_test.lua"),
@@ -64,7 +64,7 @@ fn plugin_package(root: &Path) {
 }
 
 // The regression that motivated this: from the package root, naming the file must resolve the
-// package's `[plugins]` exactly as the bare manifest run does.
+// package's `[dependencies]` exactly as the bare manifest run does.
 #[test]
 fn explicit_file_resolves_manifest_plugins() {
     let t = Tmp::new("plugins");
@@ -181,14 +181,14 @@ fn explicit_files_spanning_two_packages_are_refused() {
     );
 }
 
-// A manifest with `[plugins]` but NO `[run] proofs` cannot run bare — but an explicit file names
+// A manifest with `[dependencies]` but NO `[run] proofs` cannot run bare — but an explicit file names
 // the selection itself, so it must not be blocked by the missing key.
 #[test]
 fn explicit_file_runs_in_a_package_that_declares_no_proofs() {
     let t = Tmp::new("noproofs");
     write(
         &t.0.join("plugin/prova.toml"),
-        "[plugin]\nname = \"greeter\"\nentry = \"impl.lua\"\n\n[requires]\nprova = \">=0.1\"\n",
+        "[package]\nname = \"greeter\"\nentry = \"impl.lua\"\n\n[requires]\nprova = \">=0.1\"\n",
     );
     write(
         &t.0.join("plugin/impl.lua"),
@@ -196,7 +196,7 @@ fn explicit_file_runs_in_a_package_that_declares_no_proofs() {
     );
     write(
         &t.0.join("project/prova.toml"),
-        "[plugins]\ngreet = { path = \"../plugin\" }\n",
+        "[dependencies]\ngreet = { path = \"../plugin\" }\n",
     );
     write(
         &t.0.join("project/scratch/greet_test.lua"),

@@ -29,12 +29,12 @@ fn start_ps_down_supervises_a_detached_topology() {
     std::fs::write(
         root.join("prova.toml"),
         "[run]\nproofs = [\".\"]\n[luals]\nmanage = \"never\"\n\
-         [plugins]\nfixture = { path = \"./fixture\" }\n\
+         [dependencies]\nfixture = { path = \"./fixture\" }\n\
          [topologies]\norders = { plugin = \"fixture\", factory = \"orders\" }\n",
     )
     .unwrap();
     std::fs::create_dir_all(root.join("fixture")).unwrap();
-    std::fs::write(root.join("fixture/prova.toml"), "[plugin]\nname = \"fixture\"\n").unwrap();
+    std::fs::write(root.join("fixture/prova.toml"), "[package]\nname = \"fixture\"\n").unwrap();
     // A no-docker topology: two fake resources with `url`s, and a deferred teardown that appends to a
     // marker file — so we can prove the detached child ran teardown when `down` signalled it.
     std::fs::write(

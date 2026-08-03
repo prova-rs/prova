@@ -1,4 +1,4 @@
-//! End-to-end (hermetic — no docker, no network): a directory plugin with a `prova.toml [plugin]`
+//! End-to-end (hermetic — no docker, no network): a directory plugin with a `prova.toml [package]`
 //! resolves via its declared `entry` even under a *different* consumer alias, vendors a sibling
 //! module via the plugin namespace, and is version-gated by `requires.prova`.
 
@@ -20,7 +20,7 @@ fn run(project: &Path, home: &Path) -> std::process::Output {
         .expect("run prova")
 }
 
-/// A plugin repo whose entry is `impl.lua` (declared in prova.toml [plugin]) and which `require`s a
+/// A plugin repo whose entry is `impl.lua` (declared in prova.toml [package]) and which `require`s a
 /// vendored sibling — pulled under the alias `greet`. Filename-matching would look for `greet.lua`
 /// and fail; the manifest entry + namespace make it resolve regardless of the alias.
 #[test]
@@ -35,7 +35,7 @@ fn manifest_entry_and_vendored_sibling_resolve_under_alias() {
     // A permissive `>=0.1` compat so the test tracks the workspace version across 0.x bumps.
     write(
         &plugin.join("prova.toml"),
-        "[plugin]\nname = \"greeter\"\nentry = \"impl.lua\"\n\n[requires]\nprova = \">=0.1\"\n",
+        "[package]\nname = \"greeter\"\nentry = \"impl.lua\"\n\n[requires]\nprova = \">=0.1\"\n",
     );
     write(
         &plugin.join("impl.lua"),
@@ -51,7 +51,7 @@ fn manifest_entry_and_vendored_sibling_resolve_under_alias() {
     write(
         &project.join("prova.toml"),
         &format!(
-            "[run]\nproofs = [\"tests\"]\n\n[plugins]\ngreet = {{ path = \"{}\" }}\n",
+            "[run]\nproofs = [\"tests\"]\n\n[dependencies]\ngreet = {{ path = \"{}\" }}\n",
             plugin.to_string_lossy().replace('\\', "/")
         ),
     );
@@ -89,7 +89,7 @@ fn incompatible_plugin_version_is_rejected() {
 
     write(
         &plugin.join("prova.toml"),
-        "[plugin]\nname = \"future\"\nentry = \"impl.lua\"\n\n[requires]\nprova = \">=99.0\"\n",
+        "[package]\nname = \"future\"\nentry = \"impl.lua\"\n\n[requires]\nprova = \">=99.0\"\n",
     );
     write(
         &plugin.join("impl.lua"),
@@ -98,7 +98,7 @@ fn incompatible_plugin_version_is_rejected() {
     write(
         &project.join("prova.toml"),
         &format!(
-            "[run]\nproofs = [\"tests\"]\n\n[plugins]\nfuture = {{ path = \"{}\" }}\n",
+            "[run]\nproofs = [\"tests\"]\n\n[dependencies]\nfuture = {{ path = \"{}\" }}\n",
             plugin.to_string_lossy().replace('\\', "/")
         ),
     );

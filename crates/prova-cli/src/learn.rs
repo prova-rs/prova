@@ -17,7 +17,7 @@ use std::process::ExitCode;
 
 use crate::catalog::Catalog;
 use crate::home;
-use crate::manifest::{Manifest, PluginSource, Profile, Resolved};
+use crate::manifest::{Manifest, PackageSource, Profile, Resolved};
 
 /// Every topic the catalog serves. Adding a variant without a markdown file (or vice versa) is a
 /// compile error; forgetting it in a match is too.
@@ -37,8 +37,8 @@ pub enum Topic {
     Proxies,
     Drivers,
     Topologies,
-    Plugins,
-    PluginAuthoring,
+    Packages,
+    PackageAuthoring,
     Running,
     Mcp,
 }
@@ -59,8 +59,8 @@ impl Topic {
         Topic::Proxies,
         Topic::Drivers,
         Topic::Topologies,
-        Topic::Plugins,
-        Topic::PluginAuthoring,
+        Topic::Packages,
+        Topic::PackageAuthoring,
         Topic::Running,
         Topic::Mcp,
     ];
@@ -112,9 +112,13 @@ impl Topic {
         ("driver", Topic::Drivers),
         ("protocols", Topic::Drivers),
         ("topology", Topic::Topologies),
-        ("plugin", Topic::Plugins),
-        ("authoring-plugins", Topic::PluginAuthoring),
-        ("create-plugin", Topic::PluginAuthoring),
+        ("plugin", Topic::Packages),
+        ("plugins", Topic::Packages),
+        ("authoring-packages", Topic::PackageAuthoring),
+        ("authoring-plugins", Topic::PackageAuthoring),
+        ("plugin-authoring", Topic::PackageAuthoring),
+        ("create-package", Topic::PackageAuthoring),
+        ("create-plugin", Topic::PackageAuthoring),
         ("selection", Topic::Running),
         ("ci", Topic::Running),
         ("cli", Topic::Running),
@@ -138,8 +142,8 @@ impl Topic {
             Topic::Proxies => "proxies",
             Topic::Drivers => "drivers",
             Topic::Topologies => "topologies",
-            Topic::Plugins => "plugins",
-            Topic::PluginAuthoring => "plugin-authoring",
+            Topic::Packages => "packages",
+            Topic::PackageAuthoring => "package-authoring",
             Topic::Running => "running",
             Topic::Mcp => "mcp",
         }
@@ -163,8 +167,8 @@ impl Topic {
             Topic::Proxies => include_str!("topics/proxies.md"),
             Topic::Drivers => include_str!("topics/drivers.md"),
             Topic::Topologies => include_str!("topics/topologies.md"),
-            Topic::Plugins => include_str!("topics/plugins.md"),
-            Topic::PluginAuthoring => include_str!("topics/plugin-authoring.md"),
+            Topic::Packages => include_str!("topics/packages.md"),
+            Topic::PackageAuthoring => include_str!("topics/package-authoring.md"),
             Topic::Running => include_str!("topics/running.md"),
             Topic::Mcp => include_str!("topics/mcp.md"),
         }
@@ -231,8 +235,8 @@ impl Slot {
             "init_catalog" => Some(Slot::InitCatalog),
             "agent" => Some(Slot::Agent),
             "proof_paths" => Some(Slot::ProofPaths),
-            "plugin_root" => Some(Slot::PluginRoot),
-            "plugins" => Some(Slot::Plugins),
+            "packages_dir" => Some(Slot::PluginRoot),
+            "packages" => Some(Slot::Plugins),
             "registries" => Some(Slot::Registries),
             "topologies" => Some(Slot::Topologies),
             "profiles" => Some(Slot::Profiles),
@@ -264,7 +268,7 @@ struct PackageFacts {
 /// full of them as having none. A directory counts when it holds an `init.lua`, which is exactly what
 /// the resolver requires.
 fn local_plugins(p: &PackageFacts) -> Vec<String> {
-    local_plugins_in(&p.home_dir, p.resolved.plugin_root.as_deref())
+    local_plugins_in(&p.home_dir, p.resolved.packages_dir.as_deref())
 }
 
 /// The scan itself, split out so it is testable without a resolved manifest.
@@ -396,10 +400,10 @@ impl RenderEnv {
 }
 
 /// One plugin source, described the way an agent would re-declare it.
-fn describe_source(source: &PluginSource) -> String {
+fn describe_source(source: &PackageSource) -> String {
     match source {
-        PluginSource::Path(s) => s.clone(),
-        PluginSource::Detailed(d) => {
+        PackageSource::Path(s) => s.clone(),
+        PackageSource::Detailed(d) => {
             let origin = d
                 .git
                 .clone()
@@ -459,13 +463,13 @@ fn render_slot(slot: Slot, env: &RenderEnv, transport: Transport) -> String {
             None => env.no_package_line(transport),
         },
         Slot::PluginRoot => match &env.package {
-            Some(p) => match &p.resolved.plugin_root {
+            Some(p) => match &p.resolved.packages_dir {
                 Some(root) => format!(
-                    "**Local plugins**: author them under `{root}/<name>/` (the declared \
-                     `plugin_root`); each subdirectory is requirable by name."
+                    "**Local packages**: author them under `{root}/<name>/` (the declared \
+                     `packages` directory); each subdirectory is requirable by name."
                 ),
-                None => "**Local plugins**: no `plugin_root` declared — set `[run] plugin_root` \
-                         in the manifest before authoring package-local plugins."
+                None => "**Local packages**: no `packages` directory declared — set \
+                         `[run] packages` in the manifest before authoring package-local packages."
                     .into(),
             },
             None => String::new(),
@@ -475,7 +479,7 @@ fn render_slot(slot: Slot, env: &RenderEnv, transport: Transport) -> String {
         Slot::Registries => crate::registry::learn_lines(transport == Transport::Cli),
         Slot::Plugins => match &env.package {
             Some(p)
-                if !p.resolved.plugins.is_empty() || !local_plugins(p).is_empty() =>
+                if !p.resolved.dependencies.is_empty() || !local_plugins(p).is_empty() =>
             {
                 // BOTH kinds, because `require("<name>")` does not distinguish them. Listing only
                 // the `[plugins]` table told a package with three working local plugins that it had
@@ -484,34 +488,34 @@ fn render_slot(slot: Slot, env: &RenderEnv, transport: Transport) -> String {
                 let local = local_plugins(p);
                 let width = p
                     .resolved
-                    .plugins
+                    .dependencies
                     .keys()
                     .chain(local.iter())
                     .map(String::len)
                     .max()
                     .unwrap_or(0);
-                let root = p.resolved.plugin_root.as_deref().unwrap_or("");
+                let root = p.resolved.packages_dir.as_deref().unwrap_or("");
                 let rows: Vec<String> = local
                     .iter()
                     .map(|name| format!("  {name:<width$}  local ({root}/{name})"))
                     .chain(
                         p.resolved
-                            .plugins
+                            .dependencies
                             .iter()
                             .map(|(name, src)| format!("  {name:<width$}  {}", describe_source(src))),
                     )
                     .collect();
                 format!(
-                    "**Plugins** (`require(\"<name>\")` in any proof):\n{}",
+                    "**Packages** (`require(\"<name>\")` in any proof):\n{}",
                     rows.join("\n")
                 )
             }
-            Some(_) => "**Plugins**: none — declare external ones under `[plugins]` in the \
-                        manifest, or author local ones under `[run] plugin_root`."
+            Some(_) => "**Packages**: none — declare external ones under `[dependencies]` in the \
+                        manifest, or author local ones under `[run] packages`."
                 .into(),
             // The long no-package guidance renders once, on the ProofPaths slot; here one short
             // line keeps a doctrine topic readable outside a package.
-            None => "(no package in reach — declared plugins unknown)".into(),
+            None => "(no package in reach — declared dependencies unknown)".into(),
         },
         Slot::Topologies => match &env.package {
             Some(p) if !p.resolved.topologies.is_empty() => {
@@ -531,7 +535,7 @@ fn render_slot(slot: Slot, env: &RenderEnv, transport: Transport) -> String {
                         } else {
                             format!("  (requires {})", t.requires.join(", "))
                         };
-                        format!("  {name}  → plugin `{}` {what}{requires}", t.plugin)
+                        format!("  {name}  → package `{}` {what}{requires}", t.package)
                     })
                     .collect();
                 let verb = match transport {
@@ -603,8 +607,8 @@ fn render_slot(slot: Slot, env: &RenderEnv, transport: Transport) -> String {
                         if !profile.proofs.is_empty() {
                             overrides.push("proofs");
                         }
-                        if profile.plugin_root.is_some() {
-                            overrides.push("plugin_root");
+                        if profile.packages.is_some() {
+                            overrides.push("packages");
                         }
                         if profile.config.is_some() {
                             overrides.push("config");
@@ -618,8 +622,8 @@ fn render_slot(slot: Slot, env: &RenderEnv, transport: Transport) -> String {
                         if !profile.env.is_empty() {
                             overrides.push("env");
                         }
-                        if !profile.plugins.is_empty() {
-                            overrides.push("plugins");
+                        if !profile.dependencies.is_empty() {
+                            overrides.push("dependencies");
                         }
                         if !profile.must_run.is_empty() {
                             overrides.push("must_run");

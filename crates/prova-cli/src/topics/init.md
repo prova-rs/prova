@@ -15,20 +15,20 @@ always name the key.
 | You are... | Key |
 |---|---|
 | Adding proofs to an app/repo (the common case) | `project` |
-| Authoring a reusable plugin — a namespace others `require()` | `plugin` |
-| Adding a plugin to THIS package (run it inside the package) | `plugin` — it lands in `plugin_root` |
+| Authoring a reusable package — a namespace others `require()` | `plugin` |
+| Adding a local package to THIS one (run it inside the package) | `plugin` — it lands in the `packages` dir |
 | In an org with its own entries (see below) | the org's key |
 
 ## Flags that matter in automation
 
 ```
 prova init project --headless                # the project scaffold is promptless — this just works
-prova init plugin --headless -a name=redis   # plugin: `name` has no default, so answer it
+prova init plugin --headless -a name=redis   # package: `name` has no default, so answer it
 # the flags, separately:
 #   --headless        never prompt; an unanswerable prompt is an ERROR
 #   -a k=v            --answer, repeatable; beats baked answers
 #   --defaults        take the archetype's default for every remaining prompt
-#   -s ci             --switch, repeatable (e.g. `-s standalone` forces the plugin repo shape)
+#   -s ci             --switch, repeatable (e.g. `-s standalone` forces the standalone repo shape)
 ```
 
 Answer precedence: CLI `--answer` > the entry's baked answers > injected package state > prompt
@@ -38,7 +38,7 @@ Answer precedence: CLI `--answer` > the entry's baked answers > injected package
 
 Inside an existing package, every render also receives the `prova:in-package` switch plus
 `prova_package_root` / `prova_plugin_root` answers — generic facts ANY archetype can read (the
-`plugin` entry uses them to scaffold a local plugin into `plugin_root` instead of a standalone
+`plugin` entry uses them to scaffold a local package into the `packages` dir instead of a standalone
 repo). Outside a package none are supplied.
 
 ## Extending the catalog

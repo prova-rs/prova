@@ -47,7 +47,7 @@ use serde_json::json;
 
 use crate::home::Home;
 use crate::manifest::{SuiteDecl, TopologyDecl};
-use crate::plugins;
+use crate::packages;
 use prova_core::{
     discover_files, discover_path_with, eval_snippet, hold_topology, run_suites, Endpoint, Event,
     Outcome, PortMode, Reporter, Selection, XdgSystemLayout,
@@ -70,7 +70,8 @@ pub fn run(args: Vec<String>) -> ExitCode {
             manifest_path = Some(v);
             continue;
         }
-        if let Some(v) = crate::value_flag(&arg, &mut it, &["--plugin", "-P"]) {
+        if let Some(v) = crate::value_flag(&arg, &mut it, &["--package", "-P", "--plugin"]) {
+            if arg.starts_with("--plugin") { eprintln!("prova: `--plugin` is deprecated — use `--package` (retires at 1.0)"); }
             cli_plugins.push(v);
             continue;
         }
@@ -132,7 +133,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
                     home, profile, None, None, None, &layout, false, false, true,
                 ) {
                     Ok(r) => (
-                        r.plugins,
+                        r.dependencies,
                         r.sources,
                         r.proofs,
                         r.suites,
@@ -144,7 +145,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
                 }
             }
             None => (
-                plugins::ResolvedPlugins::default(),
+                packages::ResolvedPackages::default(),
                 BTreeMap::new(),
                 Vec::new(),
                 BTreeMap::new(),
@@ -166,7 +167,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
         proofs,
         declared,
         jobs,
-        plugins: plugins_resolved,
+        dependencies: plugins_resolved,
         capabilities,
         topologies,
     });
@@ -234,7 +235,7 @@ struct McpEnv {
     /// Manifest `[suites.*]` declarations.
     declared: BTreeMap<String, SuiteDecl>,
     jobs: usize,
-    plugins: plugins::ResolvedPlugins,
+    dependencies: packages::ResolvedPackages,
     /// Capabilities the startup package's `prova.lua` registered. Per-package calls re-resolve their
     /// own (see `CallEnv`), so two packages served by one warm server never share a vocabulary.
     capabilities: prova_core::Capabilities,
@@ -251,7 +252,7 @@ struct CallEnv {
     proofs: Vec<String>,
     declared: BTreeMap<String, SuiteDecl>,
     jobs: usize,
-    plugins: plugins::ResolvedPlugins,
+    dependencies: packages::ResolvedPackages,
     /// This call's registered capabilities — the startup set, or the package's own on a `package`
     /// re-resolve. Never the process's: capabilities are per-resolve, not global.
     capabilities: prova_core::Capabilities,
@@ -307,7 +308,7 @@ impl McpEnv {
                 proofs: self.proofs.clone(),
                 declared: self.declared.clone(),
                 jobs: self.jobs,
-                plugins: self.plugins.clone(),
+                dependencies: self.dependencies.clone(),
                 capabilities: self.capabilities.clone(),
                 topologies: self.topologies.clone(),
             }),
@@ -329,7 +330,7 @@ impl McpEnv {
                     &self.cli_plugins,
                     &self.layout,
                     &run.sources,
-                    &mut run.plugins,
+                    &mut run.dependencies,
                 )
                 .map_err(|_| {
                     "could not resolve --plugin entries (details on the server's stderr)"
@@ -341,7 +342,7 @@ impl McpEnv {
                     proofs: run.proofs,
                     declared: run.suites,
                     jobs: run.jobs,
-                    plugins: run.plugins,
+                    dependencies: run.dependencies,
                     capabilities: run.capabilities,
                     topologies: run.topologies,
                 })
@@ -780,12 +781,12 @@ impl ProvaMcpServer {
             let plugin_roots: Vec<PathBuf> = match req.package.as_deref() {
                 Some(package) => env
                     .resolve_call(None, Some(package))?
-                    .plugins
+                    .dependencies
                     .roots
                     .values()
                     .cloned()
                     .collect(),
-                None => env.plugins.roots.values().cloned().collect(),
+                None => env.dependencies.roots.values().cloned().collect(),
             };
             let all =
                 prova_core::help::entries_with_plugins(plugin_roots.iter().map(|p| p.as_path()));
@@ -1031,7 +1032,7 @@ fn run_blocking(env: &McpEnv, req: RunRequest) -> Result<(serde_json::Value, boo
     }
 
     let jobs = req.jobs.map(|n| (n as usize).max(1)).unwrap_or(call.jobs);
-    let mut config = crate::engine_config(jobs, &call.plugins, Some(&call.home), prova_core::progress::null())
+    let mut config = crate::engine_config(jobs, &call.dependencies, Some(&call.home), prova_core::progress::null())
         .with_capabilities(call.capabilities.clone())
         .with_specs_only(req.selection.promises.unwrap_or(false))
         .with_falsify(req.selection.falsify.unwrap_or(false))
@@ -1121,7 +1122,7 @@ fn attest_blocking(env: &McpEnv, req: AttestRequest) -> Result<(serde_json::Valu
         ));
     };
 
-    let proofs = crate::collect_obligations(&call.home, &manifest, &call.plugins)?;
+    let proofs = crate::collect_obligations(&call.home, &manifest, &call.dependencies)?;
     let bindings: Vec<String> = proofs
         .iter()
         .filter(|p| {
@@ -1164,7 +1165,7 @@ fn evidence_blocking(env: &McpEnv, req: EvidenceRequest) -> Result<(serde_json::
     let manifest = std::fs::read_to_string(&call.home.manifest)
         .map_err(|e| e.to_string())
         .and_then(|text| crate::manifest::Manifest::parse(&text))?;
-    let account = crate::evidence_account(&call.home, &manifest, &call.plugins)?;
+    let account = crate::evidence_account(&call.home, &manifest, &call.dependencies)?;
     Ok((
         json!({
             "claimed": account.claimed,
@@ -1183,7 +1184,7 @@ fn owed_blocking(env: &McpEnv, req: OwedRequest) -> Result<(serde_json::Value, b
     let manifest = std::fs::read_to_string(&call.home.manifest)
         .map_err(|e| e.to_string())
         .and_then(|text| crate::manifest::Manifest::parse(&text))?;
-    let account = crate::evidence_account(&call.home, &manifest, &call.plugins)?;
+    let account = crate::evidence_account(&call.home, &manifest, &call.dependencies)?;
     Ok((json!({ "owed": owed_rows(&account.owed) }), false))
 }
 
@@ -1205,7 +1206,7 @@ fn list_blocking(env: &McpEnv, req: SelectionArgs) -> Result<(serde_json::Value,
     }
 
     let suites = crate::collect_suites(&call.base_dir, &call.declared, &call.proofs, true)?;
-    let mut config = crate::engine_config(1, &call.plugins, Some(&call.home), prova_core::progress::null())
+    let mut config = crate::engine_config(1, &call.dependencies, Some(&call.home), prova_core::progress::null())
         .with_capabilities(call.capabilities.clone())
         .with_specs_only(req.promises.unwrap_or(false));
     config.selection = selection;
@@ -1231,10 +1232,10 @@ fn eval_blocking(
     // through `resolve_call`, which requires one. A `package` still targets another suite: resolve
     // its home + plugins so `require(...)` and `prova.root` mean what they mean *there*.
     let (home, plugins) = match package.as_deref() {
-        None => (env.home.clone(), env.plugins.clone()),
+        None => (env.home.clone(), env.dependencies.clone()),
         Some(p) => {
             let call = env.resolve_call(None, Some(p))?;
-            (Some(call.home), call.plugins)
+            (Some(call.home), call.dependencies)
         }
     };
     let config = crate::engine_config(1, &plugins, home.as_ref(), prova_core::progress::null());
@@ -1268,7 +1269,7 @@ fn up_blocking(
     if call.topologies.is_empty() {
         return Err(format!(
             "up {name:?}: no topologies registered — add it to [topologies] in prova.toml, e.g.\n  \
-             [topologies]\n  {name} = {{ plugin = \"<plugin>\", topology = \"<advertised>\" }}"
+             [topologies]\n  {name} = {{ package = \"<package>\", topology = \"<advertised>\" }}"
         ));
     }
     if !call.topologies.contains_key(&name) {
@@ -1279,7 +1280,7 @@ fn up_blocking(
         ));
     }
 
-    let mut config = crate::engine_config(1, &call.plugins, Some(&call.home), prova_core::progress::null())
+    let mut config = crate::engine_config(1, &call.dependencies, Some(&call.home), prova_core::progress::null())
         .with_capabilities(call.capabilities.clone())
         .with_ports(if req.fixed.unwrap_or(false) {
             PortMode::Fixed
@@ -1288,10 +1289,10 @@ fn up_blocking(
         });
     let mut requested_requires: Vec<String> = Vec::new();
     for (alias, decl) in &call.topologies {
-        let resolved = plugins::resolve_topology(alias, decl, &call.plugins)
+        let resolved = packages::resolve_topology(alias, decl, &call.dependencies)
             .map_err(|e| format!("up {name:?}: {e}"))?;
         let options = crate::topology_options_to_lua(&decl.options);
-        config = config.with_topology_registration(alias, &decl.plugin, resolved.factory, options);
+        config = config.with_topology_registration(alias, &decl.package, resolved.factory, options);
         if alias == &name {
             requested_requires = resolved.requires;
         }

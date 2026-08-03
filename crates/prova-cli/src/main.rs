@@ -27,7 +27,7 @@ mod init;
 mod learn;
 mod manifest;
 mod mcp;
-mod plugins;
+mod packages;
 mod registry;
 mod progress;
 mod record;
@@ -169,17 +169,22 @@ const VERBS: &[Verb] = &[
         run: ps_subcommand,
     },
     Verb {
-        name: "plugin",
-        help: "  prova plugin lint <f>...  check plugin files against the namespacing grammar",
-        run: plugin_subcommand,
+        name: "package",
+        help: "  prova package lint <f>... check package files against the namespacing grammar",
+        run: package_subcommand,
     },
     Verb {
-        name: "plugins",
-        help: "  prova plugins [<query>]   search the configured plugin registries (no query lists all;\n\
-               \x20                           `info <name>` details; `add <name>[@ref]` pins into [plugins])",
+        name: "packages",
+        help: "  prova packages [<query>]  search the configured package registries (no query lists all;\n\
+               \x20                           `info <name>` details; `add <name>[@ref]` pins into [dependencies])",
         run: registry::run,
     },
 ];
+
+/// Deprecated verb spellings — one release's bridge to the `package` vocabulary, retiring at 1.0
+/// with the other pre-1.0 spellings. Dispatch still lands on the canonical verb; the warning is
+/// what teaches the rename.
+const DEPRECATED_VERBS: &[(&str, &str)] = &[("plugin", "package"), ("plugins", "packages")];
 
 /// `prova --help`, assembled from the verb table so the two cannot disagree.
 fn help_text() -> String {
@@ -203,7 +208,7 @@ options:
       --junit PATH          also write a JUnit XML report to PATH (for CI; composes with --format)
       --gha auto|on|off     GitHub Actions annotations + step summary (default auto: when in GHA)
   -j, --jobs N              run up to N units concurrently
-  -P, --plugin name=source  add an ad-hoc plugin (repeatable; layers over the manifest)
+  -P, --package name=source add an ad-hoc package (repeatable; layers over the manifest)
   -k PATTERN                select nodes whose path contains PATTERN (repeatable; !PAT excludes)
       --tags a,b            select nodes tagged with any listed tag (repeatable; !tag excludes)
       --node PATH           select an exact node path (repeatable) — re-run what a report named
@@ -266,18 +271,27 @@ fn main() -> ExitCode {
             raw.next();
             return (verb.run)(raw.collect());
         }
+        if let Some((old, new)) = DEPRECATED_VERBS.iter().find(|(old, _)| old == first) {
+            eprintln!("prova: `prova {old}` is deprecated — use `prova {new}` (retires at 1.0)");
+            let verb = VERBS
+                .iter()
+                .find(|v| v.name == *new)
+                .expect("every deprecated verb maps to a live one");
+            raw.next();
+            return (verb.run)(raw.collect());
+        }
     }
     run(std::env::args().skip(1).collect())
 }
 
-/// `prova plugin lint <file>...` — check each plugin file against the namespacing grammar.
-fn plugin_subcommand(args: Vec<String>) -> ExitCode {
+/// `prova package lint <file>...` — check each package file against the namespacing grammar.
+fn package_subcommand(args: Vec<String>) -> ExitCode {
     let mut args = args.into_iter();
     match args.next().as_deref() {
         Some("lint") => {
             let files: Vec<String> = args.collect();
             if files.is_empty() {
-                eprintln!("usage: prova plugin lint <file>...");
+                eprintln!("usage: prova package lint <file>...");
                 return ExitCode::from(2);
             }
             let mut ok = true;
@@ -285,7 +299,7 @@ fn plugin_subcommand(args: Vec<String>) -> ExitCode {
                 // Lint loads each plugin with the same primitives + archetect module a run would
                 // install, plus the plugin's own namespace so its intra-plugin `require`s resolve.
                 let path = Path::new(file);
-                let ns = plugins::namespace_for_file(path);
+                let ns = packages::namespace_for_file(path);
                 let mut config = RunConfig::new(1).with_module(prova_archetect::install);
                 if let Some(bin) = prova_bin() {
                     config = config.with_prova_bin(bin);
@@ -333,11 +347,11 @@ fn plugin_subcommand(args: Vec<String>) -> ExitCode {
             }
         }
         Some(other) => {
-            eprintln!("prova: unknown plugin subcommand {other:?} (expected: lint)");
+            eprintln!("prova: unknown package subcommand {other:?} (expected: lint)");
             ExitCode::from(2)
         }
         None => {
-            eprintln!("usage: prova plugin lint <file>...");
+            eprintln!("usage: prova package lint <file>...");
             ExitCode::from(2)
         }
     }
@@ -606,7 +620,7 @@ fn attest_subcommand(args: Vec<String>) -> ExitCode {
 /// a plugins-only manifest is legitimate here where it would be a config error for a run.
 fn resolve_for_obligations(
     home: &home::Home,
-) -> Result<(Manifest, plugins::ResolvedPlugins), ExitCode> {
+) -> Result<(Manifest, packages::ResolvedPackages), ExitCode> {
     let manifest = match std::fs::read_to_string(&home.manifest)
         .map_err(|e| e.to_string())
         .and_then(|text| Manifest::parse(&text))
@@ -625,7 +639,7 @@ fn resolve_for_obligations(
         }
     };
     let run = resolve_from_manifest(home, None, None, None, None, &layout, false, false, false)?;
-    Ok((manifest, run.plugins))
+    Ok((manifest, run.dependencies))
 }
 
 /// How the run was narrowed, spelled the way it was asked for.
@@ -661,7 +675,7 @@ fn spell_selection(config: &prova_core::RunConfig) -> Vec<String> {
 fn attest_all(
     home: &home::Home,
     manifest: &Manifest,
-    plugins_resolved: &plugins::ResolvedPlugins,
+    plugins_resolved: &packages::ResolvedPackages,
 ) -> ExitCode {
     let docs = manifest.claims.as_ref().map(|c| c.docs.clone()).unwrap_or_default();
     let claims = match claims::scan(&home.dir, &docs) {
@@ -741,7 +755,7 @@ pub(crate) struct Account {
 pub(crate) fn evidence_account(
     home: &home::Home,
     manifest: &Manifest,
-    plugins_resolved: &plugins::ResolvedPlugins,
+    plugins_resolved: &packages::ResolvedPackages,
 ) -> Result<Account, String> {
     let docs = manifest.claims.as_ref().map(|c| c.docs.clone()).unwrap_or_default();
     let claims = claims::scan(&home.dir, &docs).map_err(|e| e.to_string())?;
@@ -854,7 +868,7 @@ fn evidence_subcommand(args: Vec<String>) -> ExitCode {
 fn collect_obligations(
     home: &home::Home,
     manifest: &Manifest,
-    plugins_resolved: &plugins::ResolvedPlugins,
+    plugins_resolved: &packages::ResolvedPackages,
 ) -> Result<Vec<prova_core::ProofObligation>, String> {
     let resolved = manifest.resolve(None)?;
     let config = engine_config(
@@ -923,7 +937,8 @@ fn eval_subcommand(args: Vec<String>) -> ExitCode {
             manifest_path = Some(v);
             continue;
         }
-        if let Some(v) = value_flag(&arg, &mut it, &["--plugin", "-P"]) {
+        if let Some(v) = value_flag(&arg, &mut it, &["--package", "-P", "--plugin"]) {
+            if arg.starts_with("--plugin") { eprintln!("prova: `--plugin` is deprecated — use `--package` (retires at 1.0)"); }
             cli_plugins.push(v);
             continue;
         }
@@ -1015,11 +1030,11 @@ fn eval_subcommand(args: Vec<String>) -> ExitCode {
     let (mut plugins_resolved, sources) = match &home {
         Some(home) => {
             match resolve_from_manifest(home, profile, None, None, None, &layout, false, false, false) {
-                Ok(r) => (r.plugins, r.sources),
+                Ok(r) => (r.dependencies, r.sources),
                 Err(code) => return code,
             }
         }
-        None => (plugins::ResolvedPlugins::default(), BTreeMap::new()),
+        None => (packages::ResolvedPackages::default(), BTreeMap::new()),
     };
     if let Err(code) = layer_cli_plugins(&cli_plugins, &layout, &sources, &mut plugins_resolved) {
         return code;
@@ -1122,9 +1137,9 @@ fn up_subcommand(args: Vec<String>) -> ExitCode {
     //   prova up <topology> <url>   → stand up a repo's advertised topology
     let (name, url): (Option<String>, Option<String>) = match positionals.as_slice() {
         [] => (None, None),
-        [a] if plugins::is_git_source(a) => (None, Some(a.clone())),
+        [a] if packages::is_git_source(a) => (None, Some(a.clone())),
         [a] => (Some(a.clone()), None),
-        [a, b] if plugins::is_git_source(b) => (Some(a.clone()), Some(b.clone())),
+        [a, b] if packages::is_git_source(b) => (Some(a.clone()), Some(b.clone())),
         [a, b] => {
             eprintln!("prova up: expected `<topology> <url>`, but {b:?} is not a git source (and {a:?} was already given)");
             return ExitCode::from(2);
@@ -1251,11 +1266,11 @@ fn up_from_git(name: Option<&str>, url: &str, fixed: bool) -> ExitCode {
         }
     };
     eprintln!("prova: fetching {url}…");
-    let src = match plugins::fetch_topology_source(
+    let src = match packages::fetch_topology_source(
         url,
         &layout,
         PROVA_VERSION,
-        &plugins::GitFetchOptions::default(),
+        &packages::GitFetchOptions::default(),
     ) {
         Ok(s) => s,
         Err(err) => {
@@ -1268,7 +1283,7 @@ fn up_from_git(name: Option<&str>, url: &str, fixed: bool) -> ExitCode {
     let Some(name) = name else {
         if src.advertised.is_empty() {
             eprintln!(
-                "prova up: {url} advertises no topologies (no [[plugin.topologies]] in its prova.toml)"
+                "prova up: {url} advertises no topologies (no [[package.topologies]] in its prova.toml)"
             );
             return ExitCode::from(2);
         }
@@ -1307,7 +1322,7 @@ fn up_from_git(name: Option<&str>, url: &str, fixed: bool) -> ExitCode {
         }
     }
 
-    let config = engine_config(1, &src.plugins, None, prova_core::progress::null())
+    let config = engine_config(1, &src.dependencies, None, prova_core::progress::null())
         .with_ports(if fixed {
             PortMode::Fixed
         } else {
@@ -1436,7 +1451,7 @@ fn build_topology_run(
         match name {
             Some(n) => eprintln!(
                 "prova {verb}: no topology {n:?} — register it in [topologies], e.g.\n  \
-                 [topologies]\n  {n} = {{ plugin = \"<plugin>\", topology = \"<advertised>\" }}"
+                 [topologies]\n  {n} = {{ package = \"<package>\", topology = \"<advertised>\" }}"
             ),
             None => eprintln!(
                 "prova {verb}: no topologies registered — add a [topologies] entry to prova.toml"
@@ -1458,7 +1473,7 @@ fn build_topology_run(
     // Build the engine config with the declared plugins (so the topology's `require(...)` resolves).
     // `--fixed` pins ports for external reachability; the default is random (like tests), so several
     // topologies can be inhabited at once without colliding.
-    let mut config = engine_config(1, &run.plugins, Some(&home), progress::sink(progress::Mode::Auto))
+    let mut config = engine_config(1, &run.dependencies, Some(&home), progress::sink(progress::Mode::Auto))
         .with_ports(if fixed {
         PortMode::Fixed
     } else {
@@ -1470,7 +1485,7 @@ fn build_topology_run(
     // whose `requires` (plus the registration's) become the topology's environment gate.
     let mut topology_requires: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (alias, decl) in &run.topologies {
-        let resolved = match plugins::resolve_topology(alias, decl, &run.plugins) {
+        let resolved = match packages::resolve_topology(alias, decl, &run.dependencies) {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("prova {verb}: {e}");
@@ -1478,7 +1493,7 @@ fn build_topology_run(
             }
         };
         let options = topology_options_to_lua(&decl.options);
-        config = config.with_topology_registration(alias, &decl.plugin, resolved.factory, options);
+        config = config.with_topology_registration(alias, &decl.package, resolved.factory, options);
         if !resolved.requires.is_empty() {
             topology_requires.insert(alias.clone(), resolved.requires);
         }
@@ -1929,8 +1944,9 @@ fn run(cli_args: Vec<String>) -> ExitCode {
 
     let mut args = cli_args.into_iter();
     while let Some(arg) = args.next() {
-        // `--plugin name=source` (repeatable): an ad-hoc plugin, layered over the manifest (CLI wins).
-        if let Some(v) = value_flag(&arg, &mut args, &["--plugin", "-P"]) {
+        // `-P name=source` (repeatable): an ad-hoc package, layered over the manifest (CLI wins).
+        if let Some(v) = value_flag(&arg, &mut args, &["--package", "-P", "--plugin"]) {
+            if arg.starts_with("--plugin") { eprintln!("prova: `--plugin` is deprecated — use `--package` (retires at 1.0)"); }
             cli_plugins.push(v);
             continue;
         }
@@ -2173,7 +2189,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                     r.github,
                     r.junit,
                     BTreeMap::new(),
-                    r.plugins,
+                    r.dependencies,
                     r.sources,
                     Manage::Never,
                     r.capabilities,
@@ -2193,7 +2209,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                 None, // github
                 None, // junit
                 BTreeMap::new(),
-                plugins::ResolvedPlugins::default(),
+                packages::ResolvedPackages::default(),
                 BTreeMap::new(),
                 Manage::Never,
                 // No manifest, so there is no companion — built-in capabilities still work;
@@ -2234,7 +2250,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                 r.github,
                 r.junit,
                 r.suites,
-                r.plugins,
+                r.dependencies,
                 r.sources,
                 r.manage,
                 r.capabilities,
@@ -2244,7 +2260,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         }
     };
 
-    // Ad-hoc `--plugin name=source` entries (e.g. CI-only extras) resolve the same way as manifest
+    // Ad-hoc `-P name=source` entries (e.g. CI-only extras) resolve the same way as manifest
     // plugins and layer on top, overriding a manifest plugin of the same name.
     if let Err(code) = layer_cli_plugins(&cli_plugins, &layout, &sources, &mut plugins_resolved) {
         return code;
@@ -2580,7 +2596,7 @@ struct ManifestRun {
     /// Manifest `junit` (home-relative path) — `--junit` wins.
     junit: Option<String>,
     suites: BTreeMap<String, SuiteDecl>,
-    plugins: plugins::ResolvedPlugins,
+    dependencies: packages::ResolvedPackages,
     sources: BTreeMap<String, String>,
     manage: Manage,
     /// Manifest topologies (`[topologies]`) — name → the plugin factory it exposes. Consumed only by
@@ -2596,7 +2612,7 @@ struct ManifestRun {
 
 /// If a linted plugin ships no LuaCATS stub (`library/<canonical>.lua`), return an advisory message.
 /// `ns` is `(canonical, plugin_root_dir)` from `namespace_for_file`. Consumers of `require(name)` get
-/// no editor completion without a stub — the plugin archetype generates one; this nudges hand-authored
+/// no editor completion without a stub — the package archetype generates one; this nudges hand-authored
 /// plugins to match.
 fn missing_stub_warning(ns: &Option<(String, PathBuf)>) -> Option<String> {
     let (canonical, dir) = ns.as_ref()?;
@@ -2606,7 +2622,7 @@ fn missing_stub_warning(ns: &Option<(String, PathBuf)>) -> Option<String> {
     }
     Some(format!(
         "no library/{canonical}.lua — consumers of require(\"{canonical}\") get no editor \
-         completion (add a ---@meta stub; the plugin archetype generates one)"
+         completion (add a ---@meta stub; the package archetype generates one)"
     ))
 }
 
@@ -2616,7 +2632,7 @@ fn report_annotations(outcome: &annotations::Outcome) {
     let linked = if outcome.linked_plugins.is_empty() {
         String::new()
     } else {
-        format!("; plugin annotations linked for {}", outcome.linked_plugins.join(", "))
+        format!("; package annotations linked for {}", outcome.linked_plugins.join(", "))
     };
     if outcome.luarc_created {
         eprintln!("prova: wrote .luarc.json (editor IDE support enabled{linked})");
@@ -2905,7 +2921,7 @@ fn prova_bin() -> Option<std::path::PathBuf> {
 /// selection) on top.
 fn engine_config(
     jobs: usize,
-    plugins_resolved: &plugins::ResolvedPlugins,
+    plugins_resolved: &packages::ResolvedPackages,
     home: Option<&Home>,
     progress: std::sync::Arc<dyn prova_core::Progress>,
 ) -> RunConfig {
@@ -2946,41 +2962,41 @@ fn engine_config(
     config
 }
 
-/// Resolve ad-hoc `--plugin name=source` entries the same way manifest plugins resolve and layer
+/// Resolve ad-hoc `-P name=source` entries the same way manifest dependencies resolve and layer
 /// them over `plugins_resolved` (CLI wins over a manifest plugin of the same name).
 fn layer_cli_plugins(
     cli_plugins: &[String],
     layout: &dyn SystemLayout,
     sources: &BTreeMap<String, String>,
-    plugins_resolved: &mut plugins::ResolvedPlugins,
+    plugins_resolved: &mut packages::ResolvedPackages,
 ) -> Result<(), ExitCode> {
     if cli_plugins.is_empty() {
         return Ok(());
     }
-    let mut adhoc: BTreeMap<String, manifest::PluginSource> = BTreeMap::new();
+    let mut adhoc: BTreeMap<String, manifest::PackageSource> = BTreeMap::new();
     for entry in cli_plugins {
         match entry.split_once('=') {
             Some((name, source)) if !name.is_empty() && !source.is_empty() => {
                 adhoc.insert(
                     name.to_string(),
-                    manifest::PluginSource::Path(source.to_string()),
+                    manifest::PackageSource::Path(source.to_string()),
                 );
             }
             _ => {
-                eprintln!("prova: --plugin expects name=source, got {entry:?}");
+                eprintln!("prova: -P expects name=source, got {entry:?}");
                 return Err(ExitCode::from(2));
             }
         }
     }
     // Ad-hoc `--plugin` entries are always local paths (never git), so the git freshness policy is
     // irrelevant here — a default is fine.
-    match plugins::resolve_plugins(
+    match packages::resolve_plugins(
         &adhoc,
         Path::new("."),
         layout,
         sources,
         PROVA_VERSION,
-        &plugins::GitFetchOptions::default(),
+        &packages::GitFetchOptions::default(),
     ) {
         Ok(resolved) => {
             plugins_resolved.named.extend(resolved.named);
@@ -3050,7 +3066,7 @@ fn resolve_from_manifest(
 
     // Effective git-source freshness policy: the manifest's `[updates]` interval, and `force` from
     // either the manifest or the CLI `-U`; `--offline` from the CLI.
-    let git_opts = plugins::GitFetchOptions {
+    let git_opts = packages::GitFetchOptions {
         force: force_update || resolved.updates.force(),
         offline,
         interval: resolved.updates.interval_duration().map_err(|e| {
@@ -3060,8 +3076,8 @@ fn resolve_from_manifest(
     };
 
     // Resolve declared plugins relative to the home directory (git sources fetched into cache).
-    let mut plugins_resolved = plugins::resolve_plugins(
-        &resolved.plugins,
+    let mut plugins_resolved = packages::resolve_plugins(
+        &resolved.dependencies,
         &home.dir,
         layout,
         &resolved.sources,
@@ -3079,12 +3095,12 @@ fn resolve_from_manifest(
         .updates
         .retention_duration()
         .unwrap_or(manifest::UpdatesSection::DEFAULT_RETENTION);
-    plugins::prune_plugin_cache(layout, retention);
+    packages::prune_plugin_cache(layout, retention);
 
     // The declared plugin dir, absolutised against the package ROOT (like `paths`, and unlike the
     // home-relative `config`). Nothing is added here: a package scans exactly the one directory its
     // manifest names, so the file answers "where can a plugin come from?" on its own.
-    plugins_resolved.search_root = resolved.plugin_root.as_ref().map(|r| home.dir.join(r));
+    plugins_resolved.search_root = resolved.packages_dir.as_ref().map(|r| home.dir.join(r));
 
     // The other half of the reserved-name registry (api-freeze §2): a plugin-ROOT file bearing a
     // bundled namespace name would shadow it for every `require` — the same silent collision the
@@ -3104,8 +3120,8 @@ fn resolve_from_manifest(
                 if let Some(name) = name {
                     if prova_core::RESERVED_NAMESPACES.contains(&name.as_str()) {
                         eprintln!(
-                            "prova: plugin root {}: `{name}` is a reserved prova namespace — a \
-                             plugin cannot shadow a bundled global; rename it",
+                            "prova: packages directory {}: `{name}` is a reserved prova namespace — a \
+                             package cannot shadow a bundled global; rename it",
                             root.display()
                         );
                         return Err(ExitCode::from(2));
@@ -3236,7 +3252,7 @@ fn resolve_from_manifest(
         github,
         junit: resolved.junit,
         suites: resolved.suites,
-        plugins: plugins_resolved,
+        dependencies: plugins_resolved,
         sources: resolved.sources,
         manage,
         topologies: resolved.topologies,

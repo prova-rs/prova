@@ -26,7 +26,7 @@
 //!                               #  installed" and "dotnet can build this".)
 //! [profiles.ci.env]
 //! CI = "true"
-//! [profiles.ci.plugins]         # CI-only capabilities, still pinned in-repo (not an out-of-band input)
+//! [profiles.ci.dependencies]         # CI-only capabilities, still pinned in-repo (not an out-of-band input)
 //! toxiproxy = { git = "https://github.com/acme/prova-toxiproxy", tag = "v1" }
 //!
 //! ```
@@ -59,23 +59,25 @@ pub struct Manifest {
     pub profiles: BTreeMap<String, Profile>,
     #[serde(default)]
     pub suites: BTreeMap<String, SuiteDecl>,
-    /// Declared plugins: `require(name)` resolves to this source (a local file/dir or a git repo).
-    /// Not profile-specific — the plugin set is a property of the package, applied to every run.
-    #[serde(default)]
-    pub plugins: BTreeMap<String, PluginSource>,
+    /// Declared dependencies (`[dependencies]`): `require(name)` resolves to this source (a local
+    /// file/dir or a git repo). Every dependency is itself a package — the same `prova.toml` shape,
+    /// wearing the library hat. Not profile-specific — the dependency set is a property of the
+    /// package, applied to every run. `[plugins]` is the deprecated spelling (retires at 1.0).
+    #[serde(default, alias = "plugins")]
+    pub dependencies: BTreeMap<String, PackageSource>,
     /// `[globals]` — which modules are bound as unqualified ambient globals (`inject`). A property of
     /// the package, not a profile: the API surface a suite is written against does not vary by run
     /// profile. `None` (no section) falls back to the default set; a present section is authoritative.
     #[serde(default)]
     pub globals: Option<GlobalsSection>,
-    /// Registered source aliases for plugin shorthands: `alias → base`, where `base` is a host
-    /// shorthand (`github:acme`) or a base URL (`https://github.com/acme`). A plugin written
+    /// Registered source aliases for dependency shorthands: `alias → base`, where `base` is a host
+    /// shorthand (`github:acme`) or a base URL (`https://github.com/acme`). A dependency written
     /// `"acme:redis"` then expands via `acme` to `https://github.com/acme/redis`.
     #[serde(default)]
     pub sources: BTreeMap<String, String>,
-    /// Named topologies (`[topologies]`) — each exposes a factory a plugin provides under a package
+    /// Named topologies (`[topologies]`) — each exposes a factory a package provides under its
     /// name, so `prova up <name>` (and any proof) can address it. Sugar for
-    /// `prova.topology(<name>, require(<plugin>).<factory>)`. A property of the package, not a profile.
+    /// `prova.topology(<name>, require(<package>).<factory>)`. A property of the package, not a profile.
     #[serde(default)]
     pub topologies: BTreeMap<String, TopologyDecl>,
     /// How prova manages the package's LuaLS IDE integration (`.luarc.json` + synced annotations).
@@ -248,30 +250,30 @@ impl Luals {
     }
 }
 
-/// Where a declared plugin's Lua comes from. The string shorthand is a local path; the table form
-/// adds git and an in-repo `module` path.
+/// Where a dependency package's Lua comes from. The string shorthand is a local path; the table
+/// form adds git and an in-repo `module` path.
 ///
 /// ```toml
-/// [plugins]
-/// greet    = "./plugins/greet.lua"                                   # local path shorthand
+/// [dependencies]
+/// greet    = "./packages/greet.lua"                                  # local path shorthand
 /// fixtures = { path = "./test-support" }                             # local dir (fixtures.lua / init.lua)
 /// rabbitmq = { git = "https://github.com/acme/prova-rabbitmq", tag = "v1.0.0" }
 /// nats     = { git = "https://github.com/acme/prova-nats", rev = "abc123", module = "src/nats.lua" }
 /// ```
 #[derive(Debug, Deserialize, Clone, PartialEq)]
 #[serde(untagged)]
-pub enum PluginSource {
+pub enum PackageSource {
     /// A local path to a `.lua` file or a directory (resolved to `<name>.lua` then `init.lua`).
     Path(String),
     /// The detailed form: a local `path` or a `git` repo, with an optional in-repo `module` path and
     /// a pin (`tag` / `branch` / `rev`).
-    Detailed(PluginDetail),
+    Detailed(PackageDetail),
 }
 
-/// The table form of a plugin source. Exactly one of `path` / `git` is expected.
+/// The table form of a package source. Exactly one of `path` / `git` is expected.
 #[derive(Debug, Deserialize, Clone, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
-pub struct PluginDetail {
+pub struct PackageDetail {
     /// A local path to a `.lua` file or a directory.
     pub path: Option<String>,
     /// A git repository URL.
@@ -286,33 +288,35 @@ pub struct PluginDetail {
     pub module: Option<String>,
 }
 
-/// A named topology (`[topologies] <name> = { plugin = "...", … }`). It names one of a plugin's
+/// A named topology (`[topologies] <name> = { package = "...", … }`). It names one of a package's
 /// topologies in one of two ways — exactly one must be given:
 ///
-/// - `topology = "linux-vm"` — by the plugin's advertised NAME (`[[plugin.topologies]]`). The public,
-///   encapsulated form: the plugin author owns the factory path; you pick from what's advertised.
-/// - `factory = "topologies.linux_vm"` — by a direct dotted path into the plugin's namespace. Handy
-///   for your own plugins, where there's no contract to mediate.
+/// - `topology = "linux-vm"` — by the package's advertised NAME (`[[package.topologies]]`). The
+///   public, encapsulated form: the package author owns the factory path; you pick from what's
+///   advertised.
+/// - `factory = "topologies.linux_vm"` — by a direct dotted path into the package's namespace.
+///   Handy for your own packages, where there's no contract to mediate.
 ///
-/// Either way the entry desugars to `prova.topology("<name>", require("<plugin>").<factory>)`.
+/// Either way the entry desugars to `prova.topology("<name>", require("<package>").<factory>)`.
 #[derive(Debug, Deserialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct TopologyDecl {
-    /// The plugin that provides it — a name declared in `[plugins]` or an ambient plugin under the
-    /// `plugin_root`.
-    pub plugin: String,
-    /// The plugin's advertised topology name (`[[plugin.topologies]]`). Mutually exclusive with
+    /// The package that provides it — a name declared in `[dependencies]` or an ambient package
+    /// under the `packages` directory. `plugin` is the deprecated spelling (retires at 1.0).
+    #[serde(alias = "plugin")]
+    pub package: String,
+    /// The package's advertised topology name (`[[package.topologies]]`). Mutually exclusive with
     /// `factory`.
     pub topology: Option<String>,
-    /// A direct dotted path to the factory inside the plugin's namespace. Mutually exclusive with
+    /// A direct dotted path to the factory inside the package's namespace. Mutually exclusive with
     /// `topology`.
     pub factory: Option<String>,
     /// Environment this topology needs (capability expressions, e.g. `["docker"]`), added to whatever
-    /// the plugin's advertisement declares. An unmet requirement blocks `prova up` before provisioning.
+    /// the package's advertisement declares. An unmet requirement blocks `prova up` before provisioning.
     #[serde(default)]
     pub requires: Vec<String>,
     /// Options handed to the factory as its second argument: the entry desugars to
-    /// `require("<plugin>").<factory>(ctx, <options>)`. This is how a manifest-registered topology
+    /// `require("<package>").<factory>(ctx, <options>)`. This is how a manifest-registered topology
     /// passes what the factory needs but the caller can't otherwise supply — e.g. the base VM template
     /// `options = { image = "ubuntu-24.04" }` for the `parallels` `vm` topology. Absent → the factory is
     /// registered bare (`(ctx)`), unchanged.
@@ -345,15 +349,18 @@ pub struct Profile {
     /// just `<root>/proofs`. Omitted → the default `["proofs"]` (see [`Resolved::DEFAULT_PROOFS`]).
     #[serde(default)]
     pub proofs: Vec<String>,
-    /// The directory holding this package's own plugins, relative to the package **root** (like
-    /// `proofs`). No default: the one place prova scans is the one this file names.
+    /// The directory holding this package's own local packages, relative to the package **root**
+    /// (like `proofs`). No default: the one place prova scans is the one this file names.
     ///
-    /// Deliberately singular. An ambient root exists for a single job — "my package's plugins, don't
-    /// make me name each one" — and that is inherently one place. A plugin from anywhere else gets a
-    /// name and a pinned source in `[plugins]` (a path or a git ref), which is both more explicit and
-    /// more reproducible than a second directory scanned by convention. A list would only add a
-    /// precedence question ("two roots both hold `foo` — which wins?") without adding capability.
-    pub plugin_root: Option<String>,
+    /// Deliberately singular. An ambient directory exists for a single job — "my package's own
+    /// packages, don't make me name each one" — and that is inherently one place. A package from
+    /// anywhere else gets a name and a pinned source in `[dependencies]` (a path or a git ref),
+    /// which is both more explicit and more reproducible than a second directory scanned by
+    /// convention. A list would only add a precedence question ("two directories both hold `foo` —
+    /// which wins?") without adding capability. `plugin_root` is the deprecated spelling (retires
+    /// at 1.0).
+    #[serde(alias = "plugin_root")]
+    pub packages: Option<String>,
     /// The companion file loaded once, pre-suite, for `runtime.*` config (capabilities). Relative to
     /// the home. Defaults to `prova.lua` beside the manifest; point it elsewhere (e.g.
     /// `proofs/shared/config.lua`) to keep the home clean.
@@ -376,12 +383,13 @@ pub struct Profile {
     pub junit: Option<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
-    /// Profile-scoped plugins (`[profiles.<name>.plugins]`), overlaid on the package-wide
-    /// `[plugins]` set. The principled home for CI-only capabilities: declared in `prova.toml` so a
-    /// `--profile ci` run and local dev resolve the same pinned source, instead of injecting plugins
-    /// through an out-of-band CI input. On a name conflict the profile's entry wins.
-    #[serde(default)]
-    pub plugins: BTreeMap<String, PluginSource>,
+    /// Profile-scoped dependencies (`[profiles.<name>.dependencies]`), overlaid on the
+    /// package-wide `[dependencies]` set. The principled home for CI-only capabilities: declared in
+    /// `prova.toml` so a `--profile ci` run and local dev resolve the same pinned source, instead
+    /// of injecting dependencies through an out-of-band CI input. On a name conflict the profile's
+    /// entry wins. `plugins` is the deprecated spelling (retires at 1.0).
+    #[serde(default, alias = "plugins")]
+    pub dependencies: BTreeMap<String, PackageSource>,
     /// Capabilities this context **guarantees** — checked as a precondition, before anything runs.
     ///
     /// The other half of `requires`, and the reason they are two things: a test's `requires` is a
@@ -417,9 +425,9 @@ pub struct Resolved {
     /// The proof directory-name patterns to discover (never empty — an omitted `[run] proofs`
     /// resolves to [`Resolved::DEFAULT_PROOFS`]).
     pub proofs: Vec<String>,
-    /// The package's plugin directory (`[run] plugin_root`), relative to the package root. `None`
-    /// means the package declared none — the searcher then has nowhere to scan, and says so.
-    pub plugin_root: Option<String>,
+    /// The package's local-packages directory (`[run] packages`), relative to the package root.
+    /// `None` means the package declared none — the searcher then has nowhere to scan, and says so.
+    pub packages_dir: Option<String>,
     /// The companion config file (relative to home); `None` → the `prova.lua` default. See `Profile`.
     pub config: Option<String>,
     pub jobs: Option<usize>,
@@ -432,19 +440,19 @@ pub struct Resolved {
     pub env: BTreeMap<String, String>,
     /// Explicitly-declared suites (`[suites.*]`), run in addition to the discovered `proofs`.
     pub suites: BTreeMap<String, SuiteDecl>,
-    /// Declared plugins (`[plugins.*]`) — name → source, applied to every run.
-    pub plugins: BTreeMap<String, PluginSource>,
-    /// Registered source aliases (`[sources]`) for plugin shorthands.
+    /// Declared dependencies (`[dependencies]`) — name → source, applied to every run.
+    pub dependencies: BTreeMap<String, PackageSource>,
+    /// Registered source aliases (`[sources]`) for dependency shorthands.
     pub sources: BTreeMap<String, String>,
-    /// Named topologies (`[topologies]`) — name → the plugin factory it exposes.
+    /// Named topologies (`[topologies]`) — name → the package factory it exposes.
     pub topologies: BTreeMap<String, TopologyDecl>,
     /// LuaLS IDE-integration policy (`[luals]`).
     pub luals: Luals,
     /// Git-source update policy (`[updates]`), applied to every run.
     pub updates: UpdatesSection,
     /// Module names bound as unqualified ambient globals (`[globals] inject`) — bundled modules and/or
-    /// declared plugins. Package-level (not profile-overridable); absent → the default set. Validated
-    /// against the known-module registry + the resolved plugin set.
+    /// declared dependencies. Package-level (not profile-overridable); absent → the default set.
+    /// Validated against the known-module registry + the resolved dependency set.
     pub globals_inject: Vec<String>,
     /// Capabilities this run guarantees — the union of `[run] must_run` and the selected profile's.
     /// A guarantee is **additive**: a profile promises *more* than the package baseline, never less,
@@ -528,6 +536,83 @@ fn diagnose_unknown_key(err: &str) -> Option<String> {
     Some(format!("unknown key `{field}` — did you mean `{best}`?"))
 }
 
+/// One warning per deprecated spelling per process, on stderr. The serde `alias` attributes keep
+/// the old spellings PARSING for one release; this is what keeps them TEACHING. Everything here
+/// retires together at 1.0 with the other pre-1.0 spellings (`spec`, `--strict-specs`).
+///
+/// Runs against the generic TOML (same trick as the version gate), because serde aliases are
+/// silent by design — after a successful parse there is no way to know which spelling was used.
+/// Only the project's OWN manifest warns; a dependency's manifest is not the consumer's to fix.
+fn warn_deprecated_spellings(text: &str) {
+    fn warn_once(key: &'static str, msg: &str) {
+        use std::collections::BTreeSet;
+        use std::sync::{Mutex, OnceLock};
+        static WARNED: OnceLock<Mutex<BTreeSet<&'static str>>> = OnceLock::new();
+        let mut set = WARNED
+            .get_or_init(|| Mutex::new(BTreeSet::new()))
+            .lock()
+            .expect("deprecation-warning set");
+        if set.insert(key) {
+            eprintln!("prova: {msg}");
+        }
+    }
+
+    let Ok(value) = text.parse::<toml::Value>() else {
+        return; // unparseable text already failed phase two with a real diagnostic
+    };
+    if value.get("plugins").is_some() {
+        warn_once(
+            "plugins",
+            "`[plugins]` is deprecated — rename the table to `[dependencies]` (every dependency \
+             is a package; retires at 1.0)",
+        );
+    }
+    if value.get("plugin").is_some() {
+        warn_once(
+            "plugin",
+            "`[plugin]` is deprecated — rename the table to `[package]` (a package declares \
+             itself; retires at 1.0)",
+        );
+    }
+    let mut overlays: Vec<&toml::Value> = Vec::new();
+    overlays.extend(value.get("run"));
+    if let Some(table) = value.get("profiles").and_then(|p| p.as_table()) {
+        overlays.extend(table.values());
+    }
+    for overlay in &overlays {
+        if overlay.get("plugin_root").is_some() {
+            warn_once(
+                "plugin_root",
+                "`plugin_root` is deprecated — rename the key to `packages` (the directory of \
+                 this package's own packages; retires at 1.0)",
+            );
+        }
+    }
+    if overlays
+        .iter()
+        .skip(usize::from(value.get("run").is_some())) // profile tables only
+        .any(|p| p.get("plugins").is_some())
+    {
+        warn_once(
+            "profile-plugins",
+            "`[profiles.<name>.dependencies]` is deprecated — rename to \
+             `[profiles.<name>.dependencies]` (retires at 1.0)",
+        );
+    }
+    if let Some(topologies) = value.get("topologies").and_then(|t| t.as_table()) {
+        if topologies
+            .values()
+            .any(|decl| decl.get("plugin").is_some())
+        {
+            warn_once(
+                "topology-plugin",
+                "`plugin =` in a [topologies] entry is deprecated — rename the key to `package =` \
+                 (retires at 1.0)",
+            );
+        }
+    }
+}
+
 /// The version this binary reports, for the `[requires] prova` gate.
 fn running_version() -> semver::Version {
     semver::Version::parse(prova_core::VERSION)
@@ -609,13 +694,15 @@ fn check_version_gate(text: &str) -> Result<(), String> {
 impl Manifest {
     pub fn parse(text: &str) -> Result<Manifest, String> {
         check_version_gate(text)?;
-        toml::from_str(text).map_err(|e| {
+        let manifest: Manifest = toml::from_str(text).map_err(|e| {
             let raw = e.to_string();
             match diagnose_unknown_key(&raw) {
                 Some(hint) => format!("invalid prova.toml: {hint}\n\n{raw}"),
                 None => format!("invalid prova.toml: {raw}"),
             }
-        })
+        })?;
+        warn_deprecated_spellings(text);
+        Ok(manifest)
     }
 
     /// Overlay a profile on the base `[run]` profile. `None` uses the base as-is; `Some(name)` takes
@@ -639,11 +726,11 @@ impl Manifest {
             _ if !base.proofs.is_empty() => base.proofs.clone(),
             _ => Resolved::DEFAULT_PROOFS.iter().map(|s| s.to_string()).collect(),
         };
-        // A profile that names a root means "scan here instead" — it replaces, never adds, so
+        // A profile that names a directory means "scan here instead" — it replaces, never adds, so
         // selecting a profile can not widen resolution.
-        let plugin_root = overlay
-            .and_then(|p| p.plugin_root.clone())
-            .or_else(|| base.plugin_root.clone());
+        let packages_dir = overlay
+            .and_then(|p| p.packages.clone())
+            .or_else(|| base.packages.clone());
         let config = overlay
             .and_then(|p| p.config.clone())
             .or_else(|| base.config.clone());
@@ -672,13 +759,14 @@ impl Manifest {
             }
         }
 
-        // Project-wide `[plugins]` are the base; the selected profile's `[profiles.X.plugins]`
-        // overlay it (profile wins on a name conflict), so a CI profile can add capabilities without
-        // an out-of-band input and local `--profile ci` resolves identically.
-        let mut plugins = self.plugins.clone();
+        // Package-wide `[dependencies]` are the base; the selected profile's
+        // `[profiles.X.dependencies]` overlay it (profile wins on a name conflict), so a CI profile
+        // can add capabilities without an out-of-band input and local `--profile ci` resolves
+        // identically.
+        let mut dependencies = self.dependencies.clone();
         if let Some(p) = overlay {
-            for (k, v) in &p.plugins {
-                plugins.insert(k.clone(), v.clone());
+            for (k, v) in &p.dependencies {
+                dependencies.insert(k.clone(), v.clone());
             }
         }
 
@@ -693,40 +781,40 @@ impl Manifest {
             }
         }
 
-        // The reserved-name registry (api-freeze §2): a plugin bearing a bundled namespace name is
-        // a validation error, never a silent shadow — in either direction, so the check runs on the
-        // MERGED set (a profile cannot smuggle one in either).
-        for name in plugins.keys() {
+        // The reserved-name registry (api-freeze §2): a dependency bearing a bundled namespace name
+        // is a validation error, never a silent shadow — in either direction, so the check runs on
+        // the MERGED set (a profile cannot smuggle one in either).
+        for name in dependencies.keys() {
             if prova_core::RESERVED_NAMESPACES.contains(&name.as_str()) {
                 return Err(format!(
-                    "[plugins] {name}: `{name}` is a reserved prova namespace — a plugin cannot \
-                     shadow a bundled global; pick another name"
+                    "[dependencies] {name}: `{name}` is a reserved prova namespace — a package \
+                     cannot shadow a bundled global; pick another name"
                 ));
             }
         }
 
         // `[globals] inject` — the package-level list of unqualified ambient globals. Not
         // profile-overridable (the API surface a suite is written against does not vary by profile):
-        // absent → the default set; present → authoritative, even `inject = []`. Each entry must be an
-        // injectable bundled module or a declared plugin — anything else is a typo that would silently
-        // inject nothing. Validated against the MERGED plugin set so a profile plugin counts too.
+        // absent → the default set; present → authoritative, even `inject = []`. Each entry must be
+        // an injectable bundled module or a declared dependency — anything else is a typo that would
+        // silently inject nothing. Validated against the MERGED set so a profile dependency counts.
         let globals_inject = match &self.globals {
             Some(g) => g.inject.clone(),
             None => prova_core::default_inject(),
         };
         for name in &globals_inject {
-            if !prova_core::is_injectable_module(name) && !plugins.contains_key(name) {
+            if !prova_core::is_injectable_module(name) && !dependencies.contains_key(name) {
                 return Err(format!(
-                    "[globals] inject: `{name}` is neither a bundled module nor a declared plugin \
-                     (bundled modules are the reserved namespaces except `prova`/`Scope`; a plugin \
-                     must be declared in [plugins])"
+                    "[globals] inject: `{name}` is neither a bundled module nor a declared package \
+                     (bundled modules are the reserved namespaces except `prova`/`Scope`; a package \
+                     must be declared in [dependencies])"
                 ));
             }
         }
 
         Ok(Resolved {
             proofs,
-            plugin_root,
+            packages_dir,
             config,
             jobs,
             format,
@@ -737,7 +825,7 @@ impl Manifest {
             junit,
             env,
             suites: self.suites.clone(),
-            plugins,
+            dependencies,
             sources: self.sources.clone(),
             topologies: self.topologies.clone(),
             luals: self.luals.clone(),
@@ -786,7 +874,7 @@ proofs = ["tests/smoke"]
             r,
             Resolved {
                 proofs: vec!["tests".into()],
-                plugin_root: None,
+                packages_dir: None,
                 config: None,
                 jobs: Some(4),
                 format: Some("console".into()),
@@ -797,7 +885,7 @@ proofs = ["tests/smoke"]
                 junit: None,
                 env: env(&[("LOG", "info")]),
                 suites: BTreeMap::new(),
-                plugins: BTreeMap::new(),
+                dependencies: BTreeMap::new(),
                 sources: BTreeMap::new(),
                 topologies: BTreeMap::new(),
                 luals: Luals::default(),
@@ -843,29 +931,29 @@ nats     = { git = "https://example.com/acme/prova-nats", rev = "abc123", module
         )
         .unwrap();
         let r = m.resolve(None).unwrap();
-        assert_eq!(r.plugins.len(), 4);
+        assert_eq!(r.dependencies.len(), 4);
         assert_eq!(
-            r.plugins["greet"],
-            PluginSource::Path("./plugins/greet.lua".into())
+            r.dependencies["greet"],
+            PackageSource::Path("./plugins/greet.lua".into())
         );
         assert_eq!(
-            r.plugins["fixtures"],
-            PluginSource::Detailed(PluginDetail {
+            r.dependencies["fixtures"],
+            PackageSource::Detailed(PackageDetail {
                 path: Some("./test-support".into()),
                 ..Default::default()
             })
         );
         assert_eq!(
-            r.plugins["rabbitmq"],
-            PluginSource::Detailed(PluginDetail {
+            r.dependencies["rabbitmq"],
+            PackageSource::Detailed(PackageDetail {
                 git: Some("https://example.com/acme/prova-rabbitmq".into()),
                 tag: Some("v1.0.0".into()),
                 ..Default::default()
             })
         );
         assert_eq!(
-            r.plugins["nats"],
-            PluginSource::Detailed(PluginDetail {
+            r.dependencies["nats"],
+            PackageSource::Detailed(PackageDetail {
                 git: Some("https://example.com/acme/prova-nats".into()),
                 rev: Some("abc123".into()),
                 module: Some("src/nats.lua".into()),
@@ -920,8 +1008,8 @@ redis = "acme:prova-redis@v1"
         assert_eq!(r.sources["acme"], "github:acme");
         assert_eq!(r.sources["mirror"], "https://git.acme.io/plugins");
         assert_eq!(
-            r.plugins["redis"],
-            PluginSource::Path("acme:prova-redis@v1".into())
+            r.dependencies["redis"],
+            PackageSource::Path("acme:prova-redis@v1".into())
         );
     }
 
@@ -957,7 +1045,7 @@ redis = "acme:prova-redis@v1"
         .unwrap();
         let t = &m.resolve(None).unwrap().topologies;
         assert_eq!(t.len(), 1);
-        assert_eq!(t["vm"].plugin, "parallels");
+        assert_eq!(t["vm"].package, "parallels");
         assert_eq!(t["vm"].factory.as_deref(), Some("topologies.linux_vm"));
         assert_eq!(t["vm"].topology, None);
     }
@@ -985,22 +1073,22 @@ proofs = ["proofs/smoke"]
         .unwrap();
 
         assert_eq!(
-            m.resolve(None).unwrap().plugin_root.as_deref(),
+            m.resolve(None).unwrap().packages_dir.as_deref(),
             Some(".prova/plugins")
         );
         // Replaced, not added to.
         assert_eq!(
-            m.resolve(Some("vendored")).unwrap().plugin_root.as_deref(),
+            m.resolve(Some("vendored")).unwrap().packages_dir.as_deref(),
             Some("vendor/plugins")
         );
         // A profile silent about the root inherits the package's.
         assert_eq!(
-            m.resolve(Some("smoke")).unwrap().plugin_root.as_deref(),
+            m.resolve(Some("smoke")).unwrap().packages_dir.as_deref(),
             Some(".prova/plugins")
         );
         // No `plugin_root` anywhere means nothing is scanned — no built-in fallback.
         let bare = Manifest::parse("[run]\nproofs = [\"proofs\"]\n").unwrap();
-        assert!(bare.resolve(None).unwrap().plugin_root.is_none());
+        assert!(bare.resolve(None).unwrap().packages_dir.is_none());
     }
 
     #[test]
@@ -1014,7 +1102,7 @@ proofs = ["tests"]
 redis = "./plugins/redis.lua"
 
 [profiles.ci]
-[profiles.ci.plugins]
+[profiles.ci.dependencies]
 kafka = { git = "https://example.com/acme/prova-kafka", tag = "v1" }
 redis = "./plugins/redis-ci.lua"
 "#,
@@ -1023,26 +1111,26 @@ redis = "./plugins/redis-ci.lua"
 
         // Base run: only the package-wide plugin.
         let base = m.resolve(None).unwrap();
-        assert_eq!(base.plugins.len(), 1);
+        assert_eq!(base.dependencies.len(), 1);
         assert_eq!(
-            base.plugins["redis"],
-            PluginSource::Path("./plugins/redis.lua".into())
+            base.dependencies["redis"],
+            PackageSource::Path("./plugins/redis.lua".into())
         );
 
         // CI profile: adds kafka, and its redis entry wins over the package-wide one.
         let ci = m.resolve(Some("ci")).unwrap();
-        assert_eq!(ci.plugins.len(), 2);
+        assert_eq!(ci.dependencies.len(), 2);
         assert_eq!(
-            ci.plugins["kafka"],
-            PluginSource::Detailed(PluginDetail {
+            ci.dependencies["kafka"],
+            PackageSource::Detailed(PackageDetail {
                 git: Some("https://example.com/acme/prova-kafka".into()),
                 tag: Some("v1".into()),
                 ..Default::default()
             })
         );
         assert_eq!(
-            ci.plugins["redis"],
-            PluginSource::Path("./plugins/redis-ci.lua".into())
+            ci.dependencies["redis"],
+            PackageSource::Path("./plugins/redis-ci.lua".into())
         );
     }
 

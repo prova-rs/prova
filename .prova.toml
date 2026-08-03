@@ -2,14 +2,14 @@
 [run]
 proofs       = ["proofs"]            # dir-name pattern: every `proofs/` below the root (the default)
 config       = ".prova/config.lua"    # the runtime companion, tucked into the .prova/ nook
-plugin_root  = ".prova/plugins"      # this project's own plugins (root-relative). No default,
-                                     # and exactly one: anything from elsewhere gets a name and a
-                                     # pinned source in [plugins] instead.
+packages     = ".prova/packages"     # this project's own local packages (root-relative). No
+                                     # default, and exactly one: anything from elsewhere gets a
+                                     # name and a pinned source in [dependencies] instead.
 
-# The `parallels` plugin now lives in its own repo, consumed here as a pinned git source — exactly as
-# any package would, which is the whole point of the extraction. It was incubated in-tree under
-# .prova/plugins/parallels; that copy is retired. Pinned to the released `v1` tag.
-[plugins]
+# The `parallels` package now lives in its own repo, consumed here as a pinned git source — exactly
+# as any package would, which is the whole point of the extraction. It was incubated in-tree under
+# .prova/packages/parallels; that copy is retired. Pinned to the released `v1` tag.
+[dependencies]
 parallels = { git = "https://github.com/prova-rs/prova-parallels", tag = "v1" }
 
 # Prova's own claims. The point of declaring this is not bookkeeping — it is that prova must be
@@ -27,10 +27,10 @@ docs = ["docs/design"]
 [luals]
 manage = "never"
 
-# Topologies this project exposes by name (`prova up <name>`). `vm` comes from the `parallels` plugin's
-# advertisement; its `requires = ["prlctl"]` gates the stand-up, so on a machine without Parallels
-# Desktop `prova up vm` skips cleanly instead of failing. `options` is handed to the factory
-# (`vm(ctx, { image = … })`) — the base template it linked-clones. Set `image` to a template that
-# exists in your Parallels library.
+# Topologies this project exposes by name (`prova up <name>`). `vm` comes from the `parallels`
+# package's advertisement; its `requires = ["prlctl"]` gates the stand-up, so on a machine without
+# Parallels Desktop `prova up vm` skips cleanly instead of failing. `options` is handed to the
+# factory (`vm(ctx, { image = … })`) — the base template it linked-clones. Set `image` to a
+# template that exists in your Parallels library.
 [topologies]
-vm = { plugin = "parallels", topology = "vm", options = { image = "ubuntu-24.04" } }
+vm = { package = "parallels", topology = "vm", options = { image = "ubuntu-24.04" } }

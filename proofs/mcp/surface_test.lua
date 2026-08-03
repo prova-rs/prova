@@ -51,11 +51,11 @@ local function registered(root)
 [run]
 proofs = ["proofs"]
 
-[plugins]
+[dependencies]
 kitchen = "plugins/kitchen.lua"
 
 [topologies]
-orders = { plugin = "kitchen", factory = "orders" }
+orders = { package = "kitchen", factory = "orders" }
 ]])
   fs.write(root .. "/plugins/kitchen.lua", [[
 local M = {}

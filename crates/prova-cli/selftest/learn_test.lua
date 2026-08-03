@@ -65,7 +65,7 @@ prova.group("prova learn", function(g)
   g:test("the full taxonomy is served, one screen each", function(t)
     local listing = learn("")
     for _, topic in ipairs({ "pdd", "promises", "project", "init", "authoring", "fixtures", "doubles",
-                             "proxies", "drivers", "topologies", "plugins", "plugin-authoring",
+                             "proxies", "drivers", "topologies", "packages", "package-authoring",
                              "running", "mcp" }) do
       t:expect(listing.stdout, "listed: " .. topic):contains(topic)
       local r = learn(topic)

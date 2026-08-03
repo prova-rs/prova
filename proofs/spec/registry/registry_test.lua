@@ -106,7 +106,7 @@ end)
 -- does NOT contain.
 local function plugins(sb, args, opts)
   opts = opts or {}
-  return shell.run(prova.bin .. " plugins " .. args, {
+  return shell.run(prova.bin .. " packages " .. args, {
     cwd = opts.cwd or sb.root,
     env = sb.env(opts.config),
     merge_stderr = opts.merge,
@@ -123,7 +123,7 @@ end
 
 -- ── list & search ────────────────────────────────────────────────────────────────────────────
 
-prova.test("`prova plugins` lists entries from config-listed path registries", function(t)
+prova.test("`prova packages` lists entries from config-listed path registries", function(t)
   local sb = t:use(sandbox)
   -- cwd is the manifest-less sandbox root on purpose: discovery must work before a package
   -- exists, exactly like `prova init --list`.
@@ -221,7 +221,7 @@ end)
 
 -- ── add: search-to-pinned in one motion ──────────────────────────────────────────────────────
 
-prova.test("add writes a pinned [plugins] entry using the recommended pin",
+prova.test("add writes a pinned [dependencies] entry using the recommended pin",
   { covers = "docs/design/registry.md#add-materializes-a-pin" }, function(t)
   local sb = t:use(sandbox)
   local proj = project(sb, "add-latest")
@@ -273,7 +273,7 @@ end)
 prova.test("a registry-known name never resolves via require until the manifest declares it",
   { covers = "docs/design/registry.md#registry-is-discovery-only" }, function(t)
   local sb = t:use(sandbox)
-  -- `dupe` exists in the configured registries but not in this package's [plugins]; the
+  -- `dupe` exists in the configured registries but not in this package's [dependencies]; the
   -- searcher must not consult the registry (require's no-network safety boundary).
   local proj = project(sb, "discovery-only")
   -- prova.bin, not bare `prova`: this call replaces the environment via sb.env(), so PATH is not

@@ -1,6 +1,6 @@
 //! The git forms of `prova up`: point at a repo that advertises topologies. `prova up <url>` lists
 //! what it offers; `prova up <topology> <url>` stands that one up. The repo is fetched (pinned) the
-//! same way a git `[plugins]` source is. Hermetic: a local git repo served over a `file://` URL.
+//! same way a git `[dependencies]` source is. Hermetic: a local git repo served over a `file://` URL.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -28,8 +28,8 @@ fn remote_topology_plugin(tag: &str, requires: &str) -> (PathBuf, String) {
     std::fs::write(
         remote.join("prova.toml"),
         format!(
-            "[plugin]\nname = \"parallels\"\n\n\
-             [[plugin.topologies]]\nname = \"linux-vm\"\nfactory = \"linux_vm\"\n{requires}"
+            "[package]\nname = \"parallels\"\n\n\
+             [[package.topologies]]\nname = \"linux-vm\"\nfactory = \"linux_vm\"\n{requires}"
         ),
     )
     .unwrap();

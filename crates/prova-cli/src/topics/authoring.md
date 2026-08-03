@@ -1,9 +1,9 @@
 # authoring — the proof DSL, one screen
 
-Files match `*_test.lua` (or `*.test.lua`). Everything is a global — no imports except plugins via `require`.
+Files match `*_test.lua` (or `*.test.lua`). Everything is a global — no imports except packages via `require`.
 
 ```lua
-local postgres = require("postgres")            -- declared in prova.toml [plugins]
+local postgres = require("postgres")            -- declared in prova.toml [dependencies]
 
 local db = prova.fixture("db", Scope.File, function(ctx)
   return postgres.container(ctx)                -- teardown rides the scope, LIFO, guaranteed

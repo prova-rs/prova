@@ -36,7 +36,7 @@ struct PackageState {
     /// The package root, relative to the cwd (`.` when they coincide).
     package_root: String,
     /// The manifest's `[run] plugin_root`, verbatim (package-root relative), when declared.
-    plugin_root: Option<String>,
+    packages_dir: Option<String>,
 }
 
 /// Discover the enclosing package, if any, walking up from the cwd exactly like `prova` itself.
@@ -59,12 +59,12 @@ fn package_state() -> Option<PackageState> {
         }
         Err(_) => home.dir.display().to_string(), // unrelated roots (symlinks) — absolute is still true
     };
-    let plugin_root = match std::fs::read_to_string(&home.manifest)
+    let packages_dir = match std::fs::read_to_string(&home.manifest)
         .map_err(|e| e.to_string())
         .and_then(|text| crate::manifest::Manifest::parse(&text))
         .and_then(|m| m.resolve(None))
     {
-        Ok(resolved) => resolved.plugin_root,
+        Ok(resolved) => resolved.packages_dir,
         Err(err) => {
             eprintln!(
                 "prova init: note — could not read {}: {err} (rendering without `prova_plugin_root`)",
@@ -75,7 +75,7 @@ fn package_state() -> Option<PackageState> {
     };
     Some(PackageState {
         package_root,
-        plugin_root,
+        packages_dir,
     })
 }
 
@@ -230,7 +230,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
     let mut merged: BTreeMap<String, String> = BTreeMap::new();
     if let Some(state) = &state {
         merged.insert("prova_package_root".to_string(), state.package_root.clone());
-        if let Some(plugin_root) = &state.plugin_root {
+        if let Some(plugin_root) = &state.packages_dir {
             merged.insert("prova_plugin_root".to_string(), plugin_root.clone());
         }
     }

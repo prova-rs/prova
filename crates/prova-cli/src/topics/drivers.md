@@ -11,7 +11,7 @@ filesystem. Green must mean "a real caller would succeed."
 | gRPC | `grpc` | `grpc.client(addr)` → `:call(method, req)`, `:call_status` (needs server reflection) · `grpc.wait_for` |
 | GraphQL | `graphql` | `graphql.client{ url }` → `:query`, `:execute` |
 | CLI / processes | `shell` | `shell.run(cmd_or_argv, { cwd, env, timeout, check })` → `{ code, stdout, stderr }` · `shell.spawn` for long-running |
-| SQL state (cross-check) | `sqlite.client(url)`, or the resource plugin's `client` (postgres/mysql…) | assert effects WHERE THEY LAND |
+| SQL state (cross-check) | `sqlite.client(url)`, or the resource package's `client` (postgres/mysql…) | assert effects WHERE THEY LAND |
 | Files / rendered trees | `fs` | `read write exists glob tempdir remove_all` · snapshot the tree |
 | Containers (exec inside) | `docker` | `container:run(argv)`, `:exec`, `:logs` |
 
@@ -32,4 +32,4 @@ filesystem. Green must mean "a real caller would succeed."
 - `http`/`grpc` responses are userdata, not tables — use `:json()` and fields, don't iterate.
   When a shape surprises you: `prova.help("HttpResponse")` or probe with `eval`.
 - A protocol prova doesn't speak natively: drive the official CLI via `shell.run` argv, or
-  wrap the SDK in a plugin (`prova learn plugin-authoring`).
+  wrap the SDK in a package (`prova learn package-authoring`).

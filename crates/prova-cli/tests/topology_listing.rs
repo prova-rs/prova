@@ -41,12 +41,12 @@ fn up_with_no_arg_lists_defined_topologies() {
         &dir,
         ".prova.toml",
         "[run]\nproofs = [\".\"]\n\
-         [plugins]\nfixture = { path = \"./fixture\" }\n\
+         [dependencies]\nfixture = { path = \"./fixture\" }\n\
          [topologies]\n\
          web = { plugin = \"fixture\", factory = \"web\" }\n\
          db = { plugin = \"fixture\", factory = \"db\" }\n",
     );
-    write(&dir, "fixture/prova.toml", "[plugin]\nname = \"fixture\"\n");
+    write(&dir, "fixture/prova.toml", "[package]\nname = \"fixture\"\n");
     write(
         &dir,
         "fixture/init.lua",

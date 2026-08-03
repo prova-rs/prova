@@ -27,13 +27,13 @@ A topology has exactly two consumers, and each enters differently:
 
 So `prova.topology("orders", ...)` sitting in a test file is *not* visible to `prova up orders` —
 declaring a fixture inside a test file means it belongs to that test, not that it is a shared
-environment. To get both verbs, export the factory from a plugin and register it; a test then
+environment. To get both verbs, export the factory from a package and register it; a test then
 builds that same factory as its fixture:
 
 ```toml
 [topologies]
-orders = { plugin = "kitchen", topology = "orders" }
-vm     = { plugin = "parallels", topology = "vm", options = { image = "ubuntu-24.04" } }
+orders = { package = "kitchen", topology = "orders" }
+vm     = { package = "parallels", topology = "vm", options = { image = "ubuntu-24.04" } }
 ```
 
 ```lua
@@ -42,7 +42,7 @@ local orders = prova.topology("orders", require("kitchen").orders)   -- the same
 
 One definition, addressed twice — they cannot drift, and registering does not collide with
 declaring. `options` is passed as the factory's second argument. A topology registered this way
-also inherits the `requires` its plugin advertises, so it gates on the environment it needs.
+also inherits the `requires` its package advertises, so it gates on the environment it needs.
 
 ## The verbs over the same definition
 

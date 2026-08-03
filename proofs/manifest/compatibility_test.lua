@@ -72,10 +72,10 @@ prova.test("one file, one answer: a plugin's requires.prova means the same to bo
   -- by the package gate and once by the plugin resolver. They disagreed: an out-of-range caret
   -- passed the plugin's own CI and was rejected by every consumer of it. Same verdict now, and
   -- this fails if either reader drifts.
-  local dir = t:use(package_with)('[plugin]\nname = "p"\nentry = "p.lua"\n\n[requires]\nprova = "^0.5"\n\n[run]\nproofs = ["proofs"]\n')
+  local dir = t:use(package_with)('[package]\nname = "p"\nentry = "p.lua"\n\n[requires]\nprova = "^0.5"\n\n[run]\nproofs = ["proofs"]\n')
   fs.write(dir .. "/p.lua", 'return { hello = function() return "hi" end }\n')
 
-  local consumer = t:use(package_with)('[run]\nproofs = ["proofs"]\n\n[plugins]\np = "' .. dir .. '"\n')
+  local consumer = t:use(package_with)('[run]\nproofs = ["proofs"]\n\n[dependencies]\np = "' .. dir .. '"\n')
   fs.write(consumer .. "/proofs/use_test.lua",
     'local p = require("p")\nprova.test("uses it", function(t) t:expect(p.hello()):equals("hi") end)\n')
 

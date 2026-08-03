@@ -5138,8 +5138,8 @@ fn exec_topology_registrations(lua: &Lua, config: &RunConfig) -> mlua::Result<()
     for r in &config.topology_registrations {
         if !is_alias(&r.alias) || !is_ident_path(&r.plugin) || !is_ident_path(&r.factory) {
             return Err(mlua::Error::RuntimeError(format!(
-                "invalid [topologies] entry {:?}: name must be [A-Za-z0-9_-]+, and plugin/factory \
-                 dotted identifier paths (got plugin={:?}, factory={:?})",
+                "invalid [topologies] entry {:?}: name must be [A-Za-z0-9_-]+, and package/factory \
+                 dotted identifier paths (got package={:?}, factory={:?})",
                 r.alias, r.plugin, r.factory
             )));
         }
@@ -5787,7 +5787,7 @@ pub fn inspect_plugin(path: &Path, config: &RunConfig) -> mlua::Result<PluginRep
     let mut report = PluginReport::default();
     let Value::Table(ns) = value else {
         report.issues.push(format!(
-            "plugin must `return` a namespace table, but returned a {}",
+            "the package must `return` a namespace table, but returned a {}",
             value.type_name()
         ));
         return Ok(report);

@@ -97,8 +97,8 @@ fn an_advertised_requirement_gates_up() {
         &dir,
         "pg/prova.toml",
         &format!(
-            "[plugin]\nname = \"pg\"\n\n\
-             [[plugin.topologies]]\nname = \"single\"\nfactory = \"single\"\nrequires = [\"{MISSING}\"]\n"
+            "[package]\nname = \"pg\"\n\n\
+             [[package.topologies]]\nname = \"single\"\nfactory = \"single\"\nrequires = [\"{MISSING}\"]\n"
         ),
     );
     write(
@@ -114,7 +114,7 @@ fn an_advertised_requirement_gates_up() {
     write(
         &dir,
         ".prova.toml",
-        "[run]\nproofs = [\"proofs\"]\n\n[plugins]\npg = { path = \"pg\" }\n\n\
+        "[run]\nproofs = [\"proofs\"]\n\n[dependencies]\npg = { path = \"pg\" }\n\n\
          [topologies]\ndb = { plugin = \"pg\", topology = \"single\" }\n",
     );
     let (ok, out) = up(&dir, "db");

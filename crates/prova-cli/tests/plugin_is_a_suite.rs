@@ -1,4 +1,4 @@
-//! The manifests are one: a single `prova.toml` can be BOTH a requireable plugin (`[plugin]`) and a
+//! The manifests are one: a single `prova.toml` can be BOTH a requireable plugin (`[package]`) and a
 //! runnable test suite (`[run]`). There is no `prova-plugin.toml` — a plugin is a project, and a
 //! project can publish itself as a plugin. This is the executable form of "no difference between a
 //! plugin and a test suite": the topology a plugin ships is proven by the suite in the same manifest.
@@ -31,12 +31,12 @@ fn run(cwd: &Path) -> (bool, String) {
 }
 
 // `mylib` — ONE `prova.toml`, two faces. Its entry is a NON-conventional path (`src/mylib.lua`), so a
-// consumer can only resolve it if the searcher read `[plugin] entry` from `prova.toml` — the merge.
+// consumer can only resolve it if the searcher read `[package] entry` from `prova.toml` — the merge.
 fn build_mylib(base: &Path) {
     write(
         base,
         "mylib/prova.toml",
-        "[plugin]\nname = \"mylib\"\nentry = \"src/mylib.lua\"\n\n[run]\nproofs = [\"proofs\"]\n",
+        "[package]\nname = \"mylib\"\nentry = \"src/mylib.lua\"\n\n[run]\nproofs = [\"proofs\"]\n",
     );
     write(base, "mylib/src/mylib.lua", "return { answer = 42 }\n");
     write(
@@ -55,7 +55,7 @@ fn one_manifest_is_both_a_requireable_plugin_and_a_runnable_suite() {
     let base = tmp("both");
     build_mylib(&base);
 
-    // (a) The suite face: `prova` in mylib/ runs its own proofs — the `[plugin]` section doesn't
+    // (a) The suite face: `prova` in mylib/ runs its own proofs — the `[package]` section doesn't
     // interfere with being a runnable project.
     let (ok, out) = run(&base.join("mylib"));
     assert!(
@@ -64,11 +64,11 @@ fn one_manifest_is_both_a_requireable_plugin_and_a_runnable_suite() {
     );
 
     // (b) The plugin face: a consumer declares mylib and require()s it. Resolving the non-conventional
-    // `src/mylib.lua` proves the searcher read `prova.toml [plugin] entry`.
+    // `src/mylib.lua` proves the searcher read `prova.toml [package] entry`.
     write(
         &base,
         "app/prova.toml",
-        "[run]\nproofs = [\"proofs\"]\n\n[plugins]\nmylib = { path = \"../mylib\" }\n",
+        "[run]\nproofs = [\"proofs\"]\n\n[dependencies]\nmylib = { path = \"../mylib\" }\n",
     );
     write(
         &base,
@@ -78,6 +78,6 @@ fn one_manifest_is_both_a_requireable_plugin_and_a_runnable_suite() {
     let (ok, out) = run(&base.join("app"));
     assert!(
         ok && out.contains("\"passed\":1"),
-        "consumer require(mylib) resolves via prova.toml [plugin]: {out}"
+        "consumer require(mylib) resolves via prova.toml [package]: {out}"
     );
 }

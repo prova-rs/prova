@@ -51,7 +51,7 @@ const FLAT_MANIFEST: &str = "\
 [run]
 proofs = [\"proofs\"]
 config = \"config.lua\"
-plugin_root = \"plugins\"
+packages = \"plugins\"
 ";
 // Nested: the manifest and prova's files tuck into `.prova/`; the three keys point INTO the nook, all
 // relative to the ROOT. `proofs/` stays at the root, in the open.
@@ -59,7 +59,7 @@ const NESTED_MANIFEST: &str = "\
 [run]
 proofs = [\"proofs\"]
 config = \".prova/config.lua\"
-plugin_root = \".prova/plugins\"
+packages = \".prova/plugins\"
 ";
 
 fn install_flat(root: &Path) {

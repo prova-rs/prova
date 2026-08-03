@@ -22,7 +22,7 @@ observe-and-override. See `prova learn doubles` for the grammar.
 
 | You want | Do this now |
 |---|---|
-| Latency/fault injection on raw TCP | run toxiproxy as a resource (`docker.run` or a plugin) and point the SUT at it |
+| Latency/fault injection on raw TCP | run toxiproxy as a resource (`docker.run` or a package) and point the SUT at it |
 | Observe traffic you can't route through a mock | drive the dependency's own logging/metrics, or capture at the SUT's boundary instead |
 | An in-cluster shim on a container alias | not available — restructure the wiring so the SUT takes an injected URL (it should anyway) |
 

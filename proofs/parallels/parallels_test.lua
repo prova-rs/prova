@@ -1,4 +1,4 @@
--- Proves this project consumes the EXTERNAL `parallels` plugin — pinned in .prova.toml [plugins] as a
+-- Proves this project consumes the EXTERNAL `parallels` plugin — pinned in .prova.toml [dependencies] as a
 -- git source (prova-rs/prova-parallels), fetched into the cache, and `require`d here exactly as any
 -- consumer would. The plugin carries its own self-test; this is the consumer's end of the extraction:
 -- the git-sourced plugin loads, advertises `vm`, and gates on `prlctl`. The live VM provisioning is

@@ -1,4 +1,4 @@
-//! End-to-end proofs that a `[plugins]` git source honors the shared two-gate freshness check,
+//! End-to-end proofs that a `[dependencies]` git source honors the shared two-gate freshness check,
 //! driven through the real `prova` binary against a local git remote.
 //!
 //! The observable signals are (a) prova's exit status — a plugin whose returned value changed makes
@@ -54,7 +54,7 @@ fn write_project(project: &Path, remote: &Path, expect: &str, updates_toml: &str
     std::fs::write(
         project.join("prova.toml"),
         format!(
-            "[run]\nproofs = [\"tests\"]\n\n[plugins]\ngreet = {{ git = \"{}\" }}\n{updates_toml}",
+            "[run]\nproofs = [\"tests\"]\n\n[dependencies]\ngreet = {{ git = \"{}\" }}\n{updates_toml}",
             remote.to_string_lossy().replace('\\', "/"),
         ),
     )
@@ -258,7 +258,7 @@ fn moved_tag_pin_is_followed_past_ttl() {
         project.join("prova.toml"),
         format!(
             "[run]\nproofs = [\"tests\"]\n\n[updates]\ninterval = \"0s\"\n\n\
-             [plugins]\ngreet = {{ git = \"{}\", tag = \"v1\" }}\n",
+             [dependencies]\ngreet = {{ git = \"{}\", tag = \"v1\" }}\n",
             remote.to_string_lossy().replace('\\', "/"),
         ),
     )

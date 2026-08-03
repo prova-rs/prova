@@ -54,7 +54,7 @@ fn a_registered_plugin_topology_is_listed() {
         ".prova.toml",
         "[run]\n\
          proofs = [\"proofs\"]\n\
-         plugin_root = \".prova/plugins\"\n\
+         packages = \".prova/plugins\"\n\
          \n\
          [topologies]\n\
          homepage = { plugin = \"site\", factory = \"web\" }\n",
@@ -82,7 +82,7 @@ fn a_registered_plugin_topology_is_listed() {
     );
 }
 
-/// A plugin ADVERTISES its topologies (`[[plugin.topologies]]`), and a project references one by its
+/// A plugin ADVERTISES its topologies (`[[package.topologies]]`), and a project references one by its
 /// public NAME (`topology = "..."`) rather than reaching into the namespace with a `factory` path.
 /// The advertisement is the plugin author's contract: the factory path is an internal detail resolved
 /// from it. RED today: `[topologies]` only understands the direct `factory` form.
@@ -93,8 +93,8 @@ fn an_advertised_topology_is_referenced_by_name() {
     write(
         &dir,
         "pg/prova.toml",
-        "[plugin]\nname = \"pg\"\n\n\
-         [[plugin.topologies]]\nname = \"single\"\nfactory = \"topologies.single\"\n",
+        "[package]\nname = \"pg\"\n\n\
+         [[package.topologies]]\nname = \"single\"\nfactory = \"topologies.single\"\n",
     );
     write(
         &dir,
@@ -110,7 +110,7 @@ fn an_advertised_topology_is_referenced_by_name() {
         &dir,
         ".prova.toml",
         "[run]\nproofs = [\"proofs\"]\n\n\
-         [plugins]\npg = { path = \"pg\" }\n\n\
+         [dependencies]\npg = { path = \"pg\" }\n\n\
          [topologies]\ndb = { plugin = \"pg\", topology = \"single\" }\n",
     );
 
@@ -130,8 +130,8 @@ fn an_unadvertised_topology_name_fails_clearly() {
     write(
         &dir,
         "pg/prova.toml",
-        "[plugin]\nname = \"pg\"\n\n\
-         [[plugin.topologies]]\nname = \"single\"\nfactory = \"topologies.single\"\n",
+        "[package]\nname = \"pg\"\n\n\
+         [[package.topologies]]\nname = \"single\"\nfactory = \"topologies.single\"\n",
     );
     write(
         &dir,
@@ -146,7 +146,7 @@ fn an_unadvertised_topology_name_fails_clearly() {
     write(
         &dir,
         ".prova.toml",
-        "[run]\nproofs = [\"proofs\"]\n\n[plugins]\npg = { path = \"pg\" }\n\n\
+        "[run]\nproofs = [\"proofs\"]\n\n[dependencies]\npg = { path = \"pg\" }\n\n\
          [topologies]\ncluster = { plugin = \"pg\", topology = \"replicated\" }\n",
     );
     let (ok, out) = up_no_arg(&dir);

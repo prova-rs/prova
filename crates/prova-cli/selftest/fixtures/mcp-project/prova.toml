@@ -1,5 +1,5 @@
 [run]
 proofs = ["tests"]
 
-[plugins]
+[dependencies]
 greet = { path = "./greet" }
