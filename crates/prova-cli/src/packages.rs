@@ -78,8 +78,8 @@ struct PackageManifest {
     #[serde(default, alias = "plugin")]
     package: PackageMeta,
     #[serde(default)]
-    requires: PluginRequires,
-    /// The plugin's OWN dependencies, resolved transitively (see `resolve_plugins`).
+    requires: PackageRequires,
+    /// The plugin's OWN dependencies, resolved transitively (see `resolve_packages`).
     ///
     /// Ignoring these was a real gap: a plugin that composes others — the whole point of publishing
     /// a topology — could not be consumed without its consumer re-declaring every internal it
@@ -117,7 +117,7 @@ pub struct AdvertisedTopology {
 }
 
 #[derive(Debug, Deserialize, Default)]
-struct PluginRequires {
+struct PackageRequires {
     /// The range of prova versions this plugin is compatible with (semver `VersionReq`, e.g. `^0.1`).
     prova: Option<String>,
 }
@@ -126,7 +126,7 @@ struct PluginRequires {
 /// register its namespace. `base_dir` is the manifest's directory (local paths resolve relative to
 /// it); `sources` are the `[sources]` aliases; `prova_version` is the running version, checked
 /// against each plugin's `requires.prova`. Errors name the plugin that failed.
-pub fn resolve_plugins(
+pub fn resolve_packages(
     plugins: &BTreeMap<String, PackageSource>,
     base_dir: &Path,
     layout: &dyn SystemLayout,
@@ -255,7 +255,7 @@ fn advertised(
     let advertised: Vec<AdvertisedTopology> = if let Some(adv) = plugins.advertised.get(plugin) {
         adv.clone()
     } else if let Some(root) = &plugins.search_root {
-        read_plugin_manifest(&root.join(plugin))
+        read_package_manifest(&root.join(plugin))
             .map_err(|e| format!("plugin {plugin:?}: {e}"))?
             .map(|m| m.package.topologies)
             .unwrap_or_default()
@@ -317,7 +317,7 @@ pub fn fetch_topology_source(
     let mut one = BTreeMap::new();
     one.insert(require_name.clone(), PackageSource::Path(url.to_string()));
     // base_dir is irrelevant for a git source (only local `path` sources use it).
-    let plugins = resolve_plugins(
+    let plugins = resolve_packages(
         &one,
         Path::new("."),
         layout,
@@ -519,7 +519,7 @@ fn resolve_one(
     };
     let manifest = manifest_dir
         .as_deref()
-        .map(read_plugin_manifest)
+        .map(read_package_manifest)
         .transpose()?
         .flatten();
 
@@ -566,7 +566,7 @@ fn resolve_one(
 /// own `require("<canonical>.<sub>")` siblings resolve during lint. `None` if the file has no parent.
 pub fn namespace_for_file(file: &Path) -> Option<(String, PathBuf)> {
     let dir = file.parent()?;
-    let canonical = read_plugin_manifest(dir)
+    let canonical = read_package_manifest(dir)
         .ok()
         .flatten()
         .and_then(|m| m.package.name)
@@ -579,7 +579,7 @@ pub fn namespace_for_file(file: &Path) -> Option<(String, PathBuf)> {
 }
 
 /// Read a `dir/prova.toml`'s plugin view if present. `Ok(None)` when absent; `Err` on malformed TOML.
-fn read_plugin_manifest(dir: &Path) -> Result<Option<PackageManifest>, String> {
+fn read_package_manifest(dir: &Path) -> Result<Option<PackageManifest>, String> {
     // A plugin's manifest IS a `prova.toml` — the same file a project uses. It reads the `[plugin]`
     // (and `[requires]`) sections and ignores the rest (`[run]`, `[plugins]`, …), so one manifest can
     // be a plugin, a suite, or both. There is no separate `prova-plugin.toml`.
@@ -693,7 +693,7 @@ pub(crate) fn fetch_git(
         _ => (RefPin::Mutable, None),
     };
     // The crate owns the `sources/`+`trees/` layout under this root and returns the immutable tree.
-    let cache_root = layout.plugin_cache_dir();
+    let cache_root = layout.package_cache_dir();
     let cache_root = Utf8PathBuf::from_path_buf(cache_root.clone())
         .map_err(|_| format!("plugin cache path is not UTF-8: {}", cache_root.display()))?;
 
@@ -718,8 +718,8 @@ pub(crate) fn fetch_git(
 /// Quietly reap plugin source trees unused past `retention`, at most ~once/day (a `.last-prune` stamp
 /// in the plugin cache throttles it). Safe to call every run: the run's own trees are leased and so
 /// skipped. Best-effort — failures are ignored (pruning is housekeeping, not correctness).
-pub fn prune_plugin_cache(layout: &dyn SystemLayout, retention: Duration) {
-    let cache_root = layout.plugin_cache_dir();
+pub fn prune_package_cache(layout: &dyn SystemLayout, retention: Duration) {
+    let cache_root = layout.package_cache_dir();
     if !cache_root.exists() {
         return;
     }
@@ -752,7 +752,7 @@ mod tests {
         plugins.insert("greet".to_string(), PackageSource::Path("greet.lua".into()));
         let layout = RootedSystemLayout::new(dir.join("home"));
 
-        let resolved = resolve_plugins(
+        let resolved = resolve_packages(
             &plugins,
             &dir,
             &layout,
@@ -771,7 +771,7 @@ mod tests {
         let mut plugins = BTreeMap::new();
         plugins.insert("nope".to_string(), PackageSource::Path("nope.lua".into()));
         let layout = RootedSystemLayout::new(&dir);
-        let err = resolve_plugins(
+        let err = resolve_packages(
             &plugins,
             &dir,
             &layout,
@@ -806,7 +806,7 @@ mod tests {
         plugins.insert("mq".to_string(), PackageSource::Path("repo".into()));
         let layout = RootedSystemLayout::new(dir.join("home"));
 
-        let resolved = resolve_plugins(
+        let resolved = resolve_packages(
             &plugins,
             &dir,
             &layout,

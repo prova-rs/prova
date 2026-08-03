@@ -151,26 +151,33 @@ impl Catalog {
             },
         );
         entries.insert(
-            "plugin".to_string(),
+            "package".to_string(),
             InitEntry {
-                description: "A prova package that also exports a namespace — a plugin (init.lua + \
-                              [plugin] + self-test)"
+                description: "A prova package that also exports a namespace others require() \
+                              (init.lua + [package] + self-test)"
                     .to_string(),
                 // Pinned to the released `v1` tag — reproducible scaffolding that doesn't drift when
-                // the archetype's `main` moves.
+                // the archetype's `main` moves. (The repo is being renamed prova-init-package-\
+                // archetype; GitHub redirects the old name until the pin moves.)
                 source: Some(
                     "https://github.com/prova-rs/prova-init-plugin-archetype.git#v1".to_string(),
                 ),
                 switches: Vec::new(),
                 defaults: false,
                 answers: BTreeMap::new(),
-                // A plugin can be scaffolded INTO an existing package (the local variant) — the
-                // archetype reads the injected package state and places itself under `plugin_root`.
+                // A package can be scaffolded INTO an existing one (the local variant) — the
+                // archetype reads the injected package state and places itself under the `packages`
+                // directory.
                 in_package: InPackage::Allow,
             },
         );
         Catalog { entries }
     }
+
+    /// Deprecated entry spellings — the catalog side of the package-vocabulary bridge. Resolution
+    /// still lands on the canonical entry; the warning teaches the rename. Retires at 1.0.
+    pub const DEPRECATED_ENTRIES: &'static [(&'static str, &'static str)] =
+        &[("plugin", "package")];
 
     /// Load the built-in catalog and merge `<config_dir>/config.toml` over it. A missing config file
     /// is normal (most machines have none); an unreadable or malformed one is an error, because
@@ -263,6 +270,17 @@ pub fn resolve(
     layout: &dyn SystemLayout,
     warnings: &mut Vec<String>,
 ) -> Result<Resolved, String> {
+    // Rung 0: a deprecated spelling of a built-in key — resolve the canonical entry, teach the
+    // rename. A user config that deliberately declares the old key wins (checked first below).
+    let key = if catalog.entries.contains_key(key) {
+        key
+    } else if let Some((_, new)) = Catalog::DEPRECATED_ENTRIES.iter().find(|(old, _)| *old == key)
+    {
+        eprintln!("prova: `prova init {key}` is deprecated — use `prova init {new}` (retires at 1.0)");
+        new
+    } else {
+        key
+    };
     // Rungs 1–3: the key is in the catalog (a config entry has already replaced any built-in of the
     // same name during `load`, so this one lookup covers both).
     if let Some(entry) = catalog.entries.get(key) {

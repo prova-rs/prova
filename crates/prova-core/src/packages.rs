@@ -7,8 +7,8 @@
 //!   2. `named` — a plugin declared in `prova.toml` (`[plugins]`), resolved to an exact file (git
 //!      checkouts are fetched into the cache and land here as a path). The manifest is authoritative.
 //!   3. the **declared** plugin root — `<root>/<a/b>.lua` then `<root>/<a/b>/init.lua`. The CLI
-//!      derives it from the manifest's `[run] plugin_root`, resolved against the project root; an
-//!      embedder passes it via `RunConfig::with_plugin_root`.
+//!      derives it from the manifest's `[run] package_root`, resolved against the project root; an
+//!      embedder passes it via `RunConfig::with_package_root`.
 //!
 //! # Everything is declared
 //!
@@ -72,11 +72,11 @@ use mlua::{Lua, Value, Variadic};
 const BUNDLED: &[(&str, &str)] = &[
     (
         "prova.workspace",
-        include_str!("plugins/prova/workspace.lua"),
+        include_str!("packages/prova/workspace.lua"),
     ),
     // The transport-agnostic programmable double (mock / proxy / spy, with an ordered event log).
     // The reusable heart of http.mock/grpc.mock for an in-process, Lua-driven boundary.
-    ("prova.double", include_str!("plugins/prova/double.lua")),
+    ("prova.double", include_str!("packages/prova/double.lua")),
 ];
 
 /// Install the plugin searcher into `lua`'s `package.searchers`.
@@ -86,9 +86,9 @@ const BUNDLED: &[(&str, &str)] = &[
 /// module root directory, so a multi-file plugin can `require("<canonical>.<sub>")` its own sibling
 /// files (namespaced by canonical name, so it is stable regardless of the consumer's alias and never
 /// collides with another plugin). `roots` carries the declared plugin root — the manifest's
-/// `[run] plugin_root`, already absolutised — and it is the *only* directory scanned: nothing
+/// `[run] package_root`, already absolutised — and it is the *only* directory scanned: nothing
 /// machine-global, nothing from the environment, nothing cwd-relative (see the module docs). A slice
-/// rather than one path only because the embedder API (`with_plugin_root`) accumulates; the manifest
+/// rather than one path only because the embedder API (`with_package_root`) accumulates; the manifest
 /// declares exactly one. All are cloned into the closure (the Lua state is single-threaded).
 pub(crate) fn install(
     lua: &Lua,
@@ -186,8 +186,8 @@ fn resolve(
     // present as an ordinary "not found" and send the reader hunting for a misspelled plugin.
     if disk_roots(roots).is_empty() {
         msg.push_str(
-            "\n\t\t(no plugin root declared — add `plugin_root` to [run] in prova.toml, \
-             e.g. plugin_root = \".prova/plugins\")",
+            "\n\t\t(no plugin root declared — add `package_root` to [run] in prova.toml, \
+             e.g. package_root = \".prova/plugins\")",
         );
     }
     Ok(Value::String(lua.create_string(&msg)?))
@@ -222,7 +222,7 @@ fn load_module(lua: &Lua, path: &Path) -> mlua::Result<Value> {
     // Every plugin runs in its own environment now — falling through to the real globals, so it sees
     // and sets exactly what it always could, plus a per-plugin `plugin` table (its own location) and,
     // for a plugin with private dependencies, a scoped `require`.
-    chunk.set_environment(plugin_env(lua, path)?).eval::<Value>()
+    chunk.set_environment(package_env(lua, path)?).eval::<Value>()
 }
 
 /// The environment a plugin chunk runs in.
@@ -236,17 +236,21 @@ fn load_module(lua: &Lua, path: &Path) -> mlua::Result<Value> {
 ///   resolve the consumer's `target/`, not its own. `plugin.dir` is always the plugin's real home, so
 ///   `plugin.dir .. "/../../../target/debug/tool"` finds the plugin's binary wherever it is consumed.
 /// - **`require`** — shadowed by a scoped one *only* when the plugin declares private dependencies.
-fn plugin_env(lua: &Lua, path: &Path) -> mlua::Result<mlua::Table> {
+fn package_env(lua: &Lua, path: &Path) -> mlua::Result<mlua::Table> {
     let env = lua.create_table()?;
     // RAW set, deliberately: `__newindex` below forwards writes to the real globals, so a plain `set`
     // here would install these per-plugin bindings as *everyone's* (handing every consumer this
     // plugin's private `require`, or a stale `plugin`). (Ask how I know.)
     let info = lua.create_table()?;
     if let Some(dir) = path.parent() {
-        // A path-PRODUCING API: /-normalized like fs.tempdir/fs.glob (plugin resolution
+        // A path-PRODUCING API: /-normalized like fs.tempdir/fs.glob (package resolution
         // canonicalizes, which on Windows grows the `\\?\` prefix this strips).
         info.raw_set("dir", crate::modules::emit_path(dir))?;
     }
+    // `pkg` is the canonical name. It cannot be `package`: that is Lua's own module table, and a
+    // per-chunk shadow of it would take `package.loaded` away from exactly the code that needs
+    // `require`. `plugin` is the deprecated alias — same table, one release, retires at 1.0.
+    env.raw_set("pkg", &info)?;
     env.raw_set("plugin", info)?;
     let own = private_deps(path);
     if !own.is_empty() {
@@ -348,7 +352,7 @@ fn private_deps(entry: &Path) -> BTreeMap<String, PathBuf> {
 /// This function used to add an env var (`PROVA_PLUGIN_PATH`) and a cwd-relative `./.prova/plugins`.
 /// Both are gone on purpose. A root that comes from the environment or the working directory cannot
 /// be read off the project, so "where could this `require` have come from?" had four answers, three
-/// of them invisible from the repo. Now the manifest's `[run] plugin_root` is the whole story, which
+/// of them invisible from the repo. Now the manifest's `[run] package_root` is the whole story, which
 /// is what lets a reader — or an agent — audit resolution by reading one file.
 fn disk_roots(declared: &[PathBuf]) -> Vec<PathBuf> {
     declared.to_vec()

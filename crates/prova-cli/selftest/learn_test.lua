@@ -109,7 +109,7 @@ prova.group("prova learn", function(g)
     t:expect(r.code):equals(0)
     -- The built-in catalog entries surface in the topic — computed, not hand-written.
     t:expect(r.stdout):contains("default")
-    t:expect(r.stdout):contains("plugin")
+    t:expect(r.stdout):contains("package")
   end)
 
   g:test("project renders THIS package's facts inside a package", function(t)

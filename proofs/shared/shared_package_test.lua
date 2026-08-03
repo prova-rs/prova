@@ -2,10 +2,10 @@
 -- its fixture (by handle) and its helper.
 local S = require("shared")
 
-prova.test("the shared plugin provides a fixture, by handle", function(t)
-  t:expect(t:use(S.greeting)):equals("hello from the shared plugin")
+prova.test("the shared package provides a fixture, by handle", function(t)
+  t:expect(t:use(S.greeting)):equals("hello from the shared package")
 end)
 
-prova.test("the shared plugin provides a plain helper", function(t)
+prova.test("the shared package provides a plain helper", function(t)
   t:expect(S.slugify("Hello World")):equals("hello-world")
 end)

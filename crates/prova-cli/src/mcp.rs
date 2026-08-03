@@ -58,7 +58,7 @@ use prova_core::{
 pub fn run(args: Vec<String>) -> ExitCode {
     let mut profile: Option<String> = None;
     let mut manifest_path: Option<String> = None;
-    let mut cli_plugins: Vec<String> = Vec::new();
+    let mut cli_packages: Vec<String> = Vec::new();
 
     let mut it = args.into_iter();
     while let Some(arg) = it.next() {
@@ -72,7 +72,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
         }
         if let Some(v) = crate::value_flag(&arg, &mut it, &["--package", "-P", "--plugin"]) {
             if arg.starts_with("--plugin") { eprintln!("prova: `--plugin` is deprecated — use `--package` (retires at 1.0)"); }
-            cli_plugins.push(v);
+            cli_packages.push(v);
             continue;
         }
         match arg.as_str() {
@@ -126,7 +126,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
         }
     };
 
-    let (mut plugins_resolved, sources, proofs, declared, jobs, capabilities, topologies) =
+    let (mut packages_resolved, sources, proofs, declared, jobs, capabilities, topologies) =
         match &home {
             Some(home) => {
                 match crate::resolve_from_manifest(
@@ -155,7 +155,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
             ),
         };
     if let Err(code) =
-        crate::layer_cli_plugins(&cli_plugins, &layout, &sources, &mut plugins_resolved)
+        crate::layer_cli_packages(&cli_packages, &layout, &sources, &mut packages_resolved)
     {
         return code;
     }
@@ -163,11 +163,11 @@ pub fn run(args: Vec<String>) -> ExitCode {
     let env = Arc::new(McpEnv {
         layout,
         home,
-        cli_plugins,
+        cli_packages,
         proofs,
         declared,
         jobs,
-        dependencies: plugins_resolved,
+        dependencies: packages_resolved,
         capabilities,
         topologies,
     });
@@ -229,7 +229,7 @@ struct McpEnv {
     layout: XdgSystemLayout,
     home: Option<Home>,
     /// `-P name=source` server args, re-layered when a call re-resolves with a `profile`.
-    cli_plugins: Vec<String>,
+    cli_packages: Vec<String>,
     /// Manifest `[run] proofs` (empty when there is no manifest).
     proofs: Vec<String>,
     /// Manifest `[suites.*]` declarations.
@@ -326,8 +326,8 @@ impl McpEnv {
                             home.manifest.display()
                         )
                     })?;
-                crate::layer_cli_plugins(
-                    &self.cli_plugins,
+                crate::layer_cli_packages(
+                    &self.cli_packages,
                     &self.layout,
                     &run.sources,
                     &mut run.dependencies,
@@ -778,7 +778,7 @@ impl ProvaMcpServer {
         // (may fetch a git source), so it runs off-thread like the other resolving tools.
         let env = self.env.clone();
         blocking(move || {
-            let plugin_roots: Vec<PathBuf> = match req.package.as_deref() {
+            let package_roots: Vec<PathBuf> = match req.package.as_deref() {
                 Some(package) => env
                     .resolve_call(None, Some(package))?
                     .dependencies
@@ -789,7 +789,7 @@ impl ProvaMcpServer {
                 None => env.dependencies.roots.values().cloned().collect(),
             };
             let all =
-                prova_core::help::entries_with_plugins(plugin_roots.iter().map(|p| p.as_path()));
+                prova_core::help::entries_with_packages(package_roots.iter().map(|p| p.as_path()));
             let entries = match req.filter.as_deref().map(str::trim) {
                 Some(n) if !n.is_empty() => prova_core::help::filter(&all, n),
                 _ => all,

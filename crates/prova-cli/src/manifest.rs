@@ -1036,7 +1036,7 @@ redis = "acme:prova-redis@v1"
     /// `prova up <name>`. A property of the package (not profile-specific), and the entry form is
     /// strict (`deny_unknown_fields`) so a typo'd key is a parse error, not a silently-ignored one.
     #[test]
-    fn topologies_parse_as_plugin_factory_references() {
+    fn topologies_parse_as_package_factory_references() {
         let m = Manifest::parse(
             "[run]\nproofs = [\"proofs\"]\n\n\
              [topologies]\n\
@@ -1092,7 +1092,7 @@ proofs = ["proofs/smoke"]
     }
 
     #[test]
-    fn profile_plugins_overlay_project_wide_plugins() {
+    fn profile_dependencies_overlay_project_wide_dependencies() {
         let m = Manifest::parse(
             r#"
 [run]

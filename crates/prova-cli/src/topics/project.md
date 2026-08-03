@@ -47,7 +47,7 @@ anchor repo paths on them, never on cwd.
 
 - **A new proof**: a `*_test.lua` file in any directory matching a `proofs` pattern above.
 - **A new local package**: a dir under `[run] packages` (`<packages>/<name>/init.lua`); see
-  `prova learn init` for `prova init plugin`.
+  `prova learn init` for `prova init package`.
 - **A shared fixture/topology**: `prova.topology(name, factory)` in a proof file, or `[topologies]`
   in the manifest when a package provides the factory.
 

@@ -230,8 +230,11 @@ pub fn run(args: Vec<String>) -> ExitCode {
     let mut merged: BTreeMap<String, String> = BTreeMap::new();
     if let Some(state) = &state {
         merged.insert("prova_package_root".to_string(), state.package_root.clone());
-        if let Some(plugin_root) = &state.packages_dir {
-            merged.insert("prova_plugin_root".to_string(), plugin_root.clone());
+        if let Some(dir) = &state.packages_dir {
+            merged.insert("prova_packages_dir".to_string(), dir.clone());
+            // The deprecated answer name — archetype pins from before the package vocabulary
+            // still read it; both are served until it retires at 1.0.
+            merged.insert("prova_plugin_root".to_string(), dir.clone());
         }
     }
 

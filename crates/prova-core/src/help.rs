@@ -230,11 +230,11 @@ pub fn stub_entries_in(library_dir: &std::path::Path) -> Vec<HelpEntry> {
 
 /// The full surface: core entries plus each plugin root's `library/` stubs, sorted and deduped
 /// (first writer wins, so the core cannot be shadowed by a plugin).
-pub fn entries_with_plugins<'a>(
-    plugin_roots: impl IntoIterator<Item = &'a std::path::Path>,
+pub fn entries_with_packages<'a>(
+    package_roots: impl IntoIterator<Item = &'a std::path::Path>,
 ) -> Vec<HelpEntry> {
     let mut out = core_entries();
-    for root in plugin_roots {
+    for root in package_roots {
         out.extend(stub_entries_in(&root.join("library")));
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));

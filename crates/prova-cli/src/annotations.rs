@@ -63,7 +63,7 @@ use prova_core::SystemLayout;
 #[derive(Debug, Default)]
 pub struct Outcome {
     /// Plugin names whose `library/` dir is listed in `workspace.library`.
-    pub linked_plugins: Vec<String>,
+    pub linked_packages: Vec<String>,
     /// Where the shared core stubs live, for callers that want to name it.
     pub core_dir: PathBuf,
     /// `.luarc.json` was created (didn't exist before).
@@ -85,9 +85,9 @@ pub fn setup(
     version: &str,
 ) -> Result<Outcome, String> {
     let core_dir = install_core_stubs(layout, version)?;
-    let (entries, linked_plugins) = library_entries(&core_dir, roots);
+    let (entries, linked_packages) = library_entries(&core_dir, roots);
     let mut outcome = Outcome {
-        linked_plugins,
+        linked_packages,
         core_dir,
         ..Default::default()
     };
@@ -193,7 +193,7 @@ fn library_entries(
 /// local plugin leaves its (still valid, still existing) path in `workspace.library` until the user
 /// removes it — strictly better than the alternative failure, deleting an entry the user added.
 fn is_managed(entry: &str, layout: &dyn SystemLayout) -> bool {
-    [layout.annotations_dir(), layout.plugin_cache_dir()]
+    [layout.annotations_dir(), layout.package_cache_dir()]
         .iter()
         .any(|root| entry.starts_with(&path_entry(root)))
 }
@@ -338,7 +338,7 @@ mod tests {
     }
 
     /// A fake plugin dir with a `library/<name>.lua` stub.
-    fn plugin_with_stub(base: &Path, name: &str) -> PathBuf {
+    fn package_with_stub(base: &Path, name: &str) -> PathBuf {
         let root = base.join(format!("plugin-{name}"));
         std::fs::create_dir_all(root.join("library")).unwrap();
         std::fs::write(
@@ -363,7 +363,7 @@ mod tests {
         let t = Tmp::new("entries");
         let home = home_at(&t.0, Some(".prova"));
         let layout = layout_at(&t.0);
-        let plugin = plugin_with_stub(&t.0, "postgres");
+        let plugin = package_with_stub(&t.0, "postgres");
         let mut roots = BTreeMap::new();
         roots.insert("postgres".to_string(), plugin.clone());
 
@@ -507,7 +507,7 @@ mod tests {
         let luarc = t.0.join(".luarc.json");
 
         setup(&home, &BTreeMap::new(), Manage::Auto, &layout, V).unwrap();
-        let plugin = plugin_with_stub(&t.0, "redis");
+        let plugin = package_with_stub(&t.0, "redis");
         let mut roots = BTreeMap::new();
         roots.insert("redis".to_string(), plugin.clone());
         let out = setup(&home, &roots, Manage::Auto, &layout, V).unwrap();
@@ -555,7 +555,7 @@ mod tests {
             "a user-added key must transfer ownership"
         );
         // A later sync (here: with a plugin added) merges rather than rewrites.
-        let plugin = plugin_with_stub(&t.0, "redis");
+        let plugin = package_with_stub(&t.0, "redis");
         let mut roots = BTreeMap::new();
         roots.insert("redis".to_string(), plugin.clone());
         let out = setup(&home, &roots, Manage::Auto, &layout, V).unwrap();

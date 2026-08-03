@@ -13,7 +13,7 @@ use prova_core::{run_path_with, NullReporter, RunConfig};
 fn require_resolves_bundled_and_disk_plugins() {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let path = manifest.join("testdata").join("plugin_require.lua");
-    let config = RunConfig::new(1).with_plugin_root(manifest.join("testdata").join("plugins"));
+    let config = RunConfig::new(1).with_package_root(manifest.join("testdata").join("plugins"));
 
     let mut reporter = NullReporter;
     let summary = run_path_with(&path, &mut reporter, &config).expect("run plugin_require.lua");

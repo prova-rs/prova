@@ -189,13 +189,13 @@ pub struct RunConfig {
     snapshot_registry: Option<SnapshotRegistry>,
     modules: Vec<Module>,
     /// Extra disk roots the plugin searcher consults (e.g. the global `data_dir/plugins`).
-    plugin_roots: Vec<std::path::PathBuf>,
+    package_roots: Vec<std::path::PathBuf>,
     /// Manifest-declared plugins: name → an exact file (a local path, or a git checkout the CLI
     /// fetched into the cache). Authoritative over disk roots.
-    named_plugins: std::collections::BTreeMap<String, std::path::PathBuf>,
+    named_packages: std::collections::BTreeMap<String, std::path::PathBuf>,
     /// Plugin namespaces: a plugin's canonical name → its module root dir, so a multi-file plugin can
     /// `require("<canonical>.<sub>")` its own siblings.
-    plugin_namespaces: std::collections::BTreeMap<String, std::path::PathBuf>,
+    package_namespaces: std::collections::BTreeMap<String, std::path::PathBuf>,
     /// Resolved plugin roots whose `library/*.lua` stubs feed `prova.help()` (see `with_help_root`).
     help_roots: Vec<std::path::PathBuf>,
     /// The project ROOT — the base every manifest-relative path resolves against (for a nested
@@ -245,9 +245,9 @@ impl Default for RunConfig {
             update_snapshots: false,
             snapshot_registry: None,
             modules: Vec::new(),
-            plugin_roots: Vec::new(),
-            named_plugins: std::collections::BTreeMap::new(),
-            plugin_namespaces: std::collections::BTreeMap::new(),
+            package_roots: Vec::new(),
+            named_packages: std::collections::BTreeMap::new(),
+            package_namespaces: std::collections::BTreeMap::new(),
             help_roots: Vec::new(),
             project_dir: None,
             topology_registrations: Vec::new(),
@@ -274,9 +274,9 @@ impl std::fmt::Debug for RunConfig {
             .field("ports", &self.ports)
             .field("update_snapshots", &self.update_snapshots)
             .field("modules", &self.modules.len())
-            .field("plugin_roots", &self.plugin_roots)
-            .field("named_plugins", &self.named_plugins)
-            .field("plugin_namespaces", &self.plugin_namespaces)
+            .field("package_roots", &self.package_roots)
+            .field("named_packages", &self.named_packages)
+            .field("package_namespaces", &self.package_namespaces)
             .finish()
     }
 }
@@ -367,19 +367,19 @@ impl RunConfig {
     /// Add a disk root the plugin searcher consults, beyond the project's own `.prova/plugins`
     /// (which `with_project` already implies). An embedder's extension point — the CLI passes
     /// nothing here on purpose, so a run resolves only what the project has under version control.
-    pub fn with_plugin_root(mut self, root: impl Into<std::path::PathBuf>) -> Self {
-        self.plugin_roots.push(root.into());
+    pub fn with_package_root(mut self, root: impl Into<std::path::PathBuf>) -> Self {
+        self.package_roots.push(root.into());
         self
     }
 
     /// Register a manifest-declared plugin: `require(name)` resolves to `path` (a local file or a
     /// git checkout already fetched into the cache).
-    pub fn with_named_plugin(
+    pub fn with_named_package(
         mut self,
         name: impl Into<String>,
         path: impl Into<std::path::PathBuf>,
     ) -> Self {
-        self.named_plugins.insert(name.into(), path.into());
+        self.named_packages.insert(name.into(), path.into());
         self
     }
 
@@ -435,12 +435,12 @@ impl RunConfig {
         self
     }
 
-    pub fn with_plugin_namespace(
+    pub fn with_package_namespace(
         mut self,
         canonical: impl Into<String>,
         dir: impl Into<std::path::PathBuf>,
     ) -> Self {
-        self.plugin_namespaces.insert(canonical.into(), dir.into());
+        self.package_namespaces.insert(canonical.into(), dir.into());
         self
     }
 
@@ -2717,7 +2717,7 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
         "help",
         lua.create_function(move |lua, filter: Option<String>| {
             let all =
-                crate::help::entries_with_plugins(help_roots.iter().map(|p| p.as_path()));
+                crate::help::entries_with_packages(help_roots.iter().map(|p| p.as_path()));
             let entries = match filter.as_deref().map(str::trim) {
                 Some(n) if !n.is_empty() => crate::help::filter(&all, n),
                 _ => all,
@@ -2808,16 +2808,16 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
     // Wire `require` to resolve Lua plugins (bundled + manifest + disk). Installed last so a plugin
     // loaded via `require` sees every primitive global it composes.
     //
-    // Search roots are exactly what the embedder declared (`with_plugin_root`) — the engine adds
+    // Search roots are exactly what the embedder declared (`with_package_root`) — the engine adds
     // none of its own. It used to join `<project_root>/.prova/plugins` here, which meant the answer
     // to "where do plugins come from?" was split between this file and the manifest. The CLI now
-    // passes the manifest's `[run] plugin_root` (already absolutised against the project root), so
+    // passes the manifest's `[run] package_root` (already absolutised against the project root), so
     // the manifest is the single, readable source of truth and the engine has no layout opinion.
-    crate::plugins::install(
+    crate::packages::install(
         &lua,
-        &config.plugin_roots,
-        &config.named_plugins,
-        &config.plugin_namespaces,
+        &config.package_roots,
+        &config.named_packages,
+        &config.package_namespaces,
     )?;
 
     // The injection contract, installed LAST so none of prova's own setup writes pass through the
@@ -5748,7 +5748,7 @@ fn list_plan(col: &Collector, config: &RunConfig) -> mlua::Result<Vec<String>> {
 /// resource shape (`client`/`container`/`wait_for`/`mock`) is one common kind, but a library of helpers is
 /// equally valid — so lint classifies rather than requiring a fixed shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PluginShape {
+pub enum PackageShape {
     /// Exposes resource facets (`container`/`client`/`wait_for`/`mock`) — a provisioned, attachable, or
     /// virtualized resource.
     Resource,
@@ -5757,9 +5757,9 @@ pub enum PluginShape {
 }
 
 #[derive(Debug, Default)]
-pub struct PluginReport {
+pub struct PackageReport {
     /// The plugin's shape, if it returned a table (`None` only when it returned a non-table).
-    pub shape: Option<PluginShape>,
+    pub shape: Option<PackageShape>,
     /// Resource facet names found on the namespace (`client`/`container`/`wait_for`/`mock`). Empty for a
     /// library — which is fine, not an error.
     pub facets: Vec<String>,
@@ -5773,18 +5773,18 @@ pub struct PluginReport {
 ///
 /// The *only* universal requirement is that a plugin `return`s a table. Beyond that, lint
 /// **classifies** rather than prescribes: a namespace exposing resource facets
-/// (`client`/`container`/`wait_for`) is a [`PluginShape::Resource`]; a plain table of helpers with no
-/// such facets is a [`PluginShape::Library`] — equally valid. It therefore flags only what is wrong
+/// (`client`/`container`/`wait_for`) is a [`PackageShape::Resource`]; a plain table of helpers with no
+/// such facets is a [`PackageShape::Library`] — equally valid. It therefore flags only what is wrong
 /// for *any* plugin: a non-table return, or a resource facet that is present but not a function.
 /// (A `container` facet is expected to yield the `{ client?, url, container }` trio, which can't be
 /// verified without provisioning, so that is left to tests.)
-pub fn inspect_plugin(path: &Path, config: &RunConfig) -> mlua::Result<PluginReport> {
+pub fn inspect_package(path: &Path, config: &RunConfig) -> mlua::Result<PackageReport> {
     let code = std::fs::read_to_string(path)
         .map_err(|e| mlua::Error::RuntimeError(format!("cannot read {}: {e}", path.display())))?;
     let (lua, _col) = build_lua("plugin".to_string(), config)?;
     let value: Value = lua.load(&code).set_name(file_chunk_name(path)).eval()?;
 
-    let mut report = PluginReport::default();
+    let mut report = PackageReport::default();
     let Value::Table(ns) = value else {
         report.issues.push(format!(
             "the package must `return` a namespace table, but returned a {}",
@@ -5807,9 +5807,9 @@ pub fn inspect_plugin(path: &Path, config: &RunConfig) -> mlua::Result<PluginRep
     }
 
     report.shape = Some(if report.facets.is_empty() {
-        PluginShape::Library
+        PackageShape::Library
     } else {
-        PluginShape::Resource
+        PackageShape::Resource
     });
     Ok(report)
 }

@@ -221,8 +221,8 @@ enum Slot {
     InitCatalog,
     Agent,
     ProofPaths,
-    PluginRoot,
-    Plugins,
+    PackagesDir,
+    Packages,
     Registries,
     Topologies,
     Profiles,
@@ -235,8 +235,8 @@ impl Slot {
             "init_catalog" => Some(Slot::InitCatalog),
             "agent" => Some(Slot::Agent),
             "proof_paths" => Some(Slot::ProofPaths),
-            "packages_dir" => Some(Slot::PluginRoot),
-            "packages" => Some(Slot::Plugins),
+            "packages_dir" => Some(Slot::PackagesDir),
+            "packages" => Some(Slot::Packages),
             "registries" => Some(Slot::Registries),
             "topologies" => Some(Slot::Topologies),
             "profiles" => Some(Slot::Profiles),
@@ -267,12 +267,12 @@ struct PackageFacts {
 /// but they appear in no manifest table, so anything that reads `[plugins]` alone reports a package
 /// full of them as having none. A directory counts when it holds an `init.lua`, which is exactly what
 /// the resolver requires.
-fn local_plugins(p: &PackageFacts) -> Vec<String> {
-    local_plugins_in(&p.home_dir, p.resolved.packages_dir.as_deref())
+fn local_packages(p: &PackageFacts) -> Vec<String> {
+    local_packages_in(&p.home_dir, p.resolved.packages_dir.as_deref())
 }
 
 /// The scan itself, split out so it is testable without a resolved manifest.
-fn local_plugins_in(home_dir: &std::path::Path, plugin_root: Option<&str>) -> Vec<String> {
+fn local_packages_in(home_dir: &std::path::Path, plugin_root: Option<&str>) -> Vec<String> {
     let Some(root) = plugin_root else {
         return Vec::new();
     };
@@ -462,7 +462,7 @@ fn render_slot(slot: Slot, env: &RenderEnv, transport: Transport) -> String {
             ),
             None => env.no_package_line(transport),
         },
-        Slot::PluginRoot => match &env.package {
+        Slot::PackagesDir => match &env.package {
             Some(p) => match &p.resolved.packages_dir {
                 Some(root) => format!(
                     "**Local packages**: author them under `{root}/<name>/` (the declared \
@@ -477,15 +477,15 @@ fn render_slot(slot: Slot, env: &RenderEnv, transport: Transport) -> String {
         // No package needed and no fetch performed: registries come from user config alone, so
         // this renders (and stays truthful) offline and pre-init.
         Slot::Registries => crate::registry::learn_lines(transport == Transport::Cli),
-        Slot::Plugins => match &env.package {
+        Slot::Packages => match &env.package {
             Some(p)
-                if !p.resolved.dependencies.is_empty() || !local_plugins(p).is_empty() =>
+                if !p.resolved.dependencies.is_empty() || !local_packages(p).is_empty() =>
             {
                 // BOTH kinds, because `require("<name>")` does not distinguish them. Listing only
                 // the `[plugins]` table told a package with three working local plugins that it had
                 // "none" — a true statement about one manifest key, and a false answer to the
                 // question actually being asked ("what vocabulary do I have here?").
-                let local = local_plugins(p);
+                let local = local_packages(p);
                 let width = p
                     .resolved
                     .dependencies
@@ -789,12 +789,12 @@ mod tests {
         std::fs::write(root.join("README.md"), "# plugins").unwrap(); // not a directory
 
         assert_eq!(
-            local_plugins_in(&base, Some(".prova/plugins")),
+            local_packages_in(&base, Some(".prova/plugins")),
             vec!["minion".to_string(), "policy".to_string()]
         );
         // No `plugin_root` declared, or one that does not exist: no plugins, no error.
-        assert!(local_plugins_in(&base, None).is_empty());
-        assert!(local_plugins_in(&base, Some("nope")).is_empty());
+        assert!(local_packages_in(&base, None).is_empty());
+        assert!(local_packages_in(&base, Some("nope")).is_empty());
         std::fs::remove_dir_all(&base).ok();
     }
 

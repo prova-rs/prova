@@ -1,6 +1,6 @@
 # package-authoring — package a capability others require()
 
-Scaffold: `prova init plugin` (see `prova learn init`). ONE archetype, two shapes, decided by
+Scaffold: `prova init package` (see `prova learn init`). ONE archetype, two shapes, decided by
 WHERE you run it: inside a package it scaffolds a LOCAL package into the `packages` directory
 (core files only, `require()`-able with zero declaration); outside — or with `-s standalone`
 anywhere — a repo-ready STANDALONE package (core + LICENSE/CI/.version-line) consumers pin as a
@@ -50,8 +50,8 @@ prova = ">=0.4"                   # compat-gated against the running prova
 
 | Stage | Where |
 |---|---|
-| Package-local (this repo only) | a dir under `[run] packages` — requirable by name, zero declaration; `prova init plugin` in-package scaffolds one |
-| Shared, pinned | its own repo (`prova init plugin -s standalone`); consumers declare `[dependencies] name = "owner/repo@ref"` |
+| Package-local (this repo only) | a dir under `[run] packages` — requirable by name, zero declaration; `prova init package` in-package scaffolds one |
+| Shared, pinned | its own repo (`prova init package -s standalone`); consumers declare `[dependencies] name = "owner/repo@ref"` |
 | A local file while incubating | `[dependencies] name = "./packages/name.lua"` or `-P name=./...` |
 
 Self-test it like any package: `prova` inside the package repo runs its proofs against its own

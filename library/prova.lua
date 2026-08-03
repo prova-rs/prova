@@ -577,4 +577,15 @@ runtime = {}
 ---@param predicate fun(): boolean|string|nil  # true = available · a version string = comparable (`gpu >= 2`) · false/nil = unavailable
 function runtime.capability(name, predicate) end
 
+--- The per-package info table, bound only inside a loaded package's own chunks. Not `package` —
+--- that is Lua's module table, and shadowing it would take `require` away from exactly the code
+--- that needs it.
+---@class prova.PackageInfo
+---@field dir string  # the directory holding this package's own entry file — its real home, wherever it is consumed (`prova.root` is the CONSUMING package's root)
+pkg = {}
+
+---@deprecated Use `pkg` — same table; the `plugin` spelling retires at 1.0.
+---@type prova.PackageInfo
+plugin = pkg
+
 return prova

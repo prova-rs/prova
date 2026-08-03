@@ -10,7 +10,7 @@ pub mod help;
 pub mod layout;
 pub mod model;
 mod modules;
-mod plugins;
+mod packages;
 pub mod progress;
 mod suite;
 
@@ -56,10 +56,10 @@ pub fn default_inject() -> Vec<String> {
 
 pub use engine::{
     discover_path, discover_path_with, docker_runs_linux_containers, eval_snippet, hold_topology,
-    inspect_plugin, is_builtin_capability, list_topologies, load_project_config, obligations_for_suite,
+    inspect_package, is_builtin_capability, list_topologies, load_project_config, obligations_for_suite,
     qualify_leaf_path, run_path, ProofObligation,
     run_path_with, unreferenced_snapshots, up, watch, Capabilities, Endpoint, HeldTopology, Module,
-    PluginReport, PluginShape, PortMode, RunConfig, Selection, SnapshotRegistry,
+    PackageReport, PackageShape, PortMode, RunConfig, Selection, SnapshotRegistry,
     TopologyRegistration,
 };
 pub use layout::{RootedSystemLayout, SystemLayout, XdgSystemLayout};

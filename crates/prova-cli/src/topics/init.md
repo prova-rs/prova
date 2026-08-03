@@ -15,15 +15,15 @@ always name the key.
 | You are... | Key |
 |---|---|
 | Adding proofs to an app/repo (the common case) | `project` |
-| Authoring a reusable package — a namespace others `require()` | `plugin` |
-| Adding a local package to THIS one (run it inside the package) | `plugin` — it lands in the `packages` dir |
+| Authoring a reusable package — a namespace others `require()` | `package` |
+| Adding a local package to THIS one (run it inside the package) | `package` — it lands in the `packages` dir |
 | In an org with its own entries (see below) | the org's key |
 
 ## Flags that matter in automation
 
 ```
 prova init project --headless                # the project scaffold is promptless — this just works
-prova init plugin --headless -a name=redis   # package: `name` has no default, so answer it
+prova init package --headless -a name=redis   # package: `name` has no default, so answer it
 # the flags, separately:
 #   --headless        never prompt; an unanswerable prompt is an ERROR
 #   -a k=v            --answer, repeatable; beats baked answers
@@ -37,8 +37,8 @@ Answer precedence: CLI `--answer` > the entry's baked answers > injected package
 ## Package-state injection
 
 Inside an existing package, every render also receives the `prova:in-package` switch plus
-`prova_package_root` / `prova_plugin_root` answers — generic facts ANY archetype can read (the
-`plugin` entry uses them to scaffold a local package into the `packages` dir instead of a standalone
+`prova_package_root` / `prova_packages_dir` answers — generic facts ANY archetype can read (the
+`package` entry uses them to scaffold a local package into the `packages` dir instead of a standalone
 repo). Outside a package none are supplied.
 
 ## Extending the catalog
