@@ -28,15 +28,19 @@ prova mcp                 # stdio MCP server (rmcp, like archetect-mcp), resolve
 
 The server process owns a live engine (Lua state, plugin set, annotation-synced API). Held
 topologies live **in the server's own scope machinery** — the same `ctx:manage` lifecycle as
-`prova up`, with the server playing the role the attached `up` process plays today. Held
-topologies live in the server's **in-memory registry only** — `prova ps` lists *detached*
+`prova up`, with the server playing the role the attached `up` process plays today.
+
+<!-- claim: held-visible-via-status-not-ps -->
+Held topologies live in the server's **in-memory registry only** — `prova ps` lists *detached*
 topologies (the `<home>/.prova/var/running/*.json` records from `prova start`); a server-held one is
 visible through the MCP `status {}` tool, not `ps`.
 
 ### Tool surface — the CLI parity table
 
+<!-- claim: mcp-cli-parity -->
 The skill's contract: *"If Prova is an MCP server, call tools. If Prova is a CLI, run commands.
-Everything else — the language, the grammar, the semantics — is identical."*
+Everything else — the language, the grammar, the semantics — is identical."* That includes the
+doors: `up` stands up a `[topologies]` registration on both transports, and nothing else.
 
 | Capability | CLI | MCP tool | Notes |
 |---|---|---|---|
@@ -52,6 +56,7 @@ Everything else — the language, the grammar, the semantics — is identical."*
 
 ### Warm re-run: the one engine feature this needs
 
+<!-- claim: warm-rerun-held-injection -->
 Everything else is plumbing; this is the design's single piece of real engineering. Today
 `t:use(env)` provisions the topology under the run's own scope. Warm mode needs **held-scope
 injection**: a run whose `RunConfig` carries pre-instantiated topology values (the server's held
@@ -66,6 +71,7 @@ agent resets by `down`/`up` when isolation matters, exactly like a developer wou
 
 ### `prova eval`
 
+<!-- claim: eval-one-shot -->
 CLI: `prova eval 'return archetect.render{...}.path'` — collect nothing, run the snippet in a
 scratch test context (fixtures available via `require`/globals; `ctx`-style helpers exposed as a
 transient scope), print the returned value (human) or JSON (`--format json`). Kills the
@@ -75,6 +81,7 @@ probe-file ceremony an agent otherwise performs. MCP `eval` is the same executio
 
 ## The Prova Skill
 
+<!-- claim: skill-embedded-everywhere -->
 **One document, embedded in the binary** (`include_str!` — versioned with the features it
 describes, so it can never drift), delivered three ways:
 
