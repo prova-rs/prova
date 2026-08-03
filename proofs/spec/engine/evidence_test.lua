@@ -154,3 +154,34 @@ prova.test("the binary teaches evidence: catalog, topic and the verbs", {
   t:expect(topic.stdout, "the CI gate"):contains("prova attest")
   t:expect(topic.stdout, "the narrowing"):contains("prova owed")
 end)
+
+prova.test("attest resolves a bare claim id when it is unambiguous", {
+  proves = "the full address is a machine coordinate — an agent has it in its buffer, a human does not. Ids are memorable; making the unique ones resolve removes the copy/paste without loosening what an address means",
+}, function(t)
+  local proj = t:use(sandbox)
+  shell.run(prova.bin, { cwd = proj, merge_stderr = true })
+  local r = shell.run(prova.bin .. " attest busy-not-absent", { cwd = proj, merge_stderr = true })
+
+  t:expect(r.code, "the unique id attests like its full address"):equals(0)
+  t:expect(r.stdout, "resolved to the real address"):contains("docs/design.md#busy-not-absent")
+end)
+
+prova.test("an ambiguous bare id lists the candidates instead of guessing", {
+  proves = "two docs may legally anchor the same id; picking either silently would attest something the caller did not ask about. Ambiguity is an answer with a menu, never a coin flip",
+}, function(t)
+  local proj = t:use(sandbox)
+  fs.write(proj .. "/docs/other.md", [[
+# Other
+
+<!-- claim: busy-not-absent -->
+The same id, anchored in a second document.
+]])
+  shell.run(prova.bin, { cwd = proj, merge_stderr = true })
+  local r = shell.run(prova.bin .. " attest busy-not-absent", { cwd = proj, merge_stderr = true })
+  fs.remove_all(proj .. "/docs/other.md")
+
+  t:expect(r.code):never():equals(0)
+  t:expect(r.stdout, "named as ambiguous"):contains("ambiguous")
+  t:expect(r.stdout, "both candidates are listed"):contains("docs/design.md#busy-not-absent")
+  t:expect(r.stdout):contains("docs/other.md#busy-not-absent")
+end)

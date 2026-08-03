@@ -62,6 +62,16 @@ pub fn split_pin(address: &str) -> (&str, Option<&str>) {
     }
 }
 
+/// Every claim whose bare id matches `id` — the resolution behind `prova attest <id>`.
+///
+/// The full `path#id` address is a machine coordinate: an agent has it in its buffer, a human
+/// does not. Ids are the memorable half, so a unique one resolves; the same id anchored in two
+/// documents is legal, and then the caller gets the candidates, never a coin flip.
+pub fn matching_id<'c>(claims: &'c [Claim], id: &str) -> Vec<&'c Claim> {
+    let suffix = format!("#{id}");
+    claims.iter().filter(|c| c.address.ends_with(&suffix)).collect()
+}
+
 /// What the ledger found. Ordered worst-first so the actionable rows are read.
 ///
 /// The tags are the negations of the lifecycle stages (docs/design/lifecycle.md), and one

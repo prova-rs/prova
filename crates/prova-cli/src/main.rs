@@ -477,11 +477,12 @@ fn attest_subcommand(args: Vec<String>) -> ExitCode {
         match arg.as_str() {
             "-h" | "--help" => {
                 println!(
-                    "usage: prova attest [<doc.md#claim-id>]\n\n\
+                    "usage: prova attest [<doc.md#claim-id> | <claim-id>]\n\n\
                      Reports whether the proof covering an obligation actually executed in the last\n\
                      recorded run. A skipped, deselected or absent proof attests nothing.\n\n\
-                     With no address: reconcile EVERY anchored claim and exit non-zero unless each\n\
-                     one is attested — the one-exit-code answer a CI gate needs."
+                     A bare claim id resolves when exactly one claim carries it; an ambiguous id\n\
+                     lists the candidates. With no address at all: reconcile EVERY anchored claim\n\
+                     and exit non-zero unless each one is attested — the CI gate."
                 );
                 return ExitCode::SUCCESS;
             }
@@ -507,6 +508,36 @@ fn attest_subcommand(args: Vec<String>) -> ExitCode {
     // No address: the pipeline's question. Reconcile the whole account into one exit code.
     let Some(address) = address else {
         return attest_all(&home, &manifest, &plugins_resolved);
+    };
+
+    // A bare id resolves when exactly one claim carries it. The full address stays canonical —
+    // an agent has it in its buffer — but ids are the memorable half, and a human should not
+    // have to copy/paste a path to ask about one claim. Zero matches falls through untouched:
+    // a ticket address (`covers = "PROJ-123"`) has no `#` and no anchor, and must keep working.
+    let address = if !address.contains('#') {
+        let docs = manifest.claims.as_ref().map(|c| c.docs.clone()).unwrap_or_default();
+        let scanned = match claims::scan(&home.dir, &docs) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("prova: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let matches = claims::matching_id(&scanned, &address);
+        match matches.len() {
+            1 => matches[0].address.clone(),
+            0 => address,
+            n => {
+                println!("prova: attest {address}");
+                println!("  ambiguous — {n} claims match:");
+                for m in matches {
+                    println!("    {}", m.address);
+                }
+                return ExitCode::from(2);
+            }
+        }
+    } else {
+        address
     };
 
     // No record at all is the absence of evidence, not the absence of a problem. Treating it as

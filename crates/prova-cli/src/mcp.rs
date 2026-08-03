@@ -1035,10 +1035,36 @@ fn attest_blocking(env: &McpEnv, req: AttestRequest) -> Result<(serde_json::Valu
         .map_err(|e| e.to_string())
         .and_then(|text| crate::manifest::Manifest::parse(&text))?;
 
+    // A bare id resolves when exactly one claim carries it — the same rule as the CLI, so the
+    // two surfaces cannot disagree about what an address means. Zero matches falls through
+    // untouched (a ticket address has no `#` and no anchor, and must keep working).
+    let address = if !req.address.contains('#') {
+        let docs = manifest.claims.as_ref().map(|c| c.docs.clone()).unwrap_or_default();
+        let scanned = crate::claims::scan(&call.home.dir, &docs).map_err(|e| e.to_string())?;
+        let matches = crate::claims::matching_id(&scanned, &req.address);
+        match matches.len() {
+            1 => matches[0].address.clone(),
+            0 => req.address.clone(),
+            _ => {
+                return Ok((
+                    json!({
+                        "address": req.address,
+                        "attested": false,
+                        "verdict": "ambiguous",
+                        "candidates": matches.iter().map(|m| m.address.clone()).collect::<Vec<_>>(),
+                    }),
+                    true,
+                ));
+            }
+        }
+    } else {
+        req.address.clone()
+    };
+
     let Some(recorded) = crate::record::load(&call.home) else {
         return Ok((
             json!({
-                "address": req.address,
+                "address": address,
                 "attested": false,
                 "verdict": "no_evidence",
                 "reason": "no run has been recorded for this package — run the suite first",
@@ -1053,7 +1079,7 @@ fn attest_blocking(env: &McpEnv, req: AttestRequest) -> Result<(serde_json::Valu
         .filter(|p| {
             p.covers
                 .iter()
-                .any(|c| crate::claims::split_pin(c).0 == req.address)
+                .any(|c| crate::claims::split_pin(c).0 == address)
         })
         .map(|p| p.path.clone())
         .collect();
@@ -1062,10 +1088,10 @@ fn attest_blocking(env: &McpEnv, req: AttestRequest) -> Result<(serde_json::Valu
     let attested = verdict.is_attested();
     let body = match &verdict {
         crate::record::Attested::Yes { path } => json!({
-            "address": req.address, "attested": true, "verdict": "attested", "proof": path,
+            "address": address, "attested": true, "verdict": "attested", "proof": path,
         }),
         crate::record::Attested::Red { path, outcome } => json!({
-            "address": req.address, "attested": false, "verdict": "red", "proof": path,
+            "address": address, "attested": false, "verdict": "red", "proof": path,
             "reason": match outcome {
                 crate::record::Executed::Failed => "the covering proof ran and failed",
                 crate::record::Executed::Spec => "the covering proof is an open promise, red by definition",
@@ -1073,11 +1099,11 @@ fn attest_blocking(env: &McpEnv, req: AttestRequest) -> Result<(serde_json::Valu
             },
         }),
         crate::record::Attested::NoEvidence { path, why } => json!({
-            "address": req.address, "attested": false, "verdict": "no_evidence", "proof": path,
+            "address": address, "attested": false, "verdict": "no_evidence", "proof": path,
             "reason": why,
         }),
         crate::record::Attested::Unbound => json!({
-            "address": req.address, "attested": false, "verdict": "unbound",
+            "address": address, "attested": false, "verdict": "unbound",
             "reason": "no proof declares `covers` for this address",
         }),
     };

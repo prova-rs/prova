@@ -28,6 +28,7 @@ obligation *has* a proof. Whether that proof ever RAN is a fact about a run.
 ```bash
 prova                                          # produces the record
 prova attest docs/design.md#drain-not-preemption
+prova attest drain-not-preemption              # a unique bare id resolves too
 ```
 
 ```

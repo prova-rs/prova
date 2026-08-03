@@ -23,10 +23,11 @@ A report, never a gate: exit 0, executes no proof body, safe on any machine. The
 |---|---|---|
 | `prova evidence` | the account | where does this project stand? |
 | `prova owed` | the debts | what still needs doing? |
-| `prova attest <addr>` | one obligation | did the proof for THIS claim actually run? |
+| `prova attest <addr\|id>` | one obligation | did the proof for THIS claim actually run? |
 | `prova attest` | every claim | is everything we claim evidenced? **The CI gate.** |
 
-These list **obligations** and never execute a proof. `prova promises` looks similar but lists
+A bare claim id resolves when it is unique (`prova attest lease-ttl`); an ambiguous one lists
+the candidates. These list **obligations** and never execute a proof. `prova promises` looks similar but lists
 **nodes** — it is `prova list --promises`, on the run axis.
 
 ## The stages, one line each
