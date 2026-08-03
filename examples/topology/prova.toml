@@ -9,6 +9,6 @@
 [run]
 proofs = ["."]
 
-[plugins]
+[dependencies]
 postgres = "prova-rs/prova-postgres@main"
 redis    = "prova-rs/prova-redis@main"

@@ -1,4 +1,4 @@
---- POC example: the `archetect` plugin — render an archetype in-process and assert on the output.
+--- POC example: the `archetect` package — render an archetype in-process and assert on the output.
 --- Run from the repo root: `prova examples/archetect_render_test.lua`
 ---
 --- `archetect.render{...}` renders headlessly (no prompts): pass `defaults = true` to take every

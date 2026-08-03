@@ -1,8 +1,8 @@
 --- PRIMITIVES companion to examples/service-grpc-postgres/ — the SAME integration, with the database
---- built by hand instead of via the external `postgres` plugin. Read this when you need a dependency
---- no plugin covers: everything `require("postgres").container` does is a few primitives you already
+--- built by hand instead of via the external `postgres` package. Read this when you need a dependency
+--- no package covers: everything `require("postgres").container` does is a few primitives you already
 --- have — `docker.run` (+ a `wait` gate), `container:run` (drive the CLI in the image), and
---- `prova.retry` / `ctx:manage`. No plugin, so no prova.toml — run it directly:
+--- `prova.retry` / `ctx:manage`. No package, so no prova.toml — run it directly:
 ---   prova examples/service_grpc_postgres_primitives_test.lua
 --- requires docker + cargo (skips cleanly without either). Tagged "primitives".
 
@@ -23,7 +23,7 @@ local project = prova.fixture("project", Scope.File, function(ctx)
   }
 end)
 
--- A tiny docker-exec psql helper — what the postgres plugin wraps. Runs a query inside the container
+-- A tiny docker-exec psql helper — what the postgres package wraps. Runs a query inside the container
 -- (no shell, no quoting) and returns the trimmed scalar.
 local function psql(container, sql)
   return (container:run({

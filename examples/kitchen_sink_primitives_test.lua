@@ -1,9 +1,9 @@
 --- PRIMITIVES companion to kitchen-sink/ — the SAME two-service topology (Rust gRPC producer ·
 --- Pulsar · Python REST consumer), with all three infrastructure dependencies built by hand
---- instead of via the external plugins. Read this when a dependency has no plugin, or needs custom
---- wiring the plugin doesn't expose. Everything the plugins do is a few primitives you already have:
+--- instead of via the external packages. Read this when a dependency has no package, or needs custom
+--- wiring the package doesn't expose. Everything the packages do is a few primitives you already have:
 --- `docker.run` (+ a `wait` gate), `container:run` (drive the CLI already in the image), and
---- `prova.retry`. No plugins, so no prova.toml — run it directly from the repo root:
+--- `prova.retry`. No packages, so no prova.toml — run it directly from the repo root:
 ---   prova examples/kitchen_sink_primitives_test.lua
 --- requires docker + cargo + python3 (skips cleanly without them). Tagged "primitives".
 ---
@@ -23,7 +23,7 @@ local function scalar(s)
   return s
 end
 
--- docker-exec query helpers — what the postgres/mysql plugins wrap. Each runs one statement inside
+-- docker-exec query helpers — what the postgres/mysql packages wrap. Each runs one statement inside
 -- the container (no shell, no quoting) and returns the trimmed, coerced scalar in the first column.
 local function psql(container, sql)
   return scalar(container:run({
@@ -82,7 +82,7 @@ end)
 -- From here down the file is IDENTICAL to kitchen-sink/kitchen_sink_test.lua — the services neither
 -- know nor care how their dependencies came to exist. That interchangeability is the point: a
 -- hand-rolled provisioner that returns the standard { container, url } shape is indistinguishable
--- from a first-party plugin.
+-- from a first-party package.
 
 local producer = prova.fixture("producer", Scope.File, function(ctx)
   local env = ctx:use(infra)
@@ -145,7 +145,7 @@ prova.group("kitchen sink from primitives: Rust gRPC producer → Pulsar → Pyt
     t:expect(created.id, "created id"):gt(0)
 
     -- Cross-check the producer's Postgres by execing psql in its container (hand-rolled binding:
-    -- literal values inlined, since there's no plugin doing it for us).
+    -- literal values inlined, since there's no package doing it for us).
     t:expect(psql(env.pg.container,
       "SELECT count(*) FROM items WHERE display_name = 'widget'")):equals(1)
 
