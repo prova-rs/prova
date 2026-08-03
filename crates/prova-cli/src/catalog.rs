@@ -34,7 +34,7 @@
 //! 2. **`[init.<key>]` with no `source`** — the key is looked up across the configured registries
 //!    (`archetypes/<key>.toml`), and the entry's `switches`/`answers`/`defaults` still apply. This is
 //!    how you attach local policy to someone else's published archetype.
-//! 3. **A built-in key** (`project`, `plugin`) — prova's own, carrying explicit pinned sources so
+//! 3. **A built-in key** (`project`, `package`) — prova's own, carrying explicit pinned sources so
 //!    `prova init project` works on a machine with no config and no registry reachable.
 //! 4. **A bare registry name** — never declared anywhere. `prova init acme-api` renders whatever the
 //!    registries serve under that name, zero config.
@@ -46,7 +46,7 @@
 //!   lists it. Overriding a built-in is deliberate: one line of config, local and auditable (rung 1).
 //! - **`--list` shows the catalog, not the registries.** It stays offline, fast, and predictable —
 //!   the curated set you can render right now. The open namespace is reached by naming a key
-//!   (rung 4), mirroring how `[plugins]` is the committed set while `prova plugins search` browses.
+//!   (rung 4), mirroring how `[dependencies]` is the committed set while `prova packages` browses.
 //!
 //! ## Package-state injection
 //!
@@ -56,7 +56,7 @@
 //!
 //! - switch `prova:in-package`
 //! - answer `prova_package_root` — the package root, relative to the cwd (`.` when they coincide)
-//! - answer `prova_plugin_root` — the manifest's `[run] plugin_root`, when declared (package-root
+//! - answer `prova_packages_dir` (and its deprecated `prova_plugin_root` alias) — the manifest's `[run] packages` directory, when declared (package-root
 //!   relative, verbatim)
 //!
 //! Outside a package none of these are supplied, so an archetype can distinguish the two by probing
@@ -95,8 +95,8 @@ pub struct InitEntry {
     pub answers: BTreeMap<String, String>,
     /// Whether this entry may render inside an already-initialized package. `deny` (the default)
     /// keeps init's never-clobber guard: a manifest in the current directory is an error. `allow` is
-    /// for entries that AUGMENT a package rather than create one (e.g. scaffolding a local plugin
-    /// into `plugin_root`) — the guard steps aside and the archetype decides what to write, informed
+    /// for entries that AUGMENT a package rather than create one (e.g. scaffolding a local package
+    /// into the `packages` directory) — the guard steps aside and the archetype decides what to write, informed
     /// by the injected package state (see the module docs on state injection).
     #[serde(default)]
     pub in_package: InPackage,
@@ -137,7 +137,7 @@ impl Catalog {
             "project".to_string(),
             InitEntry {
                 description: "The full default prova package — a .prova/ nook (manifest, config, \
-                              shared lib plugin) + a starter proof suite"
+                              shared lib package) + a starter proof suite"
                     .to_string(),
                 // Pinned to the released `v1` tag — reproducible scaffolding that doesn't drift when
                 // the archetype's `main` moves.
@@ -611,7 +611,7 @@ mod tests {
         assert_eq!(d.in_package, InPackage::Allow);
         assert_eq!(d.answers["proof_dir"], "tests");
         assert_eq!(c.entries["service"].description, "svc");
-        assert!(c.entries.contains_key("plugin")); // the untouched builtin survives the merge
+        assert!(c.entries.contains_key("package")); // the untouched builtin survives the merge
         assert_eq!(c.entries["service"].in_package, InPackage::Deny); // unstated → never-clobber
         std::fs::remove_dir_all(&at.0).ok();
     }
