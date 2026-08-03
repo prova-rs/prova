@@ -6,7 +6,7 @@
 //! ```toml
 //! [init.project]                  # a matching key REPLACES the built-in entry outright
 //! description = "A standard prova package (a proof suite)"
-//! source      = "https://github.com/prova-rs/prova-init-project-archetype.git#v1"
+//! source      = "https://github.com/prova-rs/prova-init-project-archetype.git#v2"
 //! switches    = ["ci"]            # always passed to the render for this entry
 //! defaults    = true              # take the archetype's default for any unanswered prompt
 //!
@@ -142,7 +142,7 @@ impl Catalog {
                 // Pinned to the released `v1` tag — reproducible scaffolding that doesn't drift when
                 // the archetype's `main` moves.
                 source: Some(
-                    "https://github.com/prova-rs/prova-init-project-archetype.git#v1".to_string(),
+                    "https://github.com/prova-rs/prova-init-project-archetype.git#v2".to_string(),
                 ),
                 switches: Vec::new(),
                 defaults: false,
@@ -160,7 +160,7 @@ impl Catalog {
                 // the archetype's `main` moves. (The repo is being renamed prova-init-package-\
                 // archetype; GitHub redirects the old name until the pin moves.)
                 source: Some(
-                    "https://github.com/prova-rs/prova-init-package-archetype.git#v1".to_string(),
+                    "https://github.com/prova-rs/prova-init-package-archetype.git#v2".to_string(),
                 ),
                 switches: Vec::new(),
                 defaults: false,
