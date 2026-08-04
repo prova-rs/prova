@@ -160,3 +160,12 @@ in one line:
   invasive than the value is currently proven to be. Revisit when the ledger is in real use.
 - **Does level 5 subsume level 2?** An open spec and an unattested claim are both "no evidence
   yet". They are reported by different verbs today. That may be one idea wearing two names.
+- **Promises-aware `depends_on`, parked.** Field report from the first production coordination
+  checklist: items forming an obvious chain (land → clean → CI → close) deliberately carried no
+  dependency edges, because each item is an *observation of an end state* — an unmet upstream
+  leaves the downstream red-but-PROMISED, which is exactly the right report ("open", never
+  "blocked-unknown"), and sequencing enforced by shared facts (compare against the current head
+  sha) beat sequencing enforced by graph edges. If checklist-native gating is ever wanted, the
+  right semantics are promises-aware `depends_on`: upstream PROMISED → downstream reports
+  PROMISED "waiting on X" — never SKIP. The reporter judged it nice-to-have, not needed; park
+  until a checklist that genuinely cannot express its sequencing in data asks for it.
