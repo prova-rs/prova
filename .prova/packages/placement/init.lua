@@ -43,10 +43,26 @@ function M.broker(ctx)
 			fs.remove_all(sock)
 		end)
 	end)
+	-- Readiness is a CONNECTION, not a file. The socket file appears at bind(), a hair before
+	-- listen() — and on a noisy runner the scheduler can widen that hair into a refused connect
+	-- (it did, once, on macOS CI). Probing with a real connect closes both races: file-not-yet
+	-- and listening-not-yet read as the same "not ready, ask again".
+	local spawned = "unix://" .. sock
 	prova.retry(function()
-		return fs.exists(sock)
-	end, { timeout = "10s", every = "25ms", message = "the reference broker never bound its socket" })
-	return "unix://" .. sock
+		local ok, probe = pcall(socket.connect, spawned, { framing = { delimiter = "\n" } })
+		if not ok then
+			return false
+		end
+		pcall(function()
+			probe:close()
+		end)
+		return true
+	end, {
+		timeout = "10s",
+		every = "25ms",
+		message = "the reference broker never came up on " .. spawned,
+	})
+	return spawned
 end
 
 --- The protocol version this suite speaks. Bump with the spec, never silently.
