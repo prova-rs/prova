@@ -1,15 +1,28 @@
 //! The MIT reference placement broker — `prova broker`.
 //!
-//! docs/design/placement.md is the spec; `proofs/spec/placement/` is the contract this binary is
-//! held to, exactly as any third-party or commercial broker is. Two reasons this ships in the open
-//! product rather than living as a test stub:
+//! **This is spec scaffolding, not part of using prova.** Prova alone answers `requires` and
+//! `resources` in-process — single-machine, zero configuration, no socket, and that stays the
+//! default forever. Installing a clustered broker (Anemnez Fleet's fleetd, or any implementation
+//! that passes the conformance suite) and naming its socket is what makes the same suites
+//! pool-aware. Most users never run this verb and never need to know it exists; the conformance
+//! suite spawns it per proof and throws it away.
 //!
+//! docs/design/placement.md is the spec; `proofs/spec/placement/` is the contract this binary is
+//! held to, exactly as any third-party or commercial broker is. Why it exists at all:
+//!
+//! - **It keeps the spec attestable.** The placement proofs must pass in prova's own CI forever,
+//!   and they cannot depend on a proprietary broker. This is what lets `prova attest` answer for
+//!   placement.md on any unix machine.
 //! - **It is the second implementation.** A protocol with one implementation is a description of
 //!   that implementation's quirks. The conformance suite stays honest only while something other
-//!   than fleetd passes it.
+//!   than fleetd passes it — and a broker implementer reads this file instead of reverse
+//!   engineering a product.
 //! - **Local `materialize` is worktree isolation** — run a suite against an isolated tree at a jj
-//!   change id while you keep editing. That is a capability prova does not otherwise have, not
-//!   distribution machinery.
+//!   change id while you keep editing. A single-machine capability, not distribution machinery.
+//!
+//! And what it deliberately is NOT: a pool of one, by construction. No discovery, no pairing, no
+//! trust, no cross-node anything — every capability here is a strict subset of what prova already
+//! does in-process. Multi-machine is the clustered broker's whole job.
 //!
 //! Deliberately synchronous: one thread per connection, `std::process` for `exec`. The protocol is
 //! turn-based per connection (one request, one terminal frame), so async buys nothing here, and a
@@ -60,8 +73,13 @@ pub fn run(args: Vec<String>) -> ExitCode {
             },
             "--help" | "-h" => {
                 println!(
-                    "prova broker — the reference placement broker (docs/design/placement.md)\n\n\
+                    "prova broker — the single-machine reference placement broker (docs/design/placement.md)\n\n\
                      usage: prova broker --socket <path> [--offer <kind>]...\n\n\
+                     Spec scaffolding: the conformance suite (proofs/spec/placement/) spawns this so\n\
+                     the placement protocol stays proven on any unix machine, and broker implementers\n\
+                     read it as the working example. It is a pool of ONE by construction — using prova\n\
+                     never requires it, and multi-machine placement is a clustered broker's job\n\
+                     (install one and name its socket; the same suites become pool-aware).\n\n\
                      Serves the placement protocol (newline-delimited JSON) on a unix socket.\n\
                      `--offer` declares a slot kind this node owns; repeat it per kind. A kind\n\
                      never offered is `unsatisfiable` to claim — exactly as in a real pool."

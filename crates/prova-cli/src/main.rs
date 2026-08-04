@@ -151,8 +151,8 @@ const VERBS: &[Verb] = &[
     },
     Verb {
         name: "broker",
-        help: "  prova broker --socket <path> [--offer <kind>]...  serve the reference placement broker\n\
-               \x20                           (docs/design/placement.md) on a unix socket",
+        help: "  prova broker              spec scaffolding: the single-machine reference placement broker the\n\
+               \x20                           conformance suite spawns — not needed to use prova (see placement.md)",
         run: broker_subcommand,
     },
     Verb {

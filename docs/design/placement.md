@@ -226,6 +226,19 @@ have today. `materialize` against a local node is **worktree isolation**: run a 
 isolated tree at a change id while you keep editing. Tests stop seeing half-finished work, and it
 shares its code path with the distributed case.
 
+## The reference broker's role (`prova broker`)
+
+Spec scaffolding, deliberately. Using prova never requires it: with no broker configured, prova
+resolves everything in-process — single-machine, zero setup — and that stays the default forever.
+The reference broker exists so the conformance suite can prove this document on any unix machine
+(the suite spawns it per proof and throws it away), so broker implementers have a working example
+to read instead of a product to reverse-engineer, and so the protocol always has a second
+implementation keeping it honest. It is a **pool of one by construction** — no discovery, no
+pairing, no trust, no cross-node anything; every capability it has is a strict subset of what
+prova already does locally. The upgrade path is the product's, not this binary's: install a
+clustered broker and name its socket, and the same suites become pool-aware — nothing about how
+a proof is written changes.
+
 ## Conformance
 
 `proofs/spec/placement/` is the executable form of this document — the suite any broker proves
