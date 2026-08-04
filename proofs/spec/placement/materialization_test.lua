@@ -16,6 +16,11 @@ local placement = require("placement")
 -- broker fresh, so these proofs run (and the spec stays attested) on any unix machine.
 local UNIX = { requires = { "unix" } }
 
+--- UNIX plus a claim binding — every bound proof here covers one placement.md claim.
+local function C(claim)
+	return { requires = { "unix" }, covers = "docs/design/placement.md#" .. claim }
+end
+
 local KIND = "prova-conformance-slot"
 
 local function leased(t)
@@ -68,7 +73,7 @@ prova.test("materializing a change id yields a path holding that tree", UNIX, fu
 	t:expect(response.path):is_dir()
 end)
 
-prova.test("an unknown change id is an error, not an empty workspace", UNIX, function(t)
+prova.test("an unknown change id is an error, not an empty workspace", C("unfetchable-refused"), function(t)
 	local broker, lease = leased(t)
 
 	-- Valid in FORM (jj's change-id alphabet is k–z), absent in fact: a full-length id no repo
@@ -123,7 +128,7 @@ prova.test("warmth reports the nearest shared ancestor, or none when cold", UNIX
 	t:expect(type(response.warmth), "warmth is reported"):equals("table")
 end)
 
-prova.test("materialize requires a lease", UNIX, function(t)
+prova.test("materialize requires a lease", C("materialize-lease-bounded"), function(t)
 	local broker = placement.connect(t)
 	local hello = broker:hello()
 	if not placement.advertises(hello, "materialize") then
@@ -144,7 +149,7 @@ prova.test("materialize requires a lease", UNIX, function(t)
 	t:expect(response.outcome):equals("error")
 end)
 
-prova.test("an unsupported vcs is refused by name", UNIX, function(t)
+prova.test("an unsupported vcs is refused by name", C("unfetchable-refused"), function(t)
 	local broker, lease = leased(t)
 
 	local response = broker:request("materialize", {

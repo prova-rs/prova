@@ -13,7 +13,12 @@ local placement = require("placement")
 -- broker fresh, so these proofs run (and the spec stays attested) on any unix machine.
 local UNIX = { requires = { "unix" } }
 
-prova.test("hello negotiates a version the broker will actually speak", UNIX, function(t)
+--- UNIX plus a claim binding — every bound proof here covers one placement.md claim.
+local function C(claim)
+	return { requires = { "unix" }, covers = "docs/design/placement.md#" .. claim }
+end
+
+prova.test("hello negotiates a version the broker will actually speak", C("hello-negotiates"), function(t)
 	local broker = placement.connect(t)
 	local response = broker:hello()
 
@@ -25,7 +30,7 @@ prova.test("hello negotiates a version the broker will actually speak", UNIX, fu
 	t:expect(response.broker, "the broker identifies itself"):never():is_nil()
 end)
 
-prova.test("the broker refuses any operation before hello", UNIX, function(t)
+prova.test("the broker refuses any operation before hello", C("hello-first"), function(t)
 	local broker = placement.connect(t)
 	local response = broker:request("resolve", { capabilities = { { name = "sh" } } })
 
@@ -36,7 +41,7 @@ prova.test("the broker refuses any operation before hello", UNIX, function(t)
 	t:expect(response.outcome):equals("error")
 end)
 
-prova.test("an unknown operation is an error that names it", UNIX, function(t)
+prova.test("an unknown operation is an error that names it", C("unknown-op-named"), function(t)
 	local broker = placement.connect(t)
 	broker:hello()
 
@@ -49,7 +54,7 @@ prova.test("an unknown operation is an error that names it", UNIX, function(t)
 	t:expect(response.message, "the message names the op"):contains("teleport")
 end)
 
-prova.test("a malformed frame is rejected without killing the connection", UNIX, function(t)
+prova.test("a malformed frame is rejected without killing the connection", C("malformed-frame-survives"), function(t)
 	local broker = placement.connect(t)
 	broker:hello()
 
@@ -63,7 +68,7 @@ prova.test("a malformed frame is rejected without killing the connection", UNIX,
 	t:expect(after.ok, "the connection still works"):is_true()
 end)
 
-prova.test("every terminal frame echoes the request id", UNIX, function(t)
+prova.test("every terminal frame echoes the request id", C("ids-echo"), function(t)
 	local broker = placement.connect(t)
 	local hello = broker:hello()
 	local resolved = broker:request("resolve", { capabilities = json.array({}) })
@@ -74,7 +79,7 @@ prova.test("every terminal frame echoes the request id", UNIX, function(t)
 	t:expect(resolved.id, "resolve echoed"):equals(2)
 end)
 
-prova.test("the broker advertises its optional planes as a list", UNIX, function(t)
+prova.test("the broker advertises its optional planes as a list", C("features-gate-planes"), function(t)
 	local broker = placement.connect(t)
 	local response = broker:hello()
 

@@ -65,23 +65,33 @@ would be that it got slower.
 
 ## Frames
 
-Every request carries a client-chosen `id`; every terminal response echoes it.
+<!-- claim: ids-echo -->
+Every request carries a client-chosen `id`; every terminal response echoes it — ids are what let
+a streaming op interleave with anything else on the connection.
 
 ```json
 { "id": 1, "op": "claim", "kind": "window-server", "mode": "exclusive", "ttl_ms": 300000 }
 { "id": 1, "ok": true, "outcome": "granted", "lease": "L-7f3a", "node": "studio", "expires_at_ms": 1750000300000 }
 ```
 
+<!-- claim: streams-then-terminal -->
 Streaming operations emit zero or more `event` frames sharing the `id`, then exactly one terminal
-frame:
+frame — streamed as produced, never buffered to completion, which is what keeps a long remote run
+watchable:
 
 ```json
 { "id": 4, "event": "stdout", "data": "Test Suite 'All tests' passed\n" }
 { "id": 4, "ok": true, "exit": 0 }
 ```
 
+<!-- claim: unknown-op-named -->
 Unknown fields are ignored, so a broker may add information without a version bump. Unknown `op`
 is an error naming the op — never silence.
+
+<!-- claim: malformed-frame-survives -->
+A malformed frame is an `error`, and the connection survives it. Leases are held across turns, so
+a broker that dropped the connection on a parse error would release every slot the client holds
+as a side effect of a typo.
 
 ## Outcomes, and the one distinction that matters most
 
@@ -94,11 +104,15 @@ Every terminal frame carries `ok`, and a failed one carries `outcome`:
 | `unsatisfiable` | no node in the pool can ever satisfy this | **skip**, with the reason |
 | `error` | the broker or the work failed (+ `message`) | **fail loudly** |
 
-`busy` and `unsatisfiable` must never be confused. A skip is silent by design — it is how
-`requires` reports "you don't have Docker" without failing your build. Contention is not a reason
-to skip: reporting a saturated pool as `unsatisfiable` converts every capacity shortage into a
-suite that reports green having tested nothing. This is the single most important conformance
-rule in this document, and it is why quota exhaustion (below) is `busy`.
+<!-- claim: busy-is-not-unsatisfiable -->
+`busy` and `unsatisfiable` must never be confused, in either direction: contention is `busy`
+(satisfiable, wait), absence is `unsatisfiable` (skip, carrying its reason — the only artifact a
+silent skip leaves). A skip is silent by design — it is how `requires` reports "you don't have
+Docker" without failing your build. Contention is not a reason to skip: reporting a saturated
+pool as `unsatisfiable` converts every capacity shortage into a suite that reports green having
+tested nothing — and a slot nobody offers reported as `busy` would hang a run retrying forever.
+This is the single most important conformance rule in this document, and it is why quota
+exhaustion (below) is `busy`.
 
 ## Operations
 
@@ -109,10 +123,16 @@ rule in this document, and it is why quota exhaustion (below) is `busy`.
 ← { "id": 0, "ok": true, "protocol": "1.0", "broker": "fleetd/0.1.0", "features": ["exec", "materialize"], "nodes": 4 }
 ```
 
+<!-- claim: hello-negotiates -->
 Version is `major.minor`. A broker MUST accept any client whose major matches and whose minor is
-`<=` its own, and MUST report the version it will actually speak. `features` advertises optional
-planes; prova must not send an op the broker did not advertise.
+`<=` its own, and MUST report the version it will actually speak.
 
+<!-- claim: features-gate-planes -->
+`features` advertises optional planes, always as a list (empty is an answer; an omitted key is an
+old broker that forgot to say). Prova must not send an op the broker did not advertise, and a
+broker must refuse a plane it never claimed rather than half-implement it.
+
+<!-- claim: hello-first -->
 `hello` is mandatory and first. A broker MUST reject any other op on a connection that has not
 said hello — a client that skips it has almost certainly failed to negotiate a version.
 
@@ -124,12 +144,27 @@ said hello — a client that skips it has almost certainly failed to negotiate a
 ← { "id": 1, "ok": true, "outcome": "granted", "nodes": 2 }
 ```
 
-`capabilities` mirrors `requires` exactly, including its version-constraint grammar. `nodes` is a
-**count, not a roster**: prova needs to know whether the work can run, never where. Node identity
-is the broker's business, and keeping it out of the response keeps it out of prova's model.
+<!-- claim: constraints-evaluated -->
+`capabilities` mirrors `requires` exactly, including its version-constraint grammar — and a
+constraint is **evaluated**, never merely refused. A broker that parsed the name and dropped the
+constraint would place version-gated work on toolchains it declared unusable; one that refused
+every constrained capability would make the same work skip silently forever.
 
-Resolution is advisory and may be stale — a pool converges eventually. A `resolve` that says two
-nodes can serve does not promise a subsequent `claim` will be granted; that is what `busy` is for.
+<!-- claim: resolve-is-conjunctive -->
+Several capabilities are one question about one node: they resolve **conjunctively**, and the
+refusal names the missing one. A broker that answered disjunctively would place work on a node
+missing half its requirements.
+
+<!-- claim: resolve-counts-not-rosters -->
+`nodes` is a **count, not a roster**: prova needs to know whether the work can run, never where.
+Node identity is the broker's business, and keeping it out of the response keeps it out of
+prova's model. An empty capability list is the common case, not an error — a proof that demands
+nothing runs anywhere.
+
+<!-- claim: resolve-advisory -->
+Resolution is advisory and may be stale — a pool converges eventually. It reserves nothing: a
+`resolve` that says two nodes can serve does not promise a subsequent `claim` will be granted;
+that is what `busy` is for.
 
 ### `claim` / `renew` / `release` — widen `resources`
 
@@ -140,28 +175,36 @@ nodes can serve does not promise a subsequent `claim` will be granted; that is w
               "expires_at_ms": 1750000300000 }
 ```
 
+<!-- claim: modes-mirror-access-grammar -->
 `kind` is the resource name from `prova.writes(…)` / `prova.reads(…)`; `mode` is `exclusive` for
-a writer and `shared` for a reader. Prova's existing access-mode grammar *is* the slot grammar —
-no new vocabulary appears at the call site.
+a writer and `shared` for a reader — readers coexist, a writer excludes everyone, in both
+directions. Prova's existing access-mode grammar *is* the slot grammar — no new vocabulary
+appears at the call site.
 
-Leases **expire**. `ttl_ms` bounds how long a slot can be held by a client that has stopped
-existing: a killed `prova` must not strand a GUI slot forever. The holder renews:
+<!-- claim: leases-expire -->
+Leases **expire**. Every grant carries an identity and an `expires_at_ms`; `ttl_ms` bounds how
+long a slot can be held by a client that has stopped existing: a killed `prova` must not strand a
+GUI slot forever. The holder renews, and renewal moves the deadline out:
 
 ```json
 → { "id": 3, "op": "renew", "lease": "L-7f3a" }
 ← { "id": 3, "ok": true, "expires_at_ms": 1750000600000 }
 ```
 
+<!-- claim: stale-renew-refused -->
 Renewing an expired or unknown lease is `error`, not silent re-grant — the slot may already be
 held by someone else, and pretending otherwise double-books it.
 
-`release` returns the slot. It is idempotent: releasing twice is `ok`.
+<!-- claim: release-idempotent -->
+`release` returns the slot for the next claim. It is idempotent: releasing twice is `ok`, because
+a deferred release plus an explicit one is correct teardown, not an abuse.
 
 **Allocation is node-local.** A slot lives on exactly one machine, which is its sole writer, so
 granting needs no distributed lock and no consensus. A broker's view of a peer's free capacity is
 advisory; a claim that loses a race comes back `busy` and prova retries. This is the property that
 lets the mesh be AP — partition-tolerant, quorum-free, severable — without ever double-granting.
 
+<!-- claim: drain-never-preempt -->
 **Drain, never preempt.** A node leaving the pool stops granting new leases and lets in-flight
 ones run to completion. A broker MUST NOT revoke a granted lease. A preempted test is
 indistinguishable from a failing test, so preemption would make a proof runner manufacture false
@@ -180,7 +223,15 @@ Execution goes *through* the broker rather than prova being handed an SSH endpoi
 credentials, host trust and transport entirely behind the socket, and it means the local reference
 broker exercises the same code path as a clustered one.
 
-`exec` requires a granted lease. Executing against an expired lease is `error`.
+<!-- claim: exec-reports-the-works-exit -->
+A command that exits non-zero is a **successful exec of a failing command**: `ok` stays true and
+`exit` carries the command's own code. `error` is reserved for the transport — the broker or the
+spawn failing. Collapsing the two would make every red test look like a broken pool, and the fix
+for those is not the same.
+
+<!-- claim: exec-needs-a-live-lease -->
+`exec` requires a granted lease. Executing against an expired or unknown lease is `error` —
+running unleased work is exactly the double-booking this model exists to prevent.
 
 ### `materialize` — the workspace at a commit
 
@@ -201,6 +252,17 @@ rsync's failure mode of shipping dirty state that no commit describes.
 `warmth.shared_ancestor` reports the nearest common ancestor between the requested change and what
 the node already has materialized — the input to a scheduler's rebuild-cost estimate. A cold node
 returns no ancestor.
+
+<!-- claim: unfetchable-refused -->
+Whatever a broker cannot fetch or does not speak, it **refuses by name** — an unknown change id
+and an unsupported `vcs` are both `error`, never a silently different tree. Materializing
+something else — trunk, an empty workspace — is the worst available outcome: the suite runs,
+passes, and proves nothing about the code you meant to test.
+
+<!-- claim: materialize-lease-bounded -->
+`materialize` requires a granted lease, and the lease bounds the workspace's lifetime. Without
+that, a client could fill a node's disk with trees nobody is scheduled to use, and nothing would
+ever clean them up.
 
 ## Metering
 

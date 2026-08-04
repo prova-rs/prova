@@ -12,6 +12,11 @@ local placement = require("placement")
 -- broker fresh, so these proofs run (and the spec stays attested) on any unix machine.
 local UNIX = { requires = { "unix" } }
 
+--- UNIX plus a claim binding — every bound proof here covers one placement.md claim.
+local function C(claim)
+	return { requires = { "unix" }, covers = "docs/design/placement.md#" .. claim }
+end
+
 local KIND = "prova-conformance-slot"
 
 local function leased(t)
@@ -32,7 +37,7 @@ local function leased(t)
 	return broker, lease.lease
 end
 
-prova.test("exec reports the exit code of the work, not of the transport", UNIX, function(t)
+prova.test("exec reports the exit code of the work, not of the transport", C("exec-reports-the-works-exit"), function(t)
 	local broker, lease = leased(t)
 
 	local ok = broker:request("exec", { lease = lease, argv = { "sh", "-c", "exit 0" } })
@@ -46,7 +51,7 @@ prova.test("exec reports the exit code of the work, not of the transport", UNIX,
 	t:expect(failed.exit, "and reported the command's code"):equals(3)
 end)
 
-prova.test("stdout and stderr stream as events before the terminal frame", UNIX, function(t)
+prova.test("stdout and stderr stream as events before the terminal frame", C("streams-then-terminal"), function(t)
 	local broker, lease = leased(t)
 
 	local response, events = broker:request("exec", {
@@ -67,7 +72,7 @@ prova.test("stdout and stderr stream as events before the terminal frame", UNIX,
 	t:expect(streams.stderr, "stderr arrived, kept separate"):contains("to-err")
 end)
 
-prova.test("exec against an unknown lease is an error", UNIX, function(t)
+prova.test("exec against an unknown lease is an error", C("exec-needs-a-live-lease"), function(t)
 	local broker = placement.connect(t)
 	local hello = broker:hello()
 	if not placement.advertises(hello, "exec") then

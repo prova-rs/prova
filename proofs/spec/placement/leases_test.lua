@@ -12,6 +12,11 @@ local placement = require("placement")
 -- broker fresh, so these proofs run (and the spec stays attested) on any unix machine.
 local UNIX = { requires = { "unix" } }
 
+--- UNIX plus a claim binding — every bound proof here covers one placement.md claim.
+local function C(claim)
+	return { requires = { "unix" }, covers = "docs/design/placement.md#" .. claim }
+end
+
 local KIND = "prova-conformance-slot"
 
 local function connected(t)
@@ -38,7 +43,7 @@ local function claimed(t, broker, fields)
 	return response
 end
 
-prova.test("a claim grants a lease with an identity and an expiry", UNIX, function(t)
+prova.test("a claim grants a lease with an identity and an expiry", C("leases-expire"), function(t)
 	local broker = connected(t)
 	local response = claimed(t, broker)
 
@@ -50,7 +55,7 @@ prova.test("a claim grants a lease with an identity and an expiry", UNIX, functi
 	t:expect(response.expires_at_ms, "the lease expires"):gt(0)
 end)
 
-prova.test("a second exclusive claim on a held slot is busy, never unsatisfiable", UNIX, function(t)
+prova.test("a second exclusive claim on a held slot is busy, never unsatisfiable", C("busy-is-not-unsatisfiable"), function(t)
 	local broker = connected(t)
 	local first = claimed(t, broker)
 	t:expect(first.outcome, "the first claim was granted"):equals("granted")
@@ -64,7 +69,7 @@ prova.test("a second exclusive claim on a held slot is busy, never unsatisfiable
 	t:expect(second.retry_after_ms, "and it says when to come back"):gt(0)
 end)
 
-prova.test("shared mode admits concurrent holders where exclusive does not", UNIX, function(t)
+prova.test("shared mode admits concurrent holders where exclusive does not", C("modes-mirror-access-grammar"), function(t)
 	local broker = connected(t)
 
 	-- prova.reads() vs prova.writes() already distinguishes these at the call site, so the slot
@@ -77,7 +82,7 @@ prova.test("shared mode admits concurrent holders where exclusive does not", UNI
 	t:expect(second.lease, "and they are distinct leases"):never():equals(first.lease)
 end)
 
-prova.test("an exclusive claim waits behind a shared one", UNIX, function(t)
+prova.test("an exclusive claim waits behind a shared one", C("modes-mirror-access-grammar"), function(t)
 	local broker = connected(t)
 	local reader = claimed(t, broker, { mode = "shared" })
 	t:expect(reader.outcome):equals("granted")
@@ -89,7 +94,7 @@ prova.test("an exclusive claim waits behind a shared one", UNIX, function(t)
 	t:expect(writer.outcome):equals("busy")
 end)
 
-prova.test("renewing extends the expiry", UNIX, function(t)
+prova.test("renewing extends the expiry", C("leases-expire"), function(t)
 	local broker = connected(t)
 	local lease = claimed(t, broker)
 	t:expect(lease.outcome):equals("granted")
@@ -100,7 +105,7 @@ prova.test("renewing extends the expiry", UNIX, function(t)
 	t:expect(renewed.expires_at_ms, "the deadline moved out"):gte(lease.expires_at_ms)
 end)
 
-prova.test("renewing an unknown lease is an error, never a fresh grant", UNIX, function(t)
+prova.test("renewing an unknown lease is an error, never a fresh grant", C("stale-renew-refused"), function(t)
 	local broker = connected(t)
 	local response = broker:request("renew", { lease = "L-never-existed" })
 
@@ -111,7 +116,7 @@ prova.test("renewing an unknown lease is an error, never a fresh grant", UNIX, f
 	t:expect(response.outcome):equals("error")
 end)
 
-prova.test("releasing frees the slot for the next claim", UNIX, function(t)
+prova.test("releasing frees the slot for the next claim", C("release-idempotent"), function(t)
 	local broker = connected(t)
 	local first = broker:request("claim", { kind = KIND, mode = "exclusive", ttl_ms = 60000 })
 	t:expect(first.outcome):equals("granted")
@@ -123,7 +128,7 @@ prova.test("releasing frees the slot for the next claim", UNIX, function(t)
 	t:expect(second.outcome, "the slot came back"):equals("granted")
 end)
 
-prova.test("release is idempotent", UNIX, function(t)
+prova.test("release is idempotent", C("release-idempotent"), function(t)
 	local broker = connected(t)
 	local lease = broker:request("claim", { kind = KIND, mode = "exclusive", ttl_ms = 60000 })
 
@@ -134,7 +139,7 @@ prova.test("release is idempotent", UNIX, function(t)
 	t:expect(broker:request("release", { lease = lease.lease }).ok, "twice is fine"):is_true()
 end)
 
-prova.test("an unknown slot kind is unsatisfiable, not busy", UNIX, function(t)
+prova.test("an unknown slot kind is unsatisfiable, not busy", C("busy-is-not-unsatisfiable"), function(t)
 	local broker = connected(t)
 	local response = broker:request("claim", {
 		kind = "no-node-offers-this-xyzzy",
@@ -150,7 +155,7 @@ end)
 
 -- Against the single-node reference broker this pins only the local half of drain-never-preempt;
 -- the multi-node half (a DRAINING node keeps honouring in-flight leases) is the mesh's to prove.
-prova.test("a lease is never revoked out from under its holder", UNIX, function(t)
+prova.test("a lease is never revoked out from under its holder", C("drain-never-preempt"), function(t)
 	local broker = connected(t)
 	local lease = claimed(t, broker)
 	t:expect(lease.outcome):equals("granted")
