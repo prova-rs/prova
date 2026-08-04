@@ -65,6 +65,56 @@ pub struct Counts {
     pub deselected: usize,
 }
 
+/// One reminder, as the run evaluated it — the attention account's row in the record
+/// (docs/design/reminders.md). Conditions evaluate during RUNS; the query verbs (`reminders`,
+/// `owed`, `evidence`) execute nothing and read these rows back.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReminderEntry {
+    pub name: String,
+    /// `"quiet"` | `"due"` | `"unevaluated"`. A string, not an enum: the record is a wire format
+    /// other tools read, and an unknown future state should render as itself, not fail the parse.
+    pub state: String,
+    /// For `due`: the condition's own report of what the world did. For `unevaluated`: the reason
+    /// it could not look. Absent for `quiet`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    /// The instruction — what to do when this fires.
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+}
+
+impl ReminderEntry {
+    pub fn is_due(&self) -> bool {
+        self.state == "due"
+    }
+}
+
+/// Convert the engine's evaluated reminders into record rows.
+pub fn reminder_entries(outcomes: &[prova_core::ReminderOutcome]) -> Vec<ReminderEntry> {
+    use prova_core::ReminderState;
+    outcomes
+        .iter()
+        .map(|o| {
+            let (state, why) = match &o.state {
+                ReminderState::Quiet => ("quiet", None),
+                ReminderState::Due { why } => ("due", why.clone()),
+                ReminderState::Unevaluated { reason } => ("unevaluated", Some(reason.clone())),
+            };
+            ReminderEntry {
+                name: o.name.clone(),
+                state: state.to_string(),
+                why,
+                message: o.message.clone(),
+                file: o.file.clone(),
+                line: o.line,
+            }
+        })
+        .collect()
+}
+
 /// One run, as a durable fact.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Record {
@@ -85,6 +135,11 @@ pub struct Record {
     pub skipped: Vec<Skipped>,
     /// Named, not summed. Deselection and skipping have different causes and one consequence.
     pub deselected: Vec<String>,
+    /// The attention account: every reminder with its evaluated state. Defaulted so records from
+    /// before reminders existed still parse; a filtered run carries the previous run's rows forward
+    /// (conditions are only sound against the FULL account, and a `-k` run must not wipe them).
+    #[serde(default)]
+    pub reminders: Vec<ReminderEntry>,
 }
 
 /// Which build produced a record.
@@ -248,6 +303,7 @@ mod tests {
                 .map(|(p, r)| Skipped { path: p.to_string(), reason: r.to_string() })
                 .collect(),
             deselected: desel.iter().map(|d| d.to_string()).collect(),
+            reminders: Vec::new(),
         }
     }
 

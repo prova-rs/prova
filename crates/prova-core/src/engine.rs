@@ -42,7 +42,8 @@ use futures::stream::StreamExt;
 use mlua::{Function, Lua, Table, UserData, UserDataFields, UserDataMethods, Value};
 
 use crate::model::{
-    parse_duration, Event, NodeIx, Outcome, Params, Reporter, ResourceReq, Summary, UnitOpts,
+    parse_duration, Event, NodeIx, Outcome, Params, ReminderAccount, ReminderOutcome,
+    ReminderState, Reporter, ResourceReq, Summary, UnitOpts,
 };
 
 /// Throughput knob (never semantic). Defaults to sequential until the resource scheduler exists.
@@ -775,9 +776,28 @@ struct Node {
     line: Option<u32>,
 }
 
+/// One `prova.remind(name, { when = fn }, message)` declaration, as collected. Not a node: a
+/// reminder never enters the plan, the selection, or the tally — it is harvested by the
+/// attention-account pass ([`evaluate_reminders`]) after the proofs complete.
+struct ReminderDef {
+    name: String,
+    /// The trigger — plain Lua over the same primitives tests use. Receives the run's account.
+    when: Function,
+    /// The instruction: what to DO when this fires (the discharge is an act, not an assertion).
+    message: String,
+    /// Capability expressions gating evaluation, `requires`-style. Unmet → `Unevaluated`, never
+    /// `Quiet` — a tripwire that could not look must not report that it saw nothing.
+    requires: Vec<String>,
+    file: usize,
+    line: Option<u32>,
+}
+
 struct Collector {
     nodes: Vec<Node>,
     fixtures: Vec<FixtureDef>,
+    /// Reminders declared while loading (`prova.remind`). Collected beside the nodes, reported in a
+    /// separate account — see docs/design/reminders.md.
+    reminders: Vec<ReminderDef>,
     /// Named topologies (`prova.topology`) → their fixture id, so `prova up <name>` can address a
     /// whole environment by name. A topology is a fixture that is *also* addressable by the `up`/
     /// `start` verbs; in test mode it is used exactly like any other fixture (`t:use(handle)`).
@@ -815,6 +835,7 @@ impl Collector {
                 line: None,
             }],
             fixtures: vec![],
+            reminders: vec![],
             topologies: BTreeMap::new(),
             parent_stack: vec![0],
             builder_depth: 0,
@@ -2558,6 +2579,61 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
                 };
                 lua.create_userdata(FixtureHandle { id })
             })?,
+        )?;
+    }
+
+    {
+        // prova.remind(name, { when = fn, requires? }, message) — an obligation the WORLD creates:
+        // the attention account, not the evidence account (docs/design/reminders.md). Declared
+        // beside tests, collected like them, and deliberately NOT one: it never enters the plan,
+        // the selection, burndown, or the tally. The condition evaluates after the proofs complete
+        // (see `evaluate_reminders`); the message is the instruction, because a reminder's
+        // discharge is an act, not an assertion.
+        let col = col.clone();
+        prova.set(
+            "remind",
+            lua.create_function(
+                move |lua, (name, opts, message): (String, Table, Option<String>)| {
+                    reject_bare_in_builder(&col, "remind")?;
+                    if name.trim().is_empty() {
+                        return Err(mlua::Error::RuntimeError(
+                            "remind needs a name — it is how the reminder reports".into(),
+                        ));
+                    }
+                    let message = message.filter(|m| !m.trim().is_empty()).ok_or_else(|| {
+                        mlua::Error::RuntimeError(
+                            "remind(name, opts, message): the message is the instruction — say \
+                             what to DO when this fires (a reminder is discharged by an act, so \
+                             it carries a to-do, not an assertion)"
+                                .into(),
+                        )
+                    })?;
+                    let when: Function =
+                        opts.get::<Option<Function>>("when")?.ok_or_else(|| {
+                            mlua::Error::RuntimeError(
+                                "remind needs `when = function(account) ... end` — the condition \
+                                 that makes it due (return falsy for quiet, or true/a why-string \
+                                 when attention is owed)"
+                                    .into(),
+                            )
+                        })?;
+                    let requires: Vec<String> = opts
+                        .get::<Option<Vec<String>>>("requires")?
+                        .unwrap_or_default();
+                    let line = caller_line(lua, &col);
+                    let mut c = col.borrow_mut();
+                    let file = c.current_file;
+                    c.reminders.push(ReminderDef {
+                        name,
+                        when,
+                        message,
+                        requires,
+                        file,
+                        line,
+                    });
+                    Ok(())
+                },
+            )?,
         )?;
     }
 
@@ -4704,6 +4780,127 @@ fn load_member_files(lua: &Lua, col: &SharedCollector, files: &[PathBuf]) -> mlu
     Ok(())
 }
 
+/// The attention-account pass: evaluate every `prova.remind` condition, after the proofs have
+/// completed (docs/design/reminders.md).
+///
+/// Runs during the same invocation as the proofs — conditions evaluate in RUNS, and query verbs
+/// only ever read what this recorded — but in its own phase and its own per-suite Lua states,
+/// because reminder closures are `!Send` and the worker states that collected them are gone by the
+/// time the whole-run account (which ledger conditions observe) is known. Re-loading is the same
+/// collection `--list` performs; bodies never execute.
+///
+/// One pass, declaration order, no fixpoint: a condition receives the run's [`ReminderAccount`]
+/// and nothing about other reminders. Best-effort per suite — a suite that fails to load already
+/// failed the run itself, so the pass skips it rather than failing twice.
+pub fn evaluate_reminders(
+    suites: &[crate::suite::Suite],
+    config: &RunConfig,
+    account: &ReminderAccount,
+) -> Vec<ReminderOutcome> {
+    let mut out = Vec::new();
+    for suite in suites {
+        let loaded = (|| -> mlua::Result<(Lua, SharedCollector)> {
+            if suite.setup.is_none() && suite.files.len() == 1 {
+                return read_and_collect(&suite.files[0], config);
+            }
+            let (lua, col) = build_lua(suite.name.clone(), config)?;
+            if let Some(setup) = suite.setup.as_deref() {
+                let code = std::fs::read_to_string(setup).map_err(|e| {
+                    mlua::Error::RuntimeError(format!("cannot read {}: {e}", setup.display()))
+                })?;
+                lua.load(&code).set_name(file_chunk_name(setup)).exec()?;
+            }
+            load_member_files(&lua, &col, &suite.files)?;
+            Ok((lua, col))
+        })();
+        let Ok((lua, col)) = loaded else { continue };
+        let (defs, file_paths) = {
+            let mut c = col.borrow_mut();
+            (std::mem::take(&mut c.reminders), c.file_paths.clone())
+        };
+        if defs.is_empty() {
+            continue;
+        }
+        let Ok(rt) = new_runtime() else { continue };
+        block_on_local(&rt, async {
+            for def in defs {
+                let file = file_paths
+                    .get(def.file)
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .map(|p| p.to_string_lossy().into_owned());
+                let state = evaluate_reminder(&lua, &def, config, account).await;
+                out.push(ReminderOutcome {
+                    name: def.name,
+                    message: def.message,
+                    file,
+                    line: def.line,
+                    state,
+                });
+            }
+        });
+    }
+    out
+}
+
+/// Evaluate one reminder's condition against the run's account.
+///
+/// The mapping is the whole contract: a falsy return is `Quiet`; a truthy return is `Due`, with a
+/// string return carrying the condition's own "why" (what the world did); an unmet `requires` or a
+/// raise is `Unevaluated` with the reason — never `Quiet`, because a watcher that could not look
+/// must stay visibly disarmed.
+async fn evaluate_reminder(
+    lua: &Lua,
+    def: &ReminderDef,
+    config: &RunConfig,
+    account: &ReminderAccount,
+) -> ReminderState {
+    for expr in &def.requires {
+        if let Some(reason) = config.capabilities.unmet_reason(expr) {
+            return ReminderState::Unevaluated { reason };
+        }
+    }
+    // The read-only account view. Built fresh per condition so a condition that mutates its copy
+    // cannot leak the mutation into a later one — and it carries NO reminder state, by design.
+    let acct = match lua.create_table() {
+        Ok(t) => t,
+        Err(e) => {
+            return ReminderState::Unevaluated {
+                reason: format!("could not build the account view: {e}"),
+            }
+        }
+    };
+    for (key, value) in [
+        ("passed", account.passed),
+        ("failed", account.failed),
+        ("skipped", account.skipped),
+        ("promised", account.promised),
+        ("owed", account.owed),
+    ] {
+        if acct.set(key, value).is_err() {
+            return ReminderState::Unevaluated {
+                reason: "could not build the account view".to_string(),
+            };
+        }
+    }
+    match def.when.call_async::<Value>(acct).await {
+        Err(e) => {
+            let text = e.to_string();
+            let first = text.lines().next().unwrap_or("error").to_string();
+            ReminderState::Unevaluated {
+                reason: format!("condition raised: {first}"),
+            }
+        }
+        Ok(Value::String(s)) => {
+            let why = s.to_string_lossy().to_string();
+            ReminderState::Due {
+                why: (!why.is_empty()).then_some(why),
+            }
+        }
+        Ok(v) if truthy(&v) => ReminderState::Due { why: None },
+        Ok(_) => ReminderState::Quiet,
+    }
+}
+
 /// Build plan → run → tear down (every file scope, then the suite). Shared by the single-file and
 /// multi-file loaders once the collector is populated.
 fn execute_collected(
@@ -4738,6 +4935,7 @@ fn execute_collected(
     let mut summary = Summary {
         deselected,
         deselected_paths: dropped,
+        reminders_declared: col.borrow().reminders.len(),
         ..Summary::default()
     };
     block_on_local(&rt, async {

@@ -366,6 +366,42 @@ function prova.fixture(name, scope, factory, opts) end
 ---@return prova.Fixture<T>
 function prova.topology(name, scope, factory) end
 
+---The read-only view of the run's account a reminder condition receives — evaluated after the
+---proofs complete, so "all proofs green" / "nothing owed" are one-line conditions. Carries NO
+---reminder state: reminders cannot observe reminders.
+---@class prova.ReminderAccount
+---@field passed integer     # leaves that passed in this run
+---@field failed integer     # leaves that failed in this run
+---@field skipped integer    # leaves that skipped in this run
+---@field promised integer   # open promises in this run (the `promised` count of the headline)
+---@field owed integer       # the ledger's remainder, as `prova owed` counts it (promises + claims)
+
+---@class prova.RemindOpts
+---@field when fun(account: prova.ReminderAccount): boolean|string|nil   # the trigger: falsy → quiet; true → due; a string → due, with the string as the report's "why"
+---@field requires? string[]   # capability expressions gating evaluation — unmet → UNEVALUATED, never quiet
+
+---Declare a **reminder** — an obligation the world creates (the attention account, not the
+---evidence account). Not a test: it never enters the tally, the selection, or burndown. The
+---condition evaluates after the proofs complete; while it returns falsy the reminder is QUIET
+---(silence in the run output), and when it returns truthy the reminder is DUE — attention owed,
+---reported in the run, `prova reminders`, and `prova owed`. The message is the instruction: what
+---to DO when it fires, because a reminder is discharged by an act, not an assertion.
+---
+---A due reminder never fails the run by default (the world moving is not a defect in the change
+---under test); a context whose job is currency opts in with `heed = true` in prova.toml.
+---```lua
+---prova.remind("stay current with prova-redis", {
+---  when = function(account)
+---    local latest = releases.latest("prova-rs/prova-redis")
+---    return semver.gt(latest, "v1") and (latest .. " is out; we pin v1")
+---  end,
+---}, "integrate the new release and bump [dependencies]")
+---```
+---@param name string
+---@param opts prova.RemindOpts
+---@param message string   # the instruction — what to do when this fires
+function prova.remind(name, opts, message) end
+
 --- An opaque fixture-scope value — a member of the `Scope` global.
 ---@class prova.ScopeRef
 ---@field scope string   # the scope name ("test"|"flow"|"file"|"suite")

@@ -55,7 +55,8 @@ pub fn default_inject() -> Vec<String> {
 }
 
 pub use engine::{
-    discover_path, discover_path_with, docker_runs_linux_containers, eval_snippet, hold_topology,
+    discover_path, discover_path_with, docker_runs_linux_containers, eval_snippet,
+    evaluate_reminders, hold_topology,
     inspect_package, is_builtin_capability, list_topologies, load_project_config, obligations_for_suite,
     qualify_leaf_path, run_path, ProofObligation,
     run_path_with, unreferenced_snapshots, up, watch, Capabilities, Endpoint, HeldTopology, Module,
@@ -66,6 +67,7 @@ pub use layout::{RootedSystemLayout, SystemLayout, XdgSystemLayout};
 pub use progress::{Activity, Kind as ActivityKind, NullProgress, Progress};
 pub use model::{
     spec_summary_segment, ConsoleReporter, Event, JUnitReporter, JsonReporter, MultiReporter,
-    NullReporter, Outcome, Reporter, Summary, TapReporter,
+    NullReporter, Outcome, ReminderAccount, ReminderOutcome, ReminderState, Reporter, Summary,
+    TapReporter,
 };
 pub use suite::{discover_files, discover_suite, discover_suites, is_test_file, run_suite, run_suites, Suite};

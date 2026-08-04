@@ -113,8 +113,14 @@ const VERBS: &[Verb] = &[
     Verb {
         name: "owed",
         help: "  prova owed                what this package still owes: open promises, unproven claims,\n\
-               \x20                           and covers pointing at prose that is not there",
+               \x20                           covers pointing at prose that is not there, and due reminders",
         run: owed_subcommand,
+    },
+    Verb {
+        name: "reminders",
+        help: "  prova reminders           the attention account: every `prova.remind` with its recorded\n\
+               \x20                           state (DUE / QUIET / UNEVALUATED); exits non-zero when any is due",
+        run: reminders_subcommand,
     },
     Verb {
         name: "falsify",
@@ -471,17 +477,112 @@ fn owed_subcommand(args: Vec<String>) -> ExitCode {
     }
 
     let owed = claims::reconcile(&claims, &proofs);
-    if owed.is_empty() {
-        println!("prova: nothing owed — no open promises, and every claim is covered");
+
+    // DUE reminders join the narrowing (docs/design/reminders.md): an arriving agent asks ONE
+    // question — what is owed here? — and attention owed is part of the answer. Read from the run
+    // record, never evaluated: `owed` is a query verb and executes nothing. Quiet and unevaluated
+    // reminders live in `prova reminders`, not here — only DUE is *owed*.
+    let due: Vec<record::ReminderEntry> = record::load(&home)
+        .map(|r| r.reminders.into_iter().filter(|e| e.is_due()).collect())
+        .unwrap_or_default();
+
+    if owed.is_empty() && due.is_empty() {
+        println!("prova: nothing owed — no open promises, every claim is covered, and no reminder is due");
         return ExitCode::SUCCESS;
     }
     for row in &owed {
         println!("  {:<9} {}", row.status.tag(), row.subject);
         println!("            {}", row.detail);
     }
+    for e in &due {
+        println!("  {:<9} {}", "DUE", e.name);
+        match &e.why {
+            Some(w) => println!("            {w} — {}", e.message),
+            None => println!("            {}", e.message),
+        }
+    }
     println!();
-    println!("  {} owed", owed.len());
+    println!("  {} owed", owed.len() + due.len());
     ExitCode::SUCCESS
+}
+
+/// `prova reminders` — the attention account, read back from the run record.
+///
+/// A query verb: executes nothing, evaluates nothing (conditions evaluate during RUNS — see
+/// docs/design/reminders.md). Reports every reminder with its recorded state, DUE first, and exits
+/// non-zero when any is due — the `attest` pattern, so "is anything owed attention?" is one exit
+/// code for a pipeline.
+fn reminders_subcommand(args: Vec<String>) -> ExitCode {
+    for arg in &args {
+        if arg == "-h" || arg == "--help" {
+            println!(
+                "usage: prova reminders\n\n\
+                 Lists every `prova.remind` with the state the last recorded run evaluated:\n\
+                 DUE (attention owed — with the condition's why and the instruction), QUIET,\n\
+                 or UNEVALUATED (the condition could not run, with the reason).\n\n\
+                 Executes nothing: conditions evaluate during runs; this reads the record.\n\
+                 Exits non-zero when any reminder is due."
+            );
+            return ExitCode::SUCCESS;
+        }
+    }
+    let home = match resolve_home(None) {
+        Ok(h) => h,
+        Err(code) => return code,
+    };
+    let Some(record) = record::load(&home) else {
+        eprintln!(
+            "prova: no recorded run — conditions evaluate during runs; run `prova` first"
+        );
+        return ExitCode::from(2);
+    };
+    if record.reminders.is_empty() {
+        println!("prova: no reminders in the recorded run (none declared, or the record predates them)");
+        return ExitCode::SUCCESS;
+    }
+
+    let mut due = 0;
+    let mut unevaluated = 0;
+    let mut quiet = 0;
+    // DUE first — the actionable rows lead; then the disarmed watchers; the quiet tail last.
+    let mut ordered: Vec<&record::ReminderEntry> = record.reminders.iter().collect();
+    ordered.sort_by_key(|e| match e.state.as_str() {
+        "due" => 0,
+        "unevaluated" => 1,
+        _ => 2,
+    });
+    for e in ordered {
+        match e.state.as_str() {
+            "due" => {
+                due += 1;
+                match &e.why {
+                    Some(w) => println!("  {:<12} {} — {w}", "DUE", e.name),
+                    None => println!("  {:<12} {}", "DUE", e.name),
+                }
+                println!("               ↳ {}", e.message);
+            }
+            "unevaluated" => {
+                unevaluated += 1;
+                println!(
+                    "  {:<12} {} — {}",
+                    "UNEVALUATED",
+                    e.name,
+                    e.why.as_deref().unwrap_or("could not evaluate")
+                );
+            }
+            _ => {
+                quiet += 1;
+                println!("  {:<12} {}", "QUIET", e.name);
+            }
+        }
+    }
+    println!();
+    println!("  {due} due, {unevaluated} unevaluated, {quiet} quiet");
+    if due > 0 {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 /// `prova attest <address>` — did the proof covering this obligation actually execute?
@@ -648,6 +749,83 @@ fn resolve_for_obligations(
     };
     let run = resolve_from_manifest(home, None, None, None, None, &layout, false, false, false)?;
     Ok((manifest, run.dependencies))
+}
+
+/// The attention-account pass at the end of a run (docs/design/reminders.md): build the account
+/// this run earned, evaluate every `prova.remind` condition against it, and return the record rows.
+///
+/// The account's `owed` is the ledger's remainder exactly as `prova owed` counts it — open
+/// promises, unproven claims, dangling covers — and deliberately NOT reminders: a condition must
+/// never observe reminder state (one pass, no fixpoint). If the ledger cannot be reconciled the
+/// pass is skipped with a note and the previous rows carry forward — a wrong `owed` would fire
+/// ledger conditions falsely, which is worse than firing late.
+fn evaluate_run_reminders(
+    home: &home::Home,
+    suites: &[prova_core::Suite],
+    config: &prova_core::RunConfig,
+    summary: &prova_core::Summary,
+) -> Vec<record::ReminderEntry> {
+    let owed = (|| -> Result<usize, String> {
+        let (manifest, packages_resolved) =
+            resolve_for_obligations(home).map_err(|_| "could not resolve the package".to_string())?;
+        let docs = manifest
+            .claims
+            .as_ref()
+            .map(|c| c.docs.clone())
+            .unwrap_or_default();
+        let claims = claims::scan(&home.dir, &docs).map_err(|e| e.to_string())?;
+        let proofs = collect_obligations(home, &manifest, &packages_resolved)?;
+        Ok(claims::reconcile(&claims, &proofs).len())
+    })();
+    let owed = match owed {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("prova: reminders not evaluated — could not reconcile the ledger: {e}");
+            return record::load(home).map(|r| r.reminders).unwrap_or_default();
+        }
+    };
+    let account = prova_core::ReminderAccount {
+        passed: summary.passed,
+        failed: summary.failed,
+        skipped: summary.skipped,
+        promised: summary.spec,
+        owed,
+    };
+    record::reminder_entries(&prova_core::evaluate_reminders(suites, config, &account))
+}
+
+/// Print the attention section after the run summary — console format only (JSON/TAP streams are
+/// the evidence account and never carry reminders). QUIET is silence, by design; DUE prints loud
+/// with the condition's why and the instruction; UNEVALUATED prints its reason, because a watcher
+/// that could not look must stay visibly disarmed.
+fn print_reminders(entries: &[record::ReminderEntry]) {
+    let due: Vec<_> = entries.iter().filter(|e| e.state == "due").collect();
+    let unevaluated: Vec<_> = entries.iter().filter(|e| e.state == "unevaluated").collect();
+    if due.is_empty() && unevaluated.is_empty() {
+        return;
+    }
+    println!();
+    for e in &due {
+        match &e.why {
+            Some(w) => println!("  DUE  {} — {w}", e.name),
+            None => println!("  DUE  {}", e.name),
+        }
+        println!("       ↳ {}", e.message);
+    }
+    for e in &unevaluated {
+        println!(
+            "  UNEVALUATED  {} — {}",
+            e.name,
+            e.why.as_deref().unwrap_or("could not evaluate")
+        );
+    }
+    println!();
+    let plural = if due.len() == 1 { "" } else { "s" };
+    let mut line = format!("  {} reminder{plural} due", due.len());
+    if !unevaluated.is_empty() {
+        line.push_str(&format!(", {} unevaluated", unevaluated.len()));
+    }
+    println!("{line}");
 }
 
 /// How the run was narrowed, spelled the way it was asked for.
@@ -845,6 +1023,21 @@ fn evidence_subcommand(args: Vec<String>) -> ExitCode {
             n
         ),
         None => println!("  ATTESTED     —   no run recorded — run the suite first (`prova`)"),
+    }
+
+    // The attention account rides along (docs/design/reminders.md): all three states, from the
+    // record — `evidence` is a query verb and evaluates nothing. Absent entirely when the package
+    // declares no reminders, so a package that adopted nothing pays no output for it.
+    let reminders = record::load(&home).map(|r| r.reminders).unwrap_or_default();
+    if !reminders.is_empty() {
+        let count = |s: &str| reminders.iter().filter(|e| e.state == s).count();
+        println!();
+        println!("  DUE       {:>4}   reminders owed attention (`prova reminders`)", count("due"));
+        println!("  QUIET     {:>4}   reminders whose condition holds still", count("quiet"));
+        let unevaluated = count("unevaluated");
+        if unevaluated > 0 {
+            println!("  UNEVAL    {:>4}   reminder conditions that could not run", unevaluated);
+        }
     }
 
     let owed = account.owed;
@@ -2186,6 +2379,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         capabilities,
         globals_inject,
         manifest_broker,
+        heed,
     ) = if !explicit_paths.is_empty() {
         match &home {
             // The named paths belong to a package: borrow its environment (plugins, capabilities,
@@ -2219,6 +2413,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                     r.capabilities,
                     r.globals_inject,
                     r.placement_broker,
+                    r.heed,
                 ),
                 Err(code) => return code,
             },
@@ -2242,6 +2437,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                 prova_core::Capabilities::default(),
                 Vec::new(),
                 None, // no manifest, no [placement]; the env var is still honoured below
+                false, // heed — no manifest, nothing promised attention
             ),
         }
     } else {
@@ -2282,6 +2478,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                 r.capabilities,
                 r.globals_inject,
                 r.placement_broker,
+                r.heed,
             ),
             Err(code) => return code,
         }
@@ -2461,6 +2658,9 @@ fn run(cli_args: Vec<String>) -> ExitCode {
 
     // The stdout sink chosen by --format, plus an optional JUnit XML *file* sink (--junit), fanned
     // out through a MultiReporter so a CI run can print to the console and drop a results.xml at once.
+    // Remembered before `format` moves: the attention section prints only on the console — the
+    // JSON/TAP streams are the evidence account and never carry reminders.
+    let is_console = matches!(format, Format::Console);
     let mut sinks: Vec<Box<dyn Reporter>> = vec![match format {
         Format::Console => Box::new(report::HumanReporter::new(color, quiet, rel_root)),
         Format::Json => Box::new(JsonReporter::new(std::io::stdout())),
@@ -2521,6 +2721,28 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     match run_suites(&suites, &mut reporter, &config) {
         Ok(summary) => {
             store_last_failed(&home, &reporter.failed);
+
+            // The attention account (docs/design/reminders.md): conditions evaluate HERE — during
+            // the run, in a phase after the proofs — and only against a FULL manifest run, the same
+            // soundness rule as --unreferenced (a selection, --promises, or --falsify produces a
+            // partial account, and a partial `failed == 0` would fire ledger conditions early).
+            // Any other run carries the previous record's rows forward, so a `-k` run can never
+            // wipe the account; a full run with no declarations writes it empty (deleted reminders
+            // must vanish).
+            let full_run =
+                from_manifest && config.selection.is_empty() && !falsify && !specs_only;
+            let reminders: Vec<record::ReminderEntry> = match &home {
+                Some(h) if full_run => {
+                    if summary.reminders_declared > 0 {
+                        evaluate_run_reminders(h, &suites, &config, &summary)
+                    } else {
+                        Vec::new()
+                    }
+                }
+                Some(h) => record::load(h).map(|r| r.reminders).unwrap_or_default(),
+                None => Vec::new(),
+            };
+
             record::store(
                 &home,
                 &record::Record {
@@ -2539,6 +2761,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                     executed: std::mem::take(&mut reporter.executed),
                     skipped: std::mem::take(&mut reporter.skipped),
                     deselected: summary.deselected_paths.clone(),
+                    reminders: reminders.clone(),
                 },
                 record_to.as_deref(),
             );
@@ -2586,8 +2809,28 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                 return ExitCode::from(2);
             }
 
+            // The attention section, after the evidence summary — console only, and only when
+            // freshly evaluated (a carried-forward account was already reported by the run that
+            // evaluated it; re-printing it here would date-stamp stale news as this run's).
+            if is_console && full_run {
+                print_reminders(&reminders);
+            }
+
             // Reconcile unreferenced snapshots (only when tracking was enabled on a full run).
             let orphaned = reconcile_unreferenced(snapshot_registry.as_ref(), &unreferenced);
+
+            // DUE is non-fatal by default — the world moving is not a defect in the change under
+            // test. A context that declared `heed = true` promised attention, so there it fails.
+            let due = reminders.iter().filter(|e| e.is_due()).count();
+            if heed && due > 0 {
+                let plural = if due == 1 { "" } else { "s" };
+                eprintln!(
+                    "prova: {due} reminder{plural} due — this context heeds the attention account \
+                     (`heed = true`); see `prova reminders`"
+                );
+                return ExitCode::FAILURE;
+            }
+
             if summary.is_success() && !(unreferenced == "warn" && orphaned) {
                 ExitCode::SUCCESS
             } else {
@@ -2667,6 +2910,9 @@ struct ManifestRun {
     /// `[placement] broker` — the manifest half of broker address resolution; the env var wins at
     /// the wiring site. Carried raw: dialing happens once, at run start, not here.
     placement_broker: Option<String>,
+    /// Whether this context heeds the attention account: a DUE reminder fails the run
+    /// (`[run] heed` / `[profiles.<name>] heed` — see docs/design/reminders.md).
+    heed: bool,
 }
 
 /// If a linted plugin ships no LuaCATS stub (`library/<canonical>.lua`), return an advisory message.
@@ -3318,6 +3564,7 @@ fn resolve_from_manifest(
         capabilities,
         globals_inject: resolved.globals_inject,
         placement_broker: manifest.placement.as_ref().and_then(|p| p.broker.clone()),
+        heed: resolved.heed,
     })
 }
 

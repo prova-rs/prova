@@ -127,9 +127,8 @@ wall of nags.
 <!-- claim: due-is-not-failure -->
 DUE is non-fatal by default: a plain `prova` run with due reminders and green proofs exits 0.
 The world moving is not a defect in the change under test. A pipeline whose *job* is currency
-opts in — the profile promotes it (`[profiles.<name>] heed = true`, name open below), the
-exact `must_run` pattern: a laptop stays friendly, the lane that guarantees attention fails
-loud.
+opts in — `heed = true` (`[run]` or a profile) promotes it, the exact `must_run` pattern: a
+laptop stays friendly, the lane that guarantees attention fails loud.
 
 <!-- claim: unevaluated-never-quiet -->
 UNEVALUATED must never impersonate QUIET. A tripwire that could not look is not a tripwire
@@ -238,8 +237,9 @@ composition, taught by `learn` and rendered by archetypes, never grown into core
 - **Decided: `when` is Lua**, truthy-string-as-why; the message is the instruction.
 - **Decided: reporting split** — QUIET/DUE/UNEVALUATED, non-fatal default, burndown
   exclusion, `reminders` verb with the attest-style exit contract, DUE in `owed`.
-- **Open: the profile knob's name.** `heed = true`? `must_heed` (parallel to `must_run`)?
-  It promotes DUE to fatal for lanes whose job is currency.
+- **Decided: the promotion knob is `heed = true`** (`[run]` or a profile) — one word, the verb
+  for exactly this. Like `must_run` it is a guarantee and can only tighten: `[run] heed` OR the
+  profile's, so a laxer profile can never silence a promised bar.
 - **Open: the account view's exact surface.** Counts + `owed` are committed; address-level
   predicates (`:attested(addr)`, `:retired(addr)`) are the phase-gating extension and want a
   real use case (the tlaplus coordination checklist is the candidate) before the surface
@@ -253,12 +253,17 @@ composition, taught by `learn` and rendered by archetypes, never grown into core
 
 ## Status
 
-- **Drafted 2026-08-04.** Not yet implemented. Anchors above are claims for the
-  implementation to `covers` — this doc lands in the `[claims]`-scanned tree, so
-  `prova owed` will report the whole design as owed until the implementation discharges it,
-  which is the intended pressure.
-- Sequence on landing: the primitive + record + `reminders` verb; then the checklist
-  archetype's terminal item upgrades from always-PROMISED to a ledger-condition reminder;
-  then the tlaplus coordination checklist is generated as the first real consumer (its items
-  deputing to sibling suites, its terminal item a reminder, its upstream watch a reverse
-  item).
+- **Drafted and implemented 2026-08-04**, as one proof-carrying change: every anchor above is
+  covered by `proofs/spec/engine/reminders_test.lua`, which drove the implementation. Shipped:
+  `prova.remind` (collected beside tests, never a node), the post-proof evaluation pass with
+  the account view, QUIET/DUE/UNEVALUATED in the run record (`#[serde(default)]`, so old
+  records parse), the run's attention section (console only; JSON/TAP untouched), `heed` in
+  `[run]`/profiles, the `prova reminders` verb, DUE in `owed`, counts in `evidence`, the
+  LuaCATS stub, and `prova learn reminders`. Filtered runs (`-k`, `--promises`, `--falsify`)
+  do not re-evaluate — a partial account would fire ledger conditions early — and carry the
+  previous record's rows forward.
+- Still open, beyond the questions above: MCP surface, JSON reporter events (the record
+  carries the account meanwhile), and the checklist archetype's terminal item upgrading from
+  always-PROMISED to a ledger-condition reminder — then the tlaplus coordination checklist as
+  the first real consumer (items deputing to sibling suites, its terminal item a reminder,
+  its upstream watch a reverse item).

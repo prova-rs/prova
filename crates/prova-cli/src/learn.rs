@@ -25,6 +25,7 @@ use crate::manifest::{Manifest, PackageSource, Profile, Resolved};
 pub enum Topic {
     Pdd,
     Specs,
+    Reminders,
     Falsify,
     Claims,
     Record,
@@ -47,6 +48,7 @@ impl Topic {
     pub const ALL: &'static [Topic] = &[
         Topic::Pdd,
         Topic::Specs,
+        Topic::Reminders,
         Topic::Falsify,
         Topic::Claims,
         Topic::Record,
@@ -99,6 +101,12 @@ impl Topic {
         ("account", Topic::Evidence),
         ("lifecycle", Topic::Evidence),
         ("promise", Topic::Specs),
+        ("reminder", Topic::Reminders),
+        ("remind", Topic::Reminders),
+        ("attention", Topic::Reminders),
+        ("due", Topic::Reminders),
+        ("tripwire", Topic::Reminders),
+        ("reverse-checklist", Topic::Reminders),
         ("run-record", Topic::Record),
         ("skipped", Topic::Record),
         ("deselected", Topic::Record),
@@ -130,6 +138,7 @@ impl Topic {
         match self {
             Topic::Pdd => "pdd",
             Topic::Specs => "promises",
+            Topic::Reminders => "reminders",
             Topic::Falsify => "falsify",
             Topic::Claims => "claims",
             Topic::Record => "record",
@@ -155,6 +164,7 @@ impl Topic {
         match self {
             Topic::Pdd => include_str!("topics/pdd.md"),
             Topic::Specs => include_str!("topics/promises.md"),
+            Topic::Reminders => include_str!("topics/reminders.md"),
             Topic::Falsify => include_str!("topics/falsify.md"),
             Topic::Claims => include_str!("topics/claims.md"),
             Topic::Record => include_str!("topics/record.md"),

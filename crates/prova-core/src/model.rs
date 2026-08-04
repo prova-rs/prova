@@ -96,6 +96,51 @@ pub struct UnitOpts {
     pub proves: Option<String>,
 }
 
+/// One reminder's evaluated state — the attention account's vocabulary (docs/design/reminders.md).
+///
+/// Deliberately NOT an [`Outcome`]: a reminder is not a test, never enters the run tally, and its
+/// states answer a different question ("does the world owe us attention?") than pass/fail answers
+/// ("is the system correct?"). Two accounts, strictly separated.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReminderState {
+    /// The condition evaluated false — the world holds still. Silence in the run output.
+    Quiet,
+    /// The condition evaluated true — attention is owed. `why` is the condition's own report of
+    /// what the world did (a truthy string return), when it gave one.
+    Due { why: Option<String> },
+    /// The condition could not run (capability absent, or it raised). Never impersonates `Quiet`:
+    /// a tripwire that could not look is not a tripwire that saw nothing.
+    Unevaluated { reason: String },
+}
+
+/// One reminder, evaluated: identity, instruction, declaration site, and state.
+#[derive(Debug, Clone)]
+pub struct ReminderOutcome {
+    pub name: String,
+    /// The instruction — what to DO when this fires. A reminder's discharge is an act, so this is
+    /// what it carries instead of an assertion.
+    pub message: String,
+    pub file: Option<String>,
+    pub line: Option<u32>,
+    pub state: ReminderState,
+}
+
+/// The read-only view of this run's account that a reminder condition receives — evaluated after
+/// the proof phase, so "all proofs green" / "all promises fulfilled" / "nothing owed" are one-line
+/// conditions. Carries NO reminder state: reminders cannot observe reminders (one pass, one
+/// direction — evidence first, attention second).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ReminderAccount {
+    pub passed: usize,
+    pub failed: usize,
+    pub skipped: usize,
+    /// Open promises in this run (the `promised` count of the headline).
+    pub promised: usize,
+    /// The obligation ledger's remainder — open promises, unproven claims, dangling covers — as
+    /// `prova owed` would count it. Supplied by the caller (the reconciliation lives CLI-side).
+    pub owed: usize,
+}
+
 /// Result totals for a run.
 #[derive(Debug, Clone, Default)]
 pub struct Summary {
@@ -113,6 +158,11 @@ pub struct Summary {
     /// record needs "which", because a selection is the cheapest way of all to report green having
     /// tested nothing in particular.
     pub deselected_paths: Vec<String>,
+    /// How many `prova.remind` declarations the run collected. Plumbing, not a tally: reminders are
+    /// not tests and never enter the counts above — this exists so the caller knows whether an
+    /// attention-account pass (`evaluate_reminders`) has anything to evaluate, without paying a
+    /// re-collection to find out that the answer is zero (the common case).
+    pub reminders_declared: usize,
     pub duration: Duration,
 }
 
@@ -724,6 +774,7 @@ mod tests {
             spec: 1,
             deselected: 0,
             deselected_paths: Vec::new(),
+            reminders_declared: 0,
             duration: Duration::from_millis(6),
         };
         reporter.event(&Event::RunFinished { summary: &summary });
