@@ -43,13 +43,18 @@ end
 
 --- This repo's own current change, as the thing to materialize. Using a REAL id rather than a
 --- fabricated one matters: a broker that accepted anything would pass a test built on a fake.
+---
+--- pcall'd, deliberately: `check = false` only tames a NON-ZERO EXIT — a jj that is not
+--- installed at all makes `shell.run` RAISE on spawn, which is a different absence with the same
+--- correct answer. Both read as "nothing here to materialize", and both skip rather than error.
+--- (CI checkouts are git and carry no jj; this cost a red 3-OS matrix to learn.)
 local function current_change(t)
-	local result = shell.run({ "jj", "log", "-r", "@", "--no-graph", "-T", "change_id" }, {
+	local ok, result = pcall(shell.run, { "jj", "log", "-r", "@", "--no-graph", "-T", "change_id" }, {
 		cwd = prova.root,
 		check = false,
 	})
-	if not result:ok() then
-		t:skip("this checkout is not a jj repo")
+	if not ok or not result:ok() then
+		t:skip("this checkout is not a jj repo (or jj is not installed)")
 	end
 	return (result.stdout:gsub("%s+$", ""))
 end
