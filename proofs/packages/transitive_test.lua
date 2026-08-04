@@ -1,15 +1,16 @@
---- A plugin's own `[dependencies]` are resolved for its consumer — transitive dependencies.
+--- A package's own `[dependencies]` are resolved for its consumer — transitive dependencies.
 ---
---- The gap this closes was hit building the reference kitchen sink, a plugin whose whole purpose is
+--- The gap this closes was hit building the reference kitchen sink, a package whose whole purpose is
 --- to COMPOSE others (a topology over postgres + mysql + pulsar). A consumer that pinned only that
---- plugin died with `no prova plugin "postgres"`, because a plugin's own `[dependencies]` were read and
---- discarded. Every consumer therefore had to re-declare internals it never mentions and cannot be
---- expected to know — leaking implementation detail into their manifests and breaking the moment the
---- plugin changed what it composes. The information was always there; it simply was not followed.
+--- package died with `no prova plugin "postgres"` (the miss message of the day), because a package's
+--- own `[dependencies]` were read and discarded. Every consumer therefore had to re-declare internals
+--- it never mentions and cannot be expected to know — leaking implementation detail into their
+--- manifests and breaking the moment the package changed what it composes. The information was always
+--- there; it simply was not followed.
 ---
 --- Two rules are load-bearing and proven here rather than asserted: an explicit declaration beats a
---- transitive one (a project owns its own environment — a dependency must not swap a version out
---- from under it), and a dependency's relative `path` resolves against the plugin that DECLARED it,
+--- transitive one (a package owns its own environment — a dependency must not swap a version out
+--- from under it), and a dependency's relative `path` resolves against the package that DECLARED it,
 --- not the consumer that pulled it in.
 ---
 --- Note the `vendor/` placement below. Lua's own searcher will load `./<name>/init.lua` relative to
@@ -18,7 +19,7 @@
 --- fixtures keep every dependency out of the project root so the only thing under test is the
 --- resolver. That subtlety cost a wrong diagnosis before it was noticed.
 
---- A consumer package that pins `mid`, which in turn pins `leaf` from a vendor directory.
+--- A consumer that pins `mid`, which in turn pins `leaf` from a vendor directory.
 local function nested(t, extra_plugins)
   local root = t:tempdir()
 
@@ -41,7 +42,8 @@ local function run(root)
   return shell.run(prova.bin, { cwd = root, merge_stderr = true })
 end
 
-prova.test("a consumer inherits the plugins its plugin declares", function(t)
+prova.test("a consumer inherits the packages its package declares",
+  { covers = "docs/design/package-system.md#transitive-dependencies-resolve" }, function(t)
   local root = nested(t)
   fs.write(root .. "/proofs/t_test.lua", [[
     prova.test("leaf resolved without being named", function(t)
@@ -53,7 +55,8 @@ prova.test("a consumer inherits the plugins its plugin declares", function(t)
     :contains("1 passed, 0 failed")
 end)
 
-prova.test("a transitive path resolves against the plugin that declared it", function(t)
+prova.test("a transitive path resolves against the package that declared it",
+  { covers = "docs/design/package-system.md#transitive-dependencies-resolve" }, function(t)
   -- `mid` says `../vendor/leaf`. Relative to the CONSUMER that path does not exist; only relative to
   -- `mid` does it name anything. Resolving it at all proves the base directory is the declarer's.
   local root = nested(t)
@@ -66,8 +69,9 @@ prova.test("a transitive path resolves against the plugin that declared it", fun
   t:expect(run(root).stdout):contains("1 passed, 0 failed")
 end)
 
-prova.test("an explicit declaration beats a transitive one", function(t)
-  -- The consumer pins its OWN `leaf`, shadowing the one `mid` asks for. A project owns its
+prova.test("an explicit declaration beats a transitive one",
+  { covers = "docs/design/package-system.md#transitive-dependencies-resolve" }, function(t)
+  -- The consumer pins its OWN `leaf`, shadowing the one `mid` asks for. A package owns its
   -- environment: a dependency cannot quietly substitute a different source.
   local root = nested(t, 'leaf = { path = "./mine" }\n')
   fs.write(root .. "/mine/init.lua", 'return { who = "consumer-leaf" }\n')
@@ -81,7 +85,8 @@ prova.test("an explicit declaration beats a transitive one", function(t)
   t:expect(run(root).stdout):contains("1 passed, 0 failed")
 end)
 
-prova.test("a dependency cycle terminates instead of looping", function(t)
+prova.test("a dependency cycle terminates instead of looping",
+  { covers = "docs/design/package-system.md#transitive-dependencies-resolve" }, function(t)
   -- a → b → a. Nothing about a cycle makes an environment wrong; it only has to stop.
   local root = t:tempdir()
   fs.write(root .. "/vendor/a/init.lua", 'return { who = "a" }\n')

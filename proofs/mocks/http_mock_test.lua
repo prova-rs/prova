@@ -1,5 +1,6 @@
 -- Dogfoods the http.mock facet: stub, drive, assert on the recorded interaction.
-prova.test("http.mock stubs a response and records the call", function(t)
+prova.test("http.mock stubs a response and records the call",
+  { covers = "docs/design/namespacing.md#mock-provisions-fake" }, function(t)
   local m = http.mock(t)
   m:on{ method = "GET", path = "/health" }:reply{ status = 200, json = { ok = true } }
 
@@ -9,7 +10,8 @@ prova.test("http.mock stubs a response and records the call", function(t)
   t:expect(m:received{ path = "/health" }):has_length(1)
 end)
 
-prova.test("a Lua handler computes the response from the request", function(t)
+prova.test("a Lua handler computes the response from the request",
+  { covers = "docs/design/namespacing.md#mock-provisions-fake" }, function(t)
   local m = http.mock(t)
   m:on{ method = "POST", route = "/echo/:word" }:reply(function(req)
     return { status = 200, json = { echoed = req.params.word } }

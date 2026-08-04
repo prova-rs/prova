@@ -121,8 +121,8 @@ places: `[package]` is the package declaring itself, `[dependencies]` the packag
 `package` providing its factory.
 
 <!-- claim: deprecated-spellings-teach -->
-The `package` spellings those replaced — `[package]`, `[dependencies]`, `packages`, `package =` in a
-`[topologies]` entry, and the `prova package`/`prova packages` verbs — are deprecated, not dead:
+The `plugin` spellings those replaced — `[plugin]`, `[plugins]`, `plugin_root`, `plugin =` in a
+`[topologies]` entry, and the `prova plugin`/`prova plugins` verbs — are deprecated, not dead:
 each still works for one release and warns once per process naming its successor (the
 `spec` → `promises` pattern), and all of them retire together at 1.0. The canonical spellings
 warn nothing.

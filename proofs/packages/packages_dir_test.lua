@@ -13,7 +13,8 @@
 
 local shared = require("shared")
 
-prova.test("a package sees its own directory via pkg.dir", function(t)
+prova.test("a package sees its own directory via pkg.dir",
+  { covers = "docs/design/package-system.md#pkg-dir-locates-the-package" }, function(t)
   -- `shared` captured `pkg.dir` at load. It must be the directory holding the package's own file —
   -- here `<repo>/.prova/packages/shared` — not the project root and not the cwd.
   t:expect(shared.own_dir, "the package's own dir"):never():equals(nil)
@@ -21,7 +22,8 @@ prova.test("a package sees its own directory via pkg.dir", function(t)
   t:expect(fs.exists(shared.own_dir), "the dir really exists"):equals(true)
 end)
 
-prova.test("pkg.dir is the package's home, distinct from prova.root", function(t)
+prova.test("pkg.dir is the package's home, distinct from prova.root",
+  { covers = "docs/design/package-system.md#pkg-dir-locates-the-package" }, function(t)
   -- The whole point: `pkg.dir` is anchored on the PACKAGE, `prova.root` on the consuming one.
   -- For a project's own local package they share an ancestor, but the package dir is strictly
   -- deeper — and for a cross-repo package they would be in different repositories entirely.
@@ -29,6 +31,7 @@ prova.test("pkg.dir is the package's home, distinct from prova.root", function(t
   t:expect(shared.own_dir:sub(1, #prova.root), "own_dir is under the project here"):equals(prova.root)
 end)
 
-prova.test("the deprecated `plugin` alias still resolves to the same table", function(t)
+prova.test("the deprecated `plugin` alias still resolves to the same table",
+  { covers = "docs/design/package-system.md#pkg-dir-locates-the-package" }, function(t)
   t:expect(shared.own_dir_via_alias, "plugin.dir still answers"):equals(shared.own_dir)
 end)

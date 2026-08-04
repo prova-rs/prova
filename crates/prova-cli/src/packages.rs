@@ -159,8 +159,8 @@ pub fn resolve_packages(
         // Errors name the plugin that asked, not just the plugin that failed — a transitive
         // failure is otherwise unattributable from a consumer's manifest, which never mentions it.
         let blame = |e: String| match &via {
-            Some(parent) => format!("plugin {name:?} (required by {parent:?}): {e}"),
-            None => format!("plugin {name:?}: {e}"),
+            Some(parent) => format!("package {name:?} (required by {parent:?}): {e}"),
+            None => format!("package {name:?}: {e}"),
         };
 
         let detail = match &source {
@@ -256,7 +256,7 @@ fn advertised(
         adv.clone()
     } else if let Some(root) = &plugins.search_root {
         read_package_manifest(&root.join(plugin))
-            .map_err(|e| format!("plugin {plugin:?}: {e}"))?
+            .map_err(|e| format!("package {plugin:?}: {e}"))?
             .map(|m| m.package.topologies)
             .unwrap_or_default()
     } else {
@@ -269,10 +269,10 @@ fn advertised(
         .ok_or_else(|| {
             let names: Vec<&str> = advertised.iter().map(|a| a.name.as_str()).collect();
             if names.is_empty() {
-                format!("plugin {plugin:?} advertises no topologies (wanted {topology:?})")
+                format!("package {plugin:?} advertises no topologies (wanted {topology:?})")
             } else {
                 format!(
-                    "plugin {plugin:?} advertises no topology {topology:?} (has: {})",
+                    "package {plugin:?} advertises no topology {topology:?} (has: {})",
                     names.join(", ")
                 )
             }
@@ -587,7 +587,7 @@ fn read_package_manifest(dir: &Path) -> Result<Option<PackageManifest>, String> 
     match std::fs::read_to_string(&path) {
         Ok(text) => toml::from_str::<PackageManifest>(&text)
             .map(Some)
-            .map_err(|e| format!("invalid prova.toml [plugin]: {e}")),
+            .map_err(|e| format!("invalid prova.toml [package]: {e}")),
         Err(_) => Ok(None),
     }
 }
@@ -607,7 +607,7 @@ fn check_compat(req: &str, prova_version: &str) -> Result<(), String> {
     } else {
         Err(format!(
             "requires prova {req} but this is {prova_version} \
-             (upgrade prova, or pin an older plugin version)"
+             (upgrade prova, or pin an older package version)"
         ))
     }
 }
@@ -642,7 +642,7 @@ fn module_file(
     // A declared entry (consumer override, then the plugin's own manifest) must exist if given.
     for (source, declared) in [
         ("module", module),
-        ("prova.toml [plugin] entry", manifest_entry),
+        ("prova.toml [package] entry", manifest_entry),
     ] {
         if let Some(rel) = declared {
             let candidate = root.join(rel);
@@ -663,7 +663,7 @@ fn module_file(
         }
     }
     Err(format!(
-        "no entry file in {} (add `[plugin] entry = \"…\"` to prova.toml, an `init.lua`, \
+        "no entry file in {} (add `[package] entry = \"…\"` to prova.toml, an `init.lua`, \
          or set `module`)",
         root.display()
     ))
@@ -708,8 +708,8 @@ pub(crate) fn fetch_git(
 
     // Only speak up when the cache actually changed — a silent freshness confirmation stays silent.
     match resolved.freshness {
-        Freshness::Cloned => eprintln!("prova: fetching plugin {url}"),
-        Freshness::Updated => eprintln!("prova: updating plugin {url}"),
+        Freshness::Cloned => eprintln!("prova: fetching package {url}"),
+        Freshness::Updated => eprintln!("prova: updating package {url}"),
         Freshness::UpToDate { .. } => {}
     }
     Ok((resolved.tree_dir.into_std_path_buf(), resolved.lease))

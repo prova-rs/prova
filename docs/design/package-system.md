@@ -93,8 +93,16 @@ The contract is exactly the conventions the first-party recipes already follow:
 A package author who follows this gets the same shape, IDE completion, and skip behavior as
 `postgres` — because there is no difference.
 
+<!-- claim: pkg-dir-locates-the-package -->
+One binding the runtime adds for free: every package chunk runs with a per-package **`pkg`** table,
+and `pkg.dir` is the directory the package's own file lives in. That is the anchor for locating the
+package's *own* artifacts — `prova.root` is the **consuming** package's root, so a package reused
+cross-repo would resolve the consumer's `target/`, not its own. (`pkg`, not `package`: that name is
+Lua's own module table. `plugin` is the deprecated alias, retiring at 1.0.)
+
 ## Resolution (the searcher)
 
+<!-- claim: resolution-order -->
 `require` is wired through a custom entry appended to `package.searchers` (installed in
 `packages::install`, after the modules exist). It resolves a module name in this order:
 
@@ -126,6 +134,7 @@ config       = "config.lua"          # home-relative
 packages  = ".prova/packages"      # root-relative; no default; exactly one
 ```
 
+<!-- claim: declared-root-only -->
 Removed, deliberately, in service of that: the per-user `data_dir/packages` root, the
 `PROVA_PLUGIN_PATH` env var, the cwd-relative `./.prova/packages` fallback, and the engine's own
 hardcoded `<project_root>/.prova/packages` join. Each was an answer to "where could this `require`
@@ -145,14 +154,16 @@ sibling package, a team's shared package) belongs in `[dependencies]` with a nam
 source: more explicit, more reproducible, and it keeps a second directory from raising a precedence
 question ("both hold `foo` — which wins?") that buys no capability.
 
+<!-- claim: undeclared-root-teaches -->
 A package declaring no root resolves no ambient packages, and the miss message says exactly that
-(`no package root declared — add packages to [run]…`) rather than reading like a typo. The
-git-checkout cache (`cache_dir/packages`) is not an exception to any of this: its contents are pinned
-by the manifest and reproducible from it.
+(`no package root declared — add packages to [run] in prova.toml`) rather than reading like a
+typo — and the key it teaches is one the manifest actually accepts. The git-checkout cache
+(`cache_dir/packages`) is not an exception to any of this: its contents are pinned by the manifest
+and reproducible from it.
 
 **Testing.** Isolation comes from pointing at a manifest, not from environment injection: `--manifest`
 selects the package, `--config` / `PROVA_CONFIG` selects the companion, and in-process embedders call
-`RunConfig::with_packages` directly. For the user-level layer, `XdgSystemLayout` honors `XDG_*` and
+`RunConfig::with_package_root` directly. For the user-level layer, `XdgSystemLayout` honors `XDG_*` and
 `RootedSystemLayout` roots every directory under one path.
 
 **The user-level config** (`~/.config/prova/config.toml`, not yet implemented) must stay on the right
@@ -171,25 +182,38 @@ declare its own dependencies in its `prova.toml` (`[dependencies]`):
 inner = { path = "deps/inner" }
 ```
 
-Those names resolve **for that package's code and nobody else's**, which is what lets a library (or a
-topology) depend on something without pushing it into its consumers' namespace. The scoping happens
-at *load*, by binding the chunk's environment — not in the searcher, which only ever receives a
-module name and could never tell who was asking; that placement is also why a dependency required
-lazily, inside a function at test time, still resolves privately. Private modules cache by path in a
-registry-side table rather than in `package.loaded`, which is keyed by name and would otherwise hand
-every consumer a reference.
+<!-- claim: private-dependencies-isolated -->
+For an **ambient** package (one living under the declared root), those names resolve **for that
+package's code and nobody else's**, which is what lets a library (or a topology) depend on something
+without pushing it into its consumers' namespace. The scoping happens at *load*, by binding the
+chunk's environment — not in the searcher, which only ever receives a module name and could never
+tell who was asking; that placement is also why a dependency required lazily, inside a function at
+test time, still resolves privately. Private modules cache by path in a registry-side table rather
+than in `package.loaded`, which is keyed by name and would otherwise hand every consumer a
+reference.
+
+<!-- claim: transitive-dependencies-resolve -->
+A **declared** package's dependencies are *followed* rather than scoped: the resolver walks its
+`[dependencies]` (and theirs) breadth-first, so a consumer that pins one composing package gets
+everything it needs without re-declaring internals it never mentions. Three rules make that safe: a
+dependency's relative `path` resolves against the package that **declared** it, never the consumer;
+an **explicit declaration always beats a transitive one** (a package owns its own environment — a
+dependency cannot swap a version out from under it); and a dependency cycle terminates instead of
+looping. Today the followed names land in the consumer's namespace — the peer mode of
+[package-composition.md](package-composition.md); scoping *declared* dependencies per package the
+way ambient ones already are is the engine change that doc still owes.
 
 Consequence worth knowing: a private dependency must live *inside* its dependant, not at the top of
-`.prova/packages/` — a top-level directory there is a package package and is globally requirable by
-design. And since package packages are ambient to each other, a package that requires one without
-declaring it will break when lifted out to its own repo. That is an accepted trade: one rule instead
-of two, and the breakage is caught by tests at extraction time.
+`.prova/packages/` — a top-level directory there is an ambient package and is globally requirable by
+design. And since ambient packages can require each other freely, a package that requires one
+without declaring it will break when lifted out to its own repo. That is an accepted trade: one rule
+instead of two, and the breakage is caught by tests at extraction time.
 
 # Topologies (advertise, register, `up`)
 
 A topology is a whole environment addressable by name — the same definition tests use, stood up by
-`prova up <name>`. Underneath it's a `prova.topology(name, fn)` registration; a package and a package
-each get a manifest surface over that:
+`prova up <name>`. Underneath it's a `prova.topology(name, fn)` registration; the providing package
+and the consuming package each get a manifest surface over that:
 
 - A package **advertises** topologies in its `[package]` section — its public contract:
 
@@ -208,6 +232,7 @@ each get a manifest surface over that:
   dev = { package = "lib",       factory  = "topologies.dev" }
   ```
 
+<!-- claim: topology-advertisement-resolves -->
 Each entry desugars to `prova.topology("<name>", require("<package>").<factory>)`, execed after the
 definition files, so a manifest topology is indistinguishable from a Lua-declared one. `prova up`
 lists them; `prova up <name>` stands one up. The synthesized source is validated (name and dotted
@@ -224,14 +249,15 @@ factory  = "topologies.linux_vm"
 requires = ["parallels"]          # this topology needs the Parallels VM host
 ```
 
+<!-- claim: up-gates-on-requires -->
 `prova up <name>` checks these against the same capability set `requires` uses, *before* provisioning:
-an unmet requirement stops it early with a clear reason (`cannot stand up "vm": it requires
+an unmet requirement stops it early with a clear reason (`cannot stand up topology "vm": it requires
 "parallels" is unavailable`) instead of failing deep in a factory. The requirement travels with the
 topology, so it holds for every package that registers it — the environment gate propagates even
 though the factory's implementation stays the package's own business.
 
-Because a package is a package with its own suite (§ one manifest), a package that advertises a topology
-can prove it in its own `proofs/` — so every advertised topology ships with the suite that verifies it.
+Because a package carries its own suite (§ one manifest), a package that advertises a topology can
+prove it in its own `proofs/` — so every advertised topology ships with the suite that verifies it.
 
 **From a git repo, no local package needed.** The same advertisement drives the remote forms of `up`:
 `prova up <url>` fetches a repo (pinned + freshness-gated, like a git `[dependencies]` source) and lists
@@ -286,10 +312,12 @@ Wired now (the "easy to install" story):
   prova = ">=0.1, <0.2"     # compatibility range — refuses to load outside it (semver VersionReq)
   ```
 
+  <!-- claim: entry-decouples-alias -->
   - **`entry`** removes the frail step: the author declares the entry file once, so a consumer can
     pull the package under *any* alias (`mq = "prova-rs/prova-rabbitmq@v1"`) and it still resolves.
     Entry precedence for a directory source: consumer `module =` override → manifest `entry` →
     `init.lua` → `<alias>.lua` (last-ditch back-compat; the reason to declare `entry`).
+  <!-- claim: requires-prova-gates-load -->
   - **`[requires] prova`** gates compatibility against the running version, exactly like
     `requires.archetect` — a clear error, not a mysterious runtime failure, when a package is too new
     or too old. On 0.x the minor is the breaking axis (`^0.1` = `>=0.1.0, <0.2.0`).
@@ -340,8 +368,9 @@ and tested through the public seam with no behavior change.
 
 ## Status
 
-- **Done:** custom searcher (bundled → manifest-named → intra-package → disk roots); one bundled
-  loadable namespace (`prova.workspace`); ambient packages via the declared `[run] packages`;
+- **Done:** custom searcher (bundled → manifest-named → intra-package → disk roots); bundled
+  loadable namespaces (`prova.workspace`, `prova.double`); ambient packages via the declared
+  `[run] packages`;
   the XDG `SystemLayout`; `[dependencies]` manifest sources with **git fetch + cache**,
   verified end-to-end through the real binary (`tests/plugin_git.rs`); **private package dependencies**
   (`prova.toml [dependencies]`), scoped at load via the chunk environment and cached by path

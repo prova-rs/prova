@@ -49,7 +49,8 @@ local function is_function_entry(e)
   return e.signature:sub(1, 1) == "("
 end
 
-prova.test("every dotted function help() advertises exists and is callable", function(t)
+prova.test("every dotted function help() advertises exists and is callable",
+  { covers = "docs/design/namespacing.md#namespace-surface-parity" }, function(t)
   local entries = prova.help()
   t:expect(#entries, "a substantial surface"):gt(20)
 
@@ -109,7 +110,8 @@ local retired = {
 -- value at all. Worth stating: reverse parity is exactly the proof that would have caught a shim left
 -- behind and forgotten.
 
-prova.test("every function the core globals carry is in help()", function(t)
+prova.test("every function the core globals carry is in help()",
+  { covers = "docs/design/namespacing.md#namespace-surface-parity" }, function(t)
   local entries = prova.help()
   local documented = {}
   for _, e in ipairs(entries) do documented[e.name] = true end

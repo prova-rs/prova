@@ -4,10 +4,11 @@
 //!
 //! Resolution order, appended to `package.searchers` so it never shadows Lua's own searchers:
 //!   1. `BUNDLED` — first-party modules embedded in the binary, reserved for the `prova.*` namespace.
-//!   2. `named` — a plugin declared in `prova.toml` (`[plugins]`), resolved to an exact file (git
-//!      checkouts are fetched into the cache and land here as a path). The manifest is authoritative.
-//!   3. the **declared** plugin root — `<root>/<a/b>.lua` then `<root>/<a/b>/init.lua`. The CLI
-//!      derives it from the manifest's `[run] package_root`, resolved against the project root; an
+//!   2. `named` — a package declared in `prova.toml` (`[dependencies]`), resolved to an exact file
+//!      (git checkouts are fetched into the cache and land here as a path). The manifest is
+//!      authoritative.
+//!   3. the **declared** package root — `<root>/<a/b>.lua` then `<root>/<a/b>/init.lua`. The CLI
+//!      derives it from the manifest's `[run] packages`, resolved against the package root; an
 //!      embedder passes it via `RunConfig::with_package_root`.
 //!
 //! # Everything is declared
@@ -37,11 +38,11 @@
 //!
 //! # Private dependencies (bundled + isolated)
 //!
-//! The four steps above are the *consumer's* namespace. A plugin may also declare its own private
-//! dependencies in its `prova.toml` (`[plugins]`):
+//! The four steps above are the *consumer's* namespace. A package may also declare its own private
+//! dependencies in its `prova.toml` (`[dependencies]`):
 //!
 //! ```toml
-//! [plugins]
+//! [dependencies]
 //! inner = { path = "deps/inner" }
 //! ```
 //!
@@ -85,8 +86,8 @@ const BUNDLED: &[(&str, &str)] = &[
 /// the CLI already fetched into the cache). `namespaces` maps a plugin's *canonical* name to its
 /// module root directory, so a multi-file plugin can `require("<canonical>.<sub>")` its own sibling
 /// files (namespaced by canonical name, so it is stable regardless of the consumer's alias and never
-/// collides with another plugin). `roots` carries the declared plugin root — the manifest's
-/// `[run] package_root`, already absolutised — and it is the *only* directory scanned: nothing
+/// collides with another plugin). `roots` carries the declared package root — the manifest's
+/// `[run] packages`, already absolutised — and it is the *only* directory scanned: nothing
 /// machine-global, nothing from the environment, nothing cwd-relative (see the module docs). A slice
 /// rather than one path only because the embedder API (`with_package_root`) accumulates; the manifest
 /// declares exactly one. All are cloned into the closure (the Lua state is single-threaded).
@@ -177,17 +178,17 @@ fn resolve(
     }
 
     // Not found: a string is how a searcher reports a miss; Lua aggregates these into require's error.
-    let mut msg = format!("\n\tno prova plugin {name:?} (bundled, manifest, or on disk)");
+    let mut msg = format!("\n\tno prova package {name:?} (bundled, manifest, or on disk)");
     for path in tried {
         msg.push_str(&format!("\n\t\tno file '{path}'"));
     }
     // Having nowhere to look is a different mistake from looking and missing, and it has a different
-    // fix. Since plugin roots are declared rather than defaulted, an undeclared root would otherwise
-    // present as an ordinary "not found" and send the reader hunting for a misspelled plugin.
+    // fix. Since package roots are declared rather than defaulted, an undeclared root would otherwise
+    // present as an ordinary "not found" and send the reader hunting for a misspelled package.
     if disk_roots(roots).is_empty() {
         msg.push_str(
-            "\n\t\t(no plugin root declared — add `package_root` to [run] in prova.toml, \
-             e.g. package_root = \".prova/plugins\")",
+            "\n\t\t(no package root declared — add `packages` to [run] in prova.toml, \
+             e.g. packages = \".prova/packages\")",
         );
     }
     Ok(Value::String(lua.create_string(&msg)?))
@@ -305,7 +306,8 @@ fn private_cache(lua: &Lua) -> mlua::Result<mlua::Table> {
     Ok(table)
 }
 
-/// A plugin's declared private dependencies, read from the `prova.toml` beside its entry.
+/// A package's declared private dependencies (`[dependencies]`), read from the `prova.toml` beside
+/// its entry.
 ///
 /// Only `path` sources resolve here: the searcher never downloads (see the module docs), so a git
 /// dependency has to be fetched earlier. Anything unparseable is treated as "no private deps" rather
@@ -322,10 +324,16 @@ fn private_deps(entry: &Path) -> BTreeMap<String, PathBuf> {
     let Ok(table) = src.parse::<toml::Table>() else {
         return out;
     };
-    let Some(plugins) = table.get("plugins").and_then(toml::Value::as_table) else {
+    // `[dependencies]` is the canonical table; `[plugins]` is the deprecated spelling (one release,
+    // retires at 1.0), kept readable here for the same reason the CLI reader carries a serde alias.
+    let Some(deps) = table
+        .get("dependencies")
+        .or_else(|| table.get("plugins"))
+        .and_then(toml::Value::as_table)
+    else {
         return out;
     };
-    for (name, source) in plugins {
+    for (name, source) in deps {
         // `name = "some/path"` or `name = { path = "some/path" }`.
         let rel = match source {
             toml::Value::String(s) => Some(s.as_str()),
@@ -351,8 +359,8 @@ fn private_deps(entry: &Path) -> BTreeMap<String, PathBuf> {
 ///
 /// This function used to add an env var (`PROVA_PLUGIN_PATH`) and a cwd-relative `./.prova/plugins`.
 /// Both are gone on purpose. A root that comes from the environment or the working directory cannot
-/// be read off the project, so "where could this `require` have come from?" had four answers, three
-/// of them invisible from the repo. Now the manifest's `[run] package_root` is the whole story, which
+/// be read off the package, so "where could this `require` have come from?" had four answers, three
+/// of them invisible from the repo. Now the manifest's `[run] packages` is the whole story, which
 /// is what lets a reader — or an agent — audit resolution by reading one file.
 fn disk_roots(declared: &[PathBuf]) -> Vec<PathBuf> {
     declared.to_vec()

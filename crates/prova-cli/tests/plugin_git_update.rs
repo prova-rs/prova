@@ -3,7 +3,7 @@
 //!
 //! The observable signals are (a) prova's exit status — a plugin whose returned value changed makes
 //! the project's test flip pass↔fail — and (b) the update messages prova prints on stderr:
-//! `fetching plugin` on first clone, `updating plugin` when a fetch actually happens, and **silence**
+//! `fetching package` on first clone, `updating package` when a fetch actually happens, and **silence**
 //! when the cache is confirmed current. That silence is the crux of the feature: a repo already
 //! matching its remote produces no pull message.
 
@@ -108,7 +108,7 @@ fn ttl_gate_holds_stale_until_forced_update() {
     let a_err = String::from_utf8_lossy(&a.stderr);
     assert!(a.status.success(), "first run should pass\n{a_err}");
     assert!(
-        a_err.contains("fetching plugin"),
+        a_err.contains("fetching package"),
         "expected a clone message\n{a_err}"
     );
 
@@ -124,11 +124,11 @@ fn ttl_gate_holds_stale_until_forced_update() {
         "stale run should still pass on cached 'one'\n{b_err}"
     );
     assert!(
-        !b_err.contains("updating plugin"),
+        !b_err.contains("updating package"),
         "TTL-fresh run must be silent\n{b_err}"
     );
     assert!(
-        !b_err.contains("fetching plugin"),
+        !b_err.contains("fetching package"),
         "TTL-fresh run must not re-fetch\n{b_err}"
     );
 
@@ -141,7 +141,7 @@ fn ttl_gate_holds_stale_until_forced_update() {
         "forced update should surface the changed plugin\n{c_err}"
     );
     assert!(
-        c_err.contains("updating plugin"),
+        c_err.contains("updating package"),
         "forced update should announce it\n{c_err}"
     );
 
@@ -174,7 +174,7 @@ fn hash_gate_updates_only_when_remote_moved() {
             "unchanged remote should still pass\n{err}"
         );
         assert!(
-            !err.contains("updating plugin"),
+            !err.contains("updating package"),
             "a matching remote hash must NOT print an update message\n{err}"
         );
         std::fs::remove_dir_all(&root).ok();
@@ -197,7 +197,7 @@ fn hash_gate_updates_only_when_remote_moved() {
         let moved = run_prova(&project, &home, &[]);
         let err = String::from_utf8_lossy(&moved.stderr);
         assert!(
-            err.contains("updating plugin"),
+            err.contains("updating package"),
             "a moved remote should pull + announce\n{err}"
         );
         assert!(
@@ -232,7 +232,7 @@ fn offline_uses_cache_without_network() {
         "offline run should resolve from cache\n{err}"
     );
     assert!(
-        !err.contains("updating plugin"),
+        !err.contains("updating package"),
         "offline must not fetch\n{err}"
     );
 
@@ -284,13 +284,13 @@ fn moved_tag_pin_is_followed_past_ttl() {
     let b = run_prova(&project, &home, &[]);
     let b_err = String::from_utf8_lossy(&b.stderr);
     assert!(b.status.success(), "moved v1 should be followed past the TTL\n{b_err}");
-    assert!(b_err.contains("updating plugin"), "the follow must announce itself\n{b_err}");
+    assert!(b_err.contains("updating package"), "the follow must announce itself\n{b_err}");
 
     // Unmoved: the probe matches and stays silent.
     let c = run_prova(&project, &home, &[]);
     let c_err = String::from_utf8_lossy(&c.stderr);
     assert!(c.status.success(), "{c_err}");
-    assert!(!c_err.contains("updating plugin"), "an unmoved tag must be silent\n{c_err}");
+    assert!(!c_err.contains("updating package"), "an unmoved tag must be silent\n{c_err}");
 
     std::fs::remove_dir_all(&root).ok();
 }

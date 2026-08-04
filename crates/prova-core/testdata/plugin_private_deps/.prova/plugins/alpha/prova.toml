@@ -1,4 +1,5 @@
-[plugin]
+[package]
 name = "alpha"
-[plugins]
+
+[dependencies]
 store = { path = "deps/store" }

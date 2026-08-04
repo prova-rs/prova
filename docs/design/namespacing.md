@@ -2,14 +2,20 @@
 
 Decided 2026-07-13. This document records the naming grammar for Prova's Lua module surface —
 the rule every existing module follows and every future module (first-party or package) must follow.
+Most resource namespaces named below live in their own packages now (`prova-rs/prova-postgres` and
+siblings); the grammar binds them all the same, and each package's own suite proves its shape —
+what this doc's claims pin is the grammar as the in-tree namespaces embody it.
 
 ## The grammar
 
+<!-- claim: namespace-surface-parity -->
 **One global namespace per technology you talk to.** `postgres`, `mysql`, `sqlite`, `redis`,
 `kafka`, `pulsar`, `s3`, `grpc`, `graphql`, `http` — not grouping modules like the old `db`.
 A namespace is the unit of everything: one Cargo feature, one registration in `modules.rs`, one
-section in `library/modules.lua`, one reference page in the docs.
+section in `library/modules.lua`, one reference page in the docs — and the registered surface and
+its documented stubs are held to each other, both directions, so neither can drift.
 
+<!-- claim: facet-grammar -->
 **Fixed facet names within every service namespace:**
 
 | Facet | Meaning |
@@ -19,14 +25,17 @@ section in `library/modules.lua`, one reference page in the docs.
 | `X.wait_for(...)` | Readiness polling, where the protocol supports a cheap probe (http, grpc). |
 | `X.mock(ctx, opts?)` | Provision a **fake** instance — a real server, in-process, that you stub and then assert on. Where `container` provisions the real thing, `mock` provisions a stand-in for the thing you *can't* run. Returns the resource shape plus a request journal. |
 
+<!-- claim: facets-are-optional -->
 Facets are optional per namespace: `sqlite` has no `container` (nothing to provision);
 `http`/`grpc`/`graphql` are protocol namespaces with no `container` either — and `mock`
 is the mirror case, meaningful only where a *protocol* can be served (`http`, `grpc`) or
 where a package virtualizes a specific SaaS (a `stripe` package's `stripe.mock(ctx)`). You
 would never mock `postgres`; you would run it.
 
+<!-- claim: mock-provisions-fake -->
 The pairing is the teachable part: **`client` attaches to a real one, `container` provisions
-a real one, `mock` provisions a fake one.** Reach for `mock` only on a boundary you cannot
+a real one, `mock` provisions a fake one** — a real server, in-process, that you stub and then
+assert on through its request journal. Reach for `mock` only on a boundary you cannot
 run, for behavior the real thing won't produce on demand, or to assert on the *interaction
 itself* — see `docs/plans/mocks.md` for why that scope is deliberately narrow.
 
@@ -45,6 +54,10 @@ The teachable summary: *"`client` to attach, `container` to provision; every res
 `.client`, `.url`, `.container`."*
 
 ## What this replaced
+
+<!-- claim: grammar-replaced-old-spellings -->
+The old spellings are gone, not deprecated: `db` carries no value at all, and no namespace
+carries a `connect`.
 
 | Old | New |
 |---|---|

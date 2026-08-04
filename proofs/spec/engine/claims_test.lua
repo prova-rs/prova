@@ -310,7 +310,7 @@ prova.test("the ledger works in a package that uses its own plugins", {
 
   -- Not a stack traceback, and not a false UNBOUND either: the binding is real and discharged.
   t:expect(r.stdout, "no Lua error escapes"):never():contains("stack traceback")
-  t:expect(r.stdout):never():contains("no plugin root declared")
+  t:expect(r.stdout):never():contains("no package root declared")
   t:expect(r.code):equals(0)
 end)
 

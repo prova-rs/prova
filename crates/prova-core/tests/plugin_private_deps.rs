@@ -8,9 +8,10 @@ fn testdata(name: &str) -> PathBuf {
         .join(name)
 }
 
-/// The bundled + isolated plugin-composition contract: a plugin declares private dependencies in its
-/// own `prova.toml` (`[plugins]`), those names resolve for *that plugin's* code, and for
-/// nobody else.
+/// The bundled + isolated package-composition contract: a package declares private dependencies in
+/// its own `prova.toml` (`[dependencies]`; `[plugins]` is the deprecated spelling), those names
+/// resolve for *that package's* code, and for nobody else. `alpha` declares via `[dependencies]`
+/// and `beta` via `[plugins]`, so the canonical spelling and the alias are both load-bearing here.
 ///
 /// The fixture makes the isolation load-bearing rather than incidental: `alpha` and `beta` privately
 /// depend on two *different* plugins that both answer to `store`. A single shared namespace could not
