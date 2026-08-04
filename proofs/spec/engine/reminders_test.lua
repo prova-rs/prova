@@ -18,7 +18,7 @@ end
 
 local MANIFEST = '[run]\nproofs = ["proofs"]\n'
 
--- One green test, one reminder that is DUE (with a why), one that is QUIET. The shared package
+-- One green test, one reminder that is DUE (with a why), one that is WATCHING. The shared package
 -- for tests that only assert on their own invocation's output.
 local DUE_PROOF = [[
 prova.test("arithmetic holds", function(t)
@@ -57,7 +57,7 @@ prova.test("the run headline is the evidence account; fired reminders add their 
   t:expect(r.stdout):contains("DUE  upstream shipped — v9 is out")
   t:expect(r.stdout):contains("bump the pin")
   t:expect(r.stdout):contains("1 reminder due")
-  -- A quiet reminder is SILENCE in the run output, not a PASS line.
+  -- A watching reminder is SILENCE in the run output, not a PASS line.
   t:expect(r.stdout):never():contains("nothing to see")
 end)
 
@@ -112,8 +112,8 @@ prova.test("DUE is non-fatal by default; a context that heeds fails on it", {
   t:expect(r.stdout):contains("heed")
 end)
 
-prova.test("a watcher that could not look is UNEVALUATED, never quiet", {
-  covers = "docs/design/reminders.md#unevaluated-never-quiet",
+prova.test("a watcher that could not look is UNEVALUATED, never watching", {
+  covers = "docs/design/reminders.md#unevaluated-never-watching",
   proves = "a disarmed tripwire that reports 'saw nothing' is the vacuous green of the attention account",
 }, function(t)
   local proj = mkpkg(t:use(scratch), MANIFEST, [[
@@ -136,8 +136,8 @@ prova.remind("blows up", {
   t:expect(r.stdout):contains("unicorn")            -- the unmet capability, named
   t:expect(r.stdout):contains("condition raised")   -- the raise, named
   t:expect(r.stdout):contains("boom")
-  t:expect(r.stdout):never():contains("QUIET  needs a unicorn")
-  t:expect(r.stdout):never():contains("QUIET  blows up")
+  t:expect(r.stdout):never():contains("WATCHING     needs a unicorn")
+  t:expect(r.stdout):never():contains("WATCHING     blows up")
 end)
 
 -- The world-watcher package: its condition stamps a file every time it EVALUATES, and fires
@@ -177,10 +177,10 @@ prova.test("no daemon: the recorded state changes only when a run happens", {
   shell.run(prova.bin, { cwd = proj, merge_stderr = true })
   local before = shell.run(prova.bin .. " reminders", { cwd = proj, merge_stderr = true })
   t:expect(before.code):equals(0)
-  t:expect(before.stdout):contains("QUIET")
+  t:expect(before.stdout):contains("WATCHING")
   fs.write(proj .. "/world.flag", "moved") -- the world moves...
   local still = shell.run(prova.bin .. " reminders", { cwd = proj, merge_stderr = true })
-  t:expect(still.stdout, "no run, no evaluation — the record holds"):contains("QUIET")
+  t:expect(still.stdout, "no run, no evaluation — the record holds"):contains("WATCHING")
   t:expect(still.stdout):never():contains("the world moved")
   shell.run(prova.bin, { cwd = proj, merge_stderr = true }) -- ...and the next run sees it
   local after = shell.run(prova.bin .. " reminders", { cwd = proj, merge_stderr = true })
@@ -200,9 +200,9 @@ prova.test("`prova reminders` reports every state and exits non-zero when any is
   t:expect(r.stdout):contains("DUE")
   t:expect(r.stdout):contains("upstream shipped")
   t:expect(r.stdout):contains("bump the pin")
-  t:expect(r.stdout, "quiet is visible HERE, unlike the run output"):contains("QUIET")
+  t:expect(r.stdout, "watching is visible HERE, unlike the run output"):contains("WATCHING")
   t:expect(r.stdout):contains("nothing to see")
-  t:expect(r.stdout):contains("1 due, 0 unevaluated, 1 quiet")
+  t:expect(r.stdout):contains("1 due, 0 unevaluated, 1 watching")
   -- DUE joins the one-question answer; owed still reports rather than gates.
   local o = shell.run(prova.bin .. " owed", { cwd = proj, merge_stderr = true })
   t:expect(o.code):equals(0)
@@ -210,9 +210,9 @@ prova.test("`prova reminders` reports every state and exits non-zero when any is
   t:expect(o.stdout):contains("upstream shipped")
 end)
 
-prova.test("ledger conditions: the terminal item is quiet while work remains, due when nothing is owed", {
+prova.test("ledger conditions: the terminal item watches while work remains, due when nothing is owed", {
   covers = "docs/design/reminders.md#ledger-conditions",
-  proves = "the checklist archetype's terminal item is a reminder, not a hijacked promise — quiet while work remains, DUE exactly once, when deletion is all that is left",
+  proves = "the checklist archetype's terminal item is a reminder, not a hijacked promise — watching while work remains, DUE exactly once, when deletion is all that is left",
 }, function(t)
   local TERMINAL = [[
 prova.test("green", function(t) t:expect(true):is_true() end)
@@ -224,14 +224,14 @@ prova.remind("this checklist has served its purpose", {
   end,
 }, "delete this directory, from outside")
 ]]
-  -- Work remaining: an open promise keeps the ledger non-empty, so the terminal item is quiet.
+  -- Work remaining: an open promise keeps the ledger non-empty, so the terminal item watches.
   local open = mkpkg(t:use(scratch) .. "/open", MANIFEST, TERMINAL:format([[
 prova.test("built later", { promises = "sandbox: open" }, function(t) t:expect(1):equals(2) end)
 ]]))
   shell.run(prova.bin, { cwd = open, merge_stderr = true })
-  local quiet = shell.run(prova.bin .. " reminders", { cwd = open, merge_stderr = true })
-  t:expect(quiet.stdout, "owed > 0 keeps the terminal quiet"):contains("QUIET")
-  t:expect(quiet.stdout):never():contains("DUE  this checklist")
+  local watching = shell.run(prova.bin .. " reminders", { cwd = open, merge_stderr = true })
+  t:expect(watching.stdout, "owed > 0 keeps the terminal watching"):contains("WATCHING")
+  t:expect(watching.stdout):never():contains("DUE  this checklist")
   -- Nothing owed: the same reminder fires, and its why carries the account it observed.
   local done = mkpkg(t:use(scratch) .. "/done", MANIFEST, TERMINAL:format(""))
   shell.run(prova.bin, { cwd = done, merge_stderr = true })
@@ -252,8 +252,8 @@ prova.remind("first", { when = function() return false end }, "n/a")
 
 prova.remind("second", {
   when = function(a)
-    -- If the account exposed reminder state in any spelling, this would go quiet.
-    return a.reminders == nil and a.due == nil and a.quiet == nil
+    -- If the account exposed reminder state in any spelling, this would stay watching.
+    return a.reminders == nil and a.due == nil and a.watching == nil
        and "the account carries no reminder state"
   end,
 }, "n/a")
@@ -265,7 +265,7 @@ prova.remind("second", {
   local recorded = json.decode(fs.read(proj .. "/.prova/var/last-run.json"))
   t:expect(recorded.reminders[1].name):equals("first")
   t:expect(recorded.reminders[2].name):equals("second")
-  t:expect(recorded.reminders[1].state):equals("quiet")
+  t:expect(recorded.reminders[1].state):equals("watching")
   t:expect(recorded.reminders[2].state):equals("due")
 end)
 

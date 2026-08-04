@@ -377,13 +377,14 @@ function prova.topology(name, scope, factory) end
 ---@field owed integer       # the ledger's remainder, as `prova owed` counts it (promises + claims)
 
 ---@class prova.RemindOpts
----@field when fun(account: prova.ReminderAccount): boolean|string|nil   # the trigger: falsy → quiet; true → due; a string → due, with the string as the report's "why"
----@field requires? string[]   # capability expressions gating evaluation — unmet → UNEVALUATED, never quiet
+---@field when fun(account: prova.ReminderAccount): boolean|string|nil   # the trigger: falsy → watching; true → due; a string → due, with the string as the report's "why"
+---@field requires? string[]   # capability expressions gating evaluation — unmet → UNEVALUATED, never watching
 
 ---Declare a **reminder** — an obligation the world creates (the attention account, not the
 ---evidence account). Not a test: it never enters the tally, the selection, or burndown. The
----condition evaluates after the proofs complete; while it returns falsy the reminder is QUIET
----(silence in the run output), and when it returns truthy the reminder is DUE — attention owed,
+---condition evaluates after the proofs complete; while it returns falsy the reminder is
+---WATCHING (armed and observing — silence in the run output), and when it returns truthy the
+---reminder is DUE — attention owed,
 ---reported in the run, `prova reminders`, and `prova owed`. The message is the instruction: what
 ---to DO when it fires, because a reminder is discharged by an act, not an assertion.
 ---

@@ -71,11 +71,11 @@ pub struct Counts {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReminderEntry {
     pub name: String,
-    /// `"quiet"` | `"due"` | `"unevaluated"`. A string, not an enum: the record is a wire format
+    /// `"watching"` | `"due"` | `"unevaluated"`. A string, not an enum: the record is a wire format
     /// other tools read, and an unknown future state should render as itself, not fail the parse.
     pub state: String,
     /// For `due`: the condition's own report of what the world did. For `unevaluated`: the reason
-    /// it could not look. Absent for `quiet`.
+    /// it could not look. Absent for `watching`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
     /// The instruction — what to do when this fires.
@@ -99,7 +99,7 @@ pub fn reminder_entries(outcomes: &[prova_core::ReminderOutcome]) -> Vec<Reminde
         .iter()
         .map(|o| {
             let (state, why) = match &o.state {
-                ReminderState::Quiet => ("quiet", None),
+                ReminderState::Watching => ("watching", None),
                 ReminderState::Due { why } => ("due", why.clone()),
                 ReminderState::Unevaluated { reason } => ("unevaluated", Some(reason.clone())),
             };

@@ -3,7 +3,7 @@
 A **proof guards the past; a reminder watches the future.** `prova.remind` states an obligation
 whose *trigger* is a condition of the world and whose *discharge* is an act — project
 management, not specification. Where a promise is an executable spec an agent implements, a
-reminder is a tripwire: quiet while the world holds still, **DUE** the moment it moves — an
+reminder is a tripwire: WATCHING while the world holds still, **DUE** the moment it moves — an
 upstream cuts the release you wait on, a dependency drifts past your pin, a checklist's last
 real item graduates.
 
@@ -11,7 +11,7 @@ real item graduates.
 prova.remind("stay current with prova-redis", {
   when = function(account)
     local latest = latest_tag("prova-rs/prova-redis")   -- plain Lua over shell/http/fs
-    -- Falsy = quiet. Truthy = due; a string becomes the report's "why".
+    -- Falsy = watching. Truthy = due; a string becomes the report's "why".
     return semver_gt(latest, PINNED) and (latest .. " is out; we pin " .. PINNED)
   end,
 }, "integrate the new release and bump [dependencies]")
@@ -23,14 +23,14 @@ prova.remind("stay current with prova-redis", {
   **one-shot** form ("v1 exists") stays due until you act and delete or rewrite it. One rule
   covers both: a reminder is due whenever its condition holds. No latching, no event log.
 - `requires = { "network" }` gates evaluation like a test's — but unmet means **UNEVALUATED**,
-  never quiet: a watcher that could not look must stay visibly disarmed.
+  never WATCHING: a watcher that could not look must stay visibly disarmed.
 
 ## Two accounts, strictly separated
 
 A reminder **looks like a test and is not one**: it never enters the tally, the selection,
 `--promises`, or `burndown` (attention is not implementable work). The run headline stays the
-evidence account; fired reminders add their own `N reminders due` section, and a quiet reminder
-is silence. **DUE never fails a run by default** — the world moving is not a defect in the
+evidence account; fired reminders add their own `N reminders due` section, and a WATCHING
+reminder is silence. **DUE never fails a run by default** — the world moving is not a defect in the
 change under test. A lane whose *job* is currency opts in with `heed = true` (`[run]` or a
 profile; like `must_run`, it can only tighten).
 
@@ -40,7 +40,7 @@ The condition receives this run's account — evaluated **after** the proofs, so
 green" / "nothing owed" are one-liners: `account.passed/failed/skipped/promised`, plus
 `account.owed` (the ledger's remainder, as `prova owed` counts it). It carries **no reminder
 state**: reminders cannot observe reminders. This is what makes an ephemeral checklist's
-terminal item honest — `when = function(a) return a.owed == 0 and a.failed == 0 end`, quiet
+terminal item honest — `when = function(a) return a.owed == 0 and a.failed == 0 end`, watching
 while work remains, due exactly once, when deletion is the only thing left.
 
 ## Reading the account

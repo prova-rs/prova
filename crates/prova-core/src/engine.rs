@@ -4844,10 +4844,10 @@ pub fn evaluate_reminders(
 
 /// Evaluate one reminder's condition against the run's account.
 ///
-/// The mapping is the whole contract: a falsy return is `Quiet`; a truthy return is `Due`, with a
-/// string return carrying the condition's own "why" (what the world did); an unmet `requires` or a
-/// raise is `Unevaluated` with the reason — never `Quiet`, because a watcher that could not look
-/// must stay visibly disarmed.
+/// The mapping is the whole contract: a falsy return is `Watching`; a truthy return is `Due`,
+/// with a string return carrying the condition's own "why" (what the world did); an unmet
+/// `requires` or a raise is `Unevaluated` with the reason — never `Watching`, because a watcher
+/// that could not look must stay visibly disarmed.
 async fn evaluate_reminder(
     lua: &Lua,
     def: &ReminderDef,
@@ -4897,7 +4897,7 @@ async fn evaluate_reminder(
             }
         }
         Ok(v) if truthy(&v) => ReminderState::Due { why: None },
-        Ok(_) => ReminderState::Quiet,
+        Ok(_) => ReminderState::Watching,
     }
 }
 

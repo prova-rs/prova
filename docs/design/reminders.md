@@ -68,7 +68,7 @@ prova.remind("stay current with prova-redis", {
   when = function()
     local latest = releases.latest("https://github.com/prova-rs/prova-redis")  -- a recipe over shell/git
     local pinned = "v1"                                                        -- or read from the manifest
-    -- Falsy = quiet. Truthy = due; a string becomes the report's "why".
+    -- Falsy = watching. Truthy = due; a string becomes the report's "why".
     return semver.gt(latest, pinned) and (latest .. " is out; we pin " .. pinned)
   end,
 }, "integrate the new release and bump [dependencies]")
@@ -82,7 +82,7 @@ prova.remind("stay current with prova-redis", {
   carries is what to *do*, not what to assert.
 - **One-shot and standing forms fall out of one rule: a reminder is due whenever its
   condition holds.** The standing form (above) compares two observables and silences itself
-  when you act — bump the pin, quiet again; it is policy, not an event. The one-shot form
+  when you act — bump the pin, back to watching; it is policy, not an event. The one-shot form
   ("v1 exists") holds forever once true; acting on it ends with deleting the reminder or
   rewriting it into the standing form. No latching, no event log, no state beyond the run
   record: v1 evaluates the condition fresh each run, and what it said last is what the record
@@ -100,7 +100,7 @@ Reminders are declared in proof files, beside the tests whose world they watch, 
 collected by the same machinery. This is precedent, not exception: fixtures and topologies
 already share the declaration surface without being tests. The *declaration surface* is
 shared; the *account* is separate — a reminder never appears in the test tally, never emits a
-PASS line, and a quiet reminder is silence in the run output.
+PASS line, and a watching reminder is silence in the run output.
 
 ## Two accounts, strictly separated
 
@@ -120,7 +120,7 @@ wall of nags.
 
 | state | meaning | where it appears |
 |---|---|---|
-| **QUIET** | condition evaluated false | `prova reminders`, `evidence` |
+| **WATCHING** | condition evaluated false — armed, the world holds still | `prova reminders`, `evidence` |
 | **DUE** | condition evaluated true — attention owed | run's reminder line, `reminders`, `owed`, `evidence` |
 | **UNEVALUATED** | condition could not run (capability absent, error, or no recorded run) | `reminders`, `evidence`, with the reason |
 
@@ -130,8 +130,8 @@ The world moving is not a defect in the change under test. A pipeline whose *job
 opts in — `heed = true` (`[run]` or a profile) promotes it, the exact `must_run` pattern: a
 laptop stays friendly, the lane that guarantees attention fails loud.
 
-<!-- claim: unevaluated-never-quiet -->
-UNEVALUATED must never impersonate QUIET. A tripwire that could not look is not a tripwire
+<!-- claim: unevaluated-never-watching -->
+UNEVALUATED must never impersonate WATCHING. A tripwire that could not look is not a tripwire
 that saw nothing: a condition gated on an absent capability, or one that raised, reports as
 unevaluated with its reason — a disarmed watcher stays visibly disarmed.
 
@@ -151,14 +151,17 @@ promises, and attestations are known.
 `prova reminders` lists every reminder with its state, why, and message, and exits non-zero
 if any is DUE — the `attest` pattern: the pipeline's question ("is anything owed attention?")
 gets one exit-code answer. `prova owed` includes DUE reminders in its narrowing — an arriving
-agent asks one question, and attention owed is part of the answer — while QUIET and
+agent asks one question, and attention owed is part of the answer — while WATCHING and
 UNEVALUATED appear only in `reminders` and `evidence`.
 
 The naming follows the vocabulary decision `lifecycle.md` already made — name the query after
 its object: `promises` lists nodes, `owed` lists obligations, `reminders` lists reminders.
 (`--due` is untouched and unrelated despite the rhyme: it makes *promises* fall due by
 decree; a reminder falls due by the world. Both mean "the time is now", which is consonance,
-not collision.)
+not collision. **WATCHING** replaced the draft's QUIET — quiet named the *output behavior*
+rather than the state, and misread as muted/snoozed; watching says what the reminder is doing
+and makes the armed/disarmed pair against UNEVALUATED legible at a glance. Its consonance with
+`prova watch` is the `--due` kind: both mean "respond when it changes".)
 
 ### Cadence, honestly
 
@@ -188,7 +191,7 @@ The account view exposes this run's counts (`passed`, `failed`, `skipped`, `prom
 the obligation ledger's remainder (`owed`), evaluated after the proof phase — so "all proofs
 green", "all promises fulfilled", and "nothing owed" are one-line conditions. This is what
 makes the checklist archetype's terminal item a reminder rather than a hijacked promise:
-quiet while work remains, DUE exactly once, when deletion is the only thing left.
+watching while work remains, DUE exactly once, when deletion is the only thing left.
 
 <!-- claim: no-reminder-fixpoint -->
 Reminders cannot observe reminders. They evaluate in one pass, after proofs, in declaration
@@ -219,6 +222,12 @@ composition, taught by `learn` and rendered by archetypes, never grown into core
   right now?" is `prova reminders` per repo, aggregated. An architecture's integration state
   becomes a set of small state machines driven by conditions — visible, executable, and
   never in anyone's head.
+- **The heeding lane** — a scheduled run with `heed = true` whose only job is currency: its
+  red is an *intake signal*, not a defect. The lane hands the DUE report to an agent, the
+  agent opens the PR that discharges the instruction, and the reminder goes back to watching
+  on merge. This is the SDLC state machine composing: `heed` controls where a state must be
+  fulfilled, while the default stays advisory — users assemble their own workflows from the
+  same two knobs.
 
 ## Boundaries
 
@@ -235,7 +244,7 @@ composition, taught by `learn` and rendered by archetypes, never grown into core
 - **Decided: separate construct** (`prova.remind`), never a test flag — the promise flag
   stays pure, per the failure analysis above.
 - **Decided: `when` is Lua**, truthy-string-as-why; the message is the instruction.
-- **Decided: reporting split** — QUIET/DUE/UNEVALUATED, non-fatal default, burndown
+- **Decided: reporting split** — WATCHING/DUE/UNEVALUATED, non-fatal default, burndown
   exclusion, `reminders` verb with the attest-style exit contract, DUE in `owed`.
 - **Decided: the promotion knob is `heed = true`** (`[run]` or a profile) — one word, the verb
   for exactly this. Like `must_run` it is a guarantee and can only tighten: `[run] heed` OR the
@@ -256,7 +265,7 @@ composition, taught by `learn` and rendered by archetypes, never grown into core
 - **Drafted and implemented 2026-08-04**, as one proof-carrying change: every anchor above is
   covered by `proofs/spec/engine/reminders_test.lua`, which drove the implementation. Shipped:
   `prova.remind` (collected beside tests, never a node), the post-proof evaluation pass with
-  the account view, QUIET/DUE/UNEVALUATED in the run record (`#[serde(default)]`, so old
+  the account view, WATCHING/DUE/UNEVALUATED in the run record (`#[serde(default)]`, so old
   records parse), the run's attention section (console only; JSON/TAP untouched), `heed` in
   `[run]`/profiles, the `prova reminders` verb, DUE in `owed`, counts in `evidence`, the
   LuaCATS stub, and `prova learn reminders`. Filtered runs (`-k`, `--promises`, `--falsify`)

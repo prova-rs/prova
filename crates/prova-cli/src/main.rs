@@ -119,7 +119,7 @@ const VERBS: &[Verb] = &[
     Verb {
         name: "reminders",
         help: "  prova reminders           the attention account: every `prova.remind` with its recorded\n\
-               \x20                           state (DUE / QUIET / UNEVALUATED); exits non-zero when any is due",
+               \x20                           state (DUE / WATCHING / UNEVALUATED); exits non-zero when any is due",
         run: reminders_subcommand,
     },
     Verb {
@@ -480,8 +480,8 @@ fn owed_subcommand(args: Vec<String>) -> ExitCode {
 
     // DUE reminders join the narrowing (docs/design/reminders.md): an arriving agent asks ONE
     // question — what is owed here? — and attention owed is part of the answer. Read from the run
-    // record, never evaluated: `owed` is a query verb and executes nothing. Quiet and unevaluated
-    // reminders live in `prova reminders`, not here — only DUE is *owed*.
+    // record, never evaluated: `owed` is a query verb and executes nothing. Watching and
+    // unevaluated reminders live in `prova reminders`, not here — only DUE is *owed*.
     let due: Vec<record::ReminderEntry> = record::load(&home)
         .map(|r| r.reminders.into_iter().filter(|e| e.is_due()).collect())
         .unwrap_or_default();
@@ -518,8 +518,8 @@ fn reminders_subcommand(args: Vec<String>) -> ExitCode {
             println!(
                 "usage: prova reminders\n\n\
                  Lists every `prova.remind` with the state the last recorded run evaluated:\n\
-                 DUE (attention owed — with the condition's why and the instruction), QUIET,\n\
-                 or UNEVALUATED (the condition could not run, with the reason).\n\n\
+                 DUE (attention owed — with the condition's why and the instruction), WATCHING\n\
+                 (armed, the world holds still), or UNEVALUATED (could not run, with the reason).\n\n\
                  Executes nothing: conditions evaluate during runs; this reads the record.\n\
                  Exits non-zero when any reminder is due."
             );
@@ -543,8 +543,8 @@ fn reminders_subcommand(args: Vec<String>) -> ExitCode {
 
     let mut due = 0;
     let mut unevaluated = 0;
-    let mut quiet = 0;
-    // DUE first — the actionable rows lead; then the disarmed watchers; the quiet tail last.
+    let mut watching = 0;
+    // DUE first — the actionable rows lead; then the disarmed watchers; the watching tail last.
     let mut ordered: Vec<&record::ReminderEntry> = record.reminders.iter().collect();
     ordered.sort_by_key(|e| match e.state.as_str() {
         "due" => 0,
@@ -571,13 +571,13 @@ fn reminders_subcommand(args: Vec<String>) -> ExitCode {
                 );
             }
             _ => {
-                quiet += 1;
-                println!("  {:<12} {}", "QUIET", e.name);
+                watching += 1;
+                println!("  {:<12} {}", "WATCHING", e.name);
             }
         }
     }
     println!();
-    println!("  {due} due, {unevaluated} unevaluated, {quiet} quiet");
+    println!("  {due} due, {unevaluated} unevaluated, {watching} watching");
     if due > 0 {
         ExitCode::FAILURE
     } else {
@@ -795,9 +795,9 @@ fn evaluate_run_reminders(
 }
 
 /// Print the attention section after the run summary — console format only (JSON/TAP streams are
-/// the evidence account and never carry reminders). QUIET is silence, by design; DUE prints loud
-/// with the condition's why and the instruction; UNEVALUATED prints its reason, because a watcher
-/// that could not look must stay visibly disarmed.
+/// the evidence account and never carry reminders). WATCHING is silence, by design; DUE prints
+/// loud with the condition's why and the instruction; UNEVALUATED prints its reason, because a
+/// watcher that could not look must stay visibly disarmed.
 fn print_reminders(entries: &[record::ReminderEntry]) {
     let due: Vec<_> = entries.iter().filter(|e| e.state == "due").collect();
     let unevaluated: Vec<_> = entries.iter().filter(|e| e.state == "unevaluated").collect();
@@ -1033,7 +1033,7 @@ fn evidence_subcommand(args: Vec<String>) -> ExitCode {
         let count = |s: &str| reminders.iter().filter(|e| e.state == s).count();
         println!();
         println!("  DUE       {:>4}   reminders owed attention (`prova reminders`)", count("due"));
-        println!("  QUIET     {:>4}   reminders whose condition holds still", count("quiet"));
+        println!("  WATCHING  {:>4}   reminders armed — checked, the world holds still", count("watching"));
         let unevaluated = count("unevaluated");
         if unevaluated > 0 {
             println!("  UNEVAL    {:>4}   reminder conditions that could not run", unevaluated);

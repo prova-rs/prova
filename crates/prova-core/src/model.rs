@@ -103,13 +103,14 @@ pub struct UnitOpts {
 /// ("is the system correct?"). Two accounts, strictly separated.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReminderState {
-    /// The condition evaluated false — the world holds still. Silence in the run output.
-    Quiet,
+    /// The condition evaluated false — armed and observing, the world holds still. Silence in
+    /// the run output: a watcher with nothing to report says nothing.
+    Watching,
     /// The condition evaluated true — attention is owed. `why` is the condition's own report of
     /// what the world did (a truthy string return), when it gave one.
     Due { why: Option<String> },
-    /// The condition could not run (capability absent, or it raised). Never impersonates `Quiet`:
-    /// a tripwire that could not look is not a tripwire that saw nothing.
+    /// The condition could not run (capability absent, or it raised). Never impersonates
+    /// `Watching`: a tripwire that could not look is not a tripwire that saw nothing.
     Unevaluated { reason: String },
 }
 
