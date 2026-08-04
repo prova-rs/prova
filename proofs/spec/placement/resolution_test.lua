@@ -6,10 +6,10 @@
 
 local placement = require("placement")
 
-local OPEN = {
-	promises = "placement: no broker implementation yet (docs/design/placement.md)",
-	requires = { "placement_broker" },
-}
+-- Gated on unix only: the transport IS a unix socket and the conformance vocabulary (`sh`) is
+-- POSIX. Otherwise hermetic — with no external broker named, each connect spawns the reference
+-- broker fresh, so these proofs run (and the spec stays attested) on any unix machine.
+local UNIX = { requires = { "unix" } }
 
 local function connected(t)
 	local broker = placement.connect(t)
@@ -17,7 +17,7 @@ local function connected(t)
 	return broker
 end
 
-prova.test("a satisfiable capability resolves with a node count", OPEN, function(t)
+prova.test("a satisfiable capability resolves with a node count", UNIX, function(t)
 	local broker = connected(t)
 	local response = broker:request("resolve", { capabilities = { { name = "sh" } } })
 
@@ -29,7 +29,7 @@ prova.test("a satisfiable capability resolves with a node count", OPEN, function
 	t:expect(response.nodes, "at least one node can serve"):gte(1)
 end)
 
-prova.test("an absent capability is unsatisfiable, which is what makes a skip honest", OPEN, function(t)
+prova.test("an absent capability is unsatisfiable, which is what makes a skip honest", UNIX, function(t)
 	local broker = connected(t)
 	local response = broker:request("resolve", {
 		capabilities = { { name = "definitely-not-installed-anywhere-xyzzy" } },
@@ -42,7 +42,7 @@ prova.test("an absent capability is unsatisfiable, which is what makes a skip ho
 	t:expect(response.reason, "the skip carries its reason"):never():is_nil()
 end)
 
-prova.test("version constraints are honoured, not ignored", OPEN, function(t)
+prova.test("version constraints are honoured, not ignored", UNIX, function(t)
 	local broker = connected(t)
 
 	-- An unsatisfiable FLOOR on something that exists. A broker that parsed the name and dropped
@@ -56,7 +56,7 @@ prova.test("version constraints are honoured, not ignored", OPEN, function(t)
 	t:expect(response.outcome):equals("unsatisfiable")
 end)
 
-prova.test("a constraint is EVALUATED, not merely refused", OPEN, function(t)
+prova.test("a constraint is EVALUATED, not merely refused", UNIX, function(t)
 	local broker = connected(t)
 
 	-- The proof above is passed by a broker that evaluates versions correctly AND by one that
@@ -78,7 +78,7 @@ prova.test("a constraint is EVALUATED, not merely refused", OPEN, function(t)
 	t:expect(ceiling.outcome, "a floor no version meets"):equals("unsatisfiable")
 end)
 
-prova.test("several capabilities resolve conjunctively", OPEN, function(t)
+prova.test("several capabilities resolve conjunctively", UNIX, function(t)
 	local broker = connected(t)
 
 	-- `requires = { "a", "b" }` means ONE node has both, not that the pool has each somewhere. A
@@ -92,7 +92,7 @@ prova.test("several capabilities resolve conjunctively", OPEN, function(t)
 	t:expect(response.reason, "names the missing one"):contains("xyzzy")
 end)
 
-prova.test("an empty capability list resolves against the whole pool", OPEN, function(t)
+prova.test("an empty capability list resolves against the whole pool", UNIX, function(t)
 	local broker = connected(t)
 	local response = broker:request("resolve", { capabilities = json.array({}) })
 
@@ -103,7 +103,7 @@ prova.test("an empty capability list resolves against the whole pool", OPEN, fun
 	t:expect(response.nodes):gte(1)
 end)
 
-prova.test("a saturated pool is never reported as unsatisfiable", OPEN, function(t)
+prova.test("a saturated pool is never reported as unsatisfiable", UNIX, function(t)
 	local broker = connected(t)
 
 	-- THE rule of this protocol, checked from the resolution side: `resolve` answers about
@@ -117,7 +117,7 @@ prova.test("a saturated pool is never reported as unsatisfiable", OPEN, function
 	t:expect(response.outcome):equals("granted")
 end)
 
-prova.test("resolution is advisory and does not reserve anything", OPEN, function(t)
+prova.test("resolution is advisory and does not reserve anything", UNIX, function(t)
 	local broker = connected(t)
 
 	-- Resolving twice must not consume capacity. `resolve` is a question, `claim` is a commitment;

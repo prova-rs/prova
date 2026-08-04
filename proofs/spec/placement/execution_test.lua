@@ -7,10 +7,10 @@
 
 local placement = require("placement")
 
-local OPEN = {
-	promises = "placement: no broker implementation yet (docs/design/placement.md)",
-	requires = { "placement_broker" },
-}
+-- Gated on unix only: the transport IS a unix socket and the conformance vocabulary (`sh`) is
+-- POSIX. Otherwise hermetic — with no external broker named, each connect spawns the reference
+-- broker fresh, so these proofs run (and the spec stays attested) on any unix machine.
+local UNIX = { requires = { "unix" } }
 
 local KIND = "prova-conformance-slot"
 
@@ -32,7 +32,7 @@ local function leased(t)
 	return broker, lease.lease
 end
 
-prova.test("exec reports the exit code of the work, not of the transport", OPEN, function(t)
+prova.test("exec reports the exit code of the work, not of the transport", UNIX, function(t)
 	local broker, lease = leased(t)
 
 	local ok = broker:request("exec", { lease = lease, argv = { "sh", "-c", "exit 0" } })
@@ -46,7 +46,7 @@ prova.test("exec reports the exit code of the work, not of the transport", OPEN,
 	t:expect(failed.exit, "and reported the command's code"):equals(3)
 end)
 
-prova.test("stdout and stderr stream as events before the terminal frame", OPEN, function(t)
+prova.test("stdout and stderr stream as events before the terminal frame", UNIX, function(t)
 	local broker, lease = leased(t)
 
 	local response, events = broker:request("exec", {
@@ -67,7 +67,7 @@ prova.test("stdout and stderr stream as events before the terminal frame", OPEN,
 	t:expect(streams.stderr, "stderr arrived, kept separate"):contains("to-err")
 end)
 
-prova.test("exec against an unknown lease is an error", OPEN, function(t)
+prova.test("exec against an unknown lease is an error", UNIX, function(t)
 	local broker = placement.connect(t)
 	local hello = broker:hello()
 	if not placement.advertises(hello, "exec") then
@@ -82,7 +82,7 @@ prova.test("exec against an unknown lease is an error", OPEN, function(t)
 	t:expect(response.outcome):equals("error")
 end)
 
-prova.test("the working directory and environment are honoured", OPEN, function(t)
+prova.test("the working directory and environment are honoured", UNIX, function(t)
 	local broker, lease = leased(t)
 
 	local response, events = broker:request("exec", {
@@ -107,7 +107,7 @@ prova.test("the working directory and environment are honoured", OPEN, function(
 	t:expect(out, "env applied"):contains("marked")
 end)
 
-prova.test("a client must not send exec to a broker that never advertised it", OPEN, function(t)
+prova.test("a client must not send exec to a broker that never advertised it", UNIX, function(t)
 	local broker = placement.connect(t)
 	local hello = broker:hello()
 	if placement.advertises(hello, "exec") then

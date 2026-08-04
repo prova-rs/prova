@@ -11,10 +11,10 @@
 
 local placement = require("placement")
 
-local OPEN = {
-	promises = "placement: no broker implementation yet (docs/design/placement.md)",
-	requires = { "placement_broker" },
-}
+-- Gated on unix only: the transport IS a unix socket and the conformance vocabulary (`sh`) is
+-- POSIX. Otherwise hermetic — with no external broker named, each connect spawns the reference
+-- broker fresh, so these proofs run (and the spec stays attested) on any unix machine.
+local UNIX = { requires = { "unix" } }
 
 local KIND = "prova-conformance-slot"
 
@@ -49,7 +49,7 @@ local function current_change(t)
 	return (result.stdout:gsub("%s+$", ""))
 end
 
-prova.test("materializing a change id yields a path holding that tree", OPEN, function(t)
+prova.test("materializing a change id yields a path holding that tree", UNIX, function(t)
 	local broker, lease = leased(t)
 	local change = current_change(t)
 
@@ -68,13 +68,18 @@ prova.test("materializing a change id yields a path holding that tree", OPEN, fu
 	t:expect(response.path):is_dir()
 end)
 
-prova.test("an unknown change id is an error, not an empty workspace", OPEN, function(t)
+prova.test("an unknown change id is an error, not an empty workspace", UNIX, function(t)
 	local broker, lease = leased(t)
 
+	-- Valid in FORM (jj's change-id alphabet is k–z), absent in fact: a full-length id no repo
+	-- holds. Not all-z — that is the ROOT commit's change id, which resolves in every jj repo,
+	-- and a proof that "refused the unknown" built on it would be crediting a broker for
+	-- materializing the root's empty tree. (Found the expensive way: the first reference-broker
+	-- run materialized it successfully.)
 	local response = broker:request("materialize", {
 		lease = lease,
 		vcs = "jj",
-		change = "zzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+		change = "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
 		source = prova.root,
 	})
 
@@ -85,7 +90,7 @@ prova.test("an unknown change id is an error, not an empty workspace", OPEN, fun
 	t:expect(response.outcome):equals("error")
 end)
 
-prova.test("materialization is idempotent for the same change", OPEN, function(t)
+prova.test("materialization is idempotent for the same change", UNIX, function(t)
 	local broker, lease = leased(t)
 	local change = current_change(t)
 
@@ -102,7 +107,7 @@ prova.test("materialization is idempotent for the same change", OPEN, function(t
 	t:expect(second.path, "the same tree, same place"):equals(first.path)
 end)
 
-prova.test("warmth reports the nearest shared ancestor, or none when cold", OPEN, function(t)
+prova.test("warmth reports the nearest shared ancestor, or none when cold", UNIX, function(t)
 	local broker, lease = leased(t)
 	local change = current_change(t)
 
@@ -118,7 +123,7 @@ prova.test("warmth reports the nearest shared ancestor, or none when cold", OPEN
 	t:expect(type(response.warmth), "warmth is reported"):equals("table")
 end)
 
-prova.test("materialize requires a lease", OPEN, function(t)
+prova.test("materialize requires a lease", UNIX, function(t)
 	local broker = placement.connect(t)
 	local hello = broker:hello()
 	if not placement.advertises(hello, "materialize") then
@@ -139,7 +144,7 @@ prova.test("materialize requires a lease", OPEN, function(t)
 	t:expect(response.outcome):equals("error")
 end)
 
-prova.test("an unsupported vcs is refused by name", OPEN, function(t)
+prova.test("an unsupported vcs is refused by name", UNIX, function(t)
 	local broker, lease = leased(t)
 
 	local response = broker:request("materialize", {

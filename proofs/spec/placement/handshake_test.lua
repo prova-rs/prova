@@ -8,12 +8,12 @@ local placement = require("placement")
 -- One options table, shared by every proof in this file: open until a broker exists, and gated on
 -- an address having been named. `requires` skips where there is nothing to prove against; the spec
 -- flag keeps it open until something can pass.
-local OPEN = {
-	promises = "placement: no broker implementation yet (docs/design/placement.md)",
-	requires = { "placement_broker" },
-}
+-- Gated on unix only: the transport IS a unix socket and the conformance vocabulary (`sh`) is
+-- POSIX. Otherwise hermetic — with no external broker named, each connect spawns the reference
+-- broker fresh, so these proofs run (and the spec stays attested) on any unix machine.
+local UNIX = { requires = { "unix" } }
 
-prova.test("hello negotiates a version the broker will actually speak", OPEN, function(t)
+prova.test("hello negotiates a version the broker will actually speak", UNIX, function(t)
 	local broker = placement.connect(t)
 	local response = broker:hello()
 
@@ -25,7 +25,7 @@ prova.test("hello negotiates a version the broker will actually speak", OPEN, fu
 	t:expect(response.broker, "the broker identifies itself"):never():is_nil()
 end)
 
-prova.test("the broker refuses any operation before hello", OPEN, function(t)
+prova.test("the broker refuses any operation before hello", UNIX, function(t)
 	local broker = placement.connect(t)
 	local response = broker:request("resolve", { capabilities = { { name = "sh" } } })
 
@@ -36,7 +36,7 @@ prova.test("the broker refuses any operation before hello", OPEN, function(t)
 	t:expect(response.outcome):equals("error")
 end)
 
-prova.test("an unknown operation is an error that names it", OPEN, function(t)
+prova.test("an unknown operation is an error that names it", UNIX, function(t)
 	local broker = placement.connect(t)
 	broker:hello()
 
@@ -49,7 +49,7 @@ prova.test("an unknown operation is an error that names it", OPEN, function(t)
 	t:expect(response.message, "the message names the op"):contains("teleport")
 end)
 
-prova.test("a malformed frame is rejected without killing the connection", OPEN, function(t)
+prova.test("a malformed frame is rejected without killing the connection", UNIX, function(t)
 	local broker = placement.connect(t)
 	broker:hello()
 
@@ -63,7 +63,7 @@ prova.test("a malformed frame is rejected without killing the connection", OPEN,
 	t:expect(after.ok, "the connection still works"):is_true()
 end)
 
-prova.test("every terminal frame echoes the request id", OPEN, function(t)
+prova.test("every terminal frame echoes the request id", UNIX, function(t)
 	local broker = placement.connect(t)
 	local hello = broker:hello()
 	local resolved = broker:request("resolve", { capabilities = json.array({}) })
@@ -74,7 +74,7 @@ prova.test("every terminal frame echoes the request id", OPEN, function(t)
 	t:expect(resolved.id, "resolve echoed"):equals(2)
 end)
 
-prova.test("the broker advertises its optional planes as a list", OPEN, function(t)
+prova.test("the broker advertises its optional planes as a list", UNIX, function(t)
 	local broker = placement.connect(t)
 	local response = broker:hello()
 

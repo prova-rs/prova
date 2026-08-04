@@ -19,6 +19,7 @@
 //! home discovery anchors at the named paths, so a file runs the same from anywhere.
 
 mod annotations;
+mod broker;
 mod claims;
 mod catalog;
 mod home;
@@ -147,6 +148,12 @@ const VERBS: &[Verb] = &[
         name: "up",
         help: "  prova up [<topology>] [<url>]  list/stand up a topology — local, or from a git repo that advertises it",
         run: up_subcommand,
+    },
+    Verb {
+        name: "broker",
+        help: "  prova broker --socket <path> [--offer <kind>]...  serve the reference placement broker\n\
+               \x20                           (docs/design/placement.md) on a unix socket",
+        run: broker_subcommand,
     },
     Verb {
         name: "watch",
@@ -1073,6 +1080,21 @@ fn print_eval_value(value: &serde_json::Value, force_json: bool) {
             "{}",
             serde_json::to_string_pretty(other).unwrap_or_else(|_| "null".into())
         ),
+    }
+}
+
+/// `prova broker` — the reference placement broker (unix-only: the placement transport IS a unix
+/// socket, so there is nothing meaningful to serve elsewhere).
+fn broker_subcommand(args: Vec<String>) -> ExitCode {
+    #[cfg(unix)]
+    {
+        broker::run(args)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = args;
+        eprintln!("prova broker: the placement transport is a unix socket — not available on this platform");
+        ExitCode::FAILURE
     }
 }
 

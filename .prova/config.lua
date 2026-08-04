@@ -20,16 +20,8 @@ runtime.capability("soak", function()
   return os.getenv("PROVA_SOAK") ~= nil
 end)
 
--- `placement_broker` — the gate on the placement conformance suite (proofs/spec/placement/,
--- docs/design/placement.md). It means exactly one thing: "an address to prove against was named".
---
--- It deliberately does NOT dial the socket to check it answers. A configured-but-unreachable broker
--- is a LOUD failure in the spec's own terms, not an absence: silently skipping it would report the
--- same green as a machine that never had a broker, which is the difference the suite exists to
--- police. Reachability is the proof's job; presence of an address is this predicate's.
---
--- Returns a boolean, not a message. A capability predicate that returns a string is read as a
--- VERSION, so a helpful explanation turns a clean skip into a hard configuration error.
-runtime.capability("placement_broker", function()
-  return os.getenv("PROVA_PLACEMENT_BROKER") ~= nil
-end)
+-- There is no `placement_broker` gate anymore. The placement conformance suite
+-- (proofs/spec/placement/) is hermetic: with no PROVA_PLACEMENT_BROKER named it spawns the MIT
+-- reference broker (`prova broker`, through prova.bin) per test, so the suite runs — and the
+-- spec's promises stay kept — on any unix machine. Naming an address still points the same suite
+-- at an external broker, which is how a third-party implementation proves itself.

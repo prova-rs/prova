@@ -229,12 +229,14 @@ shares its code path with the distributed case.
 ## Conformance
 
 `proofs/spec/placement/` is the executable form of this document — the suite any broker proves
-itself against, including the reference one. Point it at a broker and run:
+itself against, including the reference one. It is hermetic: with no address named, each proof
+spawns the MIT reference broker (`prova broker --socket <path> --offer <kind>`), so the spec
+stays attested on any unix machine with no setup. Point the same suite at any other
+implementation to conformance-test it:
 
 ```bash
 PROVA_PLACEMENT_BROKER=unix:///tmp/broker.sock cargo xtask proofs -- -k placement
 ```
 
-The promises are open (`prova promises`) until a broker exists. A promise that starts passing
-fails demanding graduation, so an implementation and its promotion land as one proof-carrying
-change.
+The suite began as open promises and graduated with the reference broker in one proof-carrying
+change — the `promises` → `proves` mechanic working as designed.

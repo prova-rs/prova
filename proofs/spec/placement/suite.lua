@@ -3,13 +3,11 @@
 -- `requires`, and slot leases that widen `resources`.
 --
 -- This suite is the executable form of that document. Any broker proves itself against it — the
--- MIT reference broker in this repo and any third-party or commercial one alike. That is what
--- makes the open/closed seam real rather than asserted: the interface is a suite you can run, not
--- a promise in a README.
+-- MIT reference broker in this repo (`prova broker`) and any third-party or commercial one alike.
+-- That is what makes the open/closed seam real rather than asserted: the interface is a suite you
+-- can run, not a promise in a README.
 --
--- Point it at a broker and run:
+-- Hermetic by default: with no address named, each test spawns the reference broker through
+-- prova.bin. Point the SAME suite at any other implementation to conformance-test it:
 --   PROVA_PLACEMENT_BROKER=unix:///tmp/broker.sock cargo xtask proofs -- -k placement
---
--- Spec flags are test-level; each open test carries its own reason. They stay open until a broker
--- exists, and each FAILS demanding graduation the moment its body passes.
 suite.config{ name = "spec-placement" }

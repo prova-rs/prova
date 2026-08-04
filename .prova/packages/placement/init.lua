@@ -12,13 +12,41 @@
 
 local M = {}
 
---- The broker address under proof, or nil when none is configured.
----
---- The suite gates on the `placement_broker` capability (see .prova/config.lua) rather than
---- calling this and skipping by hand, so an unconfigured machine reports one clear reason.
+--- The externally configured broker address, or nil when none is named.
 ---@return string|nil
 function M.address()
 	return os.getenv("PROVA_PLACEMENT_BROKER")
+end
+
+--- The broker under proof: the configured external one, or the MIT reference broker spawned
+--- fresh for this test. Self-spawning is what makes the suite hermetic — the spec's proofs run
+--- on any unix machine with no setup — while the env var keeps the same suite pointable at any
+--- third-party broker, which is how one proves itself.
+---@param ctx any
+---@return string address
+function M.broker(ctx)
+	local addr = M.address()
+	if addr then
+		return addr
+	end
+	-- A SHORT socket path, deliberately: sockaddr_un caps the path near 104 bytes, and a tempdir
+	-- path plus a filename can exceed it. /tmp plus eight hex characters cannot.
+	local sock = "/tmp/prova-b-" .. uuid.v4():sub(1, 8) .. ".sock"
+	local proc = shell.spawn({
+		prova.bin, "broker", "--socket", sock, "--offer", "prova-conformance-slot",
+	})
+	ctx:defer(function()
+		pcall(function()
+			proc:stop()
+		end)
+		pcall(function()
+			fs.remove_all(sock)
+		end)
+	end)
+	prova.retry(function()
+		return fs.exists(sock)
+	end, { timeout = "10s", every = "25ms", message = "the reference broker never bound its socket" })
+	return "unix://" .. sock
 end
 
 --- The protocol version this suite speaks. Bump with the spec, never silently.
@@ -29,9 +57,9 @@ M.PROTOCOL = "1.0"
 --- Connections are managed by the scope, so a spec never leaks a socket into the next test — which
 --- matters here because leases are keyed to connections in some broker designs.
 ---@param ctx any
----@param addr string|nil defaults to `M.address()`
+---@param addr string|nil defaults to `M.broker(ctx)` — the external broker, or a spawned reference one
 function M.connect(ctx, addr)
-	local conn = socket.connect(addr or M.address(), { framing = { delimiter = "\n" } })
+	local conn = socket.connect(addr or M.broker(ctx), { framing = { delimiter = "\n" } })
 	ctx:defer(function()
 		pcall(function()
 			conn:close()
