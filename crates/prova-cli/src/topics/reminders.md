@@ -31,8 +31,9 @@ A reminder **looks like a test and is not one**: it never enters the tally, the 
 `--promises`, or `burndown` (attention is not implementable work). The run headline stays the
 evidence account; fired reminders add their own `N reminders due` section, and a WATCHING
 reminder is silence. **DUE never fails a run by default** — the world moving is not a defect in the
-change under test. A lane whose *job* is currency opts in with `heed = true` (`[run]` or a
-profile; like `must_run`, it can only tighten).
+change under test. A lane whose *job* is keeping the project current opts in with
+`heed_reminders = true` (`[run]` or a profile; like `must_run`, it can only tighten), or
+`--heed` for one invocation.
 
 ## Conditions over the ledger itself
 

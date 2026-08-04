@@ -389,7 +389,8 @@ function prova.topology(name, scope, factory) end
 ---to DO when it fires, because a reminder is discharged by an act, not an assertion.
 ---
 ---A due reminder never fails the run by default (the world moving is not a defect in the change
----under test); a context whose job is currency opts in with `heed = true` in prova.toml.
+---under test); a lane that promises attention opts in with `heed_reminders = true` in prova.toml
+---(or `--heed` for one invocation).
 ---```lua
 ---prova.remind("stay current with prova-redis", {
 ---  when = function(account)

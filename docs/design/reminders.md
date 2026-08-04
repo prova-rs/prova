@@ -126,9 +126,10 @@ wall of nags.
 
 <!-- claim: due-is-not-failure -->
 DUE is non-fatal by default: a plain `prova` run with due reminders and green proofs exits 0.
-The world moving is not a defect in the change under test. A pipeline whose *job* is currency
-opts in — `heed = true` (`[run]` or a profile) promotes it, the exact `must_run` pattern: a
-laptop stays friendly, the lane that guarantees attention fails loud.
+The world moving is not a defect in the change under test. A lane whose *job* is keeping the
+project current opts in — `heed_reminders = true` (`[run]` or a profile), or `--heed` for one
+invocation — the exact `must_run` pattern: a laptop stays friendly, the lane that guarantees
+attention fails loud.
 
 <!-- claim: unevaluated-never-watching -->
 UNEVALUATED must never impersonate WATCHING. A tripwire that could not look is not a tripwire
@@ -212,22 +213,22 @@ composition, taught by `learn` and rendered by archetypes, never grown into core
 - **The reverse checklist** — reminders pointed at the world: releases, tags, deprecation
   dates, cert expiry, an API sunset. The checklist pattern gains its intake half: items that
   *arrive*.
-- **Dependency currency** — the standing form over a manifest: "are all of this project's
-  dependencies, in whatever form, current?" Ecosystem packages ship the observables
-  (`cargo.outdated()`, `npm.outdated()`, a `releases.latest` recipe); the reminder composes
-  them. Prova states the policy and reports the drift — it never becomes the bot that opens
-  the bump PR. Dependabot acts; prova *accounts*.
-- **Fleet / SOA currency** — each service carries reminders on its upstreams; one service
+- **Staying current with dependencies** — the standing form over a manifest: "are all of
+  this project's dependencies, in whatever form, current?" Ecosystem packages ship the
+  observables (`cargo.outdated()`, `npm.outdated()`, a `releases.latest` recipe); the reminder
+  composes them. Prova states the policy and reports the drift — it never becomes the bot that
+  opens the bump PR. Dependabot acts; prova *accounts*.
+- **Keeping a fleet current** — each service carries reminders on its upstreams; one service
   bumping makes the dependents' next scheduled runs report DUE, so "what does the fleet owe
   right now?" is `prova reminders` per repo, aggregated. An architecture's integration state
   becomes a set of small state machines driven by conditions — visible, executable, and
   never in anyone's head.
-- **The heeding lane** — a scheduled run with `heed = true` whose only job is currency: its
-  red is an *intake signal*, not a defect. The lane hands the DUE report to an agent, the
-  agent opens the PR that discharges the instruction, and the reminder goes back to watching
-  on merge. This is the SDLC state machine composing: `heed` controls where a state must be
-  fulfilled, while the default stays advisory — users assemble their own workflows from the
-  same two knobs.
+- **The heeding lane** — a scheduled run with `heed_reminders = true` whose only job is
+  keeping the project current: its red is an *intake signal*, not a defect. The lane hands the
+  DUE report to an agent, the agent opens the PR that discharges the instruction, and the
+  reminder goes back to watching on merge. This is the SDLC state machine composing:
+  `heed_reminders` controls where a state must be fulfilled, while the default stays
+  advisory — users assemble their own workflows from the same two knobs.
 
 ## Boundaries
 
@@ -246,9 +247,11 @@ composition, taught by `learn` and rendered by archetypes, never grown into core
 - **Decided: `when` is Lua**, truthy-string-as-why; the message is the instruction.
 - **Decided: reporting split** — WATCHING/DUE/UNEVALUATED, non-fatal default, burndown
   exclusion, `reminders` verb with the attest-style exit contract, DUE in `owed`.
-- **Decided: the promotion knob is `heed = true`** (`[run]` or a profile) — one word, the verb
-  for exactly this. Like `must_run` it is a guarantee and can only tighten: `[run] heed` OR the
-  profile's, so a laxer profile can never silence a promised bar.
+- **Decided: the promotion knob is `heed_reminders = true`** (`[run]` or a profile; `--heed`
+  per invocation). The verb carries the register; the object makes a cold manifest read
+  self-explanatory — a bare `heed` was field-judged opaque. Like `must_run` it is a guarantee
+  and can only tighten: `[run]`'s OR the profile's OR the CLI's, so a laxer context can never
+  silence a promised bar.
 - **Open: the account view's exact surface.** Counts + `owed` are committed; address-level
   predicates (`:attested(addr)`, `:retired(addr)`) are the phase-gating extension and want a
   real use case (the tlaplus coordination checklist is the candidate) before the surface
@@ -266,9 +269,9 @@ composition, taught by `learn` and rendered by archetypes, never grown into core
   covered by `proofs/spec/engine/reminders_test.lua`, which drove the implementation. Shipped:
   `prova.remind` (collected beside tests, never a node), the post-proof evaluation pass with
   the account view, WATCHING/DUE/UNEVALUATED in the run record (`#[serde(default)]`, so old
-  records parse), the run's attention section (console only; JSON/TAP untouched), `heed` in
-  `[run]`/profiles, the `prova reminders` verb, DUE in `owed`, counts in `evidence`, the
-  LuaCATS stub, and `prova learn reminders`. Filtered runs (`-k`, `--promises`, `--falsify`)
+  records parse), the run's attention section (console only; JSON/TAP untouched),
+  `heed_reminders` in `[run]`/profiles (+ CLI `--heed`), the `prova reminders` verb, DUE in
+  `owed`, counts in `evidence`, the LuaCATS stub, and `prova learn reminders`. Filtered runs (`-k`, `--promises`, `--falsify`)
   do not re-evaluate — a partial account would fire ledger conditions early — and carry the
   previous record's rows forward.
 - Still open, beyond the questions above: MCP surface, JSON reporter events (the record

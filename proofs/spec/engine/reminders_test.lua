@@ -105,11 +105,15 @@ prova.test("DUE is non-fatal by default; a context that heeds fails on it", {
   -- Default: due reminder + green proofs → exit 0 (proven on the shared package's run).
   local ok = shell.run(prova.bin, { cwd = t:use(due_pkg), merge_stderr = true })
   t:expect(ok.code, ok.stdout):equals(0)
-  -- The heeding lane: same package shape, `heed = true` → the same run fails, saying why.
-  local proj = mkpkg(t:use(scratch), '[run]\nproofs = ["proofs"]\nheed = true\n', DUE_PROOF)
+  -- The heeding lane: same package shape, `heed_reminders = true` → the same run fails,
+  -- saying why. And `--heed` promotes a single invocation identically, no manifest change.
+  local proj = mkpkg(t:use(scratch), '[run]\nproofs = ["proofs"]\nheed_reminders = true\n', DUE_PROOF)
   local r = shell.run(prova.bin, { cwd = proj, merge_stderr = true })
   t:expect(r.code, "a heeding context fails on DUE"):never():equals(0)
   t:expect(r.stdout):contains("heed")
+  local adhoc = mkpkg(t:use(scratch) .. "/adhoc", MANIFEST, DUE_PROOF)
+  local a = shell.run(prova.bin .. " --heed", { cwd = adhoc, merge_stderr = true })
+  t:expect(a.code, "--heed promotes one invocation"):never():equals(0)
 end)
 
 prova.test("a watcher that could not look is UNEVALUATED, never watching", {

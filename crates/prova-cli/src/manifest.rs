@@ -423,10 +423,15 @@ pub struct Profile {
     pub must_run: Vec<String>,
     /// Heed the attention account: a DUE reminder fails this context's runs. The `must_run` of
     /// reminders — DUE is non-fatal by default (the world moving is not a defect in the change
-    /// under test), and a lane whose *job* is currency opts in here. Like every guarantee it can
-    /// only tighten: `[run] heed` or the profile's, whichever promises attention, wins.
+    /// under test), and a lane whose *job* is keeping the project current opts in here. Like
+    /// every guarantee it can only tighten: `[run] heed_reminders` or the profile's, whichever
+    /// promises attention, wins. (CLI `--heed` promotes a single invocation the same way.)
     #[serde(default)]
-    pub heed: bool,
+    pub heed_reminders: bool,
+    /// One line shown by `prova run --list` — what this lane is for. Optional; a lane with no
+    /// description lists as its settings summary.
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 /// `[globals]` — the closed shape of the globals-injection knobs. `inject` lists the modules (bundled
@@ -480,9 +485,10 @@ pub struct Resolved {
     /// because a context that could retract a guarantee would let the strictest bar be silenced by
     /// selecting a laxer profile.
     pub must_run: Vec<String>,
-    /// Whether a DUE reminder fails the run — `[run] heed` OR the selected profile's. Additive for
-    /// the same reason `must_run` is: a laxer profile must not silence a promised bar.
-    pub heed: bool,
+    /// Whether a DUE reminder fails the run — `[run] heed_reminders` OR the selected profile's
+    /// (OR the CLI's `--heed`). Additive for the same reason `must_run` is: a laxer profile must
+    /// not silence a promised bar.
+    pub heed_reminders: bool,
     /// Project-provided agent context docs (top-level `context`), home-relative paths.
     pub context: Vec<String>,
 }
@@ -737,9 +743,20 @@ impl Manifest {
         let overlay = match profile {
             None => None,
             Some(name) => Some(
-                self.profiles
-                    .get(name)
-                    .ok_or_else(|| format!("no such profile {name:?} in prova.toml"))?,
+                self.profiles.get(name).ok_or_else(|| {
+                    let available: Vec<&str> =
+                        self.profiles.keys().map(String::as_str).collect();
+                    if available.is_empty() {
+                        format!(
+                            "no such profile {name:?} — prova.toml declares no [profiles.*]"
+                        )
+                    } else {
+                        format!(
+                            "no such profile {name:?} — available: {}",
+                            available.join(", ")
+                        )
+                    }
+                })?,
             ),
         };
 
@@ -804,9 +821,10 @@ impl Manifest {
                 }
             }
         }
-        // `heed` is a guarantee too — OR, never override, so a profile can promise attention but
-        // never retract the package's promise of it.
-        let heed = base.heed || overlay.map(|p| p.heed).unwrap_or(false);
+        // Heeding is a guarantee too — OR, never override, so a profile can promise attention
+        // but never retract the package's promise of it.
+        let heed_reminders =
+            base.heed_reminders || overlay.map(|p| p.heed_reminders).unwrap_or(false);
 
         // The reserved-name registry (api-freeze §2): a dependency bearing a bundled namespace name
         // is a validation error, never a silent shadow — in either direction, so the check runs on
@@ -859,7 +877,7 @@ impl Manifest {
             updates: self.updates.clone(),
             globals_inject,
             must_run,
-            heed,
+            heed_reminders,
             context: self.context.clone(),
         })
     }
@@ -920,7 +938,7 @@ proofs = ["tests/smoke"]
                 updates: UpdatesSection::default(),
                 globals_inject: prova_core::default_inject(),
                 must_run: Vec::new(),
-                heed: false,
+                heed_reminders: false,
                 context: Vec::new(),
             }
         );

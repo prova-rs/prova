@@ -76,6 +76,12 @@ const VERBS: &[Verb] = &[
         run: ide::run,
     },
     Verb {
+        name: "run",
+        help: "  prova run [<lane>]        run the suite through a named lane ([profiles.<lane>]) — sugar\n\
+               \x20                           for `--profile`; `prova run --list` lists this package's lanes",
+        run: run_subcommand,
+    },
+    Verb {
         name: "eval",
         help: "  prova eval '<code>'       run a one-shot Lua snippet in the full prova environment and print\n\
                \x20                           the returned value (`-` reads the snippet from stdin)",
@@ -219,6 +225,8 @@ options:
       --format console|json|tap  output format (--json is shorthand)
       --color auto|always|never  color console output (default auto: TTY only; honors NO_COLOR)
   -q, --quiet               only print failures, the recap, and the summary
+      --heed                fail the run when any reminder is DUE — the ad-hoc form of the
+                            manifest's `heed_reminders` (a guarantee: it can only tighten)
       --junit PATH          also write a JUnit XML report to PATH (for CI; composes with --format)
       --gha auto|on|off     GitHub Actions annotations + step summary (default auto: when in GHA)
   -j, --jobs N              run up to N units concurrently
@@ -504,6 +512,101 @@ fn owed_subcommand(args: Vec<String>) -> ExitCode {
     println!();
     println!("  {} owed", owed.len() + due.len());
     ExitCode::SUCCESS
+}
+
+/// `prova run [<lane>]` — the lanes front door. A lane is a `[profiles.<name>]` table; the verb
+/// is sugar for `--profile <lane>` (the composable primitive stays — it is what other verbs
+/// compose with: `prova list -p ut`), never a second code path. `prova run --list` shows the
+/// package's lanes offline, from the manifest alone — the "what can I run right now" answer,
+/// mirroring `init --list`.
+fn run_subcommand(args: Vec<String>) -> ExitCode {
+    let mut args = args.into_iter().peekable();
+    match args.peek().map(String::as_str) {
+        Some("-h") | Some("--help") => {
+            println!(
+                "usage: prova run [<lane>] [run options]\n\
+                 \x20      prova run --list\n\n\
+                 A lane is a [profiles.<name>] table in prova.toml — a named way to run the\n\
+                 suite (its own selection, guarantees, env). `prova run ut` is exactly\n\
+                 `prova --profile ut`; everything after the lane composes as usual\n\
+                 (`prova run ut -k orders`). With no lane, same as bare `prova`."
+            );
+            ExitCode::SUCCESS
+        }
+        Some("--list") => {
+            let home = match resolve_home(None) {
+                Ok(h) => h,
+                Err(code) => return code,
+            };
+            let manifest = match std::fs::read_to_string(&home.manifest)
+                .map_err(|e| e.to_string())
+                .and_then(|text| Manifest::parse(&text))
+            {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("prova: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            println!("  {:<12}  the [run] table — what bare `prova` runs", "(default)");
+            for (name, p) in &manifest.profiles {
+                println!("  {:<12}  {}", name, lane_line(p));
+            }
+            if manifest.profiles.is_empty() {
+                println!();
+                println!("  No lanes declared — add [profiles.<name>] tables to prova.toml.");
+            }
+            ExitCode::SUCCESS
+        }
+        // A leading non-flag argument is the lane. A path here is a common slip with a specific
+        // fix, so it gets its own message instead of "no such profile".
+        Some(first) if !first.starts_with('-') => {
+            let lane = args.next().expect("peeked");
+            if lane.contains('/') || Path::new(&lane).exists() {
+                eprintln!(
+                    "prova: `run` takes a lane (a [profiles.<name>] from prova.toml), not a \
+                     path — run files/dirs with `prova {lane}`"
+                );
+                return ExitCode::from(2);
+            }
+            let mut rest: Vec<String> = vec!["--profile".to_string(), lane];
+            rest.extend(args);
+            run(rest)
+        }
+        // No lane: same as bare `prova`, with whatever flags followed.
+        _ => run(args.collect()),
+    }
+}
+
+/// One `run --list` line for a lane: its declared description, else a summary of what it changes.
+fn lane_line(p: &crate::manifest::Profile) -> String {
+    if let Some(d) = p.description.as_deref().filter(|d| !d.trim().is_empty()) {
+        return d.to_string();
+    }
+    let mut chips: Vec<String> = Vec::new();
+    if !p.proofs.is_empty() {
+        chips.push(format!("proofs: {}", p.proofs.join(", ")));
+    }
+    if let Some(jobs) = p.jobs {
+        chips.push(format!("jobs: {jobs}"));
+    }
+    if !p.must_run.is_empty() {
+        chips.push(format!("must_run: {}", p.must_run.join(", ")));
+    }
+    if p.heed_reminders {
+        chips.push("heeds reminders".to_string());
+    }
+    if !p.env.is_empty() {
+        chips.push(format!("env: {} var(s)", p.env.len()));
+    }
+    if !p.dependencies.is_empty() {
+        chips.push(format!("deps: {}", p.dependencies.len()));
+    }
+    if chips.is_empty() {
+        "(no overrides — same as default)".to_string()
+    } else {
+        chips.join("; ")
+    }
 }
 
 /// `prova reminders` — the attention account, read back from the run record.
@@ -2132,6 +2235,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     let mut cli_color: Option<report::ColorMode> = None;
     let mut cli_progress: Option<progress::Mode> = None;
     let mut cli_quiet = false;
+    let mut cli_heed = false;
     let mut cli_junit: Option<String> = None;
     let mut cli_gha: Option<report::GhaMode> = None;
     let mut cli_jobs: Option<usize> = None;
@@ -2290,6 +2394,9 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         match arg.as_str() {
             "--list" => list = true,
             "--quiet" | "-q" => cli_quiet = true,
+            // Promote this one invocation to heed the attention account — the ad-hoc form of
+            // the manifest's `heed_reminders`; like every guarantee it can only tighten.
+            "--heed" => cli_heed = true,
             "--last-failed" => last_failed = true,
             "--falsify" => falsify = true,
             "--promises" => specs_only = true,
@@ -2824,13 +2931,14 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             let orphaned = reconcile_unreferenced(snapshot_registry.as_ref(), &unreferenced);
 
             // DUE is non-fatal by default — the world moving is not a defect in the change under
-            // test. A context that declared `heed = true` promised attention, so there it fails.
+            // test. A context that promised attention (`heed_reminders` in the manifest, or this
+            // invocation's `--heed`) fails on it.
             let due = reminders.iter().filter(|e| e.is_due()).count();
-            if heed && due > 0 {
+            if (heed || cli_heed) && due > 0 {
                 let plural = if due == 1 { "" } else { "s" };
                 eprintln!(
                     "prova: {due} reminder{plural} due — this context heeds the attention account \
-                     (`heed = true`); see `prova reminders`"
+                     (heed_reminders / --heed); see `prova reminders`"
                 );
                 return ExitCode::FAILURE;
             }
@@ -2915,7 +3023,7 @@ struct ManifestRun {
     /// the wiring site. Carried raw: dialing happens once, at run start, not here.
     placement_broker: Option<String>,
     /// Whether this context heeds the attention account: a DUE reminder fails the run
-    /// (`[run] heed` / `[profiles.<name>] heed` — see docs/design/reminders.md).
+    /// (`heed_reminders` in `[run]`/a profile, or CLI `--heed` — see docs/design/reminders.md).
     heed: bool,
 }
 
@@ -3568,7 +3676,7 @@ fn resolve_from_manifest(
         capabilities,
         globals_inject: resolved.globals_inject,
         placement_broker: manifest.placement.as_ref().and_then(|p| p.broker.clone()),
-        heed: resolved.heed,
+        heed: resolved.heed_reminders,
     })
 }
 
