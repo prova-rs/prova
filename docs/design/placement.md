@@ -53,12 +53,18 @@ Newline-delimited JSON over a Unix domain socket — `socket.connect(addr, { del
 in prova's own vocabulary. No TLS: a Unix socket is protected by filesystem permissions, and
 there is no remote peer on this hop to authenticate.
 
-Address resolution, first match wins:
+<!-- claim: broker-address-resolution -->
+Address resolution, first match wins (a blank value is unset, so an empty env var disables rather
+than misdials):
 
 1. `PROVA_PLACEMENT_BROKER` — a `unix://` address
 2. `[placement] broker = "unix://…"` in the manifest
 3. nothing → **local resolution**, today's behaviour, no socket opened
 
+A resolved broker is dialed at run start — `hello` first, always — and announced with its pool
+size before anything runs.
+
+<!-- claim: unreachable-is-loud -->
 A configured-but-unreachable broker is a **loud error**, never a silent fall back to local. Falling
 back would turn a broken pool into a suite that quietly stopped distributing, and the only symptom
 would be that it got slower.

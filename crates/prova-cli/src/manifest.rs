@@ -104,6 +104,21 @@ pub struct Manifest {
     /// a subsystem it does not use. Declaring `docs` is the opt-in.
     #[serde(default)]
     pub claims: Option<ClaimsSection>,
+    /// `[placement]` — the broker prova dials at run start (docs/design/placement.md §Transport).
+    /// A property of the package, not a profile: where capability and contention questions are
+    /// answered does not vary by run profile. `PROVA_PLACEMENT_BROKER` overrides it per
+    /// invocation, and configured-but-unreachable is a loud error, never a silent local fallback.
+    #[serde(default)]
+    pub placement: Option<PlacementSection>,
+}
+
+/// `[placement]` — where capability and contention questions are answered (docs/design/placement.md).
+#[derive(Debug, Deserialize, Clone, Default)]
+#[serde(deny_unknown_fields)]
+pub struct PlacementSection {
+    /// The broker address — a `unix://<path>` socket on THIS machine. Prova never dials a remote
+    /// broker; which machines exist is the broker's business, behind this socket.
+    pub broker: Option<String>,
 }
 
 /// `[claims]` — the prose side of the obligation ledger.

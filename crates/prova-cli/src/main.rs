@@ -29,6 +29,7 @@ mod learn;
 mod manifest;
 mod mcp;
 mod packages;
+mod placement;
 mod registry;
 mod progress;
 mod record;
@@ -2184,6 +2185,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         manage,
         capabilities,
         globals_inject,
+        manifest_broker,
     ) = if !explicit_paths.is_empty() {
         match &home {
             // The named paths belong to a package: borrow its environment (plugins, capabilities,
@@ -2216,6 +2218,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                     Manage::Never,
                     r.capabilities,
                     r.globals_inject,
+                    r.placement_broker,
                 ),
                 Err(code) => return code,
             },
@@ -2238,6 +2241,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                 // registered ones are simply absent.
                 prova_core::Capabilities::default(),
                 Vec::new(),
+                None, // no manifest, no [placement]; the env var is still honoured below
             ),
         }
     } else {
@@ -2277,6 +2281,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                 r.manage,
                 r.capabilities,
                 r.globals_inject,
+                r.placement_broker,
             ),
             Err(code) => return code,
         }
@@ -2404,6 +2409,35 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             }
         }
         return ExitCode::SUCCESS;
+    }
+
+    // Placement (docs/design/placement.md §Transport): if a broker is configured — env var over
+    // manifest — dial it and say hello BEFORE anything runs. Configured-but-unreachable is a loud
+    // error, never a silent fall back to local: falling back would turn a broken pool into a
+    // suite that quietly stopped distributing, and the only symptom would be that it got slower.
+    // (Answering `requires`/`resources` from the pool waits on the dispatch planes — see
+    // docs/plans/placement-client.md — so today the handshake validates the configuration and
+    // announces the pool; the run itself proceeds as before.)
+    #[cfg(unix)]
+    if let Some((addr, source)) = placement::configured(manifest_broker.as_deref()) {
+        match placement::hello(&addr) {
+            Ok(info) => {
+                let plural = if info.nodes == 1 { "" } else { "s" };
+                eprintln!(
+                    "prova: placement broker {} at {addr} ({} node{plural}, protocol {})",
+                    info.broker, info.nodes, info.protocol
+                );
+            }
+            Err(e) => {
+                eprintln!("prova: {e} (configured via {source}; fix the address or start the broker — prova never silently falls back to local)");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    if manifest_broker.is_some() || std::env::var("PROVA_PLACEMENT_BROKER").is_ok_and(|v| !v.trim().is_empty()) {
+        eprintln!("prova: a placement broker is configured, but the placement transport is a unix socket — unavailable on this platform");
+        return ExitCode::from(2);
     }
 
     // Color resolution, per key: CLI flag > `PROVA_COLOR` env > manifest > auto. Format never
@@ -2630,6 +2664,9 @@ struct ManifestRun {
     capabilities: prova_core::Capabilities,
     /// `[globals] inject` — module names (bundled and/or plugin) bound as unqualified ambient globals.
     globals_inject: Vec<String>,
+    /// `[placement] broker` — the manifest half of broker address resolution; the env var wins at
+    /// the wiring site. Carried raw: dialing happens once, at run start, not here.
+    placement_broker: Option<String>,
 }
 
 /// If a linted plugin ships no LuaCATS stub (`library/<canonical>.lua`), return an advisory message.
@@ -3280,6 +3317,7 @@ fn resolve_from_manifest(
         topologies: resolved.topologies,
         capabilities,
         globals_inject: resolved.globals_inject,
+        placement_broker: manifest.placement.as_ref().and_then(|p| p.broker.clone()),
     })
 }
 
