@@ -2773,7 +2773,11 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             // typo must not be green. (Distinct from `requires`, which is *ability*: that skips, and
             // is a declared hole rather than a mistake.) Exit 2, with the other usage errors: nothing
             // failed a test.
-            let ran = summary.passed + summary.failed + summary.skipped;
+            //
+            // Open promises COUNT as matched: `--node "<a promised test>"` selected and ran that
+            // node — its body being expectedly red is the promise mechanism, not an empty
+            // selection. Field-reported: the error fired after a PROMISED node was plainly shown.
+            let ran = summary.passed + summary.failed + summary.skipped + summary.spec;
             if ran == 0 && !config.selection.is_empty() && !allow_empty {
                 let mut asked: Vec<String> = Vec::new();
                 asked.extend(

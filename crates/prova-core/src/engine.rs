@@ -1958,11 +1958,14 @@ impl UserData for Matcher {
         methods.add_method("contains", |_, this, needle: Value| {
             let pass = contains(&this.subject, &needle);
             this.record(pass, || {
-                format!(
-                    "expected {} to contain {}",
-                    display(&this.subject),
-                    display(&needle)
-                )
+                let shown = match (&this.subject, &needle) {
+                    (Value::String(s), Value::String(n)) => display_windowed(
+                        &s.to_string_lossy(),
+                        &n.to_string_lossy(),
+                    ),
+                    _ => display(&this.subject),
+                };
+                format!("expected {} to contain {}", shown, display(&needle))
             })
         });
 
@@ -2410,6 +2413,54 @@ fn contains(subject: &Value, needle: &Value) -> bool {
             false
         }
         _ => false,
+    }
+}
+
+/// Render a string subject for a `contains` diagnostic without dumping it whole. Small subjects
+/// print verbatim (unchanged behavior); large ones show a window — around the first match when
+/// there is one (the `never()` polarity: WHERE it matched is the actionable part), else the head
+/// and tail (the plain polarity: the subject's edges, since no middle is more relevant than any
+/// other). Field-reported: a `contains` against a captured CLI transcript dumped ~3KB into every
+/// diagnostic line, burying the needle it was about.
+fn display_windowed(subject: &str, needle: &str) -> String {
+    const LIMIT: usize = 600; // below this, verbatim
+    const WINDOW: usize = 240; // bytes shown per side of a cut
+    if subject.len() <= LIMIT {
+        return format!("{subject:?}");
+    }
+    // Nearest char boundary at-or-before `i`, so a cut never lands mid-UTF-8.
+    let clamp = |mut i: usize| -> usize {
+        i = i.min(subject.len());
+        while !subject.is_char_boundary(i) {
+            i -= 1;
+        }
+        i
+    };
+    let elide = |n: usize| format!(" …[{n} bytes elided]… ");
+    if let Some(at) = (!needle.is_empty())
+        .then(|| subject.find(needle))
+        .flatten()
+    {
+        let start = clamp(at.saturating_sub(WINDOW));
+        let end = clamp((at + needle.len() + WINDOW).min(subject.len()));
+        let mut out = String::new();
+        if start > 0 {
+            out.push_str(&elide(start));
+        }
+        out.push_str(&format!("{:?}", &subject[start..end]));
+        if end < subject.len() {
+            out.push_str(&elide(subject.len() - end));
+        }
+        out
+    } else {
+        let head = clamp(WINDOW);
+        let tail = clamp(subject.len() - WINDOW);
+        format!(
+            "{:?}{}{:?}",
+            &subject[..head],
+            elide(tail - head),
+            &subject[tail..]
+        )
     }
 }
 
@@ -6015,6 +6066,43 @@ pub fn inspect_package(path: &Path, config: &RunConfig) -> mlua::Result<PackageR
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Small subjects print verbatim — the windowing must change nothing for the common case.
+    #[test]
+    fn display_windowed_leaves_small_subjects_verbatim() {
+        assert_eq!(display_windowed("short output", "needle"), "\"short output\"");
+    }
+
+    /// A large non-matching subject shows its edges with the middle elided — never the whole dump.
+    #[test]
+    fn display_windowed_elides_the_middle_of_a_large_non_match() {
+        let subject = "A".repeat(3000);
+        let shown = display_windowed(&subject, "needle");
+        assert!(shown.len() < 700, "still dumped {} bytes", shown.len());
+        assert!(shown.contains("[2520 bytes elided]"), "{shown}");
+        assert!(shown.starts_with('"') && shown.ends_with('"'));
+    }
+
+    /// The never() polarity: when the needle IS present, the window centers on the match — WHERE
+    /// it matched is the actionable part of that diagnostic.
+    #[test]
+    fn display_windowed_centers_on_the_match_when_there_is_one() {
+        let subject = format!("{}NEEDLE{}", "x".repeat(2000), "y".repeat(2000));
+        let shown = display_windowed(&subject, "NEEDLE");
+        assert!(shown.contains("NEEDLE"), "{shown}");
+        assert!(shown.len() < 700, "still dumped {} bytes", shown.len());
+        assert!(shown.contains("[1760 bytes elided]"), "leading elision: {shown}");
+        // Both sides elided: the window sits in the middle of the subject.
+        assert_eq!(shown.matches("bytes elided").count(), 2, "{shown}");
+    }
+
+    /// Cuts never land mid-UTF-8 — a multibyte subject must not panic the diagnostic.
+    #[test]
+    fn display_windowed_respects_char_boundaries() {
+        let subject = "é".repeat(2000); // 2 bytes per char
+        let shown = display_windowed(&subject, "needle");
+        assert!(shown.contains("bytes elided"), "{shown}");
+    }
 
     #[test]
     fn slugify_makes_filesystem_safe_keys() {

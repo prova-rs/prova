@@ -1043,8 +1043,9 @@ fn run_blocking(env: &McpEnv, req: RunRequest) -> Result<(serde_json::Value, boo
     let summary = run_suites(&suites, &mut reporter, &config).map_err(|e| e.to_string())?;
 
     // The CLI's empty-selection contract, mirrored: a selection that matched NOTHING is an error,
-    // not a green run — it usually means a typo, and a typo must not read as success.
-    let ran = summary.passed + summary.failed + summary.skipped;
+    // not a green run — it usually means a typo, and a typo must not read as success. Open
+    // promises count as matched, exactly as on the CLI.
+    let ran = summary.passed + summary.failed + summary.skipped + summary.spec;
     if ran == 0 && !config.selection.is_empty() {
         return Err(format!(
             "selection matched no tests ({} deselected) — usually a typo; loosen the selection \
@@ -1426,7 +1427,8 @@ fn warm_run_blocking(
     .map_err(|_| not_held(topology))?;
     let outcome = reply_rx.recv().map_err(|_| not_held(topology))??;
 
-    // The CLI's empty-selection contract, mirrored (see `run_blocking`).
+    // The CLI's empty-selection contract, mirrored (see `run_blocking`). No spec term here: warm
+    // runs refuse promises/due outright, so a promised count cannot arise.
     if outcome.passed + outcome.failed + outcome.skipped == 0 && had_selection {
         return Err(format!(
             "selection matched no tests ({} deselected) — usually a typo; loosen the selection \

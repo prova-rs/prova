@@ -65,6 +65,19 @@ prova.test("`prova burndown` is the inner loop: spec-selected, open specs fail l
   t:expect(r.stdout):never():contains("arithmetic holds")  -- unflagged tests are not selected
 end)
 
+prova.test("selecting only promised nodes is a matched selection, not an empty one", {
+  proves = "field-reported: `prova --node <a promised test>` ran the node, printed PROMISED, and \
+then exited 2 claiming the selection matched nothing — an open promise is a selected, executed \
+node whose redness is the mechanism, so it counts as matched",
+}, function(t)
+  local proj = t:use(sandbox)
+  local r = shell.run(prova.bin .. ' --node "the widget frobnicates"',
+    { cwd = proj, merge_stderr = true })
+  t:expect(r.code, r.stdout):equals(0)
+  t:expect(r.stdout):contains("PROMISED")
+  t:expect(r.stdout):never():contains("matched no tests")
+end)
+
 prova.test("the binary teaches the verbs: `prova learn promises` names them", function(t)
   local proj = t:use(sandbox)
   local r = shell.run(prova.bin .. " learn promises", { cwd = proj, merge_stderr = true })
