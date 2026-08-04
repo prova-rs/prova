@@ -499,6 +499,9 @@ fn to_selection(args: &SelectionArgs) -> Selection {
         tags: args.tags.clone().unwrap_or_default(),
         tag_excludes: args.tag_excludes.clone().unwrap_or_default(),
         nodes: args.nodes.clone().unwrap_or_default(),
+        // Lanes are a manifest/CLI concept; the MCP run tool speaks the raw axes.
+        lane_tags: Vec::new(),
+        lane_tag_excludes: Vec::new(),
     }
 }
 

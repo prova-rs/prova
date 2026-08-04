@@ -783,6 +783,65 @@ function json.encode(v, opts) end
 ---@return table
 function json.array(t) end
 
+------------------------------------------------------------------------------------------
+-- junit — the verdict-ingestion seam (docs/design/verifiers.md): conduct another verifier
+-- and adopt its results as deputed evidence, structured and ledgered.
+------------------------------------------------------------------------------------------
+
+---One deputed case, as parsed from a JUnit XML result file.
+---@class prova.JunitCase
+---@field suite string       # the case's classname (or the enclosing <testsuite name>)
+---@field name string
+---@field outcome "passed"|"failed"|"error"|"skipped"
+---@field message? string    # the failure/error message (first line), when the deputy gave one
+---@field time_ms? integer
+---@field file string        # the artifact the verdict was read from — the provenance
+
+---@class prova.JunitReport
+---@field total integer
+---@field passed integer
+---@field failed integer
+---@field errors integer
+---@field skipped integer
+---@field files { path: string, mtime: integer }[]
+---@field cases prova.JunitCase[]
+
+---@class prova.JunitLoadOpts
+---@field cwd? string        # base for a relative `results` pattern
+
+---@class prova.JunitVerifyOpts
+---@field results string     # REQUIRED: where the deputy writes its XML (a path or glob)
+---@field run? string        # the deputy's command; run tolerantly (its exit code is not the
+---                          # verdict — its results are), with freshness enforced on the files
+---@field cwd? string        # working directory for `run` and base for a relative `results`
+
+---@class prova.junit
+junit = {}
+--- Parse JUnit XML result files (a path or glob) into a structured report — the primitive.
+--- Tolerant of dialect drift; consumes the stable core (names, outcomes, messages, timings).
+---@param pattern string
+---@param opts? prova.JunitLoadOpts
+---@return prova.JunitReport
+function junit.load(pattern, opts) end
+--- File a loaded report's cases into the run's deputed account (what `verify` calls after
+--- loading; a no-op outside a recorded run, so querying with `load` never pollutes anything).
+---@param report prova.JunitReport
+---@return integer  # cases ingested
+function junit.ingest(report) end
+--- The verifier facet: run the deputy (optional), load its FRESH results, ingest them, and
+--- adopt the verdict — any failed/errored case fails the proof with the deputed cases' own
+--- names and messages, and zero parsed cases fails too (a glob matching nothing must never
+--- read as green). Returns the report.
+--- ```lua
+--- prova.test("the service's own suite holds", { tags = { "unit" } }, function(t)
+---   junit.verify(t, { run = "mvn -q test", results = "target/surefire-reports/*.xml" })
+--- end)
+--- ```
+---@param t prova.TestContext
+---@param opts prova.JunitVerifyOpts
+---@return prova.JunitReport
+function junit.verify(t, opts) end
+
 ---@class prova.toml
 toml = {}
 --- Parse TOML text into a Lua value. Raises on invalid TOML.

@@ -142,6 +142,30 @@ pub struct ReminderAccount {
     pub owed: usize,
 }
 
+/// One deputed case — a verdict another verifier produced, conducted and adopted by a proof
+/// (docs/design/verifiers.md). Never a node: the deputy owns selection, re-runs, and
+/// falsification; prova owns the account.
+#[derive(Debug, Clone)]
+pub struct DeputedCase {
+    /// Which verifier produced it (`"junit"` today; `"tap"`, `"tlaplus"` designed).
+    pub verifier: String,
+    /// The suite/class the deputy groups the case under (JUnit's `classname`).
+    pub suite: String,
+    pub name: String,
+    /// `"passed"` | `"failed"` | `"error"` | `"skipped"` — the deputy's own vocabulary, kept.
+    pub outcome: String,
+    pub message: Option<String>,
+    pub time_ms: Option<u64>,
+    /// The artifact file the verdict was read from — the provenance that makes adoption auditable.
+    pub file: String,
+}
+
+/// Where a run's ingested deputed cases accumulate — shared across workers, drained by the caller
+/// into the run record. The same shape as snapshot tracking: a registry handle on the config,
+/// because the ingesting call sites (Lua, any worker thread) and the consumer (the record writer)
+/// are far apart.
+pub type DeputedRegistry = std::sync::Arc<std::sync::Mutex<Vec<DeputedCase>>>;
+
 /// Result totals for a run.
 #[derive(Debug, Clone, Default)]
 pub struct Summary {

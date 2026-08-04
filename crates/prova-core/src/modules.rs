@@ -53,6 +53,7 @@ mod format_names {
 }
 
 mod cassette;
+mod junit;
 mod shellproxy;
 mod socket;
 mod terminal;
@@ -84,7 +85,11 @@ fn journal_keep(lua: &Lua, filter: &Option<Value>, entry: &Table) -> mlua::Resul
 
 /// Install the built-in module globals (`shell`, `fs`, `docker`, and — with the `http` feature —
 /// `http`) into `lua`.
-pub(crate) fn install(lua: &Lua, progress: &Arc<dyn Progress>) -> mlua::Result<()> {
+pub(crate) fn install(
+    lua: &Lua,
+    progress: &Arc<dyn Progress>,
+    deputed: Option<crate::model::DeputedRegistry>,
+) -> mlua::Result<()> {
     lua.globals().set("shell", make_shell(lua, progress)?)?;
     lua.globals().set("fs", make_fs(lua)?)?;
     lua.globals().set("path", make_path(lua)?)?;
@@ -106,6 +111,9 @@ pub(crate) fn install(lua: &Lua, progress: &Arc<dyn Progress>) -> mlua::Result<(
     lua.globals().set("toml", make_toml(lua)?)?;
     lua.globals().set("csv", make_csv(lua)?)?;
     // The utility belt (api-freeze §1): separate from formats, same grammar, all reserved names.
+    // The verdict-ingestion seam (docs/design/verifiers.md): junit.load parses the lingua franca
+    // of test results; junit.verify (recipe, below) conducts a deputy and adopts its verdict.
+    lua.globals().set("junit", junit::make(lua, deputed)?)?;
     lua.globals().set("base64", make_base64(lua)?)?;
     lua.globals().set("hash", make_hash(lua)?)?;
     lua.globals().set("uuid", make_uuid(lua)?)?;
@@ -146,6 +154,7 @@ pub(crate) fn install(lua: &Lua, progress: &Arc<dyn Progress>) -> mlua::Result<(
     lua.load(CONTAINERIZED_LUA)
         .set_name("@prova/containerized")
         .exec()?;
+    junit::install_recipe(lua)?;
     // Resource recipes — Lua sugar over docker.run + prova.retry + a client + ctx:manage. Loaded
     // after the modules exist; the globals they touch resolve when a recipe is *called*.
     Ok(())

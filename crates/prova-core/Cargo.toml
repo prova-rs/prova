@@ -22,6 +22,9 @@ humantime = "2"
 toml = "0.8"
 # Filesystem globbing for the `fs` module (fs.glob(root, "**/*.rs")).
 glob = "0.3"
+# The `junit` module (docs/design/verifiers.md) — JUnit XML is the de facto lingua franca of
+# test results, and its escaping/entity rules are the classic place to hand-roll a quiet bug.
+quick-xml = "0.37"
 # The `csv` module (api-freeze §1) — RFC 4180 quoting is a well-known place to introduce a quiet
 # bug for no benefit (same reasoning as form_urlencoded below), so the parsing/quoting is a crate.
 csv = "1"

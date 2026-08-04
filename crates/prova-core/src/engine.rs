@@ -66,6 +66,11 @@ pub struct Selection {
     pub tags: Vec<String>,
     pub tag_excludes: Vec<String>,
     pub nodes: Vec<String>,
+    /// The lane's baked tag selection (`[profiles.<name>] tags`, split on `!` like `--tags`).
+    /// An INDEPENDENT gate ANDed with the CLI axes above: the lane defines the set, the CLI
+    /// narrows within it — never widens past it.
+    pub lane_tags: Vec<String>,
+    pub lane_tag_excludes: Vec<String>,
 }
 
 impl Selection {
@@ -75,10 +80,20 @@ impl Selection {
             && self.tags.is_empty()
             && self.tag_excludes.is_empty()
             && self.nodes.is_empty()
+            && self.lane_tags.is_empty()
+            && self.lane_tag_excludes.is_empty()
     }
 
     /// Does a leaf with these paths and effective tags survive this selection?
     fn selects(&self, paths: &[&str], tags: &[String]) -> bool {
+        // The lane gate first, independent of the CLI axes: a leaf outside the lane's tag set is
+        // out regardless of what -k/--node/--tags would say — the CLI narrows, never escapes.
+        if !self.lane_tags.is_empty() && !self.lane_tags.iter().any(|t| tags.contains(t)) {
+            return false;
+        }
+        if self.lane_tag_excludes.iter().any(|t| tags.contains(t)) {
+            return false;
+        }
         let lower: Vec<String> = paths.iter().map(|p| p.to_lowercase()).collect();
         // Includes: with no include criteria at all, everything is a candidate.
         let has_includes =
@@ -188,6 +203,9 @@ pub struct RunConfig {
     /// If present, every `.snap` a `matches_snapshot` references is recorded here (shared across
     /// workers), so the caller can reconcile untouched snapshots (`--unreferenced`) after a full run.
     snapshot_registry: Option<SnapshotRegistry>,
+    /// If present, every deputed case a verifier facet ingests (`junit.verify`) is recorded here
+    /// (shared across workers), so the caller can file the deputed account into the run record.
+    deputed_registry: Option<crate::model::DeputedRegistry>,
     modules: Vec<Module>,
     /// Extra disk roots the plugin searcher consults (e.g. the global `data_dir/plugins`).
     package_roots: Vec<std::path::PathBuf>,
@@ -245,6 +263,7 @@ impl Default for RunConfig {
             ports: PortMode::default(),
             update_snapshots: false,
             snapshot_registry: None,
+            deputed_registry: None,
             modules: Vec::new(),
             package_roots: Vec::new(),
             named_packages: std::collections::BTreeMap::new(),
@@ -350,6 +369,13 @@ impl RunConfig {
 
     /// Record every referenced `.snap` into `registry`, so the caller can reconcile unreferenced
     /// snapshots after the run (`--unreferenced`).
+    /// Attach the deputed-case registry — every `junit.verify`-style ingestion lands here, for
+    /// the caller to file into the run record (docs/design/verifiers.md).
+    pub fn with_deputed_tracking(mut self, registry: crate::model::DeputedRegistry) -> Self {
+        self.deputed_registry = Some(registry);
+        self
+    }
+
     pub fn with_snapshot_tracking(mut self, registry: SnapshotRegistry) -> Self {
         self.snapshot_registry = Some(registry);
         self
@@ -2925,7 +2951,7 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
     }
 
     // First-party capability modules (`shell`, `fs`) as their own injected globals.
-    crate::modules::install(&lua, config.progress())?;
+    crate::modules::install(&lua, config.progress(), config.deputed_registry.clone())?;
 
     // Host-provided plugin modules (e.g. `archetect`), installed into every Lua state.
     for install in &config.modules {

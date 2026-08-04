@@ -584,6 +584,9 @@ fn lane_line(p: &crate::manifest::Profile) -> String {
         return d.to_string();
     }
     let mut chips: Vec<String> = Vec::new();
+    if !p.tags.is_empty() {
+        chips.push(format!("tags: {}", p.tags.join(", ")));
+    }
     if !p.proofs.is_empty() {
         chips.push(format!("proofs: {}", p.proofs.join(", ")));
     }
@@ -735,6 +738,50 @@ fn attest_subcommand(args: Vec<String>) -> ExitCode {
     let Some(address) = address else {
         return attest_all(&home, &manifest, &packages_resolved);
     };
+
+    // A deputed address (`junit:<suite>#<name>`) asks about a case another verifier produced
+    // (docs/design/verifiers.md): did it execute and pass in the recorded run? Answered from the
+    // record's deputed rows — same contract as every other address, red/skipped/absent attest
+    // nothing.
+    if let Some(rest) = address.strip_prefix("junit:") {
+        let (suite, name) = match rest.split_once('#') {
+            Some(pair) => pair,
+            None => {
+                eprintln!("prova: a deputed address is junit:<suite>#<case>, got {address:?}");
+                return ExitCode::from(2);
+            }
+        };
+        let Some(recorded) = record::load(&home) else {
+            println!("prova: attest {address}");
+            println!("  ↳ no run has been recorded here — run the suite first (`prova`)");
+            return ExitCode::FAILURE;
+        };
+        println!("prova: attest {address}");
+        let row = recorded
+            .deputed
+            .iter()
+            .find(|d| d.verifier == "junit" && d.suite == suite && d.name == name);
+        return match row {
+            Some(d) if d.outcome == "passed" => {
+                println!("  ↳ attested — the deputed case ran and passed (from {})", d.file);
+                ExitCode::SUCCESS
+            }
+            Some(d) => {
+                match &d.message {
+                    Some(m) => println!("  ↳ NOT attested — the deputed case {}: {m}", d.outcome),
+                    None => println!("  ↳ NOT attested — the deputed case {}", d.outcome),
+                }
+                ExitCode::FAILURE
+            }
+            None => {
+                println!(
+                    "  ↳ NOT attested — no ingested case matches ({} deputed rows in the record)",
+                    recorded.deputed.len()
+                );
+                ExitCode::FAILURE
+            }
+        };
+    }
 
     // A bare id resolves when exactly one claim carries it. The full address stays canonical —
     // an agent has it in its buffer — but ids are the memorable half, and a human should not
@@ -1126,6 +1173,23 @@ fn evidence_subcommand(args: Vec<String>) -> ExitCode {
             n
         ),
         None => println!("  ATTESTED     —   no run recorded — run the suite first (`prova`)"),
+    }
+
+    // The deputed account (docs/design/verifiers.md): verdicts other verifiers produced,
+    // conducted and adopted this run — counts only; `prova attest junit:<suite>#<name>` asks
+    // about one. Absent entirely when nothing was ingested.
+    let deputed = record::load(&home).map(|r| r.deputed).unwrap_or_default();
+    if !deputed.is_empty() {
+        let red = deputed
+            .iter()
+            .filter(|d| d.outcome == "failed" || d.outcome == "error")
+            .count();
+        println!();
+        println!(
+            "  DEPUTED   {:>4}   cases adopted from other verifiers ({} red)",
+            deputed.len(),
+            red
+        );
     }
 
     // The attention account rides along (docs/design/reminders.md): all three states, from the
@@ -2487,6 +2551,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         globals_inject,
         manifest_broker,
         heed,
+        lane_tags,
     ) = if !explicit_paths.is_empty() {
         match &home {
             // The named paths belong to a package: borrow its environment (plugins, capabilities,
@@ -2521,6 +2586,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                     r.globals_inject,
                     r.placement_broker,
                     r.heed,
+                    r.lane_tags,
                 ),
                 Err(code) => return code,
             },
@@ -2543,8 +2609,9 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                 // registered ones are simply absent.
                 prova_core::Capabilities::default(),
                 Vec::new(),
-                None, // no manifest, no [placement]; the env var is still honoured below
-                false, // heed — no manifest, nothing promised attention
+                None,       // no manifest, no [placement]; the env var is still honoured below
+                false,      // heed — no manifest, nothing promised attention
+                Vec::new(), // lane tags — no manifest, no lanes
             ),
         }
     } else {
@@ -2586,6 +2653,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                 r.globals_inject,
                 r.placement_broker,
                 r.heed,
+                r.lane_tags,
             ),
             Err(code) => return code,
         }
@@ -2642,13 +2710,17 @@ fn run(cli_args: Vec<String>) -> ExitCode {
 
     // The standalone `prova` binary ships the archetect plugin, so `archetect.render{...}` works.
     // The plugin searcher consults the global install dir plus any manifest-declared plugins.
+    // The deputed account (docs/design/verifiers.md): every case a verifier facet ingests
+    // (`junit.verify`) accumulates here, drained into the run record below.
+    let deputed_registry: prova_core::DeputedRegistry = std::sync::Arc::default();
     let mut config = engine_config(jobs, &packages_resolved, home.as_ref(), std::sync::Arc::clone(&progress_sink))
         .with_update_snapshots(update_snapshots)
         .with_strict_specs(strict_specs)
         .with_specs_only(specs_only)
         .with_falsify(falsify)
         .with_capabilities(capabilities)
-        .with_globals_inject(globals_inject);
+        .with_globals_inject(globals_inject)
+        .with_deputed_tracking(deputed_registry.clone());
 
     // `--last-failed`: fold the previous run's failed node paths into the selection as exact nodes.
     if last_failed {
@@ -2657,6 +2729,14 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             _ => eprintln!(
                 "prova: --last-failed: no failure state from a previous run here; running everything"
             ),
+        }
+    }
+    // The lane's baked tags join the selection as their own gate (`!` splits into excludes,
+    // same grammar as --tags). The CLI's axes then narrow WITHIN the lane.
+    for t in &lane_tags {
+        match t.strip_prefix('!') {
+            Some(rest) => selection.lane_tag_excludes.push(rest.to_string()),
+            None => selection.lane_tags.push(t.clone()),
         }
     }
     config.selection = selection;
@@ -2869,6 +2949,9 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                     skipped: std::mem::take(&mut reporter.skipped),
                     deselected: summary.deselected_paths.clone(),
                     reminders: reminders.clone(),
+                    deputed: record::deputed_rows(
+                        &std::mem::take(&mut *deputed_registry.lock().expect("deputed registry")),
+                    ),
                 },
                 record_to.as_deref(),
             );
@@ -2908,6 +2991,26 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                         .iter()
                         .map(|n| format!("--node {n:?}")),
                 );
+                if !config.selection.lane_tags.is_empty()
+                    || !config.selection.lane_tag_excludes.is_empty()
+                {
+                    asked.push(format!(
+                        "lane tags {:?}",
+                        config
+                            .selection
+                            .lane_tags
+                            .iter()
+                            .cloned()
+                            .chain(
+                                config
+                                    .selection
+                                    .lane_tag_excludes
+                                    .iter()
+                                    .map(|t| format!("!{t}"))
+                            )
+                            .collect::<Vec<_>>()
+                    ));
+                }
                 eprintln!(
                     "prova: selection matched no tests ({}) — {} deselected",
                     asked.join(", "),
@@ -3025,6 +3128,9 @@ struct ManifestRun {
     /// Whether this context heeds the attention account: a DUE reminder fails the run
     /// (`heed_reminders` in `[run]`/a profile, or CLI `--heed` — see docs/design/reminders.md).
     heed: bool,
+    /// The lane's baked tag selection (`tags` on `[run]`/the profile) — folded into the run's
+    /// Selection as an independent gate the CLI narrows within.
+    lane_tags: Vec<String>,
 }
 
 /// If a linted plugin ships no LuaCATS stub (`library/<canonical>.lua`), return an advisory message.
@@ -3677,6 +3783,7 @@ fn resolve_from_manifest(
         globals_inject: resolved.globals_inject,
         placement_broker: manifest.placement.as_ref().and_then(|p| p.broker.clone()),
         heed: resolved.heed_reminders,
+        lane_tags: resolved.lane_tags,
     })
 }
 

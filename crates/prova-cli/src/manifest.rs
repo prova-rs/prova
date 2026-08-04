@@ -432,6 +432,11 @@ pub struct Profile {
     /// description lists as its settings summary.
     #[serde(default)]
     pub description: Option<String>,
+    /// The lane's baked selection: tags a leaf must carry to be in this lane (`!tag` excludes,
+    /// same grammar as `--tags`). CLI selection then narrows WITHIN the lane, never past it. A
+    /// profile's non-empty list replaces `[run]`'s, like `proofs`.
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 /// `[globals]` — the closed shape of the globals-injection knobs. `inject` lists the modules (bundled
@@ -485,6 +490,8 @@ pub struct Resolved {
     /// because a context that could retract a guarantee would let the strictest bar be silenced by
     /// selecting a laxer profile.
     pub must_run: Vec<String>,
+    /// The lane's baked tag selection — the profile's `tags` (non-empty replaces `[run]`'s).
+    pub lane_tags: Vec<String>,
     /// Whether a DUE reminder fails the run — `[run] heed_reminders` OR the selected profile's
     /// (OR the CLI's `--heed`). Additive for the same reason `must_run` is: a laxer profile must
     /// not silence a promised bar.
@@ -825,6 +832,12 @@ impl Manifest {
         // but never retract the package's promise of it.
         let heed_reminders =
             base.heed_reminders || overlay.map(|p| p.heed_reminders).unwrap_or(false);
+        // A lane's tags are its selection, so they OVERRIDE like `proofs` (a lane defines its
+        // set), never union like the guarantees.
+        let lane_tags = match overlay {
+            Some(p) if !p.tags.is_empty() => p.tags.clone(),
+            _ => base.tags.clone(),
+        };
 
         // The reserved-name registry (api-freeze §2): a dependency bearing a bundled namespace name
         // is a validation error, never a silent shadow — in either direction, so the check runs on
@@ -877,6 +890,7 @@ impl Manifest {
             updates: self.updates.clone(),
             globals_inject,
             must_run,
+            lane_tags,
             heed_reminders,
             context: self.context.clone(),
         })
@@ -938,6 +952,7 @@ proofs = ["tests/smoke"]
                 updates: UpdatesSection::default(),
                 globals_inject: prova_core::default_inject(),
                 must_run: Vec::new(),
+                lane_tags: Vec::new(),
                 heed_reminders: false,
                 context: Vec::new(),
             }

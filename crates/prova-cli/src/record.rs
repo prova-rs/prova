@@ -115,6 +115,41 @@ pub fn reminder_entries(outcomes: &[prova_core::ReminderOutcome]) -> Vec<Reminde
         .collect()
 }
 
+/// One deputed case — a verdict another verifier produced, conducted by a proof and adopted
+/// into this run's account (docs/design/verifiers.md). `prova attest junit:<suite>#<name>`
+/// answers against these rows.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeputedRow {
+    /// Which verifier produced it (`"junit"` today).
+    pub verifier: String,
+    pub suite: String,
+    pub name: String,
+    /// The deputy's own vocabulary, kept: `"passed"` | `"failed"` | `"error"` | `"skipped"`.
+    pub outcome: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_ms: Option<u64>,
+    /// The artifact file the verdict was read from — the provenance of the adoption.
+    pub file: String,
+}
+
+/// Convert the engine's ingested cases into record rows.
+pub fn deputed_rows(cases: &[prova_core::DeputedCase]) -> Vec<DeputedRow> {
+    cases
+        .iter()
+        .map(|c| DeputedRow {
+            verifier: c.verifier.clone(),
+            suite: c.suite.clone(),
+            name: c.name.clone(),
+            outcome: c.outcome.clone(),
+            message: c.message.clone(),
+            time_ms: c.time_ms,
+            file: c.file.clone(),
+        })
+        .collect()
+}
+
 /// One run, as a durable fact.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Record {
@@ -140,6 +175,9 @@ pub struct Record {
     /// (conditions are only sound against the FULL account, and a `-k` run must not wipe them).
     #[serde(default)]
     pub reminders: Vec<ReminderEntry>,
+    /// The deputed account: every case a verifier facet ingested this run, with provenance.
+    #[serde(default)]
+    pub deputed: Vec<DeputedRow>,
 }
 
 /// Which build produced a record.
@@ -304,6 +342,7 @@ mod tests {
                 .collect(),
             deselected: desel.iter().map(|d| d.to_string()).collect(),
             reminders: Vec::new(),
+            deputed: Vec::new(),
         }
     }
 
