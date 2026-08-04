@@ -41,6 +41,9 @@ prova = ">=0.4"                   # compat-gated against the running prova
 - The common body is one call: `prova.containerized{ name, image|build, port, env, url, client,
   wait }` — provision, wait, manage, and return the `{ client, url, container, host, port }`
   trio.
+- A verb that changes provisioned state returns only when the change is observable THROUGH THE
+  SEAM THE CONSUMER WILL USE — the provisioner's exit code is not that seam. `prova.retry` the
+  consumer-visible check; a CLI that "completed" may have handed off to a store that syncs later.
 - Private dependencies: a `[dependencies]` table in the PACKAGE'S own prova.toml (e.g.
   `inner = { path = "deps/inner" }`) — isolated from consumers, no version bleed.
 - Ship `library/<name>.lua` (`---@meta <name>`) — it is what makes your API answerable in

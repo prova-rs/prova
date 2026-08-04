@@ -82,7 +82,11 @@ The contract is exactly the conventions the first-party recipes already follow:
    as its first argument.
 3. **Lifecycle through `ctx:manage` / `ctx:defer`.** Never leak; teardown ties to the scope. A
    managed value just needs a `stop()` or `close()` method.
-4. **Readiness through `prova.retry`.** Don't sleep; retry the real thing.
+4. **Readiness through `prova.retry`.** Don't sleep; retry the real thing — and "the real thing"
+   means the seam the consumer will use. A verb that changes provisioned state returns only when
+   the change is observable there; the provisioner's exit code is not that seam. (The lesson's
+   price was paid once: `kind load` exits when containerd has imported the image, but the kubelet
+   pulls through the CRI, whose store syncs later — prova-kind's `load_image` now polls the CRI.)
 5. **`container` returns the trio** `{ client, url, container }` (extras allowed, trio guaranteed).
 6. **`requires` for graceful skip.** A recipe touching Docker lets its tests declare
    `requires = { "docker" }`; the existing skip-fixpoint handles absence for free.
