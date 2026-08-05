@@ -47,8 +47,21 @@ impl ColorMode {
 
 /// Whether to add the GitHub Actions sink (workflow-command annotations + step summary).
 /// Resolution order: `--gha` flag > `PROVA_GHA` env > manifest `github` key > `Auto`. Under
-/// `Auto` the sink turns on exactly when `GITHUB_ACTIONS=true` — zero-config in CI, silent
-/// everywhere else.
+/// `Auto` the sink turns on when `GITHUB_ACTIONS=true` **and this is the job's own run** —
+/// zero-config in CI, silent everywhere else.
+///
+/// The nesting half of that condition is what keeps the sink truthful. `$GITHUB_STEP_SUMMARY`
+/// names ONE file for the whole job and `::error` annotations attach to the job, so both are
+/// job-scoped resources — but the environment naming them is inherited by every descendant. A
+/// suite that drives prova (prova's own do, and so does any user proving a CLI) therefore had
+/// each inner run append its own table to the shared summary and annotate its own failures. The
+/// result reads as a job that failed many times, when in truth an inner run failing is usually
+/// the *expected* outcome the outer test asserts on — a deliberately-red fixture is a pass one
+/// level up. The job summary is the outer run's to write; an inner run reports through its exit
+/// code, to the test that spawned it.
+///
+/// Only `Auto` consults the depth. `On` still forces the sink at any depth — an explicit `--gha
+/// on` is a person saying "annotate THIS run", and nesting is not evidence against that.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum GhaMode {
     Auto,
@@ -70,7 +83,10 @@ impl GhaMode {
         match self {
             GhaMode::On => true,
             GhaMode::Off => false,
-            GhaMode::Auto => std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true"),
+            GhaMode::Auto => {
+                std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true")
+                    && prova_core::run_depth() == 0
+            }
         }
     }
 }

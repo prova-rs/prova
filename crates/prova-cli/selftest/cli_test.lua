@@ -135,7 +135,12 @@ end)
 
 prova.test("GitHub Actions mode: annotations + step summary, honoring --gha off", function(t)
   local summary = fs.tempdir() .. "/step_summary.md"
-  local gha_env = { GITHUB_ACTIONS = "true", GITHUB_STEP_SUMMARY = summary }
+  -- PROVA_RUN_DEPTH = 0 stands in for the job's own run. This assertion is about what the TOP-LEVEL
+  -- run does under Actions, but it is necessarily made from inside a suite — so the child is nested
+  -- by construction, and `auto` correctly declines to annotate at depth > 0 (that is
+  -- proofs/hermeticity/nested_run_reporting_test.lua's subject). Overriding the stamp is how a
+  -- nested run asks for the top-level behavior deliberately.
+  local gha_env = { GITHUB_ACTIONS = "true", GITHUB_STEP_SUMMARY = summary, PROVA_RUN_DEPTH = "0" }
 
   -- Detected via GITHUB_ACTIONS=true: failures become ::error annotations (with file/line
   -- properties) alongside the normal console output, and the run appends a markdown summary.
