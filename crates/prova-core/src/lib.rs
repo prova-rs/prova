@@ -13,6 +13,7 @@ mod modules;
 mod packages;
 pub mod progress;
 mod suite;
+pub mod ledger;
 
 /// The reserved-name registry (api-freeze §2): every bundled namespace name, including kernel
 /// transports that are designed but not yet shipped — reserving ahead of the implementation is

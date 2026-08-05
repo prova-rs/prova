@@ -91,7 +91,7 @@ prost-reflect = { version = "0.16.5", features = ["serde"], optional = true }
 # `http`'s `:json()` does for JSON. General black-box-testing capability, not archetype-specific.
 # Maintained serde_yaml fork. Feature-gated (default on); light, pure-Rust.
 serde_yaml_ng = { version = "0.10.0", optional = true }
-serde = { version = "1", features = ["derive"], optional = true }
+serde = { version = "1", features = ["derive"] }
 # The `str` module's casing half — archetect's OWN inflections (same repo+tag as prova-archetect's
 # archetect-core, so the lockfile dedupes to one copy). Calling archetect's implementation rather
 # than reimplementing is the point: `str.snake_case` in a proof and `snake_case` in an archetype
@@ -146,7 +146,6 @@ mock = [
     "http",
     # Cassettes are serde-derived structs. `serde` is already compiled (reqwest), and `derive` is
     # additive for the `yaml` feature that also uses it.
-    "dep:serde",
     "dep:hyper",
     "dep:hyper-util",
     "dep:http-body-util",
@@ -181,4 +180,5 @@ grpc = [
     "dep:prost-types",
     "dep:prost-reflect",
 ]
-yaml = ["dep:serde_yaml_ng", "dep:serde"]
+yaml = ["dep:serde_yaml_ng"]
+

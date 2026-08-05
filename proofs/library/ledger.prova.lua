@@ -88,9 +88,10 @@ end)
 
 prova.test("an outside crate can reach the obligation ledger", {
 	covers = "docs/design/lifecycle.md#ledger-is-library-side",
-	promises = "Phase 1 slices 1a-1c — lift record/annotations/claims out of prova-cli into "
-		.. "prova-core as a typed, path-injected, serde API (no optional-feature gate), leaving "
-		.. "prova-cli a renderer over it.",
+	proves = "The RECORD half of the account is library-side: a crate outside the workspace compiles "
+		.. "against prova_core::ledger with default features only. The claim/annotation half is still "
+		.. "owed — see the claim-ledger proof below, which keeps this obligation un-attested until it "
+		.. "lands (attest resolves worst-first, so a sibling passing is not enough).",
 	requires = { "cargo" },
 	timeout = "900s",
 }, function(t)
@@ -115,7 +116,9 @@ end)
 
 prova.test("the ledger reconciles an obligation for a consumer", {
 	covers = "docs/design/lifecycle.md#ledger-is-library-side",
-	promises = "Phase 1 slice 1a — `attest` and a path-taking record reader, reachable from outside.",
+	proves = "`attest` and a path-taking record reader are reachable from outside, and the record "
+		.. "prova itself writes round-trips through them — so the reader takes paths from its caller "
+		.. "rather than resolving prova's own `.prova/var` convention.",
 	requires = { "cargo" },
 	timeout = "900s",
 }, function(t)
@@ -145,4 +148,65 @@ prova.test("the ledger reconciles an obligation for a consumer", {
 	)
 	t:expect(out.code, "the consumer could not reconcile the record:\n" .. out.stdout):equals(0)
 	t:expect(out.stdout, "attest(record, []) must report Unbound"):contains("UNBOUND")
+end)
+
+-- The other half of the same account. The claim above says the ledger — claims, the record,
+-- attestation, reconciliation — is computed in prova-core; only the RECORD half is there so far, and
+-- `claims.rs` / `annotations.rs` are still private to prova-cli. Without this proof the claim would
+-- read ATTESTED off the record half alone, which is the vacuous pass the whole lifecycle exists to
+-- refuse. `attest` resolves worst-first, so while this stays open the obligation stays owed no matter
+-- how green its siblings are.
+local claim_consumer = prova.fixture("claim-ledger-consumer", Scope.File, function(ctx)
+	local dir = ctx:tempdir()
+	fs.write(
+		dir .. "/Cargo.toml",
+		table.concat({
+			"[package]",
+			'name = "claim-ledger-consumer"',
+			'version = "0.0.0"',
+			'edition = "2021"',
+			"",
+			"[dependencies]",
+			'prova-core = { path = "' .. REPO .. '/crates/prova-core" }',
+			"",
+			"[workspace]",
+		}, "\n") .. "\n"
+	)
+	fs.write(
+		dir .. "/src/main.rs",
+		table.concat({
+			"use prova_core::ledger::{Claim, Owed, Status};",
+			"",
+			"fn main() {",
+			"    // Naming the types is the assertion; the reconciliation itself is exercised by the",
+			"    // record-half proofs. What is under test is whether a consumer can SEE this at all.",
+			"    let _ = std::mem::size_of::<Claim>();",
+			"    let _ = std::mem::size_of::<Owed>();",
+			"    let _ = Status::Unproven;",
+			'    println!("CLAIMS-REACHABLE");',
+			"}",
+		}, "\n") .. "\n"
+	)
+	local build = shell.run("cargo build", { cwd = dir, timeout = "900s", merge_stderr = true })
+	return { dir = dir, build = build }
+end)
+
+prova.test("an outside crate can reach the claim ledger", {
+	covers = "docs/design/lifecycle.md#ledger-is-library-side",
+	promises = "Phase 1 slices 1b-1c — lift annotations.rs (prose anchors, covers/promises binding) "
+		.. "and claims.rs (Claim, Status, Owed) out of prova-cli into prova-core alongside the record "
+		.. "half, path-injected and not feature-gated.",
+	requires = { "cargo" },
+	timeout = "900s",
+}, function(t)
+	local c = t:use(claim_consumer)
+	local first
+	for line in c.build.stdout:gmatch("[^\n]+") do
+		if line:match("^error%[") or line:match("^error:") then
+			first = line
+			break
+		end
+	end
+	first = first or ("(no rustc diagnostic; cargo exit " .. tostring(c.build.code) .. ")")
+	t:expect(c.build.code, "a consumer cannot reach the claim half of the ledger — " .. first):equals(0)
 end)
