@@ -26,7 +26,7 @@ anchor repo paths on them, never on cwd.
 
 | Key | Meaning |
 |---|---|
-| `[run] proofs = ["proofs"]` | directory-NAME patterns (not paths): every matching dir below the root holds `*_test.lua` proofs |
+| `[run] proofs = ["proofs"]` | directory-NAME patterns (not paths): every matching dir below the root holds `*.prova.lua` declaration files (`*_test.lua` also accepted) |
 | `[run] packages` | THE directory of this package's own local packages; no default — undeclared means none scanned |
 | `[run] config` | Lua companion loaded pre-suite (defaults to `prova.lua` beside the manifest) — `runtime.capability` lives there |
 | `[run] jobs / format / env` | concurrency (throughput only), output format (`console`\|`json`\|`tap`), run environment |
@@ -45,7 +45,8 @@ anchor repo paths on them, never on cwd.
 
 ## Where new things go
 
-- **A new proof**: a `*_test.lua` file in any directory matching a `proofs` pattern above.
+- **A new proof**: a `*.prova.lua` file in any directory matching a `proofs` pattern above
+  (`*_test.lua` / `*.test.lua` remain accepted; bare `prova.lua` is the companion, never collected).
 - **A new local package**: a dir under `[run] packages` (`<packages>/<name>/init.lua`); see
   `prova learn init` for `prova init package`.
 - **A shared fixture/topology**: `prova.topology(name, factory)` in a proof file, or `[topologies]`

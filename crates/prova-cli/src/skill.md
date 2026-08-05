@@ -18,7 +18,7 @@ The loop:
 
 1. `prova init` — scaffold `prova.toml` + IDE stubs (skip if the repo has one; find it by walking up).
 2. Probe unknowns with `prova eval '<lua>'` — one-shot code in the full environment, no test-file ceremony.
-3. Write the proof in a `*_test.lua` file **in a directory matching the manifest's `[run] proofs`
+3. Write the proof in a `*.prova.lua` file (`*_test.lua` also accepted) **in a directory matching the manifest's `[run] proofs`
    patterns** (directory names, `["proofs"]` by default — `prova learn project` names this
    package's). Red is correct at this stage.
 4. Implement. Re-run with `prova --last-failed` until green. Never weaken a proof to pass it —
@@ -96,7 +96,7 @@ Everything below is the crash course; depth is one call away, computed for THIS 
 
 ## Test files, in one screen
 
-Files match `*_test.lua` (or `*.test.lua`). Everything is a global — no imports except packages.
+Files match `*.prova.lua` — preferred, since a file may declare tests, fixtures, topologies, and reminders — plus the accepted `*_test.lua` / `*.test.lua`. Everything is a global — no imports except packages.
 
 ```lua
 local postgres = require("postgres")          -- a dependency, declared in prova.toml [dependencies]

@@ -7,7 +7,9 @@ Guidance for agents and developers working in this repository.
 **Prova** is a programmable, language-agnostic **black-box acceptance-test runner** — a real
 scripting language (Lua) plus a real fixture model, shipped as a single static binary. It brings a
 system into existence (render it, build it, boot it), then probes it with shell + HTTP + filesystem
-assertions, with fixtures holding setup and teardown together. Tests are `*_test.lua` files; a
+assertions, with fixtures holding setup and teardown together. Declaration files are
+`*.prova.lua` (`*_test.lua` / `*.test.lua` accepted quietly — this repo's own suite still uses
+them); a
 `prova.toml` manifest declares what to run and how.
 
 See `README.md` for the pitch and `docs/design/` for the durable design docs (foundations,

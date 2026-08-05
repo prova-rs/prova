@@ -3,7 +3,7 @@
 //!
 //! `mlua::Lua` (and the `Function` bodies collected from a file) are `!Send`, so a body collected on
 //! one state cannot execute on another thread. The unit of one state is therefore the **suite**: a
-//! directory's `suite.lua` groups its `*_test.lua` into a suite whose files load into one state, so
+//! directory's `suite.lua` groups its declaration files into a suite whose files load into one state, so
 //! `Scope.Suite` fixtures are live cached values shared across them (no cross-VM serialization). An
 //! ungrouped file is a *singleton* suite — one file, no setup — so the default is exactly per-file
 //! parallelism, unchanged. Suites run in parallel; within a suite, cooperative async as before.
@@ -128,7 +128,8 @@ pub fn discover_suite(suite: &Suite, config: &RunConfig) -> mlua::Result<Vec<Str
     crate::engine::discover_suite_files(&suite.name, suite.setup.as_deref(), &suite.files, config)
 }
 
-/// Recursively collect test files under `root` (`*_test.lua` / `*.test.lua`), or just `[root]` if it
+/// Recursively collect declaration files under `root` (`*.prova.lua`, plus the accepted
+/// `*_test.lua` / `*.test.lua`), or just `[root]` if it
 /// is itself a file. Results are sorted for deterministic discovery order.
 pub fn discover_files(root: &Path) -> std::io::Result<Vec<PathBuf>> {
     let mut out = Vec::new();
@@ -142,7 +143,7 @@ pub fn discover_files(root: &Path) -> std::io::Result<Vec<PathBuf>> {
 }
 
 /// Group the tree under `root` into suites: a directory containing a `suite.lua` becomes one suite
-/// owning the `*_test.lua` files in **that directory only** (with `suite.lua` as setup) — never the
+/// owning the declaration files in **that directory only** (with `suite.lua` as setup) — never the
 /// subtree; subdirectories are discovered independently, so a nested `suite.lua` is its own suite.
 /// Every other test file is its own singleton suite. A plain file argument is a singleton suite.
 /// Sorted for determinism.
@@ -174,7 +175,7 @@ fn collect_suites(dir: &Path, out: &mut Vec<Suite>) -> std::io::Result<()> {
     own_tests.sort();
     subdirs.sort();
 
-    // Directory-scoped: a `suite.lua` owns the `*_test.lua` in THIS directory only — not the subtree.
+    // Directory-scoped: a `suite.lua` owns the declaration files in THIS directory only — not the subtree.
     // Subdirectories are always discovered independently, so a nested `suite.lua` is its own suite
     // rather than being swallowed. Sharing across directories is `require`, never silent inheritance.
     if grouped {
@@ -202,12 +203,24 @@ fn collect_suites(dir: &Path, out: &mut Vec<Suite>) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Whether a path is a proof file by name. Public so the CLI's diagnostics use the SAME rule
-/// discovery does — a second copy of the suffix list would drift, and a stale hint is worse than
-/// none.
+/// Whether a path is a collected declaration file by name. Public so the CLI's diagnostics use
+/// the SAME rule discovery does — a second copy of the suffix list would drift, and a stale hint
+/// is worse than none.
+///
+/// The preferred spelling is **`<stem>.prova.lua`** (`_prova.lua` mirrors it): the file prova
+/// collects, whatever it declares — tests, fixtures, topologies, reminders — named after the
+/// collector, not one role. A non-empty stem is required: bare `prova.lua` is the manifest's
+/// companion file (pre-suite `runtime.*` config), never a collected file. The original
+/// `_test.lua` / `.test.lua` spellings are accepted quietly, and possibly indefinitely — the
+/// retirement question is deferred to 1.0, decided by what the fleet actually did.
 pub fn is_test_file(path: &Path) -> bool {
     match path.file_name().and_then(|n| n.to_str()) {
-        Some(name) => name.ends_with("_test.lua") || name.ends_with(".test.lua"),
+        Some(name) => {
+            (name.ends_with(".prova.lua") && name != ".prova.lua")
+                || (name.ends_with("_prova.lua") && name != "_prova.lua")
+                || name.ends_with("_test.lua")
+                || name.ends_with(".test.lua")
+        }
         None => false,
     }
 }

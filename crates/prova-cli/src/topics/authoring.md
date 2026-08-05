@@ -1,6 +1,6 @@
 # authoring — the proof DSL, one screen
 
-Files match `*_test.lua` (or `*.test.lua`). Everything is a global — no imports except packages via `require`.
+Files match `*.prova.lua` — named for the collector, since a file may declare tests, fixtures, topologies, and reminders (`*_test.lua` / `*.test.lua` are the accepted older spellings; bare `prova.lua` is the manifest companion, never collected). Everything is a global — no imports except packages via `require`.
 
 ```lua
 local postgres = require("postgres")            -- declared in prova.toml [dependencies]

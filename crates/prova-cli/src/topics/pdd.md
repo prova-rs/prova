@@ -7,7 +7,7 @@ approach", this is what they mean:
 1. `prova init` if the repo has no `prova.toml` (find it by walking up first). See
    `prova learn init`.
 2. Probe unknowns with `prova eval '<lua>'` — one-shot code in the full environment.
-3. Write the proof FIRST, in a `*_test.lua` file where the manifest points (`prova learn
+3. Write the proof FIRST, in a `*.prova.lua` file where the manifest points (`prova learn
    project` says where in this repo). Run it. **Red is correct at this stage** — a proof that
    passes before you implement proves nothing.
 4. Implement. Re-run with `prova --last-failed` until green.

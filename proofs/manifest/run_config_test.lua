@@ -125,7 +125,8 @@ prova.test("a package that resolves to no proofs is exit 2, not zero-of-zero gre
 
   local r = run(dir)
   t:expect(r.code):equals(2)
-  t:expect(r.stdout, "says what it looked for"):contains("no test files found")
+  t:expect(r.stdout, "says what it looked for"):contains("no declaration files found")
+  t:expect(r.stdout, "teaches the preferred spelling"):contains(".prova.lua")
 end)
 
 prova.test("a --profile name that doesn't exist is refused by name",

@@ -358,7 +358,8 @@ pub struct SuiteDecl {
 #[derive(Debug, Deserialize, Default, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct Profile {
-    /// Directory-NAME patterns marking proof locations. Prova runs the `*_test.lua` in every directory
+    /// Directory-NAME patterns marking proof locations. Prova runs the `*.prova.lua` (and the
+    /// accepted `*_test.lua` / `*.test.lua`) in every directory
     /// matching one of these anywhere below the package root — a pattern is a basename (glob
     /// metacharacters allowed), NOT a path, so `["proofs"]` finds every `proofs/` dir at any depth, not
     /// just `<root>/proofs`. Omitted → the default `["proofs"]` (see [`Resolved::DEFAULT_PROOFS`]).

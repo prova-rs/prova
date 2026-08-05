@@ -27,6 +27,20 @@ out of "one state per suite," and multi-core parallelism moves to the suite grai
 *right* grain (you have many suites; a giant single suite that must share state genuinely can't be
 cross-core anyway).
 
+## File naming (decided 2026-08-04)
+
+The preferred declaration-file spelling is **`<stem>.prova.lua`** (`_prova.lua` mirrors it) —
+named for the *collector*, not one role, because a file legitimately declares tests, fixtures,
+topologies, and reminders, and `_test.lua` misdescribes a file that carries no tests (a
+checklist of promises + a reminder; a topologies file). A non-empty stem is required: bare
+`prova.lua` is the manifest's companion (pre-suite `runtime.*` config, loaded with the manifest
+so `must_run` can see its capabilities) and is never collected. The original `_test.lua` /
+`.test.lua` spellings are accepted **quietly, and possibly indefinitely** — no per-file nag (a
+warning on every run of every existing suite is how stderr gets ignored); archetypes and the
+teaching surfaces render the new spelling, and the retirement question is deferred to 1.0,
+decided by what the fleet actually did. `proofs/spec/engine/naming.prova.lua` holds all of this
+executably, in a file wearing the spelling it proves.
+
 ## Backward compatibility: every file is a singleton suite
 
 <!-- claim: singleton-suite-compat -->

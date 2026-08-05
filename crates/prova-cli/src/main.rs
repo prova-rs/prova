@@ -2674,7 +2674,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         }
     };
     if suites.is_empty() {
-        eprintln!("prova: no test files found (looked for *_test.lua / *.test.lua)");
+        eprintln!("prova: no declaration files found (looked for *.prova.lua, plus the accepted *_test.lua / *.test.lua)");
         if let Some(hint) = stray_proof_hint(&base_dir, &paths) {
             eprintln!("prova: {hint}");
         }

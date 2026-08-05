@@ -470,7 +470,8 @@ fn render_slot(slot: Slot, env: &RenderEnv, transport: Transport) -> String {
         Slot::ProofPaths => match &env.package {
             Some(p) => format!(
                 "**Proofs** ({}): `proofs = [{}]` — directory-NAME patterns; every matching \
-                 directory below the package root holds `*_test.lua` proofs. Put new proofs there.",
+                 directory below the package root holds `*.prova.lua` proofs (`*_test.lua` is the \
+                 accepted older spelling). Put new proofs there.",
                 p.manifest_name,
                 p.resolved
                     .proofs
