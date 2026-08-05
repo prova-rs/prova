@@ -3182,7 +3182,7 @@ fn report_annotations(outcome: &annotations::Outcome) {
 /// proofs out of the consuming package's run.
 /// Explain an EMPTY discovery, when the reason is visible on disk.
 ///
-/// "no test files found (looked for `*_test.lua`)" reads as a lie when one is plainly sitting there —
+/// "no declaration files found (looked for `*.prova.lua`)" reads as a lie when one is plainly sitting there —
 /// it is true only in the sense that we did not look *where it is*. Proof files are found in
 /// directories NAMED by `[run] proofs`, and several directory names are never scanned at all: the
 /// `prova/` / `.prova/` **nook** most of all, because "put prova's files in `prova/`" invites putting
