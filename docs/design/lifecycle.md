@@ -124,6 +124,27 @@ non-zero unless each one is attested — one exit-code answer for a pipeline.
 An address at a time is a developer's question; the pipeline's question is "is everything this
 project claims actually evidenced", and it has to be one exit code or CI cannot gate on it.
 
+### The account is a library, not a binary
+
+A CLI is one renderer of the account, and it must not be the only one that can compute it. Today the
+reconciliation lives in `prova-cli` — `claims.rs`, `record.rs`, `annotations.rs`, `runstate.rs` — so
+anything that is not the `prova` binary is left scraping human prose to learn what a project owes.
+`prova-core` already carries the shape of that gap: `ReminderAccount.owed` is documented as *"Supplied
+by the caller (the reconciliation lives CLI-side)"*, a hole where the number arrives from somewhere
+else. A UI that renders promises going green as a run streams, an editor plugin, and an agent host that
+embeds the engine are all the same consumer, and none of them can be served by a `--format json` flag
+bolted onto a renderer.
+
+<!-- claim: ledger-is-library-side -->
+The obligation ledger — claims, the run record, attestation, and reconciliation — is computed in
+`prova-core` behind a typed API that takes paths from its caller and needs no optional feature to
+reach, and `prova-cli` is one renderer over it holding no ledger logic of its own.
+
+Two consequences worth stating, because both are easy to get wrong while making the move compile:
+the API is **path-injected** (a consumer resolves project roots its own way and must not inherit
+prova's `.prova/var` convention to read a record), and it is **not feature-gated** (a ledger a
+consumer must opt into is a ledger consumers will not find).
+
 ## Prova must be its own exemplar
 
 <!-- claim: prova-dogfoods-its-own-lifecycle -->
