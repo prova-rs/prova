@@ -48,6 +48,14 @@ jobs:
           # macOS Application Firewall's "accept incoming connections?" prompt; CI runs them on
           # every leg. GitHub runners have the firewall disabled, so no prompt blocks the run.
           PROVA_TEST_NETWORK_VANTAGE: "1"
+          # The prova runs under `cargo test` are FIXTURES, not this job's report. ~24 integration
+          # tests spawn the binary through std::process::Command against a throwaway home, dozens of
+          # times, and several are red on purpose. Each such child is a top-level prova as far as it
+          # can tell — the Rust harness is not prova, so nothing marks it as nested the way
+          # PROVA_RUN_DEPTH marks a prova spawned by prova — so under Actions every one of them
+          # appended its own table to the job summary. This step reports through cargo's output;
+          # the job summary belongs to the Proofs step below, which is a single top-level run.
+          PROVA_GHA: "off"
 
       # Prova, proven by prova. This is a BLACK-BOX pass over the binary just built, so it covers
       # ground `cargo test` structurally cannot: manifest parsing, discovery, capability gating,

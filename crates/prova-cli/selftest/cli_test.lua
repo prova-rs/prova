@@ -140,7 +140,12 @@ prova.test("GitHub Actions mode: annotations + step summary, honoring --gha off"
   -- by construction, and `auto` correctly declines to annotate at depth > 0 (that is
   -- proofs/hermeticity/nested_run_reporting_test.lua's subject). Overriding the stamp is how a
   -- nested run asks for the top-level behavior deliberately.
-  local gha_env = { GITHUB_ACTIONS = "true", GITHUB_STEP_SUMMARY = summary, PROVA_RUN_DEPTH = "0" }
+  -- PROVA_GHA = auto neutralizes an inherited setting: CI runs `cargo test` with PROVA_GHA=off
+  -- (those prova runs are fixtures, not the job's report), and env beats the `auto` default, so
+  -- without this the assertions below would be testing the ambient CI config rather than prova.
+  local gha_env = {
+    GITHUB_ACTIONS = "true", GITHUB_STEP_SUMMARY = summary, PROVA_RUN_DEPTH = "0", PROVA_GHA = "auto",
+  }
 
   -- Detected via GITHUB_ACTIONS=true: failures become ::error annotations (with file/line
   -- properties) alongside the normal console output, and the run appends a markdown summary.

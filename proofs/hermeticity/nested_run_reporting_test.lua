@@ -42,9 +42,16 @@ end)
 --- A fresh, empty step-summary file plus the Actions environment naming it. `env` EXTENDS the
 --- inherited environment, so this stands up a believable Actions context on a developer laptop and
 --- overrides the real one on a CI runner — the same proof either way.
+--- `PROVA_GHA = auto` is not redundant: it neutralizes an inherited setting, so these assertions
+--- describe prova rather than whatever the surrounding CI step configured.
 local function actions_env(summary)
   fs.write(summary, "")
-  return { GITHUB_ACTIONS = "true", GITHUB_WORKSPACE = prova.root, GITHUB_STEP_SUMMARY = summary }
+  return {
+    GITHUB_ACTIONS = "true",
+    GITHUB_WORKSPACE = prova.root,
+    GITHUB_STEP_SUMMARY = summary,
+    PROVA_GHA = "auto",
+  }
 end
 
 prova.test("prova stamps the nesting depth on every process it spawns", function(t)
@@ -102,6 +109,24 @@ prova.test("--gha on still annotates from inside a nested run", function(t)
   t:expect(r.code):equals(1)
   t:expect(r.stdout, "an explicit --gha on is honored at any depth"):contains("::error")
   t:expect(fs.read(summary), "step summary included"):contains("prova —")
+end)
+
+prova.test("PROVA_GHA=off suppresses the sink for a run that is otherwise top-level", function(t)
+  -- The depth marker answers "was I spawned by prova?", which is the only nesting prova can see.
+  -- A NON-prova harness driving the binary — prova's own ~24 Rust integration tests do, dozens of
+  -- times per run — produces children that are top-level as far as they can tell, and no stamp can
+  -- reach them: the harness is not prova. PROVA_GHA=off is the seam for that case, and .github/
+  -- workflows/build.yml sets it on the `cargo test` step for exactly this reason. Proven here
+  -- because a workflow depending on an unproven behavior is how the summary silently refills.
+  local summary = fs.tempdir() .. "/step_summary.md"
+  local env = actions_env(summary)
+  env[DEPTH] = "0"     -- top-level by the depth rule…
+  env.PROVA_GHA = "off" -- …and still silent, because the env says so.
+
+  local r = shell.run(prova.bin .. " " .. t:use(red_package)(), { env = env })
+  t:expect(r.code):equals(1)
+  t:expect(fs.read(summary), "the job summary stays the harness's business"):equals("")
+  t:expect(r.stdout:find("::error", 1, true)):is_falsy()
 end)
 
 prova.test("outside Actions, nesting changes nothing", function(t)
