@@ -11,10 +11,16 @@ local scratch = prova.fixture("vocabulary-scratch", Scope.File, function(ctx)
   return function() return ctx:tempdir() end
 end)
 
+--- `timeout` is a blast-radius bound, not a performance budget: every topology here is a static
+--- endpoint that comes up instantly. It exists because the failure this file already met once is a
+--- HANG, not a wrong answer — a detached `prova start` that keeps our stdout pipe open leaves this
+--- capturing read waiting forever, and an unbounded wait turns one defect into a six-hour CI job
+--- that reports nothing. Bounded, the same defect is a named error in seconds.
 local function run(dir, args)
   return shell.run(prova.bin .. (args and (" " .. args) or ""), {
     cwd = dir,
     merge_stderr = true,
+    timeout = "120s",
   })
 end
 

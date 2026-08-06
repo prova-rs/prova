@@ -157,8 +157,26 @@ pub fn log_tail(home: &Home, name: &str, n: usize) -> String {
 }
 
 /// Configure a `Command` to run fully detached from this process: its own process group (so it does
-/// not receive the parent shell's Ctrl-C and survives the parent exiting). Unix-only; a no-op
-/// elsewhere for now.
+/// not receive the parent shell's Ctrl-C and survives the parent exiting), with its stdio pointed at
+/// the topology's log.
+///
+/// "Detached" carries a second requirement that is invisible on Unix and load-bearing on Windows:
+/// the child must not keep the PARENT's stdio alive. `prova start` is routinely run by something
+/// capturing its output — `shell.run` in a proof, a CI step — so this process's stdout is often the
+/// write end of a pipe someone is blocked reading. Redirecting the CHILD's stdio (above) does not
+/// settle that on Windows, because `CreateProcessW` is called with `bInheritHandles = TRUE` and the
+/// child receives every INHERITABLE handle this process holds, whatever `STARTUPINFO` says. The
+/// detached `prova up` outlives `prova start` by design, so it sat on that pipe's write end
+/// indefinitely: `prova start` exited, the reader never saw EOF, and the caller hung forever.
+///
+/// That cost two six-hour Windows CI timeouts before it was diagnosed. It is the same
+/// grandchild-holds-the-pipe shape `Process::stop()` already tree-kills for `shell.spawn`, on the
+/// one path that never got the fix — which is why the flag is cleared on the handles themselves
+/// here rather than papered over at any single call site.
+///
+/// Clearing `HANDLE_FLAG_INHERIT` governs only what CHILDREN receive; this process keeps writing to
+/// its own stdout normally afterwards, which `prova start` does — it prints the endpoints once the
+/// child self-registers.
 pub fn detach(cmd: &mut Command, log: &Path) -> std::io::Result<()> {
     let out = std::fs::File::create(log)?;
     let err = out.try_clone()?;
@@ -167,6 +185,30 @@ pub fn detach(cmd: &mut Command, log: &Path) -> std::io::Result<()> {
     {
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use std::os::windows::process::CommandExt;
+        use windows_sys::Win32::Foundation::{SetHandleInformation, HANDLE_FLAG_INHERIT};
+
+        // DETACHED_PROCESS: no console of its own, and none borrowed from ours.
+        // CREATE_NEW_PROCESS_GROUP: a console Ctrl-C must not reach a topology deliberately meant to
+        // outlive the command that started it — the counterpart to `process_group(0)` above.
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+
+        // The half that actually unwedges a capturing caller. Best-effort by design: a failure means
+        // the handle is already non-inheritable or is not a real handle, neither of which is worth
+        // refusing to start a topology over.
+        for handle in [
+            std::io::stdout().as_raw_handle(),
+            std::io::stderr().as_raw_handle(),
+            std::io::stdin().as_raw_handle(),
+        ] {
+            unsafe { SetHandleInformation(handle as _, HANDLE_FLAG_INHERIT, 0) };
+        }
     }
     Ok(())
 }
