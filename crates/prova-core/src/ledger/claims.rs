@@ -16,6 +16,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 /// A normative statement anchored in prose.
@@ -78,7 +79,7 @@ pub fn matching_id<'c>(claims: &'c [Claim], id: &str) -> Vec<&'c Claim> {
 /// grammar: past participles about the obligation. `DANGLING` and `UNPROVEN` are the two
 /// directions of a broken link — a proof pointing at prose that is not there, and prose no proof
 /// points at — and the earlier names (`UNBOUND` for the first) did not say which was which.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum Status {
     /// A `covers` naming an address with no anchor. Two situations produce this — prose not
     /// written yet, and prose deleted once the proof captured the contract — and the remedies
@@ -105,7 +106,7 @@ impl Status {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Owed {
     pub status: Status,
     /// Where the obligation lives: a claim address, or the proof's node path.

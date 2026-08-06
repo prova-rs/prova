@@ -299,10 +299,11 @@ end)
 
 prova.test("an outside crate can compute the evidence account", {
 	covers = "docs/design/lifecycle.md#ledger-is-library-side",
-	promises = "Slice 1d — lift `Account` and the `evidence_account` arithmetic out of prova-cli into "
+	proves = "Slice 1d — lifted `Account` and the `evidence_account` arithmetic out of prova-cli into "
 		.. "`prova_core::ledger` as `account(claims, proofs, record) -> Account`, deriving Serialize on "
-		.. "it and on the `Owed`/`Status` it carries. prova-cli keeps Home/manifest resolution and "
-		.. "becomes the renderer that calls it.",
+		.. "it and on the `Owed`/`Status` it carries. prova-cli now resolves home/manifest/proofs/record "
+		.. "and renders the account by calling the library, so an embedding host can compute the same "
+		.. "account without scraping CLI prose.",
 	requires = { "cargo" },
 	timeout = "900s",
 }, function(t)
@@ -331,10 +332,10 @@ end)
 
 prova.test("the account speaks machine", {
 	covers = "docs/design/lifecycle.md#ledger-is-library-side",
-	promises = "Slice 1d — `--format json` on the ledger commands, rendering the serialized Account. "
-		.. "Rejected outright today (`evidence: unexpected argument`), which is only possible while the "
-		.. "account is private to the binary: a `pub(crate)` struct with no Serialize has nothing to "
-		.. "print. This is the witness the coordination checklist gates its Prova item on.",
+	proves = "Slice 1d — `prova evidence --format json` now prints the serialized Account and exits 0. "
+		.. "Console rendering is unchanged when `--format` is absent or `console`, and an unknown format "
+		.. "is a usage error. The same library-side `Account` that an embedding host can compute can now "
+		.. "be read by any machine consumer of the CLI.",
 	timeout = "300s",
 }, function(t)
 	-- A whole tiny project, so the numbers asserted are real: one anchored claim, one proof covering

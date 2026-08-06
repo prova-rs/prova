@@ -1075,54 +1075,23 @@ fn attest_all(
     }
 }
 
-/// The whole account, computed once — every stage of the lifecycle with its count, plus the
-/// debts. ONE function, because the CLI's `evidence` and the MCP `evidence` tool must be the same
-/// arithmetic or the two surfaces will eventually disagree about where a project stands.
-///
-/// The stages, statically: a claim is BOUND when at least one proof covers it. PROMISED is the
-/// open surface across every origin (claim-covering or not — an open promise is owed either way).
-/// ATTESTED needs the record, and its absence is `None` — a stated fact, never a zero.
-pub(crate) struct Account {
-    pub claimed: usize,
-    pub bound: usize,
-    pub promised: usize,
-    pub attested: Option<usize>,
-    pub owed: Vec<claims::Owed>,
-}
-
+/// Resolve the project's inputs and compute the account in `prova_core::ledger`,
+/// so the arithmetic is shared by the CLI, MCP, and any embedding host that depends on the core crate.
 pub(crate) fn evidence_account(
     home: &home::Home,
     manifest: &Manifest,
     packages_resolved: &packages::ResolvedPackages,
-) -> Result<Account, String> {
+) -> Result<prova_core::ledger::Account, String> {
     let docs = manifest.claims.as_ref().map(|c| c.docs.clone()).unwrap_or_default();
     let claims = claims::scan(&home.dir, &docs).map_err(|e| e.to_string())?;
     let proofs = collect_obligations(home, manifest, packages_resolved)?;
-    let recorded = record::load(home);
-
-    let bindings_for = |address: &str| -> Vec<String> {
-        proofs
-            .iter()
-            .filter(|p| p.covers.iter().any(|c| claims::split_pin(c).0 == address))
-            .map(|p| p.path.clone())
-            .collect()
-    };
-    let bound = claims.iter().filter(|c| !bindings_for(&c.address).is_empty()).count();
-    let promised = proofs.iter().filter(|p| p.spec.is_some()).count();
-    let attested = recorded.as_ref().map(|r| {
-        claims
-            .iter()
-            .filter(|c| record::attest(r, &bindings_for(&c.address)).is_attested())
-            .count()
-    });
-    let owed = claims::reconcile(&claims, &proofs);
-    Ok(Account {
-        claimed: claims.len(),
-        bound,
-        promised,
-        attested,
-        owed,
-    })
+    // Tolerant on purpose, and `.ok()` is the whole of it: a missing record and an unreadable one
+    // both mean "no evidence of a run", which the account already renders as an absence rather than
+    // a zero. Propagating the error instead would make `prova evidence` fail outright on a corrupt
+    // record — wrong for a verb whose contract is to report rather than gate, and inconsistent with
+    // the DEPUTED section below, which reads the same file through `record::load` and tolerates it.
+    let recorded = prova_core::ledger::read_record(&record::path(home)).ok();
+    Ok(prova_core::ledger::account(&claims, &proofs, recorded.as_ref()))
 }
 
 /// `prova evidence` — the whole account: every stage of the obligation lifecycle with its count,
@@ -1132,18 +1101,33 @@ pub(crate) fn evidence_account(
 /// A report, never a gate — exit 0 belongs to the query family's contract, and the gate is
 /// `prova attest`. Executes no proof body, like every query verb.
 fn evidence_subcommand(args: Vec<String>) -> ExitCode {
-    if let Some(arg) = args.first() {
+    let mut force_json = false;
+
+    let mut it = args.into_iter();
+    while let Some(arg) = it.next() {
+        if let Some(v) = value_flag(&arg, &mut it, &["--format"]) {
+            match v.as_str() {
+                "json" => force_json = true,
+                "console" => {}
+                other => {
+                    eprintln!("prova evidence: unknown format {other:?} (expected console|json)");
+                    return ExitCode::from(2);
+                }
+            }
+            continue;
+        }
         match arg.as_str() {
             "-h" | "--help" => {
                 println!(
-                    "usage: prova evidence\n\n\
+                    "usage: prova evidence [--format json]\n\n\
                      The whole account: CLAIMED / BOUND / PROMISED / ATTESTED with counts, then\n\
-                     what is owed. `prova owed` lists each debt; `prova attest` gates on the account."
+                     what is owed. `prova owed` lists each debt; `prova attest` gates on the account.\n\n\
+                     --format json     emit the account as JSON (default: console)"
                 );
                 return ExitCode::SUCCESS;
             }
             other => {
-                eprintln!("prova: evidence: unexpected argument {other:?}\nusage: prova evidence");
+                eprintln!("prova: evidence: unexpected argument {other:?}\nusage: prova evidence [--format json]");
                 return ExitCode::from(2);
             }
         }
@@ -1163,6 +1147,17 @@ fn evidence_subcommand(args: Vec<String>) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+
+    if force_json {
+        match serde_json::to_string(&account) {
+            Ok(text) => println!("{text}"),
+            Err(e) => {
+                eprintln!("prova: evidence: cannot serialize account: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+        return ExitCode::SUCCESS;
+    }
 
     println!("prova: evidence for {}", home.dir.display());
     println!();

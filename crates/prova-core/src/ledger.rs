@@ -109,13 +109,13 @@ pub struct Record {
     pub deputed: Vec<DeputedRow>,
 }
 
-/// Read the record at the given path.
 pub mod claims;
 
 pub use claims::{
     Claim, ClaimError, Owed, Status, digest, matching_id, pin, reconcile, scan, split_pin,
 };
 
+/// Read the record at the given path.
 pub fn read_record(path: &Path) -> Result<Record, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
@@ -193,6 +193,50 @@ pub fn attest(record: &Record, bindings: &[String]) -> Attested {
         path: bindings[0].clone(),
     }
 }
+/// The whole account, computed once — every stage of the lifecycle with its count, plus the
+/// debts. The stages, statically: a claim is BOUND when at least one proof covers it. PROMISED is
+/// the open surface across every origin (claim-covering or not — an open promise is owed either
+/// way). ATTESTED needs the record, and its absence is `None` — a stated fact, never a zero.
+#[derive(Debug, Clone, Serialize)]
+pub struct Account {
+    pub claimed: usize,
+    pub bound: usize,
+    pub promised: usize,
+    pub attested: Option<usize>,
+    pub owed: Vec<Owed>,
+}
+
+/// Reconcile claims, obligations and an optional run record into the whole account.
+pub fn account(
+    claims: &[Claim],
+    proofs: &[crate::ProofObligation],
+    record: Option<&Record>,
+) -> Account {
+    let bindings_for = |address: &str| -> Vec<String> {
+        proofs
+            .iter()
+            .filter(|p| p.covers.iter().any(|c| split_pin(c).0 == address))
+            .map(|p| p.path.clone())
+            .collect()
+    };
+    let bound = claims.iter().filter(|c| !bindings_for(&c.address).is_empty()).count();
+    let promised = proofs.iter().filter(|p| p.spec.is_some()).count();
+    let attested = record.as_ref().map(|r| {
+        claims
+            .iter()
+            .filter(|c| attest(r, &bindings_for(&c.address)).is_attested())
+            .count()
+    });
+    let owed = reconcile(claims, proofs);
+    Account {
+        claimed: claims.len(),
+        bound,
+        promised,
+        attested,
+        owed,
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
