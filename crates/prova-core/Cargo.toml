@@ -34,6 +34,7 @@ csv = "1"
 # encoding, `%20` not `+` — form_urlencoded is the wrong shape for path/query components).
 base64 = "0.22"
 sha2 = "0.10"
+hex = "0.4"
 hmac = "0.12"
 uuid = { version = "1", features = ["v4"] }
 url = "2"

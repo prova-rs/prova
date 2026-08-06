@@ -110,6 +110,12 @@ pub struct Record {
 }
 
 /// Read the record at the given path.
+pub mod claims;
+
+pub use claims::{
+    Claim, ClaimError, Owed, Status, digest, matching_id, pin, reconcile, scan, split_pin,
+};
+
 pub fn read_record(path: &Path) -> Result<Record, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read {}: {e}", path.display()))?;

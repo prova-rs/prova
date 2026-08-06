@@ -214,7 +214,7 @@ fn parse_anchor(line: &str) -> Option<String> {
 }
 
 /// Reconcile anchors against what the proofs claim to discharge.
-pub fn reconcile(claims: &[Claim], proofs: &[prova_core::ProofObligation]) -> Vec<Owed> {
+pub fn reconcile(claims: &[Claim], proofs: &[crate::ProofObligation]) -> Vec<Owed> {
     let mut owed = Vec::new();
 
     for proof in proofs {

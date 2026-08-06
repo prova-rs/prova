@@ -193,9 +193,13 @@ end)
 
 prova.test("an outside crate can reach the claim ledger", {
 	covers = "docs/design/lifecycle.md#ledger-is-library-side",
-	promises = "Phase 1 slices 1b-1c — lift annotations.rs (prose anchors, covers/promises binding) "
-		.. "and claims.rs (Claim, Status, Owed) out of prova-cli into prova-core alongside the record "
-		.. "half, path-injected and not feature-gated.",
+	proves = "The claim half of the account is library-side: an outside crate compiles against "
+		.. "prova_core::ledger::{Claim, Status, Owed} with default features only. claims.rs moved whole "
+		.. "into prova-core/src/ledger/claims.rs — it needed no redesign, having had no crate-internal "
+		.. "imports and an already path-injected `scan(root, docs)`. prova-cli is now one renderer over "
+		.. "that ledger rather than its owner. (The plan had named annotations.rs as part of this slice; "
+		.. "that file is LuaLS/IDE wiring and has nothing to do with claim anchors — the anchor parser "
+		.. "lives in claims.rs.)",
 	requires = { "cargo" },
 	timeout = "900s",
 }, function(t)
