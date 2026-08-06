@@ -24,6 +24,7 @@ mod broker;
 // read what a project owes; the CLI is one renderer over that ledger, not its owner.
 use prova_core::ledger::claims;
 mod catalog;
+mod baselines;
 mod home;
 mod ide;
 mod init;
@@ -237,11 +238,16 @@ options:
       --tags a,b            select nodes tagged with any listed tag (repeatable; !tag excludes)
       --node PATH           select an exact node path (repeatable) — re-run what a report named
       --last-failed         select only the nodes that failed in the previous run
+      --topology NAME       require attaching to the held topology NAME (error when not running) —
+                            judge the LIVE environment, never a silently fresh one
+      --fresh               ignore held topologies: always provision fresh (the CI behavior)
       --promises            select only promised tests — the open surface (composes with --list)
       --due                 promises fall due: open promises report as real failures (burndown's mode;
                             alone, the whole suite tolerates no open promise)
       --allow-empty         a selection matching no tests is OK (default: that is an error)
   -u, --update-snapshots    (re)write snapshots instead of comparing (matches_snapshot)
+      --update-baseline     move ratchet baselines toward this run's measurements (tightens only;
+                            refuses to loosen) — .prova/baselines/ (measure.ratchet)
       --unreferenced M      snapshots no test used: ignore (default) | warn | delete (full runs only)
   -U, --update              force-refresh git plugin sources (skip the freshness cache)
       --offline             never fetch git plugin sources; use only what is already cached
@@ -916,6 +922,7 @@ fn evaluate_run_reminders(
     suites: &[prova_core::Suite],
     config: &prova_core::RunConfig,
     summary: &prova_core::Summary,
+    measurements: &[prova_core::Measurement],
 ) -> Vec<record::ReminderEntry> {
     let owed = (|| -> Result<usize, String> {
         let (manifest, packages_resolved) =
@@ -942,6 +949,10 @@ fn evaluate_run_reminders(
         skipped: summary.skipped,
         promised: summary.spec,
         owed,
+        measurements: measurements
+            .iter()
+            .map(|m| (m.name.clone(), m.value))
+            .collect(),
     };
     record::reminder_entries(&prova_core::evaluate_reminders(suites, config, &account))
 }
@@ -1571,7 +1582,7 @@ fn up_subcommand(args: Vec<String>) -> ExitCode {
     // same for an attached `up` here and the detached child a `prova start` spawns).
     let state_home = home.clone();
     let state_name = name.clone();
-    let result = prova_core::up(&files, &name, &config, |endpoints| {
+    let result = prova_core::up(&files, &name, &config, |endpoints, snapshot| {
         let record = runstate::Record {
             name: state_name.clone(),
             pid: std::process::id(),
@@ -1583,6 +1594,7 @@ fn up_subcommand(args: Vec<String>) -> ExitCode {
                     url: e.url.clone(),
                 })
                 .collect(),
+            value: snapshot.clone(),
         };
         if let Err(e) = runstate::write(&state_home, &record) {
             eprintln!("prova up: could not record run-state: {e}");
@@ -1711,7 +1723,7 @@ fn up_from_git(name: Option<&str>, url: &str, fixed: bool) -> ExitCode {
         .with_topology_registration(name, &src.require_name, &adv.factory, None);
 
     eprintln!("prova: standing up topology {name:?} from {url}…");
-    let result = prova_core::up(&[], name, &config, |endpoints| {
+    let result = prova_core::up(&[], name, &config, |endpoints, _snapshot| {
         print_endpoints(name, endpoints);
         println!("\n  holding — Ctrl-C to tear down");
     });
@@ -2301,11 +2313,16 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     let mut cli_gha: Option<report::GhaMode> = None;
     let mut cli_jobs: Option<usize> = None;
     let mut update_snapshots = false;
+    let mut update_baseline = false;
     let mut unreferenced = String::from("ignore"); // ignore | warn | delete
     let mut cli_config: Option<String> = None;
     let mut list = false;
     let mut specs_only = false;
     let mut falsify = false;
+    // Held-topology attach (docs/design/topologies.md#attach-binds-by-name): `--fresh` opts a run
+    // out of attaching to held topologies; `--topology NAME` insists on attaching to NAME.
+    let mut fresh = false;
+    let mut require_topology: Option<String> = None;
     let mut strict_specs = false;
     let mut explicit_paths: Vec<String> = Vec::new();
     let mut profile: Option<String> = None;
@@ -2399,6 +2416,13 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             }
             continue;
         }
+        // `--topology NAME`: REQUIRE attaching to the held topology NAME — error rather than
+        // silently provisioning fresh, because a run meant to judge a live environment (e.g. a
+        // Tilt-injected work-in-progress build) must never quietly test something else.
+        if let Some(v) = value_flag(&arg, &mut args, &["--topology"]) {
+            require_topology = Some(v);
+            continue;
+        }
         // `--color auto|always|never`: color the console output (auto = only on a terminal).
         if let Some(v) = value_flag(&arg, &mut args, &["--color"]) {
             match report::ColorMode::parse(&v) {
@@ -2460,6 +2484,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             "--heed" => cli_heed = true,
             "--last-failed" => last_failed = true,
             "--falsify" => falsify = true,
+            "--fresh" => fresh = true,
             "--promises" => specs_only = true,
             "--due" => strict_specs = true,
             "--specs" => {
@@ -2472,6 +2497,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             }
             "--allow-empty" => allow_empty = true,
             "--update-snapshots" | "-u" => update_snapshots = true,
+            "--update-baseline" => update_baseline = true,
             "--update" | "-U" => update_force = true,
             "--offline" => offline = true,
             "--json" => cli_format = Some(Format::Json),
@@ -2710,6 +2736,10 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     // The deputed account (docs/design/verifiers.md): every case a verifier facet ingests
     // (`junit.verify`) accumulates here, drained into the run record below.
     let deputed_registry: prova_core::DeputedRegistry = std::sync::Arc::default();
+    // The measurement account (docs/design/verifiers.md): every scalar a `measure.record`/
+    // `measure.ratchet` call takes accumulates here, drained below into the record and, under
+    // `--update-baseline`, into the guarded baseline writer.
+    let measurement_registry: prova_core::MeasurementRegistry = std::sync::Arc::default();
     let mut config = engine_config(jobs, &packages_resolved, home.as_ref(), std::sync::Arc::clone(&progress_sink))
         .with_update_snapshots(update_snapshots)
         .with_strict_specs(strict_specs)
@@ -2717,7 +2747,8 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         .with_falsify(falsify)
         .with_capabilities(capabilities)
         .with_globals_inject(globals_inject)
-        .with_deputed_tracking(deputed_registry.clone());
+        .with_deputed_tracking(deputed_registry.clone())
+        .with_measurement_tracking(measurement_registry.clone());
 
     // `--last-failed`: fold the previous run's failed node paths into the selection as exact nodes.
     if last_failed {
@@ -2737,6 +2768,54 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         }
     }
     config.selection = selection;
+
+    // Held-topology attach (docs/design/topologies.md#attach-binds-by-name): unless `--fresh`,
+    // every LIVE held record is offered to the run; the engine binds the ones the collection
+    // actually declares, by name, instead of provisioning — and reports each into this registry
+    // so the run record can carry live-state provenance. Announced up front: an attached run is
+    // deliberately non-hermetic, and that must never be silent.
+    let attached_registry: prova_core::AttachedRegistry = std::sync::Arc::default();
+    if fresh {
+        if require_topology.is_some() {
+            eprintln!("prova: --topology and --fresh contradict each other — pick one");
+            return ExitCode::from(2);
+        }
+    } else {
+        if let Some(h) = &home {
+            for rec in runstate::list(h) {
+                if !runstate::is_alive(rec.pid) {
+                    continue;
+                }
+                if let Some(want) = &require_topology {
+                    if want != &rec.name {
+                        continue;
+                    }
+                }
+                eprintln!(
+                    "prova: held topology {:?} is running (pid {}) — runs that declare it attach to its LIVE state (--fresh to opt out)",
+                    rec.name, rec.pid
+                );
+                config = config.with_attached_topology(rec.name.clone(), rec.value.clone());
+            }
+        }
+        if let Some(want) = &require_topology {
+            let offered = home
+                .as_ref()
+                .map(|h| {
+                    runstate::list(h)
+                        .iter()
+                        .any(|r| &r.name == want && runstate::is_alive(r.pid))
+                })
+                .unwrap_or(false);
+            if !offered {
+                eprintln!(
+                    "prova: --topology {want:?}: no held topology by that name is running (see `prova ps`; hold one with `prova start {want}`)"
+                );
+                return ExitCode::from(2);
+            }
+        }
+        config = config.with_attached_tracking(attached_registry.clone());
+    }
 
     // `--unreferenced warn|delete`: track referenced `.snap` files so we can reconcile orphans after
     // the run. Sound only on a **full** run — a selection (`-k`/`--tags`/`--node`/`--last-failed`)
@@ -2906,6 +2985,13 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         Ok(summary) => {
             store_last_failed(&home, &reporter.failed);
 
+            // Drain this run's measurements once, up front: they feed the attention account (a
+            // reminder condition can read them — the pre-authorship surface of the same claim a
+            // ratchet gates), the record (history), and the guarded baseline writer below.
+            let measurements = std::mem::take(
+                &mut *measurement_registry.lock().expect("measurement registry"),
+            );
+
             // The attention account (docs/design/reminders.md): conditions evaluate HERE — during
             // the run, in a phase after the proofs — and only against a FULL manifest run, the same
             // soundness rule as --unreferenced (a selection, --promises, or --falsify produces a
@@ -2918,7 +3004,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             let reminders: Vec<record::ReminderEntry> = match &home {
                 Some(h) if full_run => {
                     if summary.reminders_declared > 0 {
-                        evaluate_run_reminders(h, &suites, &config, &summary)
+                        evaluate_run_reminders(h, &suites, &config, &summary, &measurements)
                     } else {
                         Vec::new()
                     }
@@ -2949,9 +3035,41 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                     deputed: record::deputed_rows(
                         &std::mem::take(&mut *deputed_registry.lock().expect("deputed registry")),
                     ),
+                    measurements: record::measurement_rows(&measurements),
+                    attached: attached_registry
+                        .lock()
+                        .expect("attached registry")
+                        .clone(),
                 },
                 record_to.as_deref(),
             );
+
+            // `--topology NAME` insisted on attaching — a suite that never declared the topology
+            // ran against nothing held, which is exactly what the flag exists to prevent.
+            if let Some(want) = &require_topology {
+                let bound = attached_registry
+                    .lock()
+                    .expect("attached registry")
+                    .iter()
+                    .any(|n| n == want);
+                if !bound {
+                    eprintln!(
+                        "prova: --topology {want:?}: the suite never declared it (prova.topology({want:?}, …)) — nothing ran against the held instance"
+                    );
+                    return ExitCode::from(2);
+                }
+            }
+
+            // `--update-baseline`: move the committed baselines toward this run's observed values,
+            // through the guard (tightens freely; refuses to loosen). Never happens on a plain run.
+            if update_baseline {
+                match home.as_ref() {
+                    Some(h) => {
+                        baselines::update(h, &measurements).print();
+                    }
+                    None => eprintln!("prova: --update-baseline: no project home; nothing to write"),
+                }
+            }
 
             // An explicit selection that matched NOTHING is an error, not a green run.
             //

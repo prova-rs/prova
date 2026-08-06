@@ -52,7 +52,7 @@ pub fn run_depth() -> u32 {
 pub const RESERVED_NAMESPACES: &[&str] = &[
     "prova", "Scope", "shell", "fs", "net", "http", "docker", "sqlite", "grpc", "graphql",
     "json", "yaml", "toml", "csv", "base64", "hash", "uuid", "url", "socket", "terminal",
-    "websocket", "path", "str", "junit",
+    "websocket", "path", "str", "junit", "sarif", "measure",
 ];
 
 /// A bundled namespace that may be INJECTED as an unqualified global via `[globals] inject` — every
@@ -71,7 +71,8 @@ pub fn is_injectable_module(name: &str) -> bool {
 /// explicitly, so a real project SEES its globals rather than inheriting an invisible default.
 pub const DEFAULT_INJECT: &[&str] = &[
     "shell", "fs", "net", "http", "docker", "sqlite", "grpc", "graphql", "json", "yaml", "toml",
-    "csv", "base64", "hash", "uuid", "url", "socket", "terminal", "websocket", "junit",
+    "csv", "base64", "hash", "uuid", "url", "socket", "terminal", "websocket", "junit", "sarif",
+    "measure",
 ];
 
 pub fn default_inject() -> Vec<String> {
@@ -83,15 +84,16 @@ pub use engine::{
     evaluate_reminders, hold_topology,
     inspect_package, is_builtin_capability, list_topologies, load_project_config, obligations_for_suite,
     qualify_leaf_path, run_path, ProofObligation,
-    run_path_with, unreferenced_snapshots, up, watch, Capabilities, Endpoint, HeldTopology, Module,
+    run_path_with, unreferenced_snapshots, up, watch, AttachedRegistry, AttachedTopology,
+    Capabilities, Endpoint, HeldTopology, Module,
     PackageReport, PackageShape, PortMode, RunConfig, Selection, SnapshotRegistry,
     TopologyRegistration,
 };
 pub use layout::{RootedSystemLayout, SystemLayout, XdgSystemLayout};
 pub use progress::{Activity, Kind as ActivityKind, NullProgress, Progress};
 pub use model::{
-    spec_summary_segment, ConsoleReporter, DeputedCase, DeputedRegistry, Event, JUnitReporter,
-    JsonReporter, MultiReporter, NullReporter, Outcome, ReminderAccount, ReminderOutcome,
-    ReminderState, Reporter, Summary, TapReporter,
+    spec_summary_segment, ConsoleReporter, DeputedCase, DeputedRegistry, Direction, Event,
+    JUnitReporter, JsonReporter, Measurement, MeasurementRegistry, MultiReporter, NullReporter,
+    Outcome, ReminderAccount, ReminderOutcome, ReminderState, Reporter, Summary, TapReporter,
 };
 pub use suite::{discover_files, discover_suite, discover_suites, is_test_file, run_suite, run_suites, Suite};

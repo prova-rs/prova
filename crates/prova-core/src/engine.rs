@@ -206,6 +206,10 @@ pub struct RunConfig {
     /// If present, every deputed case a verifier facet ingests (`junit.verify`) is recorded here
     /// (shared across workers), so the caller can file the deputed account into the run record.
     deputed_registry: Option<crate::model::DeputedRegistry>,
+    /// If present, every measurement a `measure.record`/`measure.ratchet` call takes is recorded
+    /// here (shared across workers), so the caller can file them into the run record and the
+    /// baseline writer (`--update-baseline`) can read this run's observed values.
+    measurement_registry: Option<crate::model::MeasurementRegistry>,
     modules: Vec<Module>,
     /// Extra disk roots the plugin searcher consults (e.g. the global `data_dir/plugins`).
     package_roots: Vec<std::path::PathBuf>,
@@ -253,7 +257,29 @@ pub struct RunConfig {
     /// on its behalf. `None` when the embedder does not supply one — `prova.bin` is then absent, and
     /// a proof that needs it fails saying so rather than silently falling back to `PATH`.
     prova_bin: Option<std::path::PathBuf>,
+    /// Held topologies offered to this run (docs/design/topologies.md#attach-binds-by-name): each
+    /// entry is a running holder's recorded value snapshot. When the collection declares a topology
+    /// of the same name, the snapshot is rehydrated into the scope caches instead of running the
+    /// factory — the cross-process sibling of the MCP warm path's same-Lua value injection.
+    attached: Vec<AttachedTopology>,
+    /// If present, every attached topology name that actually BOUND this run is recorded here
+    /// (the deputed-registry pattern), so the caller can announce it and file it into the run
+    /// record as provenance: an attached run's evidence is live-state, not hermetic.
+    attached_registry: Option<AttachedRegistry>,
 }
+
+/// A held topology a run may attach to: its name plus the holder's recorded JSON projection of
+/// the factory's returned value. Only JSON-representable structure survives the projection —
+/// closures and userdata do not, and must not: the resource grammar says clients attach by `url`.
+#[derive(Clone, Debug)]
+pub struct AttachedTopology {
+    pub name: String,
+    pub value: serde_json::Value,
+}
+
+/// Names of held topologies that actually bound a run — shared with the caller, the same shape as
+/// the deputed/measurement registries.
+pub type AttachedRegistry = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
 
 impl Default for RunConfig {
     fn default() -> Self {
@@ -264,6 +290,7 @@ impl Default for RunConfig {
             update_snapshots: false,
             snapshot_registry: None,
             deputed_registry: None,
+            measurement_registry: None,
             modules: Vec::new(),
             package_roots: Vec::new(),
             named_packages: std::collections::BTreeMap::new(),
@@ -282,6 +309,8 @@ impl Default for RunConfig {
             // package's resolved `[globals] inject` list.
             globals_inject: crate::default_inject(),
             prova_bin: None,
+            attached: Vec::new(),
+            attached_registry: None,
         }
     }
 }
@@ -376,6 +405,13 @@ impl RunConfig {
         self
     }
 
+    /// Attach the measurement registry — every `measure.record`/`measure.ratchet` call lands here,
+    /// for the caller to file into the run record and to feed the guarded `--update-baseline` writer.
+    pub fn with_measurement_tracking(mut self, registry: crate::model::MeasurementRegistry) -> Self {
+        self.measurement_registry = Some(registry);
+        self
+    }
+
     pub fn with_snapshot_tracking(mut self, registry: SnapshotRegistry) -> Self {
         self.snapshot_registry = Some(registry);
         self
@@ -439,6 +475,25 @@ impl RunConfig {
     /// to remember and no environment to arrange.
     pub fn with_prova_bin(mut self, path: impl Into<std::path::PathBuf>) -> Self {
         self.prova_bin = Some(path.into());
+        self
+    }
+
+    /// Offer a held topology to this run (docs/design/topologies.md#attach-binds-by-name): if the
+    /// collection declares a topology of this name, `value` — the holder's recorded JSON projection
+    /// — is rehydrated and seeded into the scope caches instead of running the factory. The holder
+    /// keeps ownership: no teardown is registered for the injected value.
+    pub fn with_attached_topology(mut self, name: impl Into<String>, value: serde_json::Value) -> Self {
+        self.attached.push(AttachedTopology {
+            name: name.into(),
+            value,
+        });
+        self
+    }
+
+    /// Record which attached topologies actually bound (see `AttachedRegistry`), so the caller can
+    /// announce attachment and file live-state provenance into the run record.
+    pub fn with_attached_tracking(mut self, registry: AttachedRegistry) -> Self {
+        self.attached_registry = Some(registry);
         self
     }
 
@@ -2951,7 +3006,12 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
     }
 
     // First-party capability modules (`shell`, `fs`) as their own injected globals.
-    crate::modules::install(&lua, config.progress(), config.deputed_registry.clone())?;
+    crate::modules::install(
+        &lua,
+        config.progress(),
+        config.deputed_registry.clone(),
+        config.measurement_registry.clone(),
+    )?;
 
     // Host-provided plugin modules (e.g. `archetect`), installed into every Lua state.
     for install in &config.modules {
@@ -4959,6 +5019,29 @@ async fn evaluate_reminder(
             };
         }
     }
+    // The run's measurements, name → value, so a condition can read the same scalar a ratchet gates
+    // on ("this file is at 480/500"). A fresh sub-table per condition, read-only like the rest.
+    match lua.create_table() {
+        Ok(m) => {
+            for (name, value) in &account.measurements {
+                if m.set(name.as_str(), *value).is_err() {
+                    return ReminderState::Unevaluated {
+                        reason: "could not build the account view".to_string(),
+                    };
+                }
+            }
+            if acct.set("measurements", m).is_err() {
+                return ReminderState::Unevaluated {
+                    reason: "could not build the account view".to_string(),
+                };
+            }
+        }
+        Err(e) => {
+            return ReminderState::Unevaluated {
+                reason: format!("could not build the account view: {e}"),
+            }
+        }
+    }
     match def.when.call_async::<Value>(acct).await {
         Err(e) => {
             let text = e.to_string();
@@ -5007,6 +5090,32 @@ fn execute_collected(
         });
         (plan, deselected, dropped, state)
     };
+
+    // Held-topology attach (docs/design/topologies.md#attach-binds-by-name): rehydrate each
+    // offered holder's recorded value and seed it into the scope caches exactly the way the warm
+    // path does (see `run_warm`) — keyed by NAME, re-resolved against THIS collection's fixture
+    // id, seeded into the suite scope and every file scope, with no teardown registered so the
+    // holder stays the one true reaper. A name the collection does not declare is not this run's
+    // business and is skipped silently.
+    if !config.attached.is_empty() {
+        let (topologies, n_files) = {
+            let c = col.borrow();
+            (c.topologies.clone(), c.file_paths.len())
+        };
+        for att in &config.attached {
+            let Some(&id) = topologies.get(&att.name) else {
+                continue;
+            };
+            let value = json_to_lua(lua, &att.value)?;
+            state.suite.borrow_mut().cache.insert(id, value.clone());
+            for idx in 0..=n_files {
+                state.file_scope(idx).borrow_mut().cache.insert(id, value.clone());
+            }
+            if let Some(reg) = &config.attached_registry {
+                reg.lock().expect("attached registry").push(att.name.clone());
+            }
+        }
+    }
 
     let rt = new_runtime()?;
     let mut summary = Summary {
@@ -5310,7 +5419,7 @@ pub fn up(
     files: &[PathBuf],
     name: &str,
     config: &RunConfig,
-    on_ready: impl FnOnce(&[Endpoint]),
+    on_ready: impl FnOnce(&[Endpoint], &serde_json::Value),
 ) -> mlua::Result<()> {
     let (lua, _col, state, id) = load_topology(files, name, config)?;
 
@@ -5513,10 +5622,13 @@ async fn provision_and_hold(
     state: &Rc<RunState>,
     id: usize,
     topo_name: &str,
-    on_ready: impl FnOnce(&[Endpoint]),
+    on_ready: impl FnOnce(&[Endpoint], &serde_json::Value),
 ) -> mlua::Result<()> {
-    let (_value, endpoints) = provision(lua, state, id, topo_name).await?;
-    on_ready(&endpoints);
+    let (value, endpoints) = provision(lua, state, id, topo_name).await?;
+    // The holder's record carries a JSON projection of the factory's returned value — the
+    // rehydration payload an attaching run seeds instead of provisioning (see `json_to_lua`).
+    let snapshot = eval_value_to_json(lua, &value, 0);
+    on_ready(&endpoints, &snapshot);
     wait_for_shutdown().await;
     Ok(())
 }
@@ -5546,6 +5658,35 @@ async fn provision(
     let value = resolve_use(lua, &ctx, Value::UserData(handle)).await?;
     let endpoints = extract_endpoints(&value, topo_name);
     Ok((value, endpoints))
+}
+
+/// Rehydrate a recorded JSON value into a Lua value — the inverse of the projection a holder
+/// records (`eval_value_to_json`). Attach seeds the result into scope caches, so what a test's
+/// `t:use(<topology>)` sees is exactly the JSON-representable structure the holder's factory
+/// returned: urls, hosts, ports, network vantages, plain data. Closures and userdata did not
+/// survive the projection — by design, the grammar's answer is "clients attach by url".
+fn json_to_lua(lua: &Lua, v: &serde_json::Value) -> mlua::Result<Value> {
+    use serde_json::Value as J;
+    Ok(match v {
+        J::Null => Value::Nil,
+        J::Bool(b) => Value::Boolean(*b),
+        J::Number(n) => Value::Number(n.as_f64().unwrap_or(0.0)),
+        J::String(s) => Value::String(lua.create_string(s.as_str())?),
+        J::Array(items) => {
+            let t = lua.create_table()?;
+            for (i, item) in items.iter().enumerate() {
+                t.set(i + 1, json_to_lua(lua, item)?)?;
+            }
+            Value::Table(t)
+        }
+        J::Object(fields) => {
+            let t = lua.create_table()?;
+            for (k, val) in fields {
+                t.set(k.as_str(), json_to_lua(lua, val)?)?;
+            }
+            Value::Table(t)
+        }
+    })
 }
 
 /// Walk a topology's returned value for connect strings. Each field whose value is a table with a

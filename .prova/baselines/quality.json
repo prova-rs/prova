@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "metrics": {
+    "rust.expect.production": {
+      "value": 40.0,
+      "direction": "lower_is_better",
+      "goal": 36.0
+    },
+    "rust.unwrap.production": {
+      "value": 20.0,
+      "direction": "lower_is_better"
+    }
+  }
+}

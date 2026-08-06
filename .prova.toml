@@ -12,6 +12,19 @@ packages     = ".prova/packages"     # this project's own local packages (root-r
 [dependencies]
 parallels = { git = "https://github.com/prova-rs/prova-parallels", tag = "v1" }
 
+# The heavy, cargo-based quality gates (clippy, unwrap/expect census under proofs/quality/) are
+# opt-in: each recompiles the workspace, so they never run in the default `prova` loop — they
+# `requires = { "quality" }`, a capability that stays false unless PROVA_QUALITY is set. This profile
+# sets it and `must_run`s it, so `prova --profile quality` (and CI's quality leg) runs them and they
+# cannot silently skip. `proofs = ["quality"]` scopes the profile to the proofs/quality/ dir (a
+# dir-name pattern, like the default ["proofs"]), so `prova --profile quality` runs exactly the
+# gates — the fast file-size gate included — and nothing else.
+[profiles.quality]
+proofs   = ["quality"]
+must_run = ["quality"]
+[profiles.quality.env]
+PROVA_QUALITY = "1"
+
 # Prova's own claims. The point of declaring this is not bookkeeping — it is that prova must be
 # the exemplar of a proven application, and a lifecycle nobody has run end-to-end on a real
 # project is a design rather than a practice. Anchors live in the design docs; `prova owed` says

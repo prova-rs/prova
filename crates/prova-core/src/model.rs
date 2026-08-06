@@ -130,7 +130,7 @@ pub struct ReminderOutcome {
 /// the proof phase, so "all proofs green" / "all promises fulfilled" / "nothing owed" are one-line
 /// conditions. Carries NO reminder state: reminders cannot observe reminders (one pass, one
 /// direction — evidence first, attention second).
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ReminderAccount {
     pub passed: usize,
     pub failed: usize,
@@ -140,6 +140,10 @@ pub struct ReminderAccount {
     /// The obligation ledger's remainder — open promises, unproven claims, dangling covers — as
     /// `prova owed` would count it. Supplied by the caller (the reconciliation lives CLI-side).
     pub owed: usize,
+    /// This run's measurements (name → value), so a condition can read the same scalar a ratchet
+    /// gates on — the pre-authorship (future) surface of the claim the proof adjudicates in the past
+    /// (docs/design/verifiers.md). Exposed to the `when` closure as `account.measurements[name]`.
+    pub measurements: Vec<(String, f64)>,
 }
 
 /// One deputed case — a verdict another verifier produced, conducted and adopted by a proof
@@ -165,6 +169,36 @@ pub struct DeputedCase {
 /// because the ingesting call sites (Lua, any worker thread) and the consumer (the record writer)
 /// are far apart.
 pub type DeputedRegistry = std::sync::Arc<std::sync::Mutex<Vec<DeputedCase>>>;
+
+/// Which direction of change is an improvement — the ratchet rule and the anti-loosening guard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    /// Smaller is better: line counts, unwraps, duplication ratio, complexity.
+    LowerIsBetter,
+    /// Larger is better: coverage, mutation score.
+    HigherIsBetter,
+}
+
+/// One measurement — a named scalar a proof recorded this run (a file's line count, a coverage
+/// percentage, a lint tally), plus which way is "better". Not a verdict: a ratchet assertion turns
+/// it into an Outcome by comparing it against the committed baseline (`.prova/baselines/`). The
+/// registry is drained into the run record (history) and read by `--update-baseline`, the guarded
+/// writer that alone may move a baseline — and only ever tighter, unless forced.
+#[derive(Debug, Clone)]
+pub struct Measurement {
+    pub name: String,
+    pub value: f64,
+    pub direction: Direction,
+    /// Which baseline set (`.prova/baselines/<set>.json`) this belongs to — the ownership/polyglot
+    /// partition. `"default"` unless the call named one.
+    pub set: String,
+}
+
+/// Where a run's recorded measurements accumulate — shared across workers, drained by the caller
+/// into the run record and the baseline writer. Same shape as [`DeputedRegistry`]: the recording
+/// call sites (Lua, any worker thread) and the consumers (record writer, `--update-baseline`) are
+/// far apart.
+pub type MeasurementRegistry = std::sync::Arc<std::sync::Mutex<Vec<Measurement>>>;
 
 /// Result totals for a run.
 #[derive(Debug, Clone, Default)]

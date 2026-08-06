@@ -54,6 +54,8 @@ mod format_names {
 
 mod cassette;
 mod junit;
+mod measure;
+mod sarif;
 mod shellproxy;
 mod socket;
 mod terminal;
@@ -89,6 +91,7 @@ pub(crate) fn install(
     lua: &Lua,
     progress: &Arc<dyn Progress>,
     deputed: Option<crate::model::DeputedRegistry>,
+    measurements: Option<crate::model::MeasurementRegistry>,
 ) -> mlua::Result<()> {
     lua.globals().set("shell", make_shell(lua, progress)?)?;
     lua.globals().set("fs", make_fs(lua)?)?;
@@ -113,7 +116,17 @@ pub(crate) fn install(
     // The utility belt (api-freeze §1): separate from formats, same grammar, all reserved names.
     // The verdict-ingestion seam (docs/design/verifiers.md): junit.load parses the lingua franca
     // of test results; junit.verify (recipe, below) conducts a deputy and adopts its verdict.
-    lua.globals().set("junit", junit::make(lua, deputed)?)?;
+    lua.globals()
+        .set("junit", junit::make(lua, deputed.clone())?)?;
+    // The findings seam (docs/design/verifiers.md): sarif.load parses SARIF — the de facto linter/
+    // static-analysis interchange — and sarif.verify (recipe, below) adopts a linter's findings.
+    // Shares the deputed account with junit, hence the clone above.
+    lua.globals().set("sarif", sarif::make(lua, deputed)?)?;
+    // The measurements seam (docs/design/verifiers.md): measure.record files a named scalar into
+    // the run's measurement account; measure.ratchet (recipe, below) compares it to the committed
+    // baseline (.prova/baselines/) and asserts no regression — the quality ratchet.
+    lua.globals()
+        .set("measure", measure::make(lua, measurements)?)?;
     lua.globals().set("base64", make_base64(lua)?)?;
     lua.globals().set("hash", make_hash(lua)?)?;
     lua.globals().set("uuid", make_uuid(lua)?)?;
@@ -155,6 +168,8 @@ pub(crate) fn install(
         .set_name("@prova/containerized")
         .exec()?;
     junit::install_recipe(lua)?;
+    sarif::install_recipe(lua)?;
+    measure::install_recipe(lua)?;
     // Resource recipes — Lua sugar over docker.run + prova.retry + a client + ctx:manage. Loaded
     // after the modules exist; the globals they touch resolve when a recipe is *called*.
     Ok(())

@@ -85,3 +85,14 @@ jobs:
         if: runner.os == 'Linux' || runner.os == 'macOS' || runner.os == 'Windows'
         shell: bash
         run: cargo xtask proofs
+
+      # Code-quality gates: clippy (-D warnings), file-size, and the production unwrap/expect census
+      # under proofs/quality/, run through the `quality` profile that enables the heavy cargo-based
+      # gates. This is prova held to the bar it enforces for others — a quality regression is red
+      # here, on the same wall as the behavioral proofs above. Linux only: the metrics are
+      # source-based and platform-independent, and each gate recompiles, so one leg is enough.
+      # (GitHub's Linux runners ship the clippy component; nothing extra to install.)
+      - name: Quality gates
+        if: runner.os == 'Linux'
+        shell: bash
+        run: cargo xtask proofs -- --profile quality

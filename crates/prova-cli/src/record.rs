@@ -150,6 +150,40 @@ pub fn deputed_rows(cases: &[prova_core::DeputedCase]) -> Vec<DeputedRow> {
         .collect()
 }
 
+/// One recorded measurement — a named scalar this run observed, with which way is better and which
+/// baseline set it belongs to. History for the record, and the source `--update-baseline` reads
+/// when asked to move a baseline.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeasurementRow {
+    pub name: String,
+    pub value: f64,
+    /// `"lower_is_better"` | `"higher_is_better"`.
+    pub direction: String,
+    /// The baseline set this belongs to (`.prova/baselines/<set>.json`).
+    pub set: String,
+}
+
+/// The stable string form of a direction, shared by the record row and the baseline file.
+pub fn direction_str(d: prova_core::Direction) -> &'static str {
+    match d {
+        prova_core::Direction::LowerIsBetter => "lower_is_better",
+        prova_core::Direction::HigherIsBetter => "higher_is_better",
+    }
+}
+
+/// Convert the engine's recorded measurements into record rows.
+pub fn measurement_rows(measurements: &[prova_core::Measurement]) -> Vec<MeasurementRow> {
+    measurements
+        .iter()
+        .map(|m| MeasurementRow {
+            name: m.name.clone(),
+            value: m.value,
+            direction: direction_str(m.direction).to_string(),
+            set: m.set.clone(),
+        })
+        .collect()
+}
+
 /// One run, as a durable fact.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Record {
@@ -178,6 +212,17 @@ pub struct Record {
     /// The deputed account: every case a verifier facet ingested this run, with provenance.
     #[serde(default)]
     pub deputed: Vec<DeputedRow>,
+    /// The measurement account: every scalar a `measure.record`/`measure.ratchet` call took this
+    /// run, with its direction and baseline set. Defaulted so records from before it existed parse.
+    #[serde(default)]
+    pub measurements: Vec<MeasurementRow>,
+    /// Held topologies this run ATTACHED to instead of provisioning
+    /// (docs/design/topologies.md#attach-is-recorded). Live-state evidence is legitimately weaker
+    /// than hermetic evidence — the environment was not built by this run and may carry state from
+    /// prior ones — so the provenance is on the record for `attest`/`evidence` to weigh. Defaulted
+    /// so records from before attach existed still parse.
+    #[serde(default)]
+    pub attached: Vec<String>,
 }
 
 /// Which build produced a record.
@@ -343,6 +388,8 @@ mod tests {
             deselected: desel.iter().map(|d| d.to_string()).collect(),
             reminders: Vec::new(),
             deputed: Vec::new(),
+            measurements: Vec::new(),
+            attached: Vec::new(),
         }
     }
 

@@ -20,6 +20,15 @@ runtime.capability("soak", function()
   return os.getenv("PROVA_SOAK") ~= nil
 end)
 
+-- `quality` — the OPT-IN gate on the heavy, cargo-based code-quality proofs under proofs/quality/
+-- (the clippy gate, the unwrap/expect census). Each recompiles the workspace, so — exactly like
+-- `soak` — they must never happen because a person typed `prova`. The `quality` profile switches
+-- this on (its env sets PROVA_QUALITY) and `must_run`s it so it can't silently skip once selected;
+-- a plain `prova` skips them. The fast file-size gate in the same directory needs no capability.
+runtime.capability("quality", function()
+  return os.getenv("PROVA_QUALITY") ~= nil
+end)
+
 -- There is no `placement_broker` gate anymore. The placement conformance suite
 -- (proofs/spec/placement/) is hermetic: with no PROVA_PLACEMENT_BROKER named it spawns the MIT
 -- reference broker (`prova broker`, through prova.bin) per test, so the suite runs — and the
