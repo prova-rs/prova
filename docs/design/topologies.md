@@ -228,6 +228,49 @@ Desktop's proxy accepts it before the server inside is listening (measured: the 
 "ready" fails). Proof 1's precondition is now an explicit `prova.retry` — the same idiom
 `prova.containerized` uses for client factories. See "Remaining work".
 
+## Held-topology attach — one capability, every holder (done)
+
+The MCP server's warm re-runs and the CLI's detached topologies were two halves of one idea: a
+**held topology** is a named, running instance any run may bind instead of provisioning. The warm
+path already had the whole mechanism in-process — inject the held value into the fresh run's scope
+caches keyed by topology *name*, register no teardown, let the holder reap (`run_warm`). Attach is
+the cross-process sibling: the holder records a **JSON projection** of the factory's returned value
+in its `running/<name>.json` record, and an attaching run **rehydrates** that projection and seeds
+it at the same seam. Closures and userdata do not survive the projection, and must not — the
+resource grammar's standing answer is that clients attach by `url`.
+
+Testing the *current state of things* is the point: hold the stack, swap a work-in-progress SUT
+into it (Tilt, `watch`, by hand), and the same suite that gates CI judges the live instance.
+Idempotency under accumulation is **test design**, not framework mechanics — upsert-or-error
+seeding, count-then-delta assertions, and a `[profiles.live]` lane are the sanctioned tools.
+
+<!-- claim: attach-binds-by-name -->
+A plain `prova` run, finding a LIVE held record whose name the collection declares
+(`prova.topology(name, …)`), binds the fixture to the held instance: the factory does not run, and
+`t:use` resolves the rehydrated value. The attachment is announced on stderr — an attached run is
+deliberately non-hermetic, and that is never silent. A held name the collection does not declare
+is skipped; a stale record (dead pid) is ignored.
+
+<!-- claim: attach-leaves-holder-sovereign -->
+An attached run registers no teardown for the held value: the holder remains the one true reaper,
+exactly as in the warm path. Runs come and go; `down` (or the holder's signal handler) is the only
+place the environment dies.
+
+<!-- claim: fresh-opts-out -->
+`prova --fresh` ignores held records entirely and provisions per the fixture — the CI behavior,
+on demand. `--fresh` with `--topology` is a contradiction and is refused.
+
+<!-- claim: require-topology-is-strict -->
+`prova --topology NAME` **requires** the attachment: it is an error when no live holder of that
+name exists, and an error when the suite never declared the name — a run meant to judge a live
+environment (a Tilt-injected build) must never quietly test something else. This is the CLI mirror
+of the MCP rule that warm calls never provision implicitly.
+
+<!-- claim: attach-is-recorded -->
+The run record carries `attached: [names]` — live-state evidence is legitimately weaker than
+hermetic evidence (the environment predates the run and may carry state from prior ones), so the
+provenance is durable where `attest`/`evidence` read.
+
 ## Remaining work (bounded, and named)
 
 - **Per-resource addressing** — whole-topology addressing across the verbs is done; standing up or

@@ -38,6 +38,11 @@ pub struct Record {
     /// Unix seconds when the topology came up (for `ps` uptime).
     pub started_at: u64,
     pub endpoints: Vec<Endpoint>,
+    /// The holder's JSON projection of the factory's returned value — the rehydration payload an
+    /// attaching run seeds into its scope caches instead of provisioning
+    /// (docs/design/topologies.md#attach-binds-by-name). Defaulted so pre-attach records parse.
+    #[serde(default)]
+    pub value: serde_json::Value,
 }
 
 /// The run-state directory for a project (`<var>/running/`), created on demand. The self-ignoring
@@ -239,6 +244,7 @@ mod tests {
                 name: "db".into(),
                 url: "postgres://x".into(),
             }],
+            value: serde_json::json!({ "db": { "url": "postgres://x" } }),
         };
         write(&home, &rec).unwrap();
         // Records live in the package's state dir, and the self-ignore sits one level up in `var/`
