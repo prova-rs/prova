@@ -5,6 +5,7 @@
 //! `suite` runs many files across a pool of per-worker Lua states (true multi-core). Output is a
 //! structured `Event` stream consumed by `Reporter` sinks (`model`).
 
+pub mod baselines;
 mod engine;
 pub mod help;
 pub mod layout;

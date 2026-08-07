@@ -179,6 +179,16 @@ pub enum Direction {
     HigherIsBetter,
 }
 
+impl Direction {
+    /// The stable string form, shared by the committed baseline file and the run record row.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Direction::LowerIsBetter => "lower_is_better",
+            Direction::HigherIsBetter => "higher_is_better",
+        }
+    }
+}
+
 /// One measurement — a named scalar a proof recorded this run (a file's line count, a coverage
 /// percentage, a lint tally), plus which way is "better". Not a verdict: a ratchet assertion turns
 /// it into an Outcome by comparing it against the committed baseline (`.prova/baselines/`). The

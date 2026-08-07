@@ -24,7 +24,6 @@ mod broker;
 // read what a project owes; the CLI is one renderer over that ledger, not its owner.
 use prova_core::ledger::claims;
 mod catalog;
-mod baselines;
 mod home;
 mod ide;
 mod init;
@@ -3065,7 +3064,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             if update_baseline {
                 match home.as_ref() {
                     Some(h) => {
-                        baselines::update(h, &measurements).print();
+                        prova_core::baselines::update(&h.dir, &measurements).print();
                     }
                     None => eprintln!("prova: --update-baseline: no project home; nothing to write"),
                 }

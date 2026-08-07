@@ -163,14 +163,6 @@ pub struct MeasurementRow {
     pub set: String,
 }
 
-/// The stable string form of a direction, shared by the record row and the baseline file.
-pub fn direction_str(d: prova_core::Direction) -> &'static str {
-    match d {
-        prova_core::Direction::LowerIsBetter => "lower_is_better",
-        prova_core::Direction::HigherIsBetter => "higher_is_better",
-    }
-}
-
 /// Convert the engine's recorded measurements into record rows.
 pub fn measurement_rows(measurements: &[prova_core::Measurement]) -> Vec<MeasurementRow> {
     measurements
@@ -178,7 +170,8 @@ pub fn measurement_rows(measurements: &[prova_core::Measurement]) -> Vec<Measure
         .map(|m| MeasurementRow {
             name: m.name.clone(),
             value: m.value,
-            direction: direction_str(m.direction).to_string(),
+            // The stable string form lives on the core type, shared with the baseline file.
+            direction: m.direction.as_str().to_string(),
             set: m.set.clone(),
         })
         .collect()
