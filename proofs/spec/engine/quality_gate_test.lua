@@ -19,7 +19,7 @@ prova.test("enforce: a threshold violation fails the run (proof surface)", funct
     'quality.gate{ name = "demo.size", value = 120, limit = 100 }')
   local r = shell.run({ prova.bin }, { cwd = dir, merge_stderr = true })
   t:expect(r.code):never():equals(0)
-  t:expect(r.stdout):contains("over limit 100")
+  t:expect(r.stdout):contains("limit 100")
 end)
 
 prova.test("enforce: within the limit passes", function(t)
@@ -33,7 +33,7 @@ prova.test("observe: a violation surfaces (DUE) but does not fail the run until 
     'quality.gate{ name = "demo.size", value = 120, limit = 100 }')
   local r = shell.run({ prova.bin }, { cwd = dir, merge_stderr = true })
   t:expect(r.code, r.stdout):equals(0) -- observe surface = reminder = non-fatal
-  t:expect(r.stdout):contains("over limit 100") -- but the reason is surfaced
+  t:expect(r.stdout):contains("limit 100") -- but the reason is surfaced
   local heeded = shell.run({ prova.bin, "--heed" }, { cwd = dir, merge_stderr = true })
   t:expect(heeded.code):never():equals(0) -- heed promotes the DUE reminder to a failure
 end)

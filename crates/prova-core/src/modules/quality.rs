@@ -23,8 +23,9 @@ const GATE_RECIPE: &str = r##"
 function quality.gate(spec)
   local name = spec.name or error("quality.gate: name is required")
   local metric = spec.metric or name
-  local value = spec.value
-  if value == nil then error("quality.gate: value is required for '" .. name .. "'") end
+  if spec.value == nil and spec.probe == nil then
+    error("quality.gate: value= or probe= is required for '" .. name .. "'")
+  end
   local set = spec.set or "default"
   local dir = spec.direction or "lower_is_better"
 
@@ -36,20 +37,19 @@ function quality.gate(spec)
     enforce = ((prova.quality and prova.quality.posture) or "enforce") == "enforce"
   end
 
-  -- Record once, here at authoring time, so the run record and `--update-baseline` see the value
-  -- regardless of which surface is authored below.
-  measure.record(metric, value, { direction = dir, set = set })
-
-  -- The check: a fixed threshold (`limit=`) or the committed baseline (via measure.check). Returns a
-  -- why-string on violation, else nil. `value` is captured, so the reminder form needs no run state.
-  local function evaluate()
+  -- Resolve the value lazily via probe() when the scalar is only knowable at run time (e.g. a metric
+  -- that shells a linter), else the eager value=. Recording + the check run in the SAME phase as the
+  -- surface — the proof body (enforce) or the reminder condition (observe) — so heavy probes fire
+  -- once, at the right time. Returns a why-string on violation, else nil.
+  local function measure_and_check()
+    local value = spec.value
+    if value == nil then value = spec.probe() end
+    measure.record(metric, value, { direction = dir, set = set })
     if spec.limit ~= nil then
-      if dir == "higher_is_better" then
-        if value < spec.limit then
-          return name .. " is " .. value .. " (below floor " .. spec.limit .. ")"
-        end
-      elseif value > spec.limit then
-        return name .. " is " .. value .. " (over limit " .. spec.limit .. ")"
+      local over
+      if dir == "higher_is_better" then over = value < spec.limit else over = value > spec.limit end
+      if over then
+        return spec.message or (name .. " is " .. value .. " (limit " .. spec.limit .. ")")
       end
       return nil
     end
@@ -60,12 +60,12 @@ function quality.gate(spec)
   if enforce then
     -- Proof: the violation gates the run.
     prova.test(name, { requires = spec.requires }, function(t)
-      local why = evaluate()
+      local why = measure_and_check()
       t:expect(why == nil, why or (name .. ": within limit")):is_true()
     end)
   else
     -- Reminder: the same check surfaces (DUE) but never fails the run (unless heeded).
-    prova.remind(name, { when = function(_) return evaluate() end, requires = spec.requires },
+    prova.remind(name, { when = function(_) return measure_and_check() end, requires = spec.requires },
       spec.message or (name .. " — quality gate (observe); see the reported reason"))
   end
 end
