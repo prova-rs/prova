@@ -1100,7 +1100,7 @@ pub(crate) fn evidence_account(
     // a zero. Propagating the error instead would make `prova evidence` fail outright on a corrupt
     // record — wrong for a verb whose contract is to report rather than gate, and inconsistent with
     // the DEPUTED section below, which reads the same file through `record::load` and tolerates it.
-    let recorded = prova_core::ledger::read_record(&record::path(home)).ok();
+    let recorded = record::load(home);
     Ok(prova_core::ledger::account(&claims, &proofs, recorded.as_ref()))
 }
 

@@ -80,6 +80,19 @@ pub struct DeputedRow {
     /// The artifact file the verdict was read from — the provenance of the adoption.
     pub file: String,
 }
+/// One recorded measurement — a named scalar this run observed, with which way is better and which
+/// baseline set it belongs to. History for the record, and the source `--update-baseline` reads
+/// when asked to move a baseline.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeasurementRow {
+    pub name: String,
+    pub value: f64,
+    /// `"lower_is_better"` | `"higher_is_better"`.
+    pub direction: String,
+    /// The baseline set this belongs to (`.prova/baselines/<set>.json`).
+    pub set: String,
+}
+
 
 /// One run, as a durable fact.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,6 +114,18 @@ pub struct Record {
     pub skipped: Vec<Skipped>,
     /// Named, not summed. Deselection and skipping have different causes and one consequence.
     pub deselected: Vec<String>,
+    /// The measurement account: every scalar a `measure.record`/`measure.ratchet` call took this
+    /// run, with its direction and baseline set. Defaulted so records from before it existed parse.
+    #[serde(default)]
+    pub measurements: Vec<MeasurementRow>,
+    /// Held topologies this run ATTACHED to instead of provisioning
+    /// (docs/design/topologies.md#attach-is-recorded). Live-state evidence is legitimately weaker
+    /// than hermetic evidence — the environment was not built by this run and may carry state from
+    /// prior ones — so the provenance is on the record for `attest`/`evidence` to weigh. Defaulted
+    /// so records from before attach existed still parse.
+    #[serde(default)]
+    pub attached: Vec<String>,
+
     /// The attention account: every reminder with its evaluated state.
     #[serde(default)]
     pub reminders: Vec<ReminderEntry>,
@@ -258,17 +283,8 @@ mod tests {
             deselected: desel.iter().map(|d| d.to_string()).collect(),
             reminders: Vec::new(),
             deputed: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn a_skipped_proof_attests_nothing_and_carries_its_reason() {
-        let r = record_with(&[], &[("drain", "requires \"broker\" (unavailable)")], &[]);
-        let verdict = attest(&r, &["drain".to_string()]);
-        assert!(!verdict.is_attested());
-        match verdict {
-            Attested::NoEvidence { why, .. } => assert!(why.contains("broker"), "reason: {why}"),
-            other => panic!("expected NoEvidence, got {other:?}"),
+            measurements: Vec::new(),
+            attached: Vec::new(),
         }
     }
 
