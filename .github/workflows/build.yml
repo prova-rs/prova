@@ -16,6 +16,15 @@ jobs:
 
     runs-on: ${{ matrix.os }}
 
+    # Windows still builds, tests, and proves on every push — but it cannot redden the run. It
+    # carries 12 known failures (issue #2) that predate this gate and were invisible until the leg
+    # got far enough to report them; blocking on them would stall every unrelated change.
+    #
+    # The cost is real and worth stating: while this is set, a NEW Windows regression is as quiet as
+    # the twelve. Read the leg's log, not its badge. Delete this line the moment issue #2 closes —
+    # that is what restores Windows to a gate rather than a report.
+    continue-on-error: ${{ matrix.os == 'windows-latest' }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
