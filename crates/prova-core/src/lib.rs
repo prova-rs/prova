@@ -26,6 +26,29 @@ pub mod ledger;
 /// which keeps a dev build satisfying the same `[requires] prova` ranges a release would.
 pub const VERSION: &str = env!("PROVA_VERSION");
 
+/// The nesting marker every process prova spawns carries: the depth of the run that launched it.
+/// Absent (or unparseable) means depth 0 — this process is the top-level run.
+///
+/// It exists because a handful of prova's behaviors are keyed on ambient environment that answers
+/// "what kind of place am I running in?" — `GITHUB_ACTIONS` most of all. That reading is a proxy
+/// for "I am the run this job is watching", and the proxy silently breaks the moment prova spawns
+/// prova: the environment propagates to the child, but being the job's run does not. A depth the
+/// child can read is what tells the two apart.
+///
+/// A counter, not a boolean, because it propagates through arbitrary levels: each spawn stamps
+/// `parent + 1`, so no level has to reason about whether some ancestor already set a flag.
+pub const RUN_DEPTH_ENV: &str = "PROVA_RUN_DEPTH";
+
+/// This process's nesting depth: 0 at the top level, +1 for each enclosing prova run.
+///
+/// Read from the environment rather than carried on `RunConfig`, because the question is asked
+/// across a process boundary — the parent stamps, the child asks — and because it must survive the
+/// intermediaries a suite legitimately puts in between (`make`, `npm`, a shell wrapper), which
+/// forward the environment but know nothing about prova.
+pub fn run_depth() -> u32 {
+    std::env::var(RUN_DEPTH_ENV).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(0)
+}
+
 pub const RESERVED_NAMESPACES: &[&str] = &[
     "prova", "Scope", "shell", "fs", "net", "http", "docker", "sqlite", "grpc", "graphql",
     "json", "yaml", "toml", "csv", "base64", "hash", "uuid", "url", "socket", "terminal",

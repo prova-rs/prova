@@ -1149,14 +1149,27 @@ impl CommandSpec {
     }
 
     fn build(&self) -> tokio::process::Command {
-        match self {
+        let mut c = match self {
             Self::Shell(s) => shell_command(s),
             Self::Argv(argv) => {
                 let mut c = tokio::process::Command::new(&argv[0]);
                 c.args(&argv[1..]);
                 c
             }
-        }
+        };
+        // Everything launched from a suite is, by construction, INSIDE a prova run — so stamp the
+        // nesting depth here, at the one place both `shell.run` and `shell.spawn` pass through,
+        // rather than trying to recognize which commands are prova. That recognition is not
+        // available: a string command is opaque (`sh -c "…"`), and the prova that matters is often
+        // reached through a wrapper. Stamping unconditionally also makes the marker transitive —
+        // `make` forwards its environment, so the prova three levels down still learns the truth.
+        // On anything that is not prova it is an inert variable.
+        //
+        // Set BEFORE the caller's `env = { … }` overlay is applied, so a suite can override the
+        // depth deliberately (proving the top-level behavior from inside a nested run needs exactly
+        // that) while the default costs the author nothing.
+        c.env(crate::RUN_DEPTH_ENV, (crate::run_depth() + 1).to_string());
+        c
     }
 }
 

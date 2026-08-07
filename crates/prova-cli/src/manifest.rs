@@ -391,8 +391,9 @@ pub struct Profile {
     pub progress: Option<String>,
     /// Only print failures, the recap, and the summary. CLI `--quiet` wins (it can only enable).
     pub quiet: Option<bool>,
-    /// GitHub Actions sink: `"auto"` (default; on exactly when `GITHUB_ACTIONS=true`) | `"on"` |
-    /// `"off"`. CLI `--gha` and `PROVA_GHA` win.
+    /// GitHub Actions sink: `"auto"` (default; on when `GITHUB_ACTIONS=true` and this is the job's
+    /// own run, not one nested inside another) | `"on"` (any depth) | `"off"`. CLI `--gha` and
+    /// `PROVA_GHA` win.
     pub github: Option<String>,
     /// Also write a JUnit XML report to this home-relative path — the manifest form of `--junit`,
     /// so a CI profile needs no extra flag. CLI `--junit` wins.

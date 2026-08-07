@@ -135,7 +135,17 @@ end)
 
 prova.test("GitHub Actions mode: annotations + step summary, honoring --gha off", function(t)
   local summary = fs.tempdir() .. "/step_summary.md"
-  local gha_env = { GITHUB_ACTIONS = "true", GITHUB_STEP_SUMMARY = summary }
+  -- PROVA_RUN_DEPTH = 0 stands in for the job's own run. This assertion is about what the TOP-LEVEL
+  -- run does under Actions, but it is necessarily made from inside a suite — so the child is nested
+  -- by construction, and `auto` correctly declines to annotate at depth > 0 (that is
+  -- proofs/hermeticity/nested_run_reporting_test.lua's subject). Overriding the stamp is how a
+  -- nested run asks for the top-level behavior deliberately.
+  -- PROVA_GHA = auto neutralizes an inherited setting: CI runs `cargo test` with PROVA_GHA=off
+  -- (those prova runs are fixtures, not the job's report), and env beats the `auto` default, so
+  -- without this the assertions below would be testing the ambient CI config rather than prova.
+  local gha_env = {
+    GITHUB_ACTIONS = "true", GITHUB_STEP_SUMMARY = summary, PROVA_RUN_DEPTH = "0", PROVA_GHA = "auto",
+  }
 
   -- Detected via GITHUB_ACTIONS=true: failures become ::error annotations (with file/line
   -- properties) alongside the normal console output, and the run appends a markdown summary.
@@ -237,9 +247,10 @@ prova.test("an unknown flag is a usage error (exit 2)", function(t)
   t:expect(r.code):equals(2)
 end)
 
-prova.test("no test files found is an error (exit 2)", function(t)
+prova.test("no declaration files found is an error (exit 2)", function(t)
   local empty = fs.tempdir()
   local r = run(empty)
   t:expect(r.code):equals(2)
-  t:expect(r.stderr):contains("no test files")
+  t:expect(r.stderr, "says what it looked for"):contains("no declaration files found")
+  t:expect(r.stderr, "teaches the preferred spelling"):contains(".prova.lua")
 end)
