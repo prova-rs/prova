@@ -1,18 +1,15 @@
--- Quality gate (file size), re-homed onto quality.gate so it honors the project's [quality] posture
--- (enforce => a proof that gates; observe => a reminder that only surfaces) and reads its limit from
--- prova.quality.max_file_lines. A big file is where bugs hide and where an agent loses the thread.
+-- Quality gate: no Rust source file grows without bound. A big file is where bugs hide and where
+-- an agent loses the thread, so oversized files are a red condition that forces a refactor.
 --
--- Per-file ceiling with the current giants grandfathered (recorded as known debt, with a graduation
--- check so a giant that drops under the limit demands removal from the list). The total-lines ratchet
--- (which defeats "split the mess in two to game per-file") rides the committed baseline and is added
--- in the dogfood phase.
---
--- Language-agnostic in spirit: line-count is the one metric every language's tooling can produce, so
--- this is the gate that works even where the whole toolbox is `wc -l`. The Rust specifics are only
--- the source roots below.
+-- Posture (Mix): a HARD limit for new files; the current giants are GRANDFATHERED — recorded here
+-- as known debt so CI stays green today, but each one carries a graduation check: the moment it
+-- drops to <= LIMIT this proof FAILS, telling you to remove it from the list (the paydown win).
+-- Numeric no-growth ratcheting (with an intentional --update-baseline bump) arrives with the
+-- measurements/baseline core; this coarse gate is the promise-grade stand-in until then.
 
-local LIMIT = (prova.quality and prova.quality.max_file_lines) or 1500
+local LIMIT = 1500
 
+-- Source trees prova gates on its own code (the four crate/tool src roots; never target/ or tests).
 local SRC_ROOTS = {
   "crates/prova-core/src",
   "crates/prova-cli/src",
@@ -20,19 +17,22 @@ local SRC_ROOTS = {
   "xtask/src",
 }
 
--- Known giants, repo-relative. Grandfathered, not excused — the graduation gate below turns any that
--- drop under the limit red, demanding they be removed from this list (the paydown win).
+-- Known giants, repo-relative. Grandfathered, not excused: still red-in-waiting via the graduation
+-- check below. Splitting any of these is the first paydown target.
 local GRANDFATHERED = {
   ["crates/prova-core/src/modules.rs"] = true,
   ["crates/prova-core/src/engine.rs"] = true,
   ["crates/prova-cli/src/main.rs"] = true,
 }
 
+-- wc -l semantics: count newlines, so the numbers match a plain `wc -l` and each other.
 local function line_count(path)
   local _, n = fs.read(path):gsub("\n", "")
   return n
 end
 
+-- fs.glob's base is a concrete dir; "*.rs" catches files directly under it and "**/*.rs" the nested
+-- ones. Globbing both and de-duping is robust regardless of whether "**" also matches depth zero.
 local function source_files()
   local prefix = prova.root .. "/"
   local seen, out = {}, {}
@@ -50,44 +50,19 @@ local function source_files()
   return out
 end
 
-local files = source_files()
-local over, graduated = {}, {}
-for _, f in ipairs(files) do
-  local n = line_count(f.path)
-  if GRANDFATHERED[f.rel] then
-    if n <= LIMIT then
-      graduated[#graduated + 1] = f.rel .. " (" .. n .. ")"
+prova.test("no source file exceeds " .. LIMIT .. " lines (giants grandfathered, tracked for paydown)", function(t)
+  local files = source_files()
+  -- Vacuity guard: a broken glob/root would make every assertion below trivially pass.
+  t:expect(#files, "no source files scanned — SRC_ROOTS or glob is wrong"):gt(20)
+
+  for _, f in ipairs(files) do
+    local n = line_count(f.path)
+    if GRANDFATHERED[f.rel] then
+      -- Still legitimately a giant. When it finally drops to <= LIMIT this fails, demanding you
+      -- remove it from GRANDFATHERED — the graduation / paydown signal.
+      t:expect(n, f.rel .. " is now <= " .. LIMIT .. " lines — remove it from GRANDFATHERED (paid down!)"):gt(LIMIT)
+    else
+      t:expect(n, f.rel .. " is " .. n .. " lines (> " .. LIMIT .. ") — split it, or grandfather it with a paydown note"):never():gt(LIMIT)
     end
-  elseif n > LIMIT then
-    over[#over + 1] = f.rel .. " (" .. n .. ")"
   end
-end
-
--- Vacuity guard: a broken glob would make the gates below trivially pass. Always enforced.
-quality.gate {
-  name = "quality:file-size scanned the source tree",
-  metric = "rust.file.scanned",
-  value = #files,
-  limit = 20,
-  direction = "higher_is_better",
-  enforce = true,
-  message = "no source files scanned — SRC_ROOTS or glob is wrong",
-}
-
--- The per-file ceiling (honors posture).
-quality.gate {
-  name = "no source file exceeds " .. LIMIT .. " lines",
-  metric = "rust.file.oversized",
-  value = #over,
-  limit = 0,
-  message = "oversized files (split them, or grandfather with a paydown note): " .. table.concat(over, ", "),
-}
-
--- Graduation: a grandfathered giant now under the limit must be removed from GRANDFATHERED (paid down!).
-quality.gate {
-  name = "grandfathered giants that have been paid down are retired",
-  metric = "rust.file.graduated",
-  value = #graduated,
-  limit = 0,
-  message = "now <= " .. LIMIT .. " — remove from GRANDFATHERED (paid down!): " .. table.concat(graduated, ", "),
-}
+end)
