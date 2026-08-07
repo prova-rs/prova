@@ -210,6 +210,52 @@ pub struct Measurement {
 /// far apart.
 pub type MeasurementRegistry = std::sync::Arc<std::sync::Mutex<Vec<Measurement>>>;
 
+/// The enforcement posture for quality gates — the observe↔enforce dial. It is NOT a new concept:
+/// it selects whether a `quality.gate` authors a **proof** (fatal, evidence account) or a
+/// **reminder** (surfaces, non-fatal, attention account) — the same check, different trigger.
+/// Language-agnostic; a Rust pack and a "count the lines" pack read it the same way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Posture {
+    /// A violated gate fails the run (authored as a proof). The default — today's behavior.
+    #[default]
+    Enforce,
+    /// A violated gate surfaces but never fails the run (authored as a reminder) — the L0 "observe"
+    /// / onboarding / vibe rung.
+    Observe,
+}
+
+impl Posture {
+    /// The stable string form surfaced to authors as `prova.quality.posture`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Posture::Enforce => "enforce",
+            Posture::Observe => "observe",
+        }
+    }
+
+    /// Parse a `[quality] posture` / `--observe`/`--enforce` value, defaulting to `Enforce`. An
+    /// unrecognized value is an error the caller surfaces (mirrors `Manage::parse`).
+    pub fn parse(value: Option<&str>) -> Result<Posture, String> {
+        match value {
+            None | Some("enforce") => Ok(Posture::Enforce),
+            Some("observe") => Ok(Posture::Observe),
+            Some(other) => Err(format!(
+                "invalid quality posture = {other:?} (expected \"enforce\" or \"observe\")"
+            )),
+        }
+    }
+}
+
+/// Resolved `[quality]` configuration, surfaced to authors as the `prova.quality` table so a
+/// language pack reads its thresholds/posture instead of hardcoding them. Thresholds are optional —
+/// a pack falls back to its own default when a project names none.
+#[derive(Debug, Clone, Default)]
+pub struct QualityConfig {
+    pub posture: Posture,
+    /// Max source-file line count a file-size gate holds to; `None` → the pack's own default.
+    pub max_file_lines: Option<u64>,
+}
+
 /// Result totals for a run.
 #[derive(Debug, Clone, Default)]
 pub struct Summary {

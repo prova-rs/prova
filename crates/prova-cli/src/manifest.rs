@@ -110,6 +110,10 @@ pub struct Manifest {
     /// invocation, and configured-but-unreachable is a loud error, never a silent local fallback.
     #[serde(default)]
     pub placement: Option<PlacementSection>,
+    /// `[quality]` — code-quality dials (posture + thresholds). Absent by default; see
+    /// [`QualitySection`]. A property of the package, not a profile.
+    #[serde(default)]
+    pub quality: Option<QualitySection>,
 }
 
 /// `[placement]` — where capability and contention questions are answered (docs/design/placement.md).
@@ -128,6 +132,19 @@ pub struct ClaimsSection {
     /// deliberately: prova must never crawl a whole repo looking for prose.
     #[serde(default)]
     pub docs: Vec<String>,
+}
+
+/// `[quality]` — the code-quality dials: the default enforcement posture and the thresholds a
+/// language pack's gates read. A property of the code, not a run profile (like `[claims]`). Absent
+/// by default — posture resolves to `enforce`, thresholds to each pack's own default. Deliberately
+/// language-agnostic: a Rust pack and a bare line-counter read the same knobs.
+#[derive(Debug, Deserialize, Clone, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct QualitySection {
+    /// `"enforce"` (default) | `"observe"` — the observe↔enforce dial. See [`prova_core::Posture`].
+    pub posture: Option<String>,
+    /// Max source-file line count a file-size gate holds to; absent → the pack's own default.
+    pub max_file_lines: Option<u64>,
 }
 
 /// `[agent]` — knobs on the guidance `prova learn` gives an agent. The seed of a configurable skill:
@@ -500,6 +517,8 @@ pub struct Resolved {
     pub heed_reminders: bool,
     /// Project-provided agent context docs (top-level `context`), home-relative paths.
     pub context: Vec<String>,
+    /// `[quality]` dials (posture + thresholds). Package-level, cloned through resolve.
+    pub quality: QualitySection,
 }
 
 impl Resolved {
@@ -895,6 +914,7 @@ impl Manifest {
             lane_tags,
             heed_reminders,
             context: self.context.clone(),
+            quality: self.quality.clone().unwrap_or_default(),
         })
     }
 }
@@ -957,6 +977,7 @@ proofs = ["tests/smoke"]
                 lane_tags: Vec::new(),
                 heed_reminders: false,
                 context: Vec::new(),
+                quality: QualitySection::default(),
             }
         );
     }

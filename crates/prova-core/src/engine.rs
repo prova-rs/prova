@@ -210,6 +210,9 @@ pub struct RunConfig {
     /// here (shared across workers), so the caller can file them into the run record and the
     /// baseline writer (`--update-baseline`) can read this run's observed values.
     measurement_registry: Option<crate::model::MeasurementRegistry>,
+    /// Resolved `[quality]` config, surfaced to authors as `prova.quality` (posture + thresholds) so
+    /// a language pack's gates read the project's dials rather than hardcoding them.
+    quality: crate::model::QualityConfig,
     modules: Vec<Module>,
     /// Extra disk roots the plugin searcher consults (e.g. the global `data_dir/plugins`).
     package_roots: Vec<std::path::PathBuf>,
@@ -291,6 +294,7 @@ impl Default for RunConfig {
             snapshot_registry: None,
             deputed_registry: None,
             measurement_registry: None,
+            quality: crate::model::QualityConfig::default(),
             modules: Vec::new(),
             package_roots: Vec::new(),
             named_packages: std::collections::BTreeMap::new(),
@@ -409,6 +413,12 @@ impl RunConfig {
     /// for the caller to file into the run record and to feed the guarded `--update-baseline` writer.
     pub fn with_measurement_tracking(mut self, registry: crate::model::MeasurementRegistry) -> Self {
         self.measurement_registry = Some(registry);
+        self
+    }
+
+    /// Set the resolved `[quality]` config, surfaced to authors as `prova.quality`.
+    pub fn with_quality(mut self, quality: crate::model::QualityConfig) -> Self {
+        self.quality = quality;
         self
     }
 
@@ -2908,6 +2918,18 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
     // split this exists to remove.
     if let Some(bin) = &config.prova_bin {
         prova.set("bin", bin.to_string_lossy().as_ref())?;
+    }
+
+    // `prova.quality` — the resolved `[quality]` dials (posture + thresholds), so a language pack's
+    // gates read the project's configuration instead of hardcoding it. Always present (at defaults
+    // when no `[quality]` section), so a gate can unconditionally read `prova.quality.posture`.
+    {
+        let q = lua.create_table()?;
+        q.set("posture", config.quality.posture.as_str())?;
+        if let Some(n) = config.quality.max_file_lines {
+            q.set("max_file_lines", n)?;
+        }
+        prova.set("quality", q)?;
     }
 
     // `prova.version` — the running version, as `--version` reports it, INCLUDING the `+dev.<sha>`

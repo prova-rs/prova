@@ -95,6 +95,7 @@ pub use progress::{Activity, Kind as ActivityKind, NullProgress, Progress};
 pub use model::{
     spec_summary_segment, ConsoleReporter, DeputedCase, DeputedRegistry, Direction, Event,
     JUnitReporter, JsonReporter, Measurement, MeasurementRegistry, MultiReporter, NullReporter,
-    Outcome, ReminderAccount, ReminderOutcome, ReminderState, Reporter, Summary, TapReporter,
+    Outcome, Posture, QualityConfig, ReminderAccount, ReminderOutcome, ReminderState, Reporter,
+    Summary, TapReporter,
 };
 pub use suite::{discover_files, discover_suite, discover_suites, is_test_file, run_suite, run_suites, Suite};
