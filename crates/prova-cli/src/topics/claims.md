@@ -74,3 +74,10 @@ and "may" are the whole content of a normative claim.
 
 The pin lives in the proof source rather than a lockfile: in a diff it reads as *"this claim's
 text changed and someone re-accepted it,"* which is the signal a reviewer wants.
+
+## Not ready to owe it? — backlog
+
+A claim is owed the moment you anchor it. When you want to capture something *without* owing it yet
+— a bug found mid-task, a spec section worth shaping but not now — anchor it `<!-- backlog: id -->`
+instead. Same shape, same id namespace, one keyword apart: a backlog item is the muted, cold state
+of a claim, out of `owed` entirely until you `prova backlog promote` it. See `prova learn backlog`.

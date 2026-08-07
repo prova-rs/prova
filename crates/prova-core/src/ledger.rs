@@ -148,7 +148,8 @@ pub struct Record {
 pub mod claims;
 
 pub use claims::{
-    Claim, ClaimError, Owed, Status, digest, matching_id, pin, reconcile, scan, split_pin,
+    Claim, ClaimError, Kind, Owed, Status, backlog, digest, matching_id, pin, promote, reconcile,
+    scan, split_pin,
 };
 
 /// Read the record at the given path.
@@ -255,17 +256,21 @@ pub fn account(
             .map(|p| p.path.clone())
             .collect()
     };
-    let bound = claims.iter().filter(|c| !bindings_for(&c.address).is_empty()).count();
+    // The account speaks only of claims. Backlog items are the muted state — captured, but not part
+    // of what is CLAIMED/BOUND/ATTESTED — so they are filtered out here exactly as they are from
+    // `owed`. `reconcile` still sees them all: a proof covering a cold item is worth a BACKLOGGED row.
+    let active = || claims.iter().filter(|c| c.kind == Kind::Claim);
+    let claimed = active().count();
+    let bound = active().filter(|c| !bindings_for(&c.address).is_empty()).count();
     let promised = proofs.iter().filter(|p| p.spec.is_some()).count();
     let attested = record.as_ref().map(|r| {
-        claims
-            .iter()
+        active()
             .filter(|c| attest(r, &bindings_for(&c.address)).is_attested())
             .count()
     });
     let owed = reconcile(claims, proofs);
     Account {
-        claimed: claims.len(),
+        claimed,
         bound,
         promised,
         attested,

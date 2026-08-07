@@ -19,9 +19,38 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-/// A normative statement anchored in prose.
+/// The two states of one prose obligation, distinguished only by the anchor's keyword.
+///
+/// `claim` is owed: it is reconciled, it can be bound by a proof, and an uncovered one reports as
+/// `UNPROVEN`. `backlog` is the cold state of the very same thing — captured in place, but muted:
+/// out of `owed`, never failing CI, invisible to an agent driving the doc. It is a not-yet-claim a
+/// human promotes when its time comes. The two share one id namespace, so promotion is a keyword
+/// flip in place (`prova backlog promote`) and a stray duplicate across the states is still caught.
+///
+/// The invariant that keeps the state machine legible: **only a claim can be bound.** A backlog
+/// item is unbound by definition; a proof that `covers` one is pointing at something still cold,
+/// and the ledger says so (`BACKLOGGED`) rather than silently discharging it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Claim,
+    Backlog,
+}
+
+impl Kind {
+    /// The anchor keyword — `claim` or `backlog` — as it appears after `<!--`.
+    pub fn keyword(self) -> &'static str {
+        match self {
+            Kind::Claim => "claim",
+            Kind::Backlog => "backlog",
+        }
+    }
+}
+
+/// A normative statement anchored in prose — a claim, or its cold-state counterpart, a backlog item.
 #[derive(Debug, Clone)]
 pub struct Claim {
+    /// Which state this anchor is in: an owed `claim`, or a muted `backlog` item.
+    pub kind: Kind,
     /// `path#id`, package-relative — the address a proof names in `covers`.
     pub address: String,
     pub file: PathBuf,
@@ -73,6 +102,12 @@ pub fn matching_id<'c>(claims: &'c [Claim], id: &str) -> Vec<&'c Claim> {
     claims.iter().filter(|c| c.address.ends_with(&suffix)).collect()
 }
 
+/// The cold shelf: every backlog-state anchor, in scan order. The muted counterpart to the owed
+/// claims `reconcile` reports — captured work a human has not yet decided to make active.
+pub fn backlog(claims: &[Claim]) -> Vec<&Claim> {
+    claims.iter().filter(|c| c.kind == Kind::Backlog).collect()
+}
+
 /// What the ledger found. Ordered worst-first so the actionable rows are read.
 ///
 /// The tags are the negations of the lifecycle stages (docs/design/lifecycle.md), and one
@@ -85,6 +120,10 @@ pub enum Status {
     /// written yet, and prose deleted once the proof captured the contract — and the remedies
     /// differ, so the message names both rather than guessing.
     Dangling,
+    /// A `covers` naming an anchor that is still in `backlog` state. The address resolves, but a
+    /// backlog item is unbound by definition — the proof is trying to discharge something nobody
+    /// has promoted to a claim yet. The remedy is one keyword: `prova backlog promote <id>`.
+    Backlogged,
     /// An anchored claim nothing covers. The intake half: an obligation with no proof.
     Unproven,
     /// A pinned claim whose text changed. The drift that keeps everything green: the anchor still
@@ -99,6 +138,7 @@ impl Status {
     pub fn tag(self) -> &'static str {
         match self {
             Status::Dangling => "DANGLING",
+            Status::Backlogged => "BACKLOGGED",
             Status::Unproven => "UNPROVEN",
             Status::Stale => "STALE",
             Status::Promised => "PROMISED",
@@ -182,9 +222,12 @@ fn collect_file(root: &Path, path: &Path, out: &mut Vec<Claim>) -> Result<(), Cl
     let relative = path.strip_prefix(root).unwrap_or(path).to_path_buf();
 
     let all: Vec<&str> = text.lines().collect();
+    // One namespace across both states: an id anchored twice is ambiguous whether the second is a
+    // claim or a backlog item, so the duplicate check spans them. It is also what makes promotion a
+    // safe in-place flip — the id is the identity, the keyword is only the state.
     let mut seen: BTreeMap<String, usize> = BTreeMap::new();
     for (index, line) in text.lines().enumerate() {
-        let Some(id) = parse_anchor(line) else { continue };
+        let Some((kind, id)) = parse_anchor(line) else { continue };
         let line_no = index + 1;
         if let Some(&first) = seen.get(&id) {
             return Err(ClaimError::Duplicate {
@@ -195,6 +238,7 @@ fn collect_file(root: &Path, path: &Path, out: &mut Vec<Claim>) -> Result<(), Cl
             });
         }
         out.push(Claim {
+            kind,
             address: format!("{}#{id}", relative.display()),
             file: relative.clone(),
             line: line_no,
@@ -205,13 +249,19 @@ fn collect_file(root: &Path, path: &Path, out: &mut Vec<Claim>) -> Result<(), Cl
     Ok(())
 }
 
-/// `<!-- claim: some-id -->` → `some-id`. Tolerant of spacing, strict about shape: anything else
-/// is ordinary prose and must stay invisible.
-fn parse_anchor(line: &str) -> Option<String> {
+/// `<!-- claim: some-id -->` → `(Claim, some-id)`, `<!-- backlog: some-id -->` → `(Backlog, …)`.
+/// Tolerant of spacing, strict about shape: anything else is ordinary prose and must stay invisible.
+fn parse_anchor(line: &str) -> Option<(Kind, String)> {
     let rest = line.trim().strip_prefix("<!--")?.trim_start();
-    let rest = rest.strip_prefix("claim:")?.trim_start();
-    let id = rest.strip_suffix("-->")?.trim();
-    (!id.is_empty() && !id.contains(char::is_whitespace)).then(|| id.to_string())
+    let (kind, rest) = if let Some(rest) = rest.strip_prefix("claim:") {
+        (Kind::Claim, rest)
+    } else if let Some(rest) = rest.strip_prefix("backlog:") {
+        (Kind::Backlog, rest)
+    } else {
+        return None;
+    };
+    let id = rest.trim_start().strip_suffix("-->")?.trim();
+    (!id.is_empty() && !id.contains(char::is_whitespace)).then(|| (kind, id.to_string()))
 }
 
 /// Reconcile anchors against what the proofs claim to discharge.
@@ -239,6 +289,22 @@ pub fn reconcile(claims: &[Claim], proofs: &[crate::ProofObligation]) -> Vec<Owe
                 });
                 continue;
             };
+            // Only a claim can be bound. The anchor resolves, but it is still in backlog state —
+            // the proof is discharging something nobody promoted to a claim yet. Report it rather
+            // than treat a cold item as covered; the remedy is one keyword.
+            if claim.kind == Kind::Backlog {
+                owed.push(Owed {
+                    status: Status::Backlogged,
+                    subject: address.to_string(),
+                    detail: format!(
+                        "{} covers it, but it is still a backlog item — `prova backlog promote {}` \
+                         to make it a claim a proof can discharge",
+                        proof.path,
+                        address.rsplit('#').next().unwrap_or(address),
+                    ),
+                });
+                continue;
+            }
             // A pin is opt-in per binding: unpinned bindings are bound but not watching the text,
             // so a wording change on a claim whose exact phrasing is not the contract costs
             // nobody a re-confirmation.
@@ -263,7 +329,10 @@ pub fn reconcile(claims: &[Claim], proofs: &[crate::ProofObligation]) -> Vec<Owe
         }
     }
 
-    for claim in claims {
+    // Backlog items are muted: a cold item is not owed, so it never enters this pass. That muting
+    // is the whole point — a bug or half-formed spec can be parked in a doc being actively driven
+    // without adding to what that doc owes right now.
+    for claim in claims.iter().filter(|c| c.kind == Kind::Claim) {
         let covered = proofs
             .iter()
             .any(|p| p.covers.iter().any(|a| split_pin(a).0 == claim.address));
@@ -327,15 +396,51 @@ pub fn pin(files: &[PathBuf], claims: &[Claim]) -> Result<usize, ClaimError> {
     Ok(pinned)
 }
 
+/// Promote a backlog item to a claim in place: flip `<!-- backlog: id -->` to `<!-- claim: id -->`
+/// on its own line. The id and the prose beneath it do not move — only the state changes, so the
+/// diff reads as exactly what happened, and the address a future proof will name is already the one
+/// the reader sees. Demotion (claim → backlog) is the inverse and deliberately not offered here: it
+/// is only safe when nothing binds the claim, a check that belongs to the caller with the proofs in
+/// hand, not to a keyword flip that cannot see them.
+pub fn promote(claim: &Claim, root: &Path) -> Result<(), ClaimError> {
+    let path = root.join(&claim.file);
+    let text = std::fs::read_to_string(&path).map_err(|source| ClaimError::Io {
+        path: path.clone(),
+        source,
+    })?;
+    // Rewrite by line, preserving every other byte — split_inclusive keeps line endings and any
+    // missing trailing newline, so a promotion never reflows or reformats the surrounding document.
+    let idx = claim.line.saturating_sub(1);
+    let mut out = String::with_capacity(text.len());
+    for (i, segment) in text.split_inclusive('\n').enumerate() {
+        if i == idx {
+            out.push_str(&segment.replacen("backlog:", "claim:", 1));
+        } else {
+            out.push_str(segment);
+        }
+    }
+    std::fs::write(&path, &out).map_err(|source| ClaimError::Io { path, source })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn ids(line: &str) -> Option<(Kind, String)> {
+        parse_anchor(line)
+    }
+
     #[test]
     fn an_anchor_is_recognised_regardless_of_spacing() {
-        assert_eq!(parse_anchor("<!-- claim: busy-not-absent -->").as_deref(), Some("busy-not-absent"));
-        assert_eq!(parse_anchor("<!--claim:tight-->").as_deref(), Some("tight"));
-        assert_eq!(parse_anchor("   <!-- claim: indented -->  ").as_deref(), Some("indented"));
+        assert_eq!(ids("<!-- claim: busy-not-absent -->"), Some((Kind::Claim, "busy-not-absent".into())));
+        assert_eq!(ids("<!--claim:tight-->"), Some((Kind::Claim, "tight".into())));
+        assert_eq!(ids("   <!-- claim: indented -->  "), Some((Kind::Claim, "indented".into())));
+    }
+
+    #[test]
+    fn a_backlog_anchor_is_the_same_shape_with_a_different_keyword() {
+        assert_eq!(ids("<!-- backlog: flaky-teardown -->"), Some((Kind::Backlog, "flaky-teardown".into())));
+        assert_eq!(ids("<!--backlog:tight-->"), Some((Kind::Backlog, "tight".into())));
     }
 
     #[test]
@@ -346,5 +451,8 @@ mod tests {
         assert!(parse_anchor("<!-- a normal comment -->").is_none());
         assert!(parse_anchor("<!-- claim: two words -->").is_none());
         assert!(parse_anchor("<!-- claim: -->").is_none());
+        // The backlog keyword is strict about shape for the same reason.
+        assert!(parse_anchor("<!-- backlog: two words -->").is_none());
+        assert!(parse_anchor("<!-- backlog: -->").is_none());
     }
 }

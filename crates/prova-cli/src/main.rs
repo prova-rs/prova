@@ -131,6 +131,12 @@ const VERBS: &[Verb] = &[
         run: reminders_subcommand,
     },
     Verb {
+        name: "backlog",
+        help: "  prova backlog             the cold shelf: `<!-- backlog: id -->` items captured in place but\n\
+               \x20                           muted from `owed`; `promote <id>` flips one to a claim (query only)",
+        run: backlog_subcommand,
+    },
+    Verb {
         name: "falsify",
         help: "  prova falsify [<sel>]     prove the proofs can fail: run only tests declaring `falsified_by`,\n\
                \x20                           applying the mutation — a body that survives it is vacuous",
@@ -519,6 +525,115 @@ fn owed_subcommand(args: Vec<String>) -> ExitCode {
     println!();
     println!("  {} owed", owed.len() + due.len());
     ExitCode::SUCCESS
+}
+
+/// `prova backlog` — the cold shelf. Every `<!-- backlog: id -->` anchor in the configured docs:
+/// work captured in place but deliberately NOT owed. Backlog and claim are the two states of one
+/// prose obligation; a backlog item is a claim a human has not yet decided to make active. It never
+/// appears in `owed`, never fails CI, and is invisible to an agent driving the doc — the whole
+/// point being that a bug or a half-formed spec can be parked *where it belongs*, without shuffling
+/// files and without adding to what is owed right now.
+///
+/// A query verb: it reads anchors and reports, gating nothing. `prova backlog promote <id>` is the
+/// one write — it flips the keyword in place, thawing a backlog item into a claim the burndown will
+/// then see. (Demotion is left to a human with the proofs in hand: cooling a claim back is only
+/// safe when nothing binds it.)
+fn backlog_subcommand(args: Vec<String>) -> ExitCode {
+    let mut it = args.into_iter();
+    let first = it.next();
+    if matches!(first.as_deref(), Some("-h") | Some("--help")) {
+        println!(
+            "usage: prova backlog                list every backlog item (muted from `owed`)\n\
+             \x20      prova backlog promote <id>   thaw a backlog item into a claim, in place\n\n\
+             A `<!-- backlog: id -->` anchor captures work in a doc without owing it. It shares the\n\
+             `[claims] docs` scan roots and one id namespace with claims, so promotion is a keyword\n\
+             flip: the id and its prose stay put, only the state changes."
+        );
+        return ExitCode::SUCCESS;
+    }
+
+    let home = match resolve_home(None) {
+        Ok(h) => h,
+        Err(code) => return code,
+    };
+    let manifest = match std::fs::read_to_string(&home.manifest)
+        .map_err(|e| e.to_string())
+        .and_then(|text| Manifest::parse(&text))
+    {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("prova: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let docs = manifest.claims.as_ref().map(|c| c.docs.clone()).unwrap_or_default();
+    let scanned = match claims::scan(&home.dir, &docs) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("prova: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // `promote <id>` — the one write. Everything else is a listing.
+    if first.as_deref() == Some("promote") {
+        let Some(id) = it.next() else {
+            eprintln!("prova: backlog promote <id> — which backlog item?\nusage: prova backlog promote <doc.md#id | id>");
+            return ExitCode::from(2);
+        };
+        // Resolve by full address when the arg carries a `#`, else by bare id — the same courtesy
+        // `attest` extends, since a human has the id but not always the path.
+        let candidates: Vec<&claims::Claim> = if id.contains('#') {
+            scanned.iter().filter(|c| c.address == id).collect()
+        } else {
+            claims::matching_id(&scanned, &id)
+        };
+        let target = match candidates.as_slice() {
+            [one] => *one,
+            [] => {
+                eprintln!("prova: no backlog item or claim with id {id:?}");
+                return ExitCode::FAILURE;
+            }
+            many => {
+                eprintln!("prova: ambiguous — {} anchors carry {id:?}:", many.len());
+                for m in many {
+                    eprintln!("    {}", m.address);
+                }
+                eprintln!("  name the full address to disambiguate");
+                return ExitCode::from(2);
+            }
+        };
+        if target.kind == claims::Kind::Claim {
+            println!("prova: {} is already a claim — nothing to promote", target.address);
+            return ExitCode::SUCCESS;
+        }
+        match claims::promote(target, &home.dir) {
+            Ok(()) => {
+                println!("prova: promoted {} — backlog → claim", target.address);
+                println!("  it is now owed; write a proof that `covers = \"{}\"` to discharge it", target.address);
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("prova: {e}");
+                ExitCode::FAILURE
+            }
+        }
+    } else if let Some(unexpected) = first {
+        eprintln!("prova: backlog: unexpected argument {unexpected:?}\nusage: prova backlog [promote <id>]");
+        ExitCode::from(2)
+    } else {
+        let items = claims::backlog(&scanned);
+        if items.is_empty() {
+            println!("prova: nothing in the backlog — no `<!-- backlog: id -->` anchors in the configured docs");
+            return ExitCode::SUCCESS;
+        }
+        for item in &items {
+            println!("  {:<48} {}:{}", item.address, item.file.display(), item.line);
+        }
+        println!();
+        println!("  {} in backlog — `prova backlog promote <id>` to make one a claim", items.len());
+        ExitCode::SUCCESS
+    }
 }
 
 /// `prova run [<lane>]` — the lanes front door. A lane is a `[profiles.<name>]` table; the verb
@@ -1030,13 +1145,18 @@ fn attest_all(
     packages_resolved: &packages::ResolvedPackages,
 ) -> ExitCode {
     let docs = manifest.claims.as_ref().map(|c| c.docs.clone()).unwrap_or_default();
-    let claims = match claims::scan(&home.dir, &docs) {
+    let scanned = match claims::scan(&home.dir, &docs) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("prova: {e}");
             return ExitCode::FAILURE;
         }
     };
+    // The CI gate is a gate on claims. Backlog items are unbound by definition and muted from every
+    // other reckoning — gating on them here would turn "I parked a bug in this doc" into a red
+    // pipeline, which is the opposite of the point.
+    let claims: Vec<&claims::Claim> =
+        scanned.iter().filter(|c| c.kind == claims::Kind::Claim).collect();
     if claims.is_empty() {
         println!(
             "prova: attest — no claims declared here (no `[claims]` docs, or no `<!-- claim: id -->` anchors); nothing to gate on"
