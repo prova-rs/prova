@@ -53,7 +53,7 @@ pub fn run_depth() -> u32 {
 pub const RESERVED_NAMESPACES: &[&str] = &[
     "prova", "Scope", "shell", "fs", "net", "http", "docker", "sqlite", "grpc", "graphql",
     "json", "yaml", "toml", "csv", "base64", "hash", "uuid", "url", "socket", "terminal",
-    "websocket", "path", "str", "junit", "sarif", "measure", "quality",
+    "websocket", "path", "str", "junit", "sarif", "measure",
 ];
 
 /// A bundled namespace that may be INJECTED as an unqualified global via `[globals] inject` — every
@@ -73,7 +73,7 @@ pub fn is_injectable_module(name: &str) -> bool {
 pub const DEFAULT_INJECT: &[&str] = &[
     "shell", "fs", "net", "http", "docker", "sqlite", "grpc", "graphql", "json", "yaml", "toml",
     "csv", "base64", "hash", "uuid", "url", "socket", "terminal", "websocket", "junit", "sarif",
-    "measure", "quality",
+    "measure",
 ];
 
 pub fn default_inject() -> Vec<String> {

@@ -55,7 +55,6 @@ mod format_names {
 mod cassette;
 mod junit;
 mod measure;
-mod quality;
 mod sarif;
 mod shellproxy;
 mod socket;
@@ -128,10 +127,6 @@ pub(crate) fn install(
     // baseline (.prova/baselines/) and asserts no regression — the quality ratchet.
     lua.globals()
         .set("measure", measure::make(lua, measurements)?)?;
-    // The golden-path quality composition (docs/design/verifiers.md): quality.gate authors a proof
-    // (enforce) or a reminder (observe) over measure/sarif — the observe↔enforce dial. Pure Lua; the
-    // empty table here is the namespace the recipe below hangs `gate` on.
-    lua.globals().set("quality", quality::make(lua)?)?;
     lua.globals().set("base64", make_base64(lua)?)?;
     lua.globals().set("hash", make_hash(lua)?)?;
     lua.globals().set("uuid", make_uuid(lua)?)?;
@@ -175,7 +170,6 @@ pub(crate) fn install(
     junit::install_recipe(lua)?;
     sarif::install_recipe(lua)?;
     measure::install_recipe(lua)?;
-    quality::install_recipe(lua)?;
     // Resource recipes — Lua sugar over docker.run + prova.retry + a client + ctx:manage. Loaded
     // after the modules exist; the globals they touch resolve when a recipe is *called*.
     Ok(())

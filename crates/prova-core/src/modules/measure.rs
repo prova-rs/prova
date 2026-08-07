@@ -31,17 +31,12 @@ fn parse_direction(s: Option<String>) -> Direction {
 /// value, load the committed baseline, and fail loudly on a regression (or on a missing baseline —
 /// a metric with no floor passes nothing until `--update-baseline` establishes it).
 const RATCHET_RECIPE: &str = r##"
--- measure.check(name, value, opts) -> why (string) | nil
--- The ratchet comparison as a PURE function: no assert, no record. Returns a human why-string when
--- the value violates the committed baseline (regression, or paydown goal-met/deadline-past), else
--- nil. The single source of truth shared by measure.ratchet (proof) and quality.gate (either
--- surface) — so the guard logic never drifts between them.
-function measure.check(name, value, opts)
+function measure.ratchet(t, name, value, opts)
   opts = opts or {}
   local dir = opts.direction or "lower_is_better"
   local set = opts.set or "default"
-  local goal = opts.goal
-  local deadline = opts.deadline
+  -- File it into the run's account: this is what the record keeps and what `--update-baseline` reads.
+  measure.record(name, value, { direction = dir, set = set })
 
   local path = prova.root .. "/.prova/baselines/" .. set .. ".json"
   local m = nil
@@ -49,63 +44,55 @@ function measure.check(name, value, opts)
     local data = json.decode(fs.read(path))
     m = data and data.metrics and data.metrics[name]
   end
-  -- opts.goal/deadline (from a caller like quality.gate) win over the file's, so a gate can carry a
-  -- paydown target even before it is committed to the baseline.
-  if m ~= nil then
-    if goal == nil then goal = m.goal end
-    if deadline == nil then deadline = m.deadline end
-  end
 
   if m == nil then
-    -- No committed baseline. Refuse to pass vacuously (mirrors matches_snapshot on a missing
-    -- snapshot): establish it with `prova --update-baseline`, then this becomes a ratchet.
-    return "no baseline for '" .. name .. "' in set '" .. set ..
-      "' — run `prova --update-baseline` to establish it"
+    -- No committed baseline for this metric. Refuse to pass vacuously (mirrors matches_snapshot on a
+    -- missing snapshot): establish it with `prova --update-baseline`, then this becomes a ratchet.
+    t:expect(false, "measure.ratchet: no baseline for '" .. name .. "' in set '" .. set ..
+      "' — run `prova --update-baseline` to establish it"):is_true()
+    return value
   end
 
   local floor = m.value
-  -- The ceiling: never regress past the committed baseline (the preventive ratchet).
+  -- 1) The ceiling: never regress past the committed baseline (the preventive ratchet).
   if dir == "higher_is_better" then
-    if value < floor then
-      return name .. " regressed to " .. value .. " (baseline floor " .. floor ..
-        ", higher is better) — recover it, or lower the baseline via --update-baseline if intended"
-    end
+    t:expect(value, name .. " regressed to " .. value .. " (baseline floor " .. floor ..
+      ", higher is better) — recover it, or lower the baseline via --update-baseline if intended")
+      :gte(floor)
   else
-    if value > floor then
-      return name .. " regressed to " .. value .. " (baseline ceiling " .. floor ..
-        ", lower is better) — bring it back down, or raise the baseline via --update-baseline if intended"
-    end
+    t:expect(value, name .. " regressed to " .. value .. " (baseline ceiling " .. floor ..
+      ", lower is better) — bring it back down, or raise the baseline via --update-baseline if intended")
+      :never():gt(floor)
   end
 
-  -- Paydown: when a `goal` is declared, drive toward it. Goal met graduates (prova's idiom); a
-  -- `deadline` past with the goal unmet turns the standing debt red.
-  if goal ~= nil then
+  -- 2) Paydown: when the baseline declares a `goal`, drive toward it (docs/design/verifiers.md).
+  -- The ceiling above still holds; this adds the proactive half — a goal met graduates (prova's
+  -- idiom), and a `deadline` past turns the standing debt red.
+  if m.goal ~= nil then
     local met
-    if dir == "higher_is_better" then met = value >= goal else met = value <= goal end
+    if dir == "higher_is_better" then met = value >= m.goal else met = value <= m.goal end
     if met then
-      return name .. " reached its paydown goal " .. goal .. " (now " .. value ..
-        ") — run `prova --update-baseline` to lock in the gain, then retire or lower the goal"
-    elseif deadline ~= nil then
-      local y, mo, d = tostring(deadline):match("^(%d+)-(%d+)-(%d+)")
+      -- Graduate on success, like a promise that starts passing: demand the gain be locked in and
+      -- the goal retired, rather than letting a reached goal linger green forever.
+      t:expect(false, name .. " reached its paydown goal " .. m.goal .. " (now " .. value ..
+        ") — run `prova --update-baseline` to lock in the gain, then retire or lower the goal")
+        :is_true()
+    elseif m.deadline ~= nil then
+      -- Past the deadline with the goal unmet is a hard failure: the debt came due.
+      local y, mo, d = tostring(m.deadline):match("^(%d+)-(%d+)-(%d+)")
       if y then
         local due = os.time({ year = tonumber(y), month = tonumber(mo), day = tonumber(d),
           hour = 23, min = 59, sec = 59 })
         if os.time() > due then
-          return name .. " missed its paydown deadline " .. deadline .. " — still " ..
-            math.abs(value - goal) .. " from goal " .. goal .. " (now " .. value .. ")"
+          t:expect(false, name .. " missed its paydown deadline " .. m.deadline .. " — still " ..
+            math.abs(value - m.goal) .. " from goal " .. m.goal .. " (now " .. value .. ")")
+            :is_true()
         end
       end
     end
+    -- Otherwise: still paying down, within time. The ceiling assertion stands; the remaining gap
+    -- (value vs goal) is the worklist item a `prova owed` / reminder surfaces.
   end
-  return nil
-end
-
--- measure.ratchet(t, name, value, opts) — the proof form: record the value, then assert the check.
-function measure.ratchet(t, name, value, opts)
-  opts = opts or {}
-  measure.record(name, value, { direction = opts.direction or "lower_is_better", set = opts.set or "default" })
-  local why = measure.check(name, value, opts)
-  t:expect(why == nil, why or (name .. ": within baseline")):is_true()
   return value
 end
 "##;
