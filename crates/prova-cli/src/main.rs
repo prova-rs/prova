@@ -2313,10 +2313,6 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     let mut cli_jobs: Option<usize> = None;
     let mut update_snapshots = false;
     let mut update_baseline = false;
-    // Quality posture overrides for this invocation (twins of --heed): --enforce tightens, --observe
-    // loosens. --enforce wins if both are somehow given.
-    let mut cli_observe = false;
-    let mut cli_enforce = false;
     let mut unreferenced = String::from("ignore"); // ignore | warn | delete
     let mut cli_config: Option<String> = None;
     let mut list = false;
@@ -2501,8 +2497,6 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             "--allow-empty" => allow_empty = true,
             "--update-snapshots" | "-u" => update_snapshots = true,
             "--update-baseline" => update_baseline = true,
-            "--observe" => cli_observe = true,
-            "--enforce" => cli_enforce = true,
             "--update" | "-U" => update_force = true,
             "--offline" => offline = true,
             "--json" => cli_format = Some(Format::Json),
@@ -2580,7 +2574,6 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         manifest_broker,
         heed,
         lane_tags,
-        quality,
     ) = if !explicit_paths.is_empty() {
         match &home {
             // The named paths belong to a package: borrow its environment (plugins, capabilities,
@@ -2616,7 +2609,6 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                     r.placement_broker,
                     r.heed,
                     r.lane_tags,
-                    r.quality,
                 ),
                 Err(code) => return code,
             },
@@ -2642,7 +2634,6 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                 None,       // no manifest, no [placement]; the env var is still honoured below
                 false,      // heed — no manifest, nothing promised attention
                 Vec::new(), // lane tags — no manifest, no lanes
-                prova_core::QualityConfig::default(), // no manifest — default posture (enforce)
             ),
         }
     } else {
@@ -2685,7 +2676,6 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                 r.placement_broker,
                 r.heed,
                 r.lane_tags,
-                r.quality,
             ),
             Err(code) => return code,
         }
@@ -2749,16 +2739,6 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     // `measure.ratchet` call takes accumulates here, drained below into the record and, under
     // `--update-baseline`, into the guarded baseline writer.
     let measurement_registry: prova_core::MeasurementRegistry = std::sync::Arc::default();
-    // CLI posture override (twin of --heed): --enforce tightens, --observe loosens, for this run.
-    let quality = {
-        let mut q = quality;
-        if cli_enforce {
-            q.posture = prova_core::Posture::Enforce;
-        } else if cli_observe {
-            q.posture = prova_core::Posture::Observe;
-        }
-        q
-    };
     let mut config = engine_config(jobs, &packages_resolved, home.as_ref(), std::sync::Arc::clone(&progress_sink))
         .with_update_snapshots(update_snapshots)
         .with_strict_specs(strict_specs)
@@ -2767,8 +2747,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         .with_capabilities(capabilities)
         .with_globals_inject(globals_inject)
         .with_deputed_tracking(deputed_registry.clone())
-        .with_measurement_tracking(measurement_registry.clone())
-        .with_quality(quality);
+        .with_measurement_tracking(measurement_registry.clone());
 
     // `--last-failed`: fold the previous run's failed node paths into the selection as exact nodes.
     if last_failed {
@@ -3266,8 +3245,6 @@ struct ManifestRun {
     /// The lane's baked tag selection (`tags` on `[run]`/the profile) — folded into the run's
     /// Selection as an independent gate the CLI narrows within.
     lane_tags: Vec<String>,
-    /// `[quality]` dials (posture + thresholds), surfaced to gates as `prova.quality`.
-    quality: prova_core::QualityConfig,
 }
 
 /// If a linted plugin ships no LuaCATS stub (`library/<canonical>.lua`), return an advisory message.
@@ -3902,16 +3879,6 @@ fn resolve_from_manifest(
             }
         },
     };
-    let quality = match prova_core::Posture::parse(resolved.quality.posture.as_deref()) {
-        Ok(posture) => prova_core::QualityConfig {
-            posture,
-            max_file_lines: resolved.quality.max_file_lines,
-        },
-        Err(e) => {
-            eprintln!("prova: {e}");
-            return Err(ExitCode::from(2));
-        }
-    };
     Ok(ManifestRun {
         proofs: resolved.proofs,
         jobs,
@@ -3931,7 +3898,6 @@ fn resolve_from_manifest(
         placement_broker: manifest.placement.as_ref().and_then(|p| p.broker.clone()),
         heed: resolved.heed_reminders,
         lane_tags: resolved.lane_tags,
-        quality,
     })
 }
 
