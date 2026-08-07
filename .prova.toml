@@ -25,16 +25,6 @@ must_run = ["quality"]
 [profiles.quality.env]
 PROVA_QUALITY = "1"
 
-# The code-quality dials — prova holding its own code to the bar it enforces for others. `posture`
-# is the observe<->enforce ladder: `enforce` (the default) makes a violated gate FAIL the run (a
-# proof); `observe` makes it SURFACE without failing (a reminder) — `prova --profile quality
-# --observe` shows the whole picture without gating (the onboarding/vibe rung). `max_file_lines` is
-# read by the file-size gate; the current giants (modules.rs/engine.rs/main.rs) are grandfathered
-# above it and tracked for paydown. Language-agnostic: these knobs know nothing about Rust.
-[quality]
-posture        = "enforce"
-max_file_lines = 1500
-
 # Prova's own claims. The point of declaring this is not bookkeeping — it is that prova must be
 # the exemplar of a proven application, and a lifecycle nobody has run end-to-end on a real
 # project is a design rather than a practice. Anchors live in the design docs; `prova owed` says
