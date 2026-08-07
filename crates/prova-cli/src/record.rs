@@ -61,6 +61,7 @@ pub fn reminder_entries(outcomes: &[prova_core::ReminderOutcome]) -> Vec<Reminde
                 state: state.to_string(),
                 why,
                 message: o.message.clone(),
+                tags: o.tags.clone(),
                 file: o.file.clone(),
                 line: o.line,
             }

@@ -227,8 +227,8 @@ options:
       --format console|json|tap  output format (--json is shorthand)
       --color auto|always|never  color console output (default auto: TTY only; honors NO_COLOR)
   -q, --quiet               only print failures, the recap, and the summary
-      --heed                fail the run when any reminder is DUE — the ad-hoc form of the
-                            manifest's `heed_reminders` (a guarantee: it can only tighten)
+      --heed[=SEL,...]      fail the run on DUE reminders — bare heeds all; =SEL heeds only those
+                            matching a reminder name/tag. Ad-hoc form of a profile's `heed`
       --junit PATH          also write a JUnit XML report to PATH (for CI; composes with --format)
       --gha auto|on|off     GitHub Actions annotations + step summary (default auto: when in GHA)
   -j, --jobs N              run up to N units concurrently
@@ -603,8 +603,12 @@ fn lane_line(p: &crate::manifest::Profile) -> String {
     if !p.must_run.is_empty() {
         chips.push(format!("must_run: {}", p.must_run.join(", ")));
     }
-    if p.heed_reminders {
-        chips.push("heeds reminders".to_string());
+    match p.heed.resolve() {
+        crate::manifest::Heed::None => {}
+        crate::manifest::Heed::All => chips.push("heeds all reminders".to_string()),
+        crate::manifest::Heed::Matching(sels) => {
+            chips.push(format!("heeds: {}", sels.join(", ")))
+        }
     }
     if !p.env.is_empty() {
         chips.push(format!("env: {} var(s)", p.env.len()));
@@ -2307,7 +2311,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     let mut cli_color: Option<report::ColorMode> = None;
     let mut cli_progress: Option<progress::Mode> = None;
     let mut cli_quiet = false;
-    let mut cli_heed = false;
+    let mut cli_heed = crate::manifest::Heed::None;
     let mut cli_junit: Option<String> = None;
     let mut cli_gha: Option<report::GhaMode> = None;
     let mut cli_jobs: Option<usize> = None;
@@ -2475,12 +2479,24 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             record_to = Some(std::path::PathBuf::from(v));
             continue;
         }
+        // `--heed` (bare) heeds all DUE reminders; `--heed=<sel>[,<sel>]` heeds only the matching
+        // ones (by reminder name/tag) — the ad-hoc form of a profile's `heed` list. Accumulates.
+        if let Some(sels) = arg.strip_prefix("--heed=") {
+            let list: Vec<String> = sels
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .collect();
+            cli_heed = std::mem::take(&mut cli_heed).merge(crate::manifest::Heed::Matching(list));
+            continue;
+        }
         match arg.as_str() {
             "--list" => list = true,
             "--quiet" | "-q" => cli_quiet = true,
-            // Promote this one invocation to heed the attention account — the ad-hoc form of
-            // the manifest's `heed_reminders`; like every guarantee it can only tighten.
-            "--heed" => cli_heed = true,
+            // Promote this one invocation to heed the attention account — the ad-hoc form of the
+            // manifest's `heed`; like every guarantee it can only tighten (All absorbs).
+            "--heed" => cli_heed = crate::manifest::Heed::All,
             "--last-failed" => last_failed = true,
             "--falsify" => falsify = true,
             "--fresh" => fresh = true,
@@ -2632,7 +2648,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                 prova_core::Capabilities::default(),
                 Vec::new(),
                 None,       // no manifest, no [placement]; the env var is still honoured below
-                false,      // heed — no manifest, nothing promised attention
+                crate::manifest::Heed::None, // heed — no manifest, nothing promised attention
                 Vec::new(), // lane tags — no manifest, no lanes
             ),
         }
@@ -3148,14 +3164,19 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             let orphaned = reconcile_unreferenced(snapshot_registry.as_ref(), &unreferenced);
 
             // DUE is non-fatal by default — the world moving is not a defect in the change under
-            // test. A context that promised attention (`heed_reminders` in the manifest, or this
-            // invocation's `--heed`) fails on it.
-            let due = reminders.iter().filter(|e| e.is_due()).count();
-            if (heed || cli_heed) && due > 0 {
-                let plural = if due == 1 { "" } else { "s" };
+            // test. A context that promised attention fails on the DUE reminders it heeds: `heed` in
+            // the manifest / a profile, plus this invocation's `--heed`, unioned. Selective heed
+            // (`heed = ["line-counts"]`, `--heed=clippy`) gates only the matching DUE reminders.
+            let effective_heed = heed.merge(cli_heed);
+            let heeded_due = reminders
+                .iter()
+                .filter(|e| e.is_due() && effective_heed.heeds(e))
+                .count();
+            if heeded_due > 0 {
+                let plural = if heeded_due == 1 { "" } else { "s" };
                 eprintln!(
-                    "prova: {due} reminder{plural} due — this context heeds the attention account \
-                     (heed_reminders / --heed); see `prova reminders`"
+                    "prova: {heeded_due} heeded reminder{plural} due — this context heeds the \
+                     attention account (heed / --heed); see `prova reminders`"
                 );
                 return ExitCode::FAILURE;
             }
@@ -3239,9 +3260,9 @@ struct ManifestRun {
     /// `[placement] broker` — the manifest half of broker address resolution; the env var wins at
     /// the wiring site. Carried raw: dialing happens once, at run start, not here.
     placement_broker: Option<String>,
-    /// Whether this context heeds the attention account: a DUE reminder fails the run
-    /// (`heed_reminders` in `[run]`/a profile, or CLI `--heed` — see docs/design/reminders.md).
-    heed: bool,
+    /// Which DUE reminders fail the run — the resolved `heed` policy (`[run]`/a profile's `heed`,
+    /// unioned; CLI `--heed` promotes further — see docs/design/reminders.md).
+    heed: crate::manifest::Heed,
     /// The lane's baked tag selection (`tags` on `[run]`/the profile) — folded into the run's
     /// Selection as an independent gate the CLI narrows within.
     lane_tags: Vec<String>,
@@ -3896,7 +3917,7 @@ fn resolve_from_manifest(
         capabilities,
         globals_inject: resolved.globals_inject,
         placement_broker: manifest.placement.as_ref().and_then(|p| p.broker.clone()),
-        heed: resolved.heed_reminders,
+        heed: resolved.heed,
         lane_tags: resolved.lane_tags,
     })
 }

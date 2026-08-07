@@ -51,6 +51,10 @@ pub struct ReminderEntry {
     pub why: Option<String>,
     /// The instruction — what to do when this fires.
     pub message: String,
+    /// Free-form tags (same grammar as tests), so a context can heed a subset of DUE reminders by
+    /// name or tag. Defaulted so records from before tags existed still parse.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -60,6 +64,13 @@ pub struct ReminderEntry {
 impl ReminderEntry {
     pub fn is_due(&self) -> bool {
         self.state == "due"
+    }
+
+    /// Whether this reminder matches a heed selector — the same grammar tests use: a substring of
+    /// the name, or an exact tag. Empty selector never matches (use "heed all" for that).
+    pub fn matches_selector(&self, selector: &str) -> bool {
+        !selector.is_empty()
+            && (self.name.contains(selector) || self.tags.iter().any(|t| t == selector))
     }
 }
 

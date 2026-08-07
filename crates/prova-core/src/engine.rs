@@ -869,6 +869,9 @@ struct ReminderDef {
     /// Capability expressions gating evaluation, `requires`-style. Unmet → `Unevaluated`, never
     /// `Quiet` — a tripwire that could not look must not report that it saw nothing.
     requires: Vec<String>,
+    /// Free-form tags, the same grammar tests use — so a reminder is addressable by name OR tag when
+    /// a context chooses which DUE reminders to heed (`--heed <selector>`, a profile's `heed` list).
+    tags: Vec<String>,
     file: usize,
     line: Option<u32>,
 }
@@ -2752,6 +2755,8 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
                     let requires: Vec<String> = opts
                         .get::<Option<Vec<String>>>("requires")?
                         .unwrap_or_default();
+                    let tags: Vec<String> =
+                        opts.get::<Option<Vec<String>>>("tags")?.unwrap_or_default();
                     let line = caller_line(lua, &col);
                     let mut c = col.borrow_mut();
                     let file = c.current_file;
@@ -2760,6 +2765,7 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
                         when,
                         message,
                         requires,
+                        tags,
                         file,
                         line,
                     });
@@ -4969,6 +4975,7 @@ pub fn evaluate_reminders(
                 out.push(ReminderOutcome {
                     name: def.name,
                     message: def.message,
+                    tags: def.tags,
                     file,
                     line: def.line,
                     state,

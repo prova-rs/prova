@@ -265,6 +265,72 @@ impl Luals {
     }
 }
 
+/// The `heed` manifest surface: `true`/`false` (heed all / none) OR a list of selectors (heed a
+/// SUBSET, matched against reminder name/tags — parity with test selection). Aliased to the older
+/// `heed_reminders` bool so existing manifests keep working.
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[serde(untagged)]
+pub enum HeedSpec {
+    All(bool),
+    Selectors(Vec<String>),
+}
+
+impl Default for HeedSpec {
+    fn default() -> Self {
+        HeedSpec::All(false)
+    }
+}
+
+impl HeedSpec {
+    pub fn resolve(&self) -> Heed {
+        match self {
+            HeedSpec::All(false) => Heed::None,
+            HeedSpec::All(true) => Heed::All,
+            HeedSpec::Selectors(v) if v.is_empty() => Heed::None,
+            HeedSpec::Selectors(v) => Heed::Matching(v.clone()),
+        }
+    }
+}
+
+/// Resolved heed policy — which DUE reminders fail the run. `None` (default): DUE is non-fatal.
+/// `All`: every DUE reminder gates. `Matching`: only DUE reminders whose name/tag matches a selector
+/// gate (so a profile heeds exactly the reminders that lane's phase is about).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum Heed {
+    #[default]
+    None,
+    All,
+    Matching(Vec<String>),
+}
+
+impl Heed {
+    /// Union — can only TIGHTEN (like `must_run`): `All` absorbs, selectors merge, `None` is the
+    /// identity. A profile can promise MORE heeding than the package baseline, never less.
+    pub fn merge(self, other: Heed) -> Heed {
+        match (self, other) {
+            (Heed::All, _) | (_, Heed::All) => Heed::All,
+            (Heed::None, x) | (x, Heed::None) => x,
+            (Heed::Matching(mut a), Heed::Matching(b)) => {
+                for s in b {
+                    if !a.contains(&s) {
+                        a.push(s);
+                    }
+                }
+                Heed::Matching(a)
+            }
+        }
+    }
+
+    /// Does this policy make `entry` (a DUE reminder) fatal?
+    pub fn heeds(&self, entry: &prova_core::ledger::ReminderEntry) -> bool {
+        match self {
+            Heed::None => false,
+            Heed::All => true,
+            Heed::Matching(sels) => sels.iter().any(|s| entry.matches_selector(s)),
+        }
+    }
+}
+
 /// Where a dependency package's Lua comes from. The string shorthand is a local path; the table
 /// form adds git and an in-repo `module` path.
 ///
@@ -426,10 +492,12 @@ pub struct Profile {
     /// Heed the attention account: a DUE reminder fails this context's runs. The `must_run` of
     /// reminders — DUE is non-fatal by default (the world moving is not a defect in the change
     /// under test), and a lane whose *job* is keeping the project current opts in here. Like
-    /// every guarantee it can only tighten: `[run] heed_reminders` or the profile's, whichever
-    /// promises attention, wins. (CLI `--heed` promotes a single invocation the same way.)
-    #[serde(default)]
-    pub heed_reminders: bool,
+    /// every guarantee it can only tighten: `[run] heed` or the profile's, unioned. `heed = true`
+    /// heeds all; `heed = ["line-counts", "clippy"]` heeds a subset by reminder name/tag (parity
+    /// with test selection), so a lane heeds exactly its phase's reminders. (CLI `--heed` /
+    /// `--heed=<selector>` promotes a single invocation the same way.) Aliased to `heed_reminders`.
+    #[serde(default, alias = "heed_reminders")]
+    pub heed: HeedSpec,
     /// One line shown by `prova run --list` — what this lane is for. Optional; a lane with no
     /// description lists as its settings summary.
     #[serde(default)]
@@ -494,10 +562,10 @@ pub struct Resolved {
     pub must_run: Vec<String>,
     /// The lane's baked tag selection — the profile's `tags` (non-empty replaces `[run]`'s).
     pub lane_tags: Vec<String>,
-    /// Whether a DUE reminder fails the run — `[run] heed_reminders` OR the selected profile's
-    /// (OR the CLI's `--heed`). Additive for the same reason `must_run` is: a laxer profile must
-    /// not silence a promised bar.
-    pub heed_reminders: bool,
+    /// Which DUE reminders fail the run — the union of `[run] heed` and the selected profile's
+    /// (and the CLI's `--heed`). Additive/tightening for the same reason `must_run` is: a laxer
+    /// profile must not silence a promised bar.
+    pub heed: Heed,
     /// Project-provided agent context docs (top-level `context`), home-relative paths.
     pub context: Vec<String>,
 }
@@ -830,10 +898,12 @@ impl Manifest {
                 }
             }
         }
-        // Heeding is a guarantee too — OR, never override, so a profile can promise attention
-        // but never retract the package's promise of it.
-        let heed_reminders =
-            base.heed_reminders || overlay.map(|p| p.heed_reminders).unwrap_or(false);
+        // Heeding is a guarantee too — union/tighten, never override, so a profile can promise MORE
+        // attention (heed all, or add selectors) but never retract the package's promise of it.
+        let heed = base
+            .heed
+            .resolve()
+            .merge(overlay.map(|p| p.heed.resolve()).unwrap_or_default());
         // A lane's tags are its selection, so they OVERRIDE like `proofs` (a lane defines its
         // set), never union like the guarantees.
         let lane_tags = match overlay {
@@ -893,7 +963,7 @@ impl Manifest {
             globals_inject,
             must_run,
             lane_tags,
-            heed_reminders,
+            heed,
             context: self.context.clone(),
         })
     }
@@ -955,7 +1025,7 @@ proofs = ["tests/smoke"]
                 globals_inject: prova_core::default_inject(),
                 must_run: Vec::new(),
                 lane_tags: Vec::new(),
-                heed_reminders: false,
+                heed: Heed::None,
                 context: Vec::new(),
             }
         );

@@ -121,6 +121,8 @@ pub struct ReminderOutcome {
     /// The instruction — what to DO when this fires. A reminder's discharge is an act, so this is
     /// what it carries instead of an assertion.
     pub message: String,
+    /// Free-form tags (same grammar as tests), for addressing which DUE reminders a context heeds.
+    pub tags: Vec<String>,
     pub file: Option<String>,
     pub line: Option<u32>,
     pub state: ReminderState,
