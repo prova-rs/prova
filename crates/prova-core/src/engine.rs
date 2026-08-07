@@ -2920,18 +2920,6 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
         prova.set("bin", bin.to_string_lossy().as_ref())?;
     }
 
-    // `prova.quality` — the resolved `[quality]` dials (posture + thresholds), so a language pack's
-    // gates read the project's configuration instead of hardcoding it. Always present (at defaults
-    // when no `[quality]` section), so a gate can unconditionally read `prova.quality.posture`.
-    {
-        let q = lua.create_table()?;
-        q.set("posture", config.quality.posture.as_str())?;
-        if let Some(n) = config.quality.max_file_lines {
-            q.set("max_file_lines", n)?;
-        }
-        prova.set("quality", q)?;
-    }
-
     // `prova.version` — the running version, as `--version` reports it, INCLUDING the `+dev.<sha>`
     // build metadata that marks a non-release build. A proof can therefore assert what it is
     // actually running on, which is the one thing that was missing when a local build and the
@@ -3034,6 +3022,20 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
         config.deputed_registry.clone(),
         config.measurement_registry.clone(),
     )?;
+
+    // `prova.quality` carries the resolved `[quality]` dials ALONGSIDE `quality.gate` — one table,
+    // no config-vs-module collision. `modules::install` put `.gate` on the `quality` global via its
+    // recipe; here we add the config (posture + thresholds) to that SAME table, so the injection
+    // block below propagates a single `prova.quality` = { gate, posture, max_file_lines, … }. Always
+    // present (at defaults when no `[quality]` section), so a gate reads `prova.quality.posture`
+    // unconditionally.
+    {
+        let quality: Table = lua.globals().get("quality")?;
+        quality.set("posture", config.quality.posture.as_str())?;
+        if let Some(n) = config.quality.max_file_lines {
+            quality.set("max_file_lines", n)?;
+        }
+    }
 
     // Host-provided plugin modules (e.g. `archetect`), installed into every Lua state.
     for install in &config.modules {
