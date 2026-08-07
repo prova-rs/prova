@@ -53,6 +53,7 @@ mod format_names {
 }
 
 mod cassette;
+mod date;
 mod junit;
 mod measure;
 mod sarif;
@@ -127,6 +128,9 @@ pub(crate) fn install(
     // baseline (.prova/baselines/) and asserts no regression — the quality ratchet.
     lua.globals()
         .set("measure", measure::make(lua, measurements)?)?;
+    // The `date` convenience over os.time/os.date — ergonomic time qualifiers for reminder `when`
+    // conditions (date.past/days_since/…). A utility, not a scheduling mechanism.
+    lua.globals().set("date", date::make(lua)?)?;
     lua.globals().set("base64", make_base64(lua)?)?;
     lua.globals().set("hash", make_hash(lua)?)?;
     lua.globals().set("uuid", make_uuid(lua)?)?;
@@ -170,6 +174,7 @@ pub(crate) fn install(
     junit::install_recipe(lua)?;
     sarif::install_recipe(lua)?;
     measure::install_recipe(lua)?;
+    date::install_recipe(lua)?;
     // Resource recipes — Lua sugar over docker.run + prova.retry + a client + ctx:manage. Loaded
     // after the modules exist; the globals they touch resolve when a recipe is *called*.
     Ok(())
