@@ -559,11 +559,13 @@ fn backlog_subcommand(args: Vec<String>) -> ExitCode {
     let first = it.next();
     if matches!(first.as_deref(), Some("-h") | Some("--help")) {
         println!(
-            "usage: prova backlog                list every backlog item (muted from `owed`)\n\
-             \x20      prova backlog promote <id>   thaw a backlog item into a claim, in place\n\n\
-             A `<!-- backlog: id -->` anchor captures work in a doc without owing it. It shares the\n\
-             `[specs] docs` scan roots and one id namespace with claims, so promotion is a keyword\n\
-             flip: the id and its prose stay put, only the state changes."
+            "usage: prova backlog                 list every backlog item, with its draw-down date\n\
+             \x20      prova backlog --undated       list only the backlog items that carry no date\n\
+             \x20      prova backlog promote <id>    thaw a backlog item into a claim, in place\n\n\
+             A `<!-- backlog: id -->` anchor captures work in a doc without owing it; add an optional\n\
+             `YYYY-MM-DD` as a draw-down deadline (`<!-- backlog: id 2026-09-01 -->`). It shares the\n\
+             `[specs]` sources and one id namespace with claims, so promotion is a keyword flip: the\n\
+             id and its prose stay put, only the state changes."
         );
         return ExitCode::SUCCESS;
     }
@@ -634,10 +636,17 @@ fn backlog_subcommand(args: Vec<String>) -> ExitCode {
                 ExitCode::FAILURE
             }
         }
-    } else if let Some(unexpected) = first {
-        eprintln!("prova: backlog: unexpected argument {unexpected:?}\nusage: prova backlog [promote <id>]");
-        ExitCode::from(2)
     } else {
+        // Listing — bare, or filtered to `--undated`. Any other argument is an error.
+        let undated_only = match first.as_deref() {
+            None => false,
+            Some("--undated") => true,
+            Some(unexpected) => {
+                eprintln!("prova: backlog: unexpected argument {unexpected:?}\nusage: prova backlog [--undated | promote <id>]");
+                return ExitCode::from(2);
+            }
+        };
+
         // No spec source at all: invoking `prova backlog` IS the signal you want the feature, so a
         // pointer to how to declare one is help, not a lecture (bare `prova` stays silent). This is
         // the one place the "absence is the point" silence gives way — because you asked.
@@ -652,16 +661,40 @@ fn backlog_subcommand(args: Vec<String>) -> ExitCode {
             println!("  then `prova backlog` lists them. See `prova learn spec`.");
             return ExitCode::SUCCESS;
         }
-        let items = claims::backlog(&scanned);
+
+        let all: Vec<&claims::Claim> = claims::backlog(&scanned);
+        let undated = all.iter().filter(|c| c.date.is_none()).count();
+        let items: Vec<&claims::Claim> = if undated_only {
+            all.iter().copied().filter(|c| c.date.is_none()).collect()
+        } else {
+            all.clone()
+        };
+
         if items.is_empty() {
-            println!("prova: nothing in the backlog — no `<!-- backlog: id -->` anchors in the spec sources");
+            if undated_only {
+                println!("prova: no undated backlog items — every backlog item carries a draw-down date");
+            } else {
+                println!("prova: nothing in the backlog — no `<!-- backlog: id -->` anchors in the spec sources");
+            }
             return ExitCode::SUCCESS;
         }
+
         for item in &items {
-            println!("  {:<48} {}:{}", item.address, item.file.display(), item.line);
+            let date = item.date.as_deref().unwrap_or("(undated)");
+            println!("  {date:<11} {:<44} {}:{}", item.address, item.file.display(), item.line);
         }
         println!();
-        println!("  {} in backlog — `prova backlog promote <id>` to make one a claim", items.len());
+        if undated_only {
+            println!("  {} undated of {} in backlog — a date makes an item drawable-down", items.len(), all.len());
+        } else {
+            print!("  {} in backlog — `prova backlog promote <id>` to make one a claim", all.len());
+            // Nudge toward dating: a dated item can be drawn down by a reminder; an undated one
+            // cannot. Reported, never enforced — dates stay optional.
+            if undated > 0 {
+                print!("; {undated} undated (`prova backlog --undated`)");
+            }
+            println!();
+        }
         ExitCode::SUCCESS
     }
 }

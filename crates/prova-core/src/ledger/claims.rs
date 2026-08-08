@@ -57,6 +57,11 @@ pub struct Claim {
     pub line: usize,
     /// Short digest of the claim's normalized text — what a pinned binding compares against.
     pub digest: String,
+    /// An optional `YYYY-MM-DD` draw-down date carried on the anchor: the deadline by which a
+    /// backlog item should be promoted, or a claim discharged. A reminder condition compares it
+    /// against `now` to draw it down (docs/plans/deprecation-drawdown.md). Optional — but agents
+    /// are nudged to set one, and `prova backlog --undated` finds the items that lack it.
+    pub date: Option<String>,
 }
 
 /// The prose an anchor labels: the lines under it, to the next blank line. A paragraph is what an
@@ -227,7 +232,7 @@ fn collect_file(root: &Path, path: &Path, out: &mut Vec<Claim>) -> Result<(), Cl
     // safe in-place flip — the id is the identity, the keyword is only the state.
     let mut seen: BTreeMap<String, usize> = BTreeMap::new();
     for (index, line) in text.lines().enumerate() {
-        let Some((kind, id)) = parse_anchor(line) else { continue };
+        let Some((kind, id, date)) = parse_anchor(line) else { continue };
         let line_no = index + 1;
         if let Some(&first) = seen.get(&id) {
             return Err(ClaimError::Duplicate {
@@ -243,15 +248,19 @@ fn collect_file(root: &Path, path: &Path, out: &mut Vec<Claim>) -> Result<(), Cl
             file: relative.clone(),
             line: line_no,
             digest: digest(&claim_text(&all, index)),
+            date,
         });
         seen.insert(id, line_no);
     }
     Ok(())
 }
 
-/// `<!-- claim: some-id -->` → `(Claim, some-id)`, `<!-- backlog: some-id -->` → `(Backlog, …)`.
-/// Tolerant of spacing, strict about shape: anything else is ordinary prose and must stay invisible.
-fn parse_anchor(line: &str) -> Option<(Kind, String)> {
+/// `<!-- claim: some-id -->` → `(Claim, some-id, None)`; with a date,
+/// `<!-- backlog: some-id 2026-09-01 -->` → `(Backlog, some-id, Some("2026-09-01"))`. Tolerant of
+/// spacing, strict about shape: an id, then an OPTIONAL `YYYY-MM-DD`, and nothing else — anything
+/// else is ordinary prose and must stay invisible (a mistyped date makes it not-an-anchor, the same
+/// strictness that keeps unmarked text from becoming an obligation).
+fn parse_anchor(line: &str) -> Option<(Kind, String, Option<String>)> {
     let rest = line.trim().strip_prefix("<!--")?.trim_start();
     let (kind, rest) = if let Some(rest) = rest.strip_prefix("claim:") {
         (Kind::Claim, rest)
@@ -260,8 +269,36 @@ fn parse_anchor(line: &str) -> Option<(Kind, String)> {
     } else {
         return None;
     };
-    let id = rest.trim_start().strip_suffix("-->")?.trim();
-    (!id.is_empty() && !id.contains(char::is_whitespace)).then(|| (kind, id.to_string()))
+    let body = rest.trim_start().strip_suffix("-->")?.trim();
+    let mut parts = body.split_whitespace();
+    let id = parts.next()?;
+    let date = match parts.next() {
+        None => None,
+        Some(tok) if valid_iso_date(tok) => Some(tok.to_string()),
+        Some(_) => return None,
+    };
+    // Nothing beyond an id and an optional date belongs in an anchor.
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((kind, id.to_string(), date))
+}
+
+/// A strict `YYYY-MM-DD` check: exact shape plus plausible month/day ranges, no date crate. The
+/// reminder condition does the real calendar arithmetic against `now`; here we only refuse an
+/// obviously malformed date so a typo does not silently ride along as a deadline.
+fn valid_iso_date(s: &str) -> bool {
+    let b = s.as_bytes();
+    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
+        return false;
+    }
+    let digits = |r: &[u8]| r.iter().all(u8::is_ascii_digit);
+    if !(digits(&b[0..4]) && digits(&b[5..7]) && digits(&b[8..10])) {
+        return false;
+    }
+    let month: u32 = s[5..7].parse().unwrap_or(0);
+    let day: u32 = s[8..10].parse().unwrap_or(0);
+    (1..=12).contains(&month) && (1..=31).contains(&day)
 }
 
 /// Reconcile anchors against what the proofs claim to discharge.
@@ -426,21 +463,40 @@ pub fn promote(claim: &Claim, root: &Path) -> Result<(), ClaimError> {
 mod tests {
     use super::*;
 
-    fn ids(line: &str) -> Option<(Kind, String)> {
+    fn ids(line: &str) -> Option<(Kind, String, Option<String>)> {
         parse_anchor(line)
     }
 
     #[test]
     fn an_anchor_is_recognised_regardless_of_spacing() {
-        assert_eq!(ids("<!-- claim: busy-not-absent -->"), Some((Kind::Claim, "busy-not-absent".into())));
-        assert_eq!(ids("<!--claim:tight-->"), Some((Kind::Claim, "tight".into())));
-        assert_eq!(ids("   <!-- claim: indented -->  "), Some((Kind::Claim, "indented".into())));
+        assert_eq!(ids("<!-- claim: busy-not-absent -->"), Some((Kind::Claim, "busy-not-absent".into(), None)));
+        assert_eq!(ids("<!--claim:tight-->"), Some((Kind::Claim, "tight".into(), None)));
+        assert_eq!(ids("   <!-- claim: indented -->  "), Some((Kind::Claim, "indented".into(), None)));
     }
 
     #[test]
     fn a_backlog_anchor_is_the_same_shape_with_a_different_keyword() {
-        assert_eq!(ids("<!-- backlog: flaky-teardown -->"), Some((Kind::Backlog, "flaky-teardown".into())));
-        assert_eq!(ids("<!--backlog:tight-->"), Some((Kind::Backlog, "tight".into())));
+        assert_eq!(ids("<!-- backlog: flaky-teardown -->"), Some((Kind::Backlog, "flaky-teardown".into(), None)));
+        assert_eq!(ids("<!--backlog:tight-->"), Some((Kind::Backlog, "tight".into(), None)));
+    }
+
+    #[test]
+    fn an_anchor_carries_an_optional_iso_date() {
+        assert_eq!(
+            ids("<!-- backlog: flaky-teardown 2026-09-01 -->"),
+            Some((Kind::Backlog, "flaky-teardown".into(), Some("2026-09-01".into())))
+        );
+        assert_eq!(
+            ids("<!-- claim: never-preempt 2026-12-31 -->"),
+            Some((Kind::Claim, "never-preempt".into(), Some("2026-12-31".into())))
+        );
+        // A malformed date is not an anchor — a typo must not ride along as a deadline, and it must
+        // be exact `YYYY-MM-DD` (no single-digit months/days).
+        assert!(parse_anchor("<!-- backlog: id 2026-13-01 -->").is_none());
+        assert!(parse_anchor("<!-- backlog: id 2026-9-1 -->").is_none());
+        assert!(parse_anchor("<!-- backlog: id notadate -->").is_none());
+        // Nothing beyond an id and its date.
+        assert!(parse_anchor("<!-- backlog: id 2026-09-01 extra -->").is_none());
     }
 
     #[test]

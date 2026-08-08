@@ -41,6 +41,21 @@ Demotion (claim → backlog) is not a keyword flip you should reach for blindly:
 is only safe when nothing binds it, and that check needs the proofs in hand. Do it by editing the
 anchor when you know the claim is unbound.
 
+## An optional draw-down date
+
+An anchor can carry a `YYYY-MM-DD` after the id — a deadline by which the item should be promoted:
+
+```markdown
+<!-- backlog: flaky-teardown 2026-09-01 -->
+```
+
+It is optional, but **set one**: a dated item is something a reminder can draw down by its deadline
+(WATCHING while there is time, DUE once it passes, fatal under `--heed`); an undated one just sits.
+`prova backlog` shows each item's date and nudges you with the undated count; `prova backlog
+--undated` lists exactly the ones missing a date, so a team can keep the shelf accountable without
+forcing a date on anything. The date survives promotion — it lives after the id, untouched by the
+keyword flip, so a claim inherits the deadline set while it was cold.
+
 ## Only a claim can be bound
 
 The invariant that keeps the two states legible: a proof may only `covers` a **claim**. Point one at
@@ -55,7 +70,7 @@ BACKLOGGED  docs/design.md#not-ready
 ## Opting in
 
 Backlog shares the spec sources — declare them under `[specs]` (`prova learn spec`).
-**Absent by default** — no section, no scan, no cost. Declaring `docs` opts in both states at once,
+**Absent by default** — no section, no scan, no cost. Declaring a source opts in both states at once,
 because they live in the same files.
 
 ## Priming a burndown, and draw-down schemes

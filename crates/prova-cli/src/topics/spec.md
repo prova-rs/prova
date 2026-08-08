@@ -32,8 +32,9 @@ same shape and one shared id namespace, one keyword apart:
 <!-- claim: never-preempt -->       owed — reconciled, dischargeable (prova learn claims)
 ```
 
-A **backlog** item is muted: out of `owed`, off CI, invisible to a run — captured without obligation.
-A **claim** is owed until a proof covers it. Promotion flips the keyword in place — the id and prose
+Either state can carry an optional `YYYY-MM-DD` after the id (`<!-- backlog: id 2026-09-01 -->`) — a
+draw-down deadline a reminder can hold you to. A **backlog** item is muted: out of `owed`, off CI,
+invisible to a run — captured without obligation. A **claim** is owed until a proof covers it. Promotion flips the keyword in place — the id and prose
 do not move — which is only possible because the directory source is read/write. `prova owed`
 reconciles the claims; `prova backlog` lists the cold ones.
 

@@ -164,6 +164,39 @@ prova.test("`prova backlog` with no spec source points to setup, and does not fa
   t:expect(r.stdout, "points to the topic"):contains("prova learn spec")
 end)
 
+prova.test("backlog items carry an optional date, and `--undated` finds the ones without", {
+  proves = "a date turns a parked item into something a reminder can draw down by a deadline; making the undated ones queryable is what keeps every item accountable to a date without forcing one on you",
+}, function(t)
+  local proj = project(t, [[
+<!-- backlog: dated-item 2026-09-01 -->
+Has a deadline.
+
+<!-- backlog: bare-item -->
+No deadline yet.
+]])
+  local listed = shell.run(prova.bin .. " backlog", { cwd = proj, merge_stderr = true })
+  t:expect(listed.stdout, "the date is shown"):contains("2026-09-01")
+  t:expect(listed.stdout, "the dated item is listed"):contains("dated-item")
+  t:expect(listed.stdout, "the bare item too"):contains("bare-item")
+  t:expect(listed.stdout, "the undated count is nudged"):contains("1 undated")
+
+  local undated = shell.run(prova.bin .. " backlog --undated", { cwd = proj, merge_stderr = true })
+  t:expect(undated.stdout, "only the undated one"):contains("bare-item")
+  t:expect(undated.stdout, "not the dated one"):never():contains("dated-item")
+end)
+
+prova.test("promoting a dated backlog item keeps its date", {
+  proves = "the date lives after the id on the same line, so the keyword flip cannot lose it — a deadline set while an item was cold carries into the claim it becomes",
+}, function(t)
+  local proj = project(t, [[
+<!-- backlog: soon 2026-09-01 -->
+Due soon.
+]])
+  shell.run(prova.bin .. " backlog promote soon", { cwd = proj, merge_stderr = true })
+  local doc = fs.read(proj .. "/docs/design.md")
+  t:expect(doc, "now a claim, still dated"):contains("<!-- claim: soon 2026-09-01 -->")
+end)
+
 prova.test("the binary teaches the backlog: catalog and topic", {
   proves = "a capability an agent cannot discover does not exist. The catalog must name the lane and the topic must explain the anchor, the muting, and the one write — checking one leaves the capability either unfindable or unexplained",
 }, function(t)

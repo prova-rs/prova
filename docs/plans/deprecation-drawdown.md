@@ -11,7 +11,33 @@ deadline or CI goes red. This is "reminders as the draw-down primitive" turned o
 Three pieces just converged:
 - **Deprecation warnings exist** (`[specs] docs` → `[[specs.source]]`, this branch).
 - **Reminders are the draw-down primitive** (`prova.remind` + `--heed`, soft→hard).
-- **A `date` module for reminder conditions** is being built (the default workspace) — the clock.
+- **A `date` module for reminder conditions** — UNBLOCKED. `crates/prova-core/src/modules/date.rs`
+  (commit a25ba, "ergonomic time helpers over os.* for reminder conditions") is an ANCESTOR of this
+  backlog line (the two were rebased linear, not diverged), so it is already in-tree. The clock is here.
+
+## One mechanism, two obligation kinds (unifies items 3 and 5)
+
+Draw-down is the same shape whether the deadline is computed or authored:
+
+| obligation | id | deadline | source |
+|---|---|---|---|
+| deprecation warning (item 3) | warning id (`specs-docs-deprecated`) | `first_seen + grace` (computed) | `.prova/deprecations.toml` (stamped) |
+| dated backlog/claim (item 5) | anchor id | the `YYYY-MM-DD` on the anchor (authored) | the doc anchor itself |
+
+Both feed ONE reminder condition: read the dated obligations, compare `deadline` to `now` (the `date`
+module) → WATCHING before, DUE after, `--heed` fatal. Build the condition once; both kinds plug in.
+
+### Item 5 — dated anchors
+
+Claims and backlog items carry an optional `YYYY-MM-DD` so a reminder can draw them down:
+
+```markdown
+<!-- backlog: flaky-teardown 2026-09-01 -->   (open: bare ISO date vs. keyed `due=`/`by=`)
+```
+
+Parser change: the anchor accepts an optional date token after the id (today it is id-only). The date
+lands on `Claim` (both kinds), and `prova backlog`/`owed` can show/sort by it. An authored due-date is
+the explicit sibling of the deprecation's computed one — same reminder condition draws both down.
 
 ## The load-bearing piece: "from the start of the first warning" needs committed state
 
