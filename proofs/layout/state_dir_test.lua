@@ -10,7 +10,7 @@
 ---   self-ignore: `var/.gitignore` of `*`, written on creation. It composes recursively — each
 ---                package ignores its OWN state and nobody else's, at any nesting depth.
 ---   lazy       : the dir materializes on the first state WRITE, never at startup. A package that
----                is only ever read (`--help`, `specs`, a plugin dir with no proofs) stays clean.
+---                is only ever read (`--help`, `promises`, a plugin dir with no proofs) stays clean.
 ---   escape     : `PROVA_VAR_DIR` relocates state wholesale, for source trees prova cannot write
 ---                to (read-only checkouts, Nix/Bazel sandboxes). It is an escape hatch, NOT a
 ---                preference: outcomes are identical either way, a relative path is refused, and
@@ -147,7 +147,7 @@ end)
 prova.test("a read-only invocation never creates a state directory",
   { covers = "docs/design/ide-and-layout.md#state-dir-self-owning" }, function(t)
   local pkg = t:use(sandbox) .. "/pkg"
-  local r = run(pkg, "specs")
+  local r = run(pkg, "promises")
   t:expect(r.code):equals(0)
   t:expect(fs.exists(pkg .. "/.prova/var"), "nothing written by an enumeration"):equals(false)
 end)
