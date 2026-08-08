@@ -44,6 +44,24 @@ example we have:
   local claim shadowing the remote address — rejected as leaky. Leaning (a)+(b): directory is
   read/write; remote sources reflect, and their promotion happens in the remote tool.
 
+## Default source, and override vs augment
+
+Decision (pending build): **opt-in stays sacred, the default is a convenience within it, and an
+explicit source overrides.**
+
+- **No `[specs]` = no scan.** The load-bearing principle ("absence is the whole point — a package
+  that never opts in scans nothing") is unchanged. An implicit `docs/` default must NOT make prova
+  scan every project that happens to have a docs folder.
+- **`[specs]` present, no source named → default to a single `directory` at `docs/`.** A convenience
+  *within* opt-in, not a global implicit scan.
+- **Any explicit `[[specs.source]]` overrides the default** — you own the list. Not augment: leaving
+  the implicit `docs/` in place is *invisible scope you cannot opt out of* (a claim owed from a
+  directory you thought you'd replaced, with no clean disable). The asymmetry decides it — keeping
+  `docs/` under override costs one explicit, self-documenting line; removing it under augment needs
+  an awkward "disable the default" escape hatch. Explicit-list-owns-the-list is also the least-
+  surprise convention. The additive intent ("docs/ *and* specs/") is still expressible — you write
+  both, visibly.
+
 ## Why defer implementation
 
 The typed-source abstraction is best validated against a second, genuinely *different* source

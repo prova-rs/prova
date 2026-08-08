@@ -4128,6 +4128,31 @@ mod tests {
         }
     }
 
+    /// Predictability as a gate: every verb teaches itself — `prova learn <verb>` must resolve and
+    /// never dead-end. The mirror of `skill_and_topics_only_name_real_verbs` (that one: every verb a
+    /// doc names is real; this one: every verb a user can type is documented).
+    ///
+    /// A UNIT test on purpose, not a black-box `.prova.lua` proof: the invariant is a correspondence
+    /// between two in-process source tables (`VERBS` ↔ `Topic::resolve`). Recovering the verb list
+    /// black-box would mean parsing `--help` — fragile and indirect for no gain. Adding a verb with
+    /// no learn home fails HERE, so the invariant cannot silently rot (docs/plans/terminology.md).
+    #[test]
+    fn every_verb_resolves_in_learn() {
+        for verb in VERBS {
+            // `learn` is the catalog verb itself: `prova learn` (no topic) IS its documentation, so
+            // it needs no topic of its own.
+            if verb.name == "learn" {
+                continue;
+            }
+            assert!(
+                learn::Topic::resolve(verb.name).is_some(),
+                "`prova {name}` has no learn topic — `prova learn {name}` would dead-end. Give it a \
+                 topic key, or a command-keyword alias in learn.rs (docs/plans/terminology.md).",
+                name = verb.name,
+            );
+        }
+    }
+
     /// Every verb's help text names the verb it dispatches — the row documents itself.
     #[test]
     fn every_verb_documents_itself() {

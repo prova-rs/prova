@@ -141,6 +141,21 @@ impl Topic {
         ("cli", Topic::Running),
         ("warm", Topic::Mcp),
         ("server", Topic::Mcp),
+        // Command-keyword resolution: every verb teaches itself. These route a VERB word to the
+        // doctrine topic that explains it, so `prova learn <verb>` never dead-ends — principled (the
+        // word you typed as a command resolves), categorically unlike a concept synonym. Held by the
+        // `every_verb_resolves_in_learn` proof; new verbs that skip a home fail it.
+        ("run", Topic::Running),
+        ("eval", Topic::Running),
+        ("list", Topic::Running),
+        ("ide", Topic::Init),
+        ("skill", Topic::Pdd),
+        ("up", Topic::Topologies),
+        ("down", Topic::Topologies),
+        ("start", Topic::Topologies),
+        ("watch", Topic::Topologies),
+        ("ps", Topic::Topologies),
+        ("broker", Topic::Topologies),
     ];
 
     pub fn key(self) -> &'static str {

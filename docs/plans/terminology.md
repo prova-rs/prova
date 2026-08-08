@@ -51,6 +51,9 @@ singular leg. Enforced by a proof (Increment 2), the mirror of the existing
    `promises`). Close every `prova learn <verb>` gap (`run`, `owed`, `attest`, `burndown`, `list`,
    `up`/`down`/…) via principled keyword mappings.
 
+   *Status: `learn spec` topic DONE; the learn-per-verb proof DONE (`every_verb_resolves_in_learn`,
+   mutation-checked). Remaining: `Topic::Specs`→`Promises` rename.*
+
    **How the invariant is proven — a unit test, not black-box.** "Every verb resolves in learn" is a
    correspondence between two in-process source tables (`VERBS` ↔ `Topic::resolve`); the honest tool
    is a Rust unit test iterating them directly, sitting beside its existing siblings
