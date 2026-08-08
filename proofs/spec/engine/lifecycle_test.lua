@@ -13,7 +13,7 @@
 local sandbox = prova.fixture("lifecycle-sandbox", Scope.File, function(ctx)
   local proj = ctx:tempdir() .. "/pkg"
   fs.mkdir(proj .. "/proofs")
-  -- Level 0 and nothing else: no [claims], no spec flag, no falsifier.
+  -- Level 0 and nothing else: no [specs], no spec flag, no falsifier.
   fs.write(proj .. "/prova.toml", '[run]\nproofs = ["proofs"]\n')
   fs.write(proj .. "/proofs/plain_test.lua", [[
 prova.test("arithmetic holds", function(t)
@@ -30,7 +30,7 @@ prova.test("no stage of the lifecycle requires an adjacent one", {
   local proj = t:use(sandbox)
   fs.mkdir(proj .. "/docs")
   fs.write(proj .. "/prova.toml",
-    '[run]\nproofs = ["proofs"]\n\n[claims]\ndocs = ["docs"]\n')
+    '[run]\nproofs = ["proofs"]\n\n[specs]\ndocs = ["docs"]\n')
   fs.write(proj .. "/docs/d.md", "# D\n\n<!-- claim: solo -->\nA claim with no spec.\n")
 
   -- Each attribute alone, and one carrying two: every combination is a legal declaration.
@@ -63,7 +63,7 @@ prova.test("a package at level 0 pays nothing for the levels it did not adopt", 
 }, function(t)
   local proj = t:use(sandbox)
 
-  -- No [claims], no spec, no falsifier: an ordinary run, and the atoms are wholly absent from it.
+  -- No [specs], no spec, no falsifier: an ordinary run, and the atoms are wholly absent from it.
   local r = shell.run(prova.bin, { cwd = proj, merge_stderr = true })
   t:expect(r.code):equals(0)
   t:expect(r.stdout):contains("1 passed")
@@ -79,7 +79,7 @@ prova.test("a query verb never executes a proof body", {
   local proj = t:use(sandbox)
   fs.mkdir(proj .. "/docs")
   fs.write(proj .. "/prova.toml",
-    '[run]\nproofs = ["proofs"]\n\n[claims]\ndocs = ["docs"]\n')
+    '[run]\nproofs = ["proofs"]\n\n[specs]\ndocs = ["docs"]\n')
   fs.write(proj .. "/docs/d.md", "# D\n\n<!-- claim: watched -->\nA claim.\n")
 
   -- The body writes a file. If a query verb executes it, the file appears — an observable that
@@ -107,11 +107,11 @@ end)
 
 prova.test("prova declares claims over its own design docs and owes against them", {
   covers = "docs/design/lifecycle.md#prova-dogfoods-its-own-lifecycle",
-  proves = "the exemplar argument, held as a regression guard. Deleting prova's own [claims] section would silently retire every anchor in its design docs, and the first sign would be a ledger that had quietly gone empty",
+  proves = "the exemplar argument, held as a regression guard. Deleting prova's own [specs] section would silently retire every anchor in its design docs, and the first sign would be a ledger that had quietly gone empty",
 }, function(t)
   -- prova.root is this repository: the subject here is prova's own manifest, deliberately.
   local manifest = fs.read(prova.root .. "/.prova.toml")
-  t:expect(manifest, "the opt-in is declared"):contains("[claims]")
+  t:expect(manifest, "the opt-in is declared"):contains("[specs]")
   t:expect(manifest):contains("docs/design")
 
   -- And the anchors it points at are real, in the doc that states the lifecycle.

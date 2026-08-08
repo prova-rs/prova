@@ -53,13 +53,13 @@ anchor in prose is an obligation; `covers = "docs/design.md#id"` on a proof disc
 `prova owed` reconciles every origin into ONE list — open promises, unproven claims, and `covers`
 pointing at prose that is not there. Pin a claim's text (`prova owed --pin`) where the exact
 wording is the contract, and an edit reports STALE instead of passing silently. Opt in with
-`[claims] docs = [...]`; absent, the subsystem is inert. If you find things owed in a repo,
+`[specs] docs = [...]`; absent, the subsystem is inert. If you find things owed in a repo,
 surface them — that is scoped work someone has not finished.
 
 **Evidence — where does this project stand?** The doc *claims* it; a proof *promises* it; the
 implementation *proves* it; the run *attests* it. `prova evidence` is the whole account: CLAIMED /
 BOUND / PROMISED / ATTESTED with counts, then what is owed. Start here when orienting in a repo
-that declares `[claims]`; `prova owed` is the actionable narrowing. In CI, **bare `prova attest`
+that declares `[specs]`; `prova owed` is the actionable narrowing. In CI, **bare `prova attest`
 gates**: it reconciles every anchored claim against the recorded run and exits non-zero unless
 each is attested. `prova learn evidence` carries the family.
 

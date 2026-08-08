@@ -25,11 +25,11 @@ must_run = ["quality"]
 [profiles.quality.env]
 PROVA_QUALITY = "1"
 
-# Prova's own claims. The point of declaring this is not bookkeeping — it is that prova must be
-# the exemplar of a proven application, and a lifecycle nobody has run end-to-end on a real
-# project is a design rather than a practice. Anchors live in the design docs; `prova owed` says
-# what is still owed against them. See docs/design/lifecycle.md.
-[claims]
+# Prova's own specs — the prose layer. The point of declaring this is not bookkeeping — it is that
+# prova must be the exemplar of a proven application, and a lifecycle nobody has run end-to-end on a
+# real project is a design rather than a practice. Claim and backlog anchors live in the design
+# docs; `prova owed` says what is still owed against them. See docs/design/lifecycle.md.
+[specs]
 docs = ["docs/design"]
 
 # This repo's /.luarc.json is deliberately COMMITTED and hand-maintained (it points at library/ —

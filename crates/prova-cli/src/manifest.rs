@@ -99,11 +99,13 @@ pub struct Manifest {
     /// package, not a profile — the same guidance regardless of which run profile is selected.
     #[serde(default)]
     pub agent: AgentSection,
-    /// `[claims]` — where prose obligations live. **Absent by default, and absence is the whole
-    /// point**: a package that never opts in pays nothing, scans nothing, and is never told about
-    /// a subsystem it does not use. Declaring `docs` is the opt-in.
+    /// `[specs]` — the prose layer: the docs that hold anchored obligations (both `claim` and
+    /// `backlog` states). **Absent by default, and absence is the whole point**: a package that
+    /// never opts in pays nothing, scans nothing, and is never told about a subsystem it does not
+    /// use. Declaring `docs` is the opt-in. (Renamed from `[claims]` — the section declares the
+    /// prose that holds claims AND backlog items, so it was under-named.)
     #[serde(default)]
-    pub claims: Option<ClaimsSection>,
+    pub specs: Option<SpecsSection>,
     /// `[placement]` — the broker prova dials at run start (docs/design/placement.md §Transport).
     /// A property of the package, not a profile: where capability and contention questions are
     /// answered does not vary by run profile. `PROVA_PLACEMENT_BROKER` overrides it per
@@ -121,11 +123,11 @@ pub struct PlacementSection {
     pub broker: Option<String>,
 }
 
-/// `[claims]` — the prose side of the obligation ledger.
+/// `[specs]` — the prose layer of the obligation ledger: the docs an author writes obligations in.
 #[derive(Debug, Deserialize, Clone, Default, PartialEq)]
-pub struct ClaimsSection {
-    /// Files and directories scanned for `<!-- claim: id -->` anchors, package-relative. Scoped
-    /// deliberately: prova must never crawl a whole repo looking for prose.
+pub struct SpecsSection {
+    /// Files and directories scanned for `<!-- claim: id -->` and `<!-- backlog: id -->` anchors,
+    /// package-relative. Scoped deliberately: prova must never crawl a whole repo looking for prose.
     #[serde(default)]
     pub docs: Vec<String>,
 }

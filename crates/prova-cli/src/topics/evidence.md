@@ -32,7 +32,7 @@ the candidates. These list **obligations** and never execute a proof. `prova pro
 
 ## The stages, one line each
 
-- **CLAIMED** — `<!-- claim: id -->` in a doc under `[claims] docs`. Prose became an obligation.
+- **CLAIMED** — `<!-- claim: id -->` in a doc under `[specs] docs`. Prose became an obligation.
 - **BOUND** — some proof declares `covers = "doc.md#id"`. The claim has an owner.
 - **PROMISED** — flagged `promises = "<reason>"`: authored ahead, red by design, graduates to
   `proves` the moment it goes green (`prova learn promises`).

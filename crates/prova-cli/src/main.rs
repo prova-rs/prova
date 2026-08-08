@@ -458,10 +458,10 @@ fn owed_subcommand(args: Vec<String>) -> ExitCode {
         Err(code) => return code,
     };
 
-    // The manifest entry IS the opt-in. No `[claims]` means no scan, no cost, and no lecture about
+    // The manifest entry IS the opt-in. No `[specs]` means no scan, no cost, and no lecture about
     // a subsystem this package never asked for — but open promises are still owed, so the ledger still
     // has something to say.
-    let docs = manifest.claims.as_ref().map(|c| c.docs.clone()).unwrap_or_default();
+    let docs = manifest.specs.as_ref().map(|c| c.docs.clone()).unwrap_or_default();
 
     let claims = match claims::scan(&home.dir, &docs) {
         Ok(claims) => claims,
@@ -546,7 +546,7 @@ fn backlog_subcommand(args: Vec<String>) -> ExitCode {
             "usage: prova backlog                list every backlog item (muted from `owed`)\n\
              \x20      prova backlog promote <id>   thaw a backlog item into a claim, in place\n\n\
              A `<!-- backlog: id -->` anchor captures work in a doc without owing it. It shares the\n\
-             `[claims] docs` scan roots and one id namespace with claims, so promotion is a keyword\n\
+             `[specs] docs` scan roots and one id namespace with claims, so promotion is a keyword\n\
              flip: the id and its prose stay put, only the state changes."
         );
         return ExitCode::SUCCESS;
@@ -566,7 +566,7 @@ fn backlog_subcommand(args: Vec<String>) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let docs = manifest.claims.as_ref().map(|c| c.docs.clone()).unwrap_or_default();
+    let docs = manifest.specs.as_ref().map(|c| c.docs.clone()).unwrap_or_default();
     let scanned = match claims::scan(&home.dir, &docs) {
         Ok(c) => c,
         Err(e) => {
@@ -914,7 +914,7 @@ fn attest_subcommand(args: Vec<String>) -> ExitCode {
     // have to copy/paste a path to ask about one claim. Zero matches falls through untouched:
     // a ticket address (`covers = "PROJ-123"`) has no `#` and no anchor, and must keep working.
     let address = if !address.contains('#') {
-        let docs = manifest.claims.as_ref().map(|c| c.docs.clone()).unwrap_or_default();
+        let docs = manifest.specs.as_ref().map(|c| c.docs.clone()).unwrap_or_default();
         let scanned = match claims::scan(&home.dir, &docs) {
             Ok(c) => c,
             Err(e) => {
@@ -1046,7 +1046,7 @@ fn evaluate_run_reminders(
         let (manifest, packages_resolved) =
             resolve_for_obligations(home).map_err(|_| "could not resolve the package".to_string())?;
         let docs = manifest
-            .claims
+            .specs
             .as_ref()
             .map(|c| c.docs.clone())
             .unwrap_or_default();
@@ -1137,14 +1137,14 @@ fn spell_selection(config: &prova_core::RunConfig) -> Vec<String> {
 /// project claims actually evidenced", and it has to be a single exit code or CI cannot gate on
 /// it. Any claim that is unbound, or whose covering proof did not execute and pass in the
 /// recorded run, fails the gate. A package with no claims exits 0 with a stated reason — a
-/// pipeline wiring the gate before declaring `[claims]` should learn it is gating nothing, and a
+/// pipeline wiring the gate before declaring `[specs]` should learn it is gating nothing, and a
 /// package that never opted in must not fail for it.
 fn attest_all(
     home: &home::Home,
     manifest: &Manifest,
     packages_resolved: &packages::ResolvedPackages,
 ) -> ExitCode {
-    let docs = manifest.claims.as_ref().map(|c| c.docs.clone()).unwrap_or_default();
+    let docs = manifest.specs.as_ref().map(|c| c.docs.clone()).unwrap_or_default();
     let scanned = match claims::scan(&home.dir, &docs) {
         Ok(c) => c,
         Err(e) => {
@@ -1159,7 +1159,7 @@ fn attest_all(
         scanned.iter().filter(|c| c.kind == claims::Kind::Claim).collect();
     if claims.is_empty() {
         println!(
-            "prova: attest — no claims declared here (no `[claims]` docs, or no `<!-- claim: id -->` anchors); nothing to gate on"
+            "prova: attest — no claims declared here (no `[specs]` docs, or no `<!-- claim: id -->` anchors); nothing to gate on"
         );
         return ExitCode::SUCCESS;
     }
@@ -1216,7 +1216,7 @@ pub(crate) fn evidence_account(
     manifest: &Manifest,
     packages_resolved: &packages::ResolvedPackages,
 ) -> Result<prova_core::ledger::Account, String> {
-    let docs = manifest.claims.as_ref().map(|c| c.docs.clone()).unwrap_or_default();
+    let docs = manifest.specs.as_ref().map(|c| c.docs.clone()).unwrap_or_default();
     let claims = claims::scan(&home.dir, &docs).map_err(|e| e.to_string())?;
     let proofs = collect_obligations(home, manifest, packages_resolved)?;
     // Tolerant on purpose, and `.ok()` is the whole of it: a missing record and an unreadable one

@@ -6,7 +6,7 @@
 --- the discharge. What prova adds is the reconciliation: which obligations exist, which are
 --- discharged, and which references point at nothing.
 ---
---- Opt-in at the package level: no `[claims]` section means no scanning and no cost. Reported, never
+--- Opt-in at the package level: no `[specs]` section means no scanning and no cost. Reported, never
 --- fatal — except a duplicate id, which makes an address ambiguous and is a defect rather than
 --- unfinished work.
 
@@ -15,7 +15,7 @@ local sandbox = prova.fixture("claims-sandbox", Scope.File, function(ctx)
   local proj = root .. "/pkg"
   fs.mkdir(proj .. "/proofs")
   fs.mkdir(proj .. "/docs")
-  fs.write(proj .. "/prova.toml", '[run]\nproofs = ["proofs"]\n\n[claims]\ndocs = ["docs"]\n')
+  fs.write(proj .. "/prova.toml", '[run]\nproofs = ["proofs"]\n\n[specs]\ndocs = ["docs"]\n')
   fs.write(proj .. "/docs/design.md", [[
 # Design
 
@@ -119,7 +119,7 @@ Second.
   t:expect(r.stdout):contains("twice")
 end)
 
-prova.test("no [claims] section means the whole subsystem is inert", {
+prova.test("no [specs] section means the whole subsystem is inert", {
   proves = "the manifest entry IS the opt-in — a package that never asked for claims pays nothing and is never told about a subsystem it does not use",
 }, function(t)
   local proj = t:use(sandbox)
@@ -162,7 +162,7 @@ local pinned = prova.fixture("claims-pin-sandbox", Scope.File, function(ctx)
   local proj = ctx:tempdir() .. "/pkg"
   fs.mkdir(proj .. "/proofs")
   fs.mkdir(proj .. "/docs")
-  fs.write(proj .. "/prova.toml", '[run]\nproofs = ["proofs"]\n\n[claims]\ndocs = ["docs"]\n')
+  fs.write(proj .. "/prova.toml", '[run]\nproofs = ["proofs"]\n\n[specs]\ndocs = ["docs"]\n')
   fs.write(proj .. "/docs/design.md", [[
 <!-- claim: pinned-claim -->
 Contention and absence are different answers.
@@ -274,7 +274,7 @@ prova.test("the binary teaches claims: catalog, topic, and the pin", {
   t:expect(topic.stdout, "the anchor form"):contains("<!-- claim:")
   t:expect(topic.stdout, "the attribute"):contains("covers")
   t:expect(topic.stdout, "the verb"):contains("prova owed")
-  t:expect(topic.stdout, "the opt-in"):contains("[claims]")
+  t:expect(topic.stdout, "the opt-in"):contains("[specs]")
   t:expect(topic.stdout, "pinning"):contains("--pin")
 end)
 
@@ -288,7 +288,7 @@ local with_plugin = prova.fixture("claims-plugin-sandbox", Scope.File, function(
   fs.mkdir(proj .. "/docs")
   fs.mkdir(proj .. "/.prova/plugins/helper")
   fs.write(proj .. "/prova.toml",
-    '[run]\nproofs = ["proofs"]\nplugin_root = ".prova/plugins"\n\n[claims]\ndocs = ["docs"]\n')
+    '[run]\nproofs = ["proofs"]\nplugin_root = ".prova/plugins"\n\n[specs]\ndocs = ["docs"]\n')
   fs.write(proj .. "/.prova/plugins/helper/init.lua", "return { greet = function() return 1 end }\n")
   fs.write(proj .. "/docs/design.md",
     "# Design\n\n<!-- claim: helper-works -->\nThe helper answers.\n")

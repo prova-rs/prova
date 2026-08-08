@@ -9,7 +9,7 @@ local sandbox = prova.fixture("evidence-sandbox", Scope.File, function(ctx)
   local proj = ctx:tempdir() .. "/pkg"
   fs.mkdir(proj .. "/proofs")
   fs.mkdir(proj .. "/docs")
-  fs.write(proj .. "/prova.toml", '[run]\nproofs = ["proofs"]\n\n[claims]\ndocs = ["docs"]\n')
+  fs.write(proj .. "/prova.toml", '[run]\nproofs = ["proofs"]\n\n[specs]\ndocs = ["docs"]\n')
   fs.write(proj .. "/docs/design.md", [[
 # Design
 
@@ -126,7 +126,7 @@ end)
 end)
 
 prova.test("bare attest on a package with no claims is a stated no-op", {
-  proves = "exit 0 with a reason, not silence: a pipeline wiring the gate before declaring [claims] should learn it is gating nothing — and a package that never opted in must not fail for it",
+  proves = "exit 0 with a reason, not silence: a pipeline wiring the gate before declaring [specs] should learn it is gating nothing — and a package that never opted in must not fail for it",
 }, function(t)
   local proj = t:use(sandbox)
   local bare = proj .. "/../bare-evidence"

@@ -37,7 +37,7 @@ Origin is a column, not a separate concept.
 
 ## Opting in
 
-`[claims] docs = ["docs/design", "README.md"]` in `prova.toml`. **Absent by default**: no section
+`[specs] docs = ["docs/design", "README.md"]` in `prova.toml`. **Absent by default**: no section
 means no scan, no cost, and no lecture about a subsystem the package never asked for. Scanning
 belongs to the verb — `prova` does not parse markdown to run a test, and an unproven claim never
 turns a green suite red.

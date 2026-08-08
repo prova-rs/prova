@@ -15,7 +15,7 @@ local function project(t, doc, proof)
   local proj = t:tempdir() .. "/pkg"
   fs.mkdir(proj .. "/proofs")
   fs.mkdir(proj .. "/docs")
-  fs.write(proj .. "/prova.toml", '[run]\nproofs = ["proofs"]\n\n[claims]\ndocs = ["docs"]\n')
+  fs.write(proj .. "/prova.toml", '[run]\nproofs = ["proofs"]\n\n[specs]\ndocs = ["docs"]\n')
   fs.write(proj .. "/docs/design.md", doc)
   if proof then fs.write(proj .. "/proofs/contract_test.lua", proof) end
   return proj

@@ -348,7 +348,7 @@ prova.test("the account speaks machine", {
 			"[run]",
 			'proofs = ["proofs"]',
 			"",
-			"[claims]",
+			"[specs]",
 			'docs = ["CLAIMS.md"]',
 		}, "\n") .. "\n"
 	)
