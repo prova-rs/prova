@@ -35,8 +35,8 @@ Teardown occasionally leaves a container behind.
   one write: flips the keyword in place (`ledger::claims::promote`), preserving the id, the prose,
   and every other byte of the doc. Demotion (claim → backlog) is intentionally *not* a CLI verb: it
   is only safe when nothing binds the claim, a check that needs the proofs in hand.
-- **Discovery.** `prova learn backlog` topic; catalog entry; `park`/`icebox`/`defer`/`shelf`/
-  `promote` aliases. Reciprocal cross-link from `prova learn claims`.
+- **Discovery.** `prova learn backlog` topic + catalog entry (no aliases — the term stands on its
+  own; we are cutting terminology, not adding it). Reciprocal cross-link from `prova learn claims`.
 - **Proofs.** `proofs/spec/engine/backlog_test.lua` (8) — muting from owed, listing, in-place
   promotion, `BACKLOGGED`, the CI gate not failing on a parked item, bare-run inertness, the shared
   namespace, and discoverability. Plus unit tests on `parse_anchor` for both keywords.
