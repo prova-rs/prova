@@ -5049,6 +5049,36 @@ async fn evaluate_reminder(
             }
         }
     }
+    // The run's dated obligations, so a draw-down condition can compare each deadline to `now`
+    // (`date.past(o.date)`) and fire once it passes. A fresh array of read-only rows per condition.
+    match lua.create_table() {
+        Ok(list) => {
+            for (i, o) in account.dated.iter().enumerate() {
+                let build = || -> mlua::Result<()> {
+                    let row = lua.create_table()?;
+                    row.set("address", o.address.as_str())?;
+                    row.set("date", o.date.as_str())?;
+                    row.set("kind", o.kind.as_str())?;
+                    list.set(i + 1, row)
+                };
+                if build().is_err() {
+                    return ReminderState::Unevaluated {
+                        reason: "could not build the account view".to_string(),
+                    };
+                }
+            }
+            if acct.set("dated", list).is_err() {
+                return ReminderState::Unevaluated {
+                    reason: "could not build the account view".to_string(),
+                };
+            }
+        }
+        Err(e) => {
+            return ReminderState::Unevaluated {
+                reason: format!("could not build the account view: {e}"),
+            }
+        }
+    }
     match def.when.call_async::<Value>(acct).await {
         Err(e) => {
             let text = e.to_string();

@@ -146,6 +146,22 @@ pub struct ReminderAccount {
     /// gates on — the pre-authorship (future) surface of the claim the proof adjudicates in the past
     /// (docs/design/verifiers.md). Exposed to the `when` closure as `account.measurements[name]`.
     pub measurements: Vec<(String, f64)>,
+    /// Dated obligations — claim/backlog anchors carrying a `YYYY-MM-DD`. Exposed to `when` as
+    /// `account.dated` (an array of `{ address, date, kind }`), so a draw-down reminder can fire
+    /// once a deadline passes: `for _, o in ipairs(a.dated) do if date.past(o.date) then … end end`.
+    /// The one surface both authored dates (anchors) and computed ones (deprecations, later) feed.
+    pub dated: Vec<DatedObligation>,
+}
+
+/// One dated obligation — an anchor carrying a draw-down date — as a reminder condition sees it.
+#[derive(Debug, Clone)]
+pub struct DatedObligation {
+    /// `path#id`, the address a proof would name in `covers`.
+    pub address: String,
+    /// The deadline, `YYYY-MM-DD`, verbatim from the anchor.
+    pub date: String,
+    /// `"claim"` or `"backlog"` — so a condition can draw down one state and not the other.
+    pub kind: String,
 }
 
 /// One deputed case — a verdict another verifier produced, conducted and adopted by a proof
