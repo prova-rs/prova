@@ -24,7 +24,7 @@ use crate::manifest::{Manifest, PackageSource, Profile, Resolved};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Topic {
     Pdd,
-    Specs,
+    Promises,
     Reminders,
     Verifiers,
     Falsify,
@@ -50,7 +50,7 @@ pub enum Topic {
 impl Topic {
     pub const ALL: &'static [Topic] = &[
         Topic::Pdd,
-        Topic::Specs,
+        Topic::Promises,
         Topic::Reminders,
         Topic::Verifiers,
         Topic::Falsify,
@@ -88,9 +88,9 @@ impl Topic {
         ("tdd", Topic::Pdd),
         ("proof-driven-development", Topic::Pdd),
         ("specs", Topic::Spec),
-        ("burndown", Topic::Specs),
-        ("xfail", Topic::Specs),
-        ("pending", Topic::Specs),
+        ("burndown", Topic::Promises),
+        ("xfail", Topic::Promises),
+        ("pending", Topic::Promises),
         ("falsifier", Topic::Falsify),
         ("falsifiers", Topic::Falsify),
         ("falsified_by", Topic::Falsify),
@@ -104,7 +104,7 @@ impl Topic {
         ("ledger", Topic::Evidence),
         ("account", Topic::Evidence),
         ("lifecycle", Topic::Evidence),
-        ("promise", Topic::Specs),
+        ("promise", Topic::Promises),
         ("reminder", Topic::Reminders),
         ("remind", Topic::Reminders),
         ("attention", Topic::Reminders),
@@ -161,7 +161,7 @@ impl Topic {
     pub fn key(self) -> &'static str {
         match self {
             Topic::Pdd => "pdd",
-            Topic::Specs => "promises",
+            Topic::Promises => "promises",
             Topic::Reminders => "reminders",
             Topic::Verifiers => "verifiers",
             Topic::Falsify => "falsify",
@@ -190,7 +190,7 @@ impl Topic {
     fn source(self) -> &'static str {
         match self {
             Topic::Pdd => include_str!("topics/pdd.md"),
-            Topic::Specs => include_str!("topics/promises.md"),
+            Topic::Promises => include_str!("topics/promises.md"),
             Topic::Reminders => include_str!("topics/reminders.md"),
             Topic::Verifiers => include_str!("topics/verifiers.md"),
             Topic::Falsify => include_str!("topics/falsify.md"),
