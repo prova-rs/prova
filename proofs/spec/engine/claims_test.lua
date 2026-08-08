@@ -119,6 +119,20 @@ Second.
   t:expect(r.stdout):contains("twice")
 end)
 
+prova.test("a malformed anchor is a helpful error, not a silent disappearance", {
+  proves = "the keyword is the line of intent — a `<!-- backlog: … -->` the author wrote must never vanish into prose; a typo'd date says WHY at file:line, or it becomes a thing hunted for and never found. Prose without the keyword stays invisible; this is the difference",
+}, function(t)
+  local proj = t:use(sandbox)
+  fs.write(proj .. "/docs/oops.md", "<!-- backlog: flaky-teardown 2026-13-45 -->\nAn impossible month.\n")
+  local r = shell.run(prova.bin .. " owed", { cwd = proj, merge_stderr = true })
+  fs.remove_all(proj .. "/docs/oops.md")
+
+  t:expect(r.code, "a defect, so it errors like a duplicate id"):never():equals(0)
+  t:expect(r.stdout, "it says the anchor is malformed"):contains("malformed")
+  t:expect(r.stdout, "and names where"):contains("oops.md")
+  t:expect(r.stdout, "and why — the bad token"):contains("2026-13-45")
+end)
+
 prova.test("no [specs] section means the whole subsystem is inert", {
   proves = "the manifest entry IS the opt-in — a package that never asked for claims pays nothing and is never told about a subsystem it does not use",
 }, function(t)

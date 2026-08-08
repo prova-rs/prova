@@ -9,9 +9,12 @@
 //! stale. Open specs and unproven claims are the same kind of thing: work someone scoped and
 //! nobody finished.
 //!
-//! Reported, never fatal — with one exception. A duplicate id makes an address ambiguous, so
-//! nothing can discharge it and the ledger is incoherent rather than merely behind. That is a
-//! defect, and it errors.
+//! Reported, never fatal — with two exceptions, both defects that make an anchor impossible to
+//! trust rather than merely behind: a **duplicate id** (an ambiguous address nothing can discharge)
+//! and a **malformed anchor** (the `claim:`/`backlog:` keyword is there, so the line means to be an
+//! anchor, but it cannot be read — a no-id or a mistyped date). Both error, naming file and line,
+//! because the alternative — silently treating the line as prose — is an obligation the author
+//! wrote and then hunts for and cannot find.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -164,6 +167,11 @@ pub struct Owed {
 pub enum ClaimError {
     /// Same id twice in one file. Errors, because the address it forms cannot be discharged.
     Duplicate { id: String, file: PathBuf, first: usize, again: usize },
+    /// A line that is clearly an anchor attempt — the `claim:` / `backlog:` keyword is there — but
+    /// cannot be read (no id, a mistyped date, trailing junk). Errors rather than silently becoming
+    /// prose: an author who wrote `<!-- backlog: … -->` expects it to appear, so a mistake must say
+    /// why, not vanish into a thing they hunt for and cannot find.
+    Malformed { file: PathBuf, line: usize, reason: String },
     Io { path: PathBuf, source: std::io::Error },
 }
 
@@ -175,6 +183,12 @@ impl std::fmt::Display for ClaimError {
                 "duplicate claim id '{id}' in {} (lines {first} and {again}) — an ambiguous \
                  address cannot be discharged by anything; rename one",
                 file.display()
+            ),
+            ClaimError::Malformed { file, line, reason } => write!(
+                f,
+                "malformed anchor at {}:{} — {reason}",
+                file.display(),
+                line
             ),
             ClaimError::Io { path, source } => {
                 write!(f, "reading {}: {source}", path.display())
@@ -232,8 +246,18 @@ fn collect_file(root: &Path, path: &Path, out: &mut Vec<Claim>) -> Result<(), Cl
     // safe in-place flip — the id is the identity, the keyword is only the state.
     let mut seen: BTreeMap<String, usize> = BTreeMap::new();
     for (index, line) in text.lines().enumerate() {
-        let Some((kind, id, date)) = parse_anchor(line) else { continue };
         let line_no = index + 1;
+        let (kind, id, date) = match parse_anchor(line) {
+            Anchor::Prose => continue,
+            Anchor::Malformed(reason) => {
+                return Err(ClaimError::Malformed {
+                    file: relative,
+                    line: line_no,
+                    reason,
+                });
+            }
+            Anchor::Found { kind, id, date } => (kind, id, date),
+        };
         if let Some(&first) = seen.get(&id) {
             return Err(ClaimError::Duplicate {
                 id,
@@ -255,33 +279,56 @@ fn collect_file(root: &Path, path: &Path, out: &mut Vec<Claim>) -> Result<(), Cl
     Ok(())
 }
 
-/// `<!-- claim: some-id -->` → `(Claim, some-id, None)`; with a date,
-/// `<!-- backlog: some-id 2026-09-01 -->` → `(Backlog, some-id, Some("2026-09-01"))`. Tolerant of
-/// spacing, strict about shape: an id, then an OPTIONAL `YYYY-MM-DD`, and nothing else — anything
-/// else is ordinary prose and must stay invisible (a mistyped date makes it not-an-anchor, the same
-/// strictness that keeps unmarked text from becoming an obligation).
-fn parse_anchor(line: &str) -> Option<(Kind, String, Option<String>)> {
-    let rest = line.trim().strip_prefix("<!--")?.trim_start();
+/// What one line is, read as an anchor.
+enum Anchor {
+    /// No `claim:`/`backlog:` keyword — ordinary prose, and it must stay invisible.
+    Prose,
+    /// A well-formed anchor: `<!-- claim: id -->`, optionally `<!-- backlog: id 2026-09-01 -->`.
+    Found { kind: Kind, id: String, date: Option<String> },
+    /// The keyword is there, so the line MEANS to be an anchor, but it cannot be read — with why.
+    Malformed(String),
+}
+
+/// Read a line as an anchor. The keyword (`claim:`/`backlog:`) is the line of intent: without it,
+/// the line is prose and stays invisible; WITH it, a mistake is reported (`Malformed`), never
+/// silently dropped. Tolerant of spacing, strict about shape: an id, then an OPTIONAL `YYYY-MM-DD`,
+/// and nothing else.
+fn parse_anchor(line: &str) -> Anchor {
+    let Some(rest) = line.trim().strip_prefix("<!--").map(str::trim_start) else {
+        return Anchor::Prose;
+    };
     let (kind, rest) = if let Some(rest) = rest.strip_prefix("claim:") {
         (Kind::Claim, rest)
     } else if let Some(rest) = rest.strip_prefix("backlog:") {
         (Kind::Backlog, rest)
     } else {
-        return None;
+        return Anchor::Prose; // an HTML comment, but not an anchor keyword
     };
-    let body = rest.trim_start().strip_suffix("-->")?.trim();
+    // Past the keyword, the author meant an anchor — every failure from here is Malformed, not Prose.
+    let kw = kind.keyword();
+    let Some(body) = rest.trim_start().strip_suffix("-->").map(str::trim) else {
+        return Anchor::Malformed(format!("`{kw}:` anchor is not closed with `-->` on this line"));
+    };
     let mut parts = body.split_whitespace();
-    let id = parts.next()?;
+    let Some(id) = parts.next() else {
+        return Anchor::Malformed(format!("`{kw}:` has no id — write `<!-- {kw}: some-id -->`"));
+    };
     let date = match parts.next() {
         None => None,
         Some(tok) if valid_iso_date(tok) => Some(tok.to_string()),
-        Some(_) => return None,
+        Some(tok) => {
+            return Anchor::Malformed(format!(
+                "{tok:?} after the id `{id}` is not a valid YYYY-MM-DD date — the only thing that \
+                 may follow an id (an id itself has no spaces)"
+            ))
+        }
     };
-    // Nothing beyond an id and an optional date belongs in an anchor.
-    if parts.next().is_some() {
-        return None;
+    if let Some(extra) = parts.next() {
+        return Anchor::Malformed(format!(
+            "unexpected {extra:?} — an anchor is an id and an optional YYYY-MM-DD date, nothing more"
+        ));
     }
-    Some((kind, id.to_string(), date))
+    Anchor::Found { kind, id: id.to_string(), date }
 }
 
 /// A strict `YYYY-MM-DD` check: exact shape plus plausible month/day ranges, no date crate. The
@@ -464,7 +511,16 @@ mod tests {
     use super::*;
 
     fn ids(line: &str) -> Option<(Kind, String, Option<String>)> {
-        parse_anchor(line)
+        match parse_anchor(line) {
+            Anchor::Found { kind, id, date } => Some((kind, id, date)),
+            _ => None,
+        }
+    }
+    fn is_prose(line: &str) -> bool {
+        matches!(parse_anchor(line), Anchor::Prose)
+    }
+    fn is_malformed(line: &str) -> bool {
+        matches!(parse_anchor(line), Anchor::Malformed(_))
     }
 
     #[test]
@@ -490,25 +546,27 @@ mod tests {
             ids("<!-- claim: never-preempt 2026-12-31 -->"),
             Some((Kind::Claim, "never-preempt".into(), Some("2026-12-31".into())))
         );
-        // A malformed date is not an anchor — a typo must not ride along as a deadline, and it must
-        // be exact `YYYY-MM-DD` (no single-digit months/days).
-        assert!(parse_anchor("<!-- backlog: id 2026-13-01 -->").is_none());
-        assert!(parse_anchor("<!-- backlog: id 2026-9-1 -->").is_none());
-        assert!(parse_anchor("<!-- backlog: id notadate -->").is_none());
-        // Nothing beyond an id and its date.
-        assert!(parse_anchor("<!-- backlog: id 2026-09-01 extra -->").is_none());
     }
 
     #[test]
     fn ordinary_prose_is_invisible() {
-        // Unanchored prose must never become an obligation. Inferring claims from unmarked text
-        // is how this pattern turns into ritual and gets routed around.
-        assert!(parse_anchor("This claim: is just a sentence.").is_none());
-        assert!(parse_anchor("<!-- a normal comment -->").is_none());
-        assert!(parse_anchor("<!-- claim: two words -->").is_none());
-        assert!(parse_anchor("<!-- claim: -->").is_none());
-        // The backlog keyword is strict about shape for the same reason.
-        assert!(parse_anchor("<!-- backlog: two words -->").is_none());
-        assert!(parse_anchor("<!-- backlog: -->").is_none());
+        // Unanchored prose must never become an obligation. Without the keyword there is no intent
+        // to anchor, so the line is prose — silently, no error.
+        assert!(is_prose("This claim: is just a sentence."));
+        assert!(is_prose("<!-- a normal comment -->"));
+        assert!(is_prose("Just a paragraph about claims and backlog items."));
+    }
+
+    #[test]
+    fn a_malformed_anchor_is_reported_not_silently_dropped() {
+        // The keyword IS there, so the author meant an anchor — a mistake must say why rather than
+        // vanish into prose and become a thing hunted for and not found.
+        assert!(is_malformed("<!-- claim: two words -->"));
+        assert!(is_malformed("<!-- claim: -->"));
+        assert!(is_malformed("<!-- backlog: -->"));
+        assert!(is_malformed("<!-- backlog: id 2026-13-01 -->")); // impossible month
+        assert!(is_malformed("<!-- backlog: id 2026-9-1 -->")); // not zero-padded
+        assert!(is_malformed("<!-- backlog: id notadate -->"));
+        assert!(is_malformed("<!-- backlog: id 2026-09-01 extra -->"));
     }
 }
