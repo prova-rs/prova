@@ -54,7 +54,7 @@ BACKLOGGED  docs/design.md#not-ready
 
 ## Opting in
 
-Backlog shares the spec scan roots: `[specs] docs = ["docs/design", "README.md"]` in `prova.toml`.
+Backlog shares the spec sources — declare them under `[specs]` (`prova learn spec`).
 **Absent by default** — no section, no scan, no cost. Declaring `docs` opts in both states at once,
 because they live in the same files.
 

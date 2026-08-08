@@ -123,13 +123,51 @@ pub struct PlacementSection {
     pub broker: Option<String>,
 }
 
-/// `[specs]` — the prose layer of the obligation ledger: the docs an author writes obligations in.
+/// `[specs]` — the prose layer of the obligation ledger: the sources an author writes obligations in.
 #[derive(Debug, Deserialize, Clone, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct SpecsSection {
-    /// Files and directories scanned for `<!-- claim: id -->` and `<!-- backlog: id -->` anchors,
-    /// package-relative. Scoped deliberately: prova must never crawl a whole repo looking for prose.
+    /// The spec sources — where prose obligations live, declared explicitly (`[[specs.source]]`).
+    /// prova takes a strong stance on explicitness: no source, no scan, no feature you did not ask
+    /// for. Conventions belong in an init archetype, not an implicit default. Today the one source
+    /// type is `directory`; docs/plans/spec-sources.md holds the room left for `jira`/`github`.
+    #[serde(default)]
+    pub source: Vec<SpecSource>,
+    /// DEPRECATED: the old flat list of directories/files. Use `[[specs.source]] type = "directory"`.
+    /// A second spelling of a directory source, which "one way, one terminology" cuts — kept working
+    /// with a warning so existing projects migrate rather than break.
     #[serde(default)]
     pub docs: Vec<String>,
+}
+
+/// One spec source. A `type`-tagged entry, open to `jira`/`github`/… later; today only a local
+/// `directory`. See docs/plans/spec-sources.md.
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum SpecSource {
+    /// A local path — a directory scanned for anchors, or a single markdown file. Read/write, which
+    /// is what lets `prova backlog promote` rewrite an anchor in place.
+    Directory { path: String },
+}
+
+impl SpecsSection {
+    /// The package-relative paths to scan: explicit sources first, then the deprecated `docs` list.
+    pub fn scan_roots(&self) -> Vec<String> {
+        let mut roots: Vec<String> = self
+            .source
+            .iter()
+            .map(|s| match s {
+                SpecSource::Directory { path } => path.clone(),
+            })
+            .collect();
+        roots.extend(self.docs.iter().cloned());
+        roots
+    }
+
+    /// Whether the deprecated `docs` list is in use — the caller announces the deprecation once.
+    pub fn uses_deprecated_docs(&self) -> bool {
+        !self.docs.is_empty()
+    }
 }
 
 /// `[agent]` — knobs on the guidance `prova learn` gives an agent. The seed of a configurable skill:

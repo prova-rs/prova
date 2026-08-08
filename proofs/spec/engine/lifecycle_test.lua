@@ -30,7 +30,7 @@ prova.test("no stage of the lifecycle requires an adjacent one", {
   local proj = t:use(sandbox)
   fs.mkdir(proj .. "/docs")
   fs.write(proj .. "/prova.toml",
-    '[run]\nproofs = ["proofs"]\n\n[specs]\ndocs = ["docs"]\n')
+    '[run]\nproofs = ["proofs"]\n\n[[specs.source]]\ntype = "directory"\npath = "docs"\n')
   fs.write(proj .. "/docs/d.md", "# D\n\n<!-- claim: solo -->\nA claim with no spec.\n")
 
   -- Each attribute alone, and one carrying two: every combination is a legal declaration.
@@ -79,7 +79,7 @@ prova.test("a query verb never executes a proof body", {
   local proj = t:use(sandbox)
   fs.mkdir(proj .. "/docs")
   fs.write(proj .. "/prova.toml",
-    '[run]\nproofs = ["proofs"]\n\n[specs]\ndocs = ["docs"]\n')
+    '[run]\nproofs = ["proofs"]\n\n[[specs.source]]\ntype = "directory"\npath = "docs"\n')
   fs.write(proj .. "/docs/d.md", "# D\n\n<!-- claim: watched -->\nA claim.\n")
 
   -- The body writes a file. If a query verb executes it, the file appears — an observable that
@@ -111,7 +111,7 @@ prova.test("prova declares claims over its own design docs and owes against them
 }, function(t)
   -- prova.root is this repository: the subject here is prova's own manifest, deliberately.
   local manifest = fs.read(prova.root .. "/.prova.toml")
-  t:expect(manifest, "the opt-in is declared"):contains("[specs]")
+  t:expect(manifest, "the opt-in is declared"):contains("[[specs.source]]")
   t:expect(manifest):contains("docs/design")
 
   -- And the anchors it points at are real, in the doc that states the lifecycle.

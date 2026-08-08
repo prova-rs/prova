@@ -439,6 +439,22 @@ fn burndown_subcommand(args: Vec<String>) -> ExitCode {
     run(full)
 }
 
+/// The spec scan roots for the obligation verbs — one door, so the resolution cannot drift between
+/// `owed`/`attest`/`evidence`/`backlog`, and the `[specs] docs` deprecation is announced exactly
+/// once per invocation. No `[specs]` (or an empty one) yields no roots: completely opt-in.
+fn spec_scan_roots(manifest: &Manifest) -> Vec<String> {
+    let Some(specs) = manifest.specs.as_ref() else {
+        return Vec::new();
+    };
+    if specs.uses_deprecated_docs() {
+        eprintln!(
+            "prova: `[specs] docs = [...]` is deprecated — use `[[specs.source]]` with \
+             `type = \"directory\"` (see `prova learn spec`)"
+        );
+    }
+    specs.scan_roots()
+}
+
 /// `prova owed` — the obligation ledger: everything this package owes, from every origin.
 ///
 /// An agent orienting in a repo should ask ONE question — what is owed here? — so open promises
@@ -461,7 +477,7 @@ fn owed_subcommand(args: Vec<String>) -> ExitCode {
     // The manifest entry IS the opt-in. No `[specs]` means no scan, no cost, and no lecture about
     // a subsystem this package never asked for — but open promises are still owed, so the ledger still
     // has something to say.
-    let docs = manifest.specs.as_ref().map(|c| c.docs.clone()).unwrap_or_default();
+    let docs = spec_scan_roots(&manifest);
 
     let claims = match claims::scan(&home.dir, &docs) {
         Ok(claims) => claims,
@@ -566,7 +582,7 @@ fn backlog_subcommand(args: Vec<String>) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let docs = manifest.specs.as_ref().map(|c| c.docs.clone()).unwrap_or_default();
+    let docs = spec_scan_roots(&manifest);
     let scanned = match claims::scan(&home.dir, &docs) {
         Ok(c) => c,
         Err(e) => {
@@ -914,7 +930,7 @@ fn attest_subcommand(args: Vec<String>) -> ExitCode {
     // have to copy/paste a path to ask about one claim. Zero matches falls through untouched:
     // a ticket address (`covers = "PROJ-123"`) has no `#` and no anchor, and must keep working.
     let address = if !address.contains('#') {
-        let docs = manifest.specs.as_ref().map(|c| c.docs.clone()).unwrap_or_default();
+        let docs = spec_scan_roots(&manifest);
         let scanned = match claims::scan(&home.dir, &docs) {
             Ok(c) => c,
             Err(e) => {
@@ -1045,11 +1061,7 @@ fn evaluate_run_reminders(
     let owed = (|| -> Result<usize, String> {
         let (manifest, packages_resolved) =
             resolve_for_obligations(home).map_err(|_| "could not resolve the package".to_string())?;
-        let docs = manifest
-            .specs
-            .as_ref()
-            .map(|c| c.docs.clone())
-            .unwrap_or_default();
+        let docs = spec_scan_roots(&manifest);
         let claims = claims::scan(&home.dir, &docs).map_err(|e| e.to_string())?;
         let proofs = collect_obligations(home, &manifest, &packages_resolved)?;
         Ok(claims::reconcile(&claims, &proofs).len())
@@ -1144,7 +1156,7 @@ fn attest_all(
     manifest: &Manifest,
     packages_resolved: &packages::ResolvedPackages,
 ) -> ExitCode {
-    let docs = manifest.specs.as_ref().map(|c| c.docs.clone()).unwrap_or_default();
+    let docs = spec_scan_roots(manifest);
     let scanned = match claims::scan(&home.dir, &docs) {
         Ok(c) => c,
         Err(e) => {
@@ -1216,7 +1228,7 @@ pub(crate) fn evidence_account(
     manifest: &Manifest,
     packages_resolved: &packages::ResolvedPackages,
 ) -> Result<prova_core::ledger::Account, String> {
-    let docs = manifest.specs.as_ref().map(|c| c.docs.clone()).unwrap_or_default();
+    let docs = spec_scan_roots(manifest);
     let claims = claims::scan(&home.dir, &docs).map_err(|e| e.to_string())?;
     let proofs = collect_obligations(home, manifest, packages_resolved)?;
     // Tolerant on purpose, and `.ok()` is the whole of it: a missing record and an unreadable one

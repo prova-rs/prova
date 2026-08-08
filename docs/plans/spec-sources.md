@@ -44,25 +44,26 @@ example we have:
   local claim shadowing the remote address — rejected as leaky. Leaning (a)+(b): directory is
   read/write; remote sources reflect, and their promotion happens in the remote tool.
 
-## Default source, and override vs augment
+## No implicit default at all — one explicit way
 
-Decision (pending build): **opt-in stays sacred, the default is a convenience within it, and an
-explicit source overrides.**
+Decision (building now): **completely opt-in, no shorthand, no default.** prova takes a strong
+stance on explicitness — you should be able to see what prova is doing and how it is configured. The
+burden of knowing what to declare is real, but it avoids surprises and stops anyone paying for a
+feature they never asked for. Conventions belong in **packages and init archetypes** (`prova init
+project`, `archetect render <project>`) — captured repeatably — not in an implicit default.
 
-- **No `[specs]` = no scan.** The load-bearing principle ("absence is the whole point — a package
-  that never opts in scans nothing") is unchanged. An implicit `docs/` default must NOT make prova
-  scan every project that happens to have a docs folder.
-- **`[specs]` present, no source named → default to a single `directory` at `docs/`.** A convenience
-  *within* opt-in, not a global implicit scan.
-- **Any explicit `[[specs.source]]` overrides the default** — you own the list. Not augment: leaving
-  the implicit `docs/` in place is *invisible scope you cannot opt out of* (a claim owed from a
-  directory you thought you'd replaced, with no clean disable). The asymmetry decides it — keeping
-  `docs/` under override costs one explicit, self-documenting line; removing it under augment needs
-  an awkward "disable the default" escape hatch. Explicit-list-owns-the-list is also the least-
-  surprise convention. The additive intent ("docs/ *and* specs/") is still expressible — you write
-  both, visibly.
+- **No `[specs]` = no scan.** Unchanged; the load-bearing principle holds.
+- **No implicit `docs/` default**, not even within opt-in. There is nothing to override or augment —
+  the earlier default/override discussion is moot.
+- **`[[specs.source]]` is the one way.** A typed source; today only `type = "directory"`.
+- **`docs = [...]` is DEPRECATED** — the flat shorthand is a second spelling of a directory source,
+  exactly the "two ways to say one thing" that "one way, one terminology" cuts. Kept working with a
+  **deprecation warning** so existing projects migrate rather than break.
+- **A spec verb run with no source configured warns and points to setup** (`prova learn spec`, and
+  eventually a prova-rs.github.io entry once its identifiers are stable) — invoking the verb IS the
+  signal you want the feature, so a pointer is help, not a lecture. Bare `prova` stays silent.
 
-## Why defer implementation
+## Why defer the *remote* source types
 
 The typed-source abstraction is best validated against a second, genuinely *different* source
 (JIRA), because that is where the constraints that should shape it — auth, writability, id

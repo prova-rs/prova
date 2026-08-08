@@ -348,8 +348,9 @@ prova.test("the account speaks machine", {
 			"[run]",
 			'proofs = ["proofs"]',
 			"",
-			"[specs]",
-			'docs = ["CLAIMS.md"]',
+			"[[specs.source]]",
+			'type = "directory"',
+			'path = "CLAIMS.md"',
 		}, "\n") .. "\n"
 	)
 	fs.write(

@@ -7,18 +7,20 @@ the proofs. A spec is not a leg you run; it is the medium the legs live in.
 
 ## The manifest entry
 
-`[specs]` declares where your spec prose lives — its **sources**. Today a source is directories in
-your project:
+`[specs]` declares where your spec prose lives — its **sources**. Each source is explicit; today the
+one type is a local `directory` (a folder scanned for anchors, or a single markdown file):
 
 ```toml
-[specs]
-docs = ["docs/design", "README.md"]
+[[specs.source]]
+type = "directory"
+path = "docs/design"
 ```
 
-**Absent by default**, and absence is the whole point: a package that never opts in scans nothing,
-pays nothing, and is never lectured about a subsystem it does not use. Scoped deliberately — prova
-never crawls a whole repo looking for prose. (Renamed from `[claims]`, which under-named it: this
-section holds more than claims.)
+Add a `[[specs.source]]` per source — more than one is fine. **Absent by default**, and absence is
+the whole point: no `[specs]`, no scan, and no feature you did not ask for. prova favors
+explicitness over an implicit default — capture your conventions in an init archetype
+(`prova init project`, `archetect render …`) rather than a magic `docs/`. (`docs = [...]` is the
+deprecated flat spelling; it still scans, with a warning.)
 
 ## What a spec contains: two states of one obligation
 

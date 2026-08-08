@@ -23,7 +23,7 @@ local sandbox = prova.fixture("record-sandbox", Scope.File, function(ctx)
   local proj = ctx:tempdir() .. "/pkg"
   fs.mkdir(proj .. "/proofs")
   fs.mkdir(proj .. "/docs")
-  fs.write(proj .. "/prova.toml", '[run]\nproofs = ["proofs"]\n\n[specs]\ndocs = ["docs"]\n')
+  fs.write(proj .. "/prova.toml", '[run]\nproofs = ["proofs"]\n\n[[specs.source]]\ntype = "directory"\npath = "docs"\n')
   fs.write(proj .. "/docs/design.md", [[
 # Design
 

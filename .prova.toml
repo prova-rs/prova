@@ -29,8 +29,9 @@ PROVA_QUALITY = "1"
 # prova must be the exemplar of a proven application, and a lifecycle nobody has run end-to-end on a
 # real project is a design rather than a practice. Claim and backlog anchors live in the design
 # docs; `prova owed` says what is still owed against them. See docs/design/lifecycle.md.
-[specs]
-docs = ["docs/design"]
+[[specs.source]]
+type = "directory"
+path = "docs/design"
 
 # This repo's /.luarc.json is deliberately COMMITTED and hand-maintained (it points at library/ —
 # the hand-written stub sources, because prova is where they come from). prova's own managed

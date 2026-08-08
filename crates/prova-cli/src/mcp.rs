@@ -1092,7 +1092,7 @@ fn attest_blocking(env: &McpEnv, req: AttestRequest) -> Result<(serde_json::Valu
     // two surfaces cannot disagree about what an address means. Zero matches falls through
     // untouched (a ticket address has no `#` and no anchor, and must keep working).
     let address = if !req.address.contains('#') {
-        let docs = manifest.specs.as_ref().map(|c| c.docs.clone()).unwrap_or_default();
+        let docs = manifest.specs.as_ref().map(|s| s.scan_roots()).unwrap_or_default();
         let scanned = crate::claims::scan(&call.home.dir, &docs).map_err(|e| e.to_string())?;
         let matches = crate::claims::matching_id(&scanned, &req.address);
         match matches.len() {

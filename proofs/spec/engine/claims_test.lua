@@ -15,7 +15,7 @@ local sandbox = prova.fixture("claims-sandbox", Scope.File, function(ctx)
   local proj = root .. "/pkg"
   fs.mkdir(proj .. "/proofs")
   fs.mkdir(proj .. "/docs")
-  fs.write(proj .. "/prova.toml", '[run]\nproofs = ["proofs"]\n\n[specs]\ndocs = ["docs"]\n')
+  fs.write(proj .. "/prova.toml", '[run]\nproofs = ["proofs"]\n\n[[specs.source]]\ntype = "directory"\npath = "docs"\n')
   fs.write(proj .. "/docs/design.md", [[
 # Design
 
@@ -148,6 +148,23 @@ prova.test("a normal run ignores claims entirely", {
   t:expect(r.stdout):never():contains("DANGLING")
 end)
 
+prova.test("the deprecated `[specs] docs` list still scans, but warns", {
+  proves = "existing projects on the flat `docs` list keep working — deprecation is a warning that points the way, not a silent break; `[[specs.source]]` is the one destination, and one way beats two spellings",
+}, function(t)
+  local proj = t:tempdir() .. "/pkg"
+  fs.mkdir(proj .. "/proofs")
+  fs.mkdir(proj .. "/docs")
+  fs.write(proj .. "/prova.toml", '[run]\nproofs = ["proofs"]\n\n[specs]\ndocs = ["docs"]\n')
+  fs.write(proj .. "/docs/design.md", "<!-- claim: still-scanned -->\nThe deprecated form still finds anchors.\n")
+  local r = shell.run(prova.bin .. " owed", { cwd = proj, merge_stderr = true })
+
+  -- Backward compatible: the anchor is still found and owed.
+  t:expect(r.stdout, "the deprecated form still scans"):contains("still-scanned")
+  -- But it says so, and points at the one way.
+  t:expect(r.stdout, "the deprecation is announced"):contains("deprecated")
+  t:expect(r.stdout, "and points to `[[specs.source]]`"):contains("specs.source")
+end)
+
 -- ── Pinning: the claim's TEXT, not just its id ───────────────────────────────────────────────
 --
 -- The nastiest drift keeps everything green. An anchor survives, its prose is edited, the proof
@@ -162,7 +179,7 @@ local pinned = prova.fixture("claims-pin-sandbox", Scope.File, function(ctx)
   local proj = ctx:tempdir() .. "/pkg"
   fs.mkdir(proj .. "/proofs")
   fs.mkdir(proj .. "/docs")
-  fs.write(proj .. "/prova.toml", '[run]\nproofs = ["proofs"]\n\n[specs]\ndocs = ["docs"]\n')
+  fs.write(proj .. "/prova.toml", '[run]\nproofs = ["proofs"]\n\n[[specs.source]]\ntype = "directory"\npath = "docs"\n')
   fs.write(proj .. "/docs/design.md", [[
 <!-- claim: pinned-claim -->
 Contention and absence are different answers.
@@ -288,7 +305,7 @@ local with_plugin = prova.fixture("claims-plugin-sandbox", Scope.File, function(
   fs.mkdir(proj .. "/docs")
   fs.mkdir(proj .. "/.prova/plugins/helper")
   fs.write(proj .. "/prova.toml",
-    '[run]\nproofs = ["proofs"]\nplugin_root = ".prova/plugins"\n\n[specs]\ndocs = ["docs"]\n')
+    '[run]\nproofs = ["proofs"]\nplugin_root = ".prova/plugins"\n\n[[specs.source]]\ntype = "directory"\npath = "docs"\n')
   fs.write(proj .. "/.prova/plugins/helper/init.lua", "return { greet = function() return 1 end }\n")
   fs.write(proj .. "/docs/design.md",
     "# Design\n\n<!-- claim: helper-works -->\nThe helper answers.\n")
