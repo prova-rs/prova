@@ -149,6 +149,21 @@ Second.
   t:expect(r.stdout):contains("twice")
 end)
 
+prova.test("`prova backlog` with no spec source points to setup, and does not fail", {
+  proves = "invoking a spec verb IS the signal you want the feature — so with nothing configured, a pointer to how to declare a source is help, not a silent empty answer; bare `prova` stays silent, this verb does not, because you asked",
+}, function(t)
+  local proj = t:tempdir() .. "/pkg"
+  fs.mkdir(proj .. "/proofs")
+  fs.write(proj .. "/prova.toml", '[run]\nproofs = ["proofs"]\n')  -- no [specs] at all
+
+  local r = shell.run(prova.bin .. " backlog", { cwd = proj, merge_stderr = true })
+
+  t:expect(r.code, "a pointer, not a failure"):equals(0)
+  t:expect(r.stdout, "names the missing thing"):contains("no spec source")
+  t:expect(r.stdout, "shows the fix"):contains("[[specs.source]]")
+  t:expect(r.stdout, "points to the topic"):contains("prova learn spec")
+end)
+
 prova.test("the binary teaches the backlog: catalog and topic", {
   proves = "a capability an agent cannot discover does not exist. The catalog must name the lane and the topic must explain the anchor, the muting, and the one write — checking one leaves the capability either unfindable or unexplained",
 }, function(t)

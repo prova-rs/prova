@@ -638,9 +638,23 @@ fn backlog_subcommand(args: Vec<String>) -> ExitCode {
         eprintln!("prova: backlog: unexpected argument {unexpected:?}\nusage: prova backlog [promote <id>]");
         ExitCode::from(2)
     } else {
+        // No spec source at all: invoking `prova backlog` IS the signal you want the feature, so a
+        // pointer to how to declare one is help, not a lecture (bare `prova` stays silent). This is
+        // the one place the "absence is the point" silence gives way — because you asked.
+        if docs.is_empty() {
+            println!("prova: no spec source configured — prova does not know where your backlog items and claims live.");
+            println!("  Declare one in prova.toml:");
+            println!();
+            println!("      [[specs.source]]");
+            println!("      type = \"directory\"");
+            println!("      path = \"docs\"");
+            println!();
+            println!("  then `prova backlog` lists them. See `prova learn spec`.");
+            return ExitCode::SUCCESS;
+        }
         let items = claims::backlog(&scanned);
         if items.is_empty() {
-            println!("prova: nothing in the backlog — no `<!-- backlog: id -->` anchors in the configured docs");
+            println!("prova: nothing in the backlog — no `<!-- backlog: id -->` anchors in the spec sources");
             return ExitCode::SUCCESS;
         }
         for item in &items {
