@@ -15,12 +15,12 @@ local function write_suite(body)
   return dir
 end
 
--- One temp suite reused across cases: an open spec + an ordinary test.
+-- One temp suite reused across cases: an open promise + an ordinary test.
 local open_suite = write_suite(
   'prova.test("json round-trips", { promises = "api-freeze" }, function(t) t:expect(1):equals(2) end)\n' ..
   'prova.test("ordinary", function(t) t:expect(1):equals(1) end)\n')
 
-prova.test("open specs keep the run green and are counted", function(t)
+prova.test("open promises keep the run green and are counted", function(t)
   local r = run(open_suite)
   t:expect(r.code):equals(0)
   t:expect(r.stdout):contains("PROMISED")
@@ -33,7 +33,7 @@ prova.test("an honored spec fails demanding graduation — convert to proves, or
   local r = run(dir)
   t:expect(r.code):equals(1)
   t:expect(r.stdout):contains("promise kept")
-  -- the fix is copy-pasteable: the spec's reason carried over as the proves context
+  -- the fix is copy-pasteable: the promise's reason carried over as the proves context
   t:expect(r.stdout):contains('change `promises` to proves = "oops"')
 end)
 
@@ -59,13 +59,13 @@ prova.test("--promises --list enumerates the open surface without running", func
   t:expect(r.stdout:find("ordinary", 1, true)):is_falsy()
 end)
 
-prova.test("TAP renders an open spec as a TODO directive", function(t)
+prova.test("TAP renders an open promise as a TODO directive", function(t)
   local r = run("--format tap " .. open_suite)
   t:expect(r.code):equals(0)
   t:expect(r.stdout):contains("# TODO api-freeze")
 end)
 
-prova.test("an open spec renders reason + first error line, without the traceback", function(t)
+prova.test("an open promise renders reason + first error line, without the traceback", function(t)
   local dir = write_suite(
     'prova.test("todo", { promises = "gap-7" }, function(t) error("json.encode is not built") end)\n')
   local r = run(dir)
@@ -97,20 +97,20 @@ prova.test("a group-level promises flag is refused with the fix", function(t)
   t:expect(out):contains("promises is test-level only")
 end)
 
-prova.test("a bare spec flag is refused — the reason is mandatory", function(t)
+prova.test("a bare promises flag is refused — the reason is mandatory", function(t)
   local dir = write_suite(
-    'prova.test("wordless", { spec = true }, function(t) t:expect(1):equals(2) end)\n')
+    'prova.test("wordless", { promises = true }, function(t) t:expect(1):equals(2) end)\n')
   local r = run(dir)
   t:expect(r.code):never():equals(0)
   local out = r.stdout .. r.stderr
   t:expect(out):contains("reason")
 end)
 
-prova.test("spec = false is refused — an unflagged test is already a proof", function(t)
+prova.test("promises = false is refused — an unflagged test is already a proof", function(t)
   local dir = write_suite(
-    'prova.test("done", { spec = false }, function(t) t:expect(1):equals(1) end)\n')
+    'prova.test("done", { promises = false }, function(t) t:expect(1):equals(1) end)\n')
   local r = run(dir)
   t:expect(r.code):never():equals(0)
   local out = r.stdout .. r.stderr
-  t:expect(out):contains("spec = false is not a thing")
+  t:expect(out):contains("remove the entry")
 end)

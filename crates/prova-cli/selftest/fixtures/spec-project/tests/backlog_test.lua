@@ -1,6 +1,6 @@
--- A package mid-burndown: one open spec (red by definition) + one finished proof. The MCP
+-- A package mid-burndown: one open promise (red by definition) + one finished proof. The MCP
 -- selftest drives the spec loop against this fixture via the `package` parameter.
-prova.test("future feature", { spec = "not built yet" }, function(t)
+prova.test("future feature", { promises = "not built yet" }, function(t)
   t:expect(1):equals(2)
 end)
 

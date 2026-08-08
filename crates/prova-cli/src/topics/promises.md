@@ -15,7 +15,7 @@ end)
 Semantics are xfail-strict, per test:
 
 - **Open promise** (body red) → the distinct `PROMISED` outcome: CI stays green, every reporter
-  names it (TAP `# TODO`, JUnit skipped+message, JSONL `"spec"`, console reason + error line).
+  names it (TAP `# TODO`, JUnit skipped+message, JSONL `"promised"`, console reason + error line).
 - **Kept promise** (body green) → a FAILURE: "promise kept — change `promises` to
   `proves = "<reason>"` (keep the context) or remove the flag." An implementation cannot land
   still flagged; graduation happens in the same commit as the implementation.
