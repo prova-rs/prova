@@ -49,7 +49,7 @@ Whenever you can state a contract the system does not honor yet, **promise it no
 - A whole feature is being designed — author the suite ahead as the definition of done, one
   promise per behavior, each carrying its own reason.
 
-The open surface is the executable backlog: `git grep TODO` lies, `prova promises` cannot.
+The open surface is the executable spec: `git grep TODO` lies, `prova promises` cannot.
 
 ## The burndown loop
 

@@ -25,7 +25,7 @@ The loop:
    fix the system, or renegotiate the bar with the human.
 5. Commit suite + implementation together: a proof-carrying change.
 
-**Specs — the executable backlog.** A contract you can state but are NOT implementing right now
+**Promises — the executable spec surface.** A contract you can state but are NOT implementing right now
 is still worth a proof: author it flagged `{ promises = "reason/ticket" }` (test/flow-level) —
 the test states what it will prove someday and does not prove today. Open promises report as
 their own outcome (PROMISED) and keep CI green; the moment the body passes it FAILS demanding
@@ -239,7 +239,7 @@ prova --tags '!build'       # skip a tier by tag (own or inherited from groups)
 prova --node "exact › path" # precisely the node a report named
 prova --last-failed         # exactly what was red last run — your main iteration verb
 prova list                  # discover without running (respects selection; = --list)
-prova promises              # list the open backlog · `prova burndown` drives it red-loud
+prova promises              # list the open spec surface · `prova burndown` drives it red-loud
 prova --promises            # the composable selector underneath (only promised tests)
 prova eval 'return require("postgres").container(ctx).url'   # one-shot probe, auto-teardown
 ```

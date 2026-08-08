@@ -367,7 +367,7 @@ struct SelectionArgs {
     nodes: Option<Vec<String>>,
     /// Also select the nodes that failed in the previous run (CLI `--last-failed`).
     last_failed: Option<bool>,
-    /// Select ONLY promised tests — the open backlog (CLI `--promises`). Composes with
+    /// Select ONLY promised tests — the open spec surface (CLI `--promises`). Composes with
     /// `list` to enumerate the surface without running; an empty selection there means the
     /// burndown is complete. `specs` is the deprecated spelling (retires at 1.0). See
     /// `learn { topic = "promises" }`.

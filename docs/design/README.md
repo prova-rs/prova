@@ -21,7 +21,7 @@ it. Concretely:
 3. Bind what is already proven: `covers = "docs/design/<doc>.md#<id>"` on the existing proof
    that holds it. One proof may cover several claims; one claim may need several proofs.
 4. What nothing proves stays **UNPROVEN in `prova owed`** — that is the point, not a failure.
-   The ledger is the backlog; do not also keep a checklist.
+   The ledger is your work list; do not also keep a checklist.
 5. Pin (`prova owed --pin`) only where the exact wording is the contract — "busy, never
    unsatisfiable" is a pin candidate; a paragraph of rationale is not.
 

@@ -63,8 +63,8 @@ doc can drift from it.
 
 **Level 2 — Spec-first.** `promises = "<reason>"` for a contract you can state but are not
 building yet. `prova promises` enumerates the open surface; `prova burndown` is the implementing
-loop; a promise whose body goes green **fails**, demanding graduation to `proves`. The backlog
-becomes executable: `grep TODO` lies, `prova promises` cannot.
+loop; a promise whose body goes green **fails**, demanding graduation to `proves`. The open
+surface becomes executable: `grep TODO` lies, `prova promises` cannot.
 
 **Level 3 — Falsification.** `falsified_by` declares the mutation a body must catch. `prova falsify`
 applies it and inverts the verdict. This is the level that distinguishes a proof from a green

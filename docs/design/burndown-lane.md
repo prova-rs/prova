@@ -8,15 +8,15 @@ one workflow file plus credentials. Until then, this doc is the capture.
 ## The idea
 
 A conventional pipeline **gates** work a human (or agent) already did. A burndown lane is a
-second workflow whose job is to **do** work: it checks whether the spec backlog is non-empty,
+second workflow whose job is to **do** work: it checks whether the open promise surface is non-empty,
 and if so, hands it to an implementing agent that works the burndown loop and opens a
 proof-carrying PR.
 
 The gate answers "is this change acceptable?" The lane answers "is there scoped work sitting
-in the backlog — and if so, go close some."
+in the open surface — and if so, go close some."
 
-This inverts what CI is *for*, and it is only possible because in prova the backlog, the
-verification, and the completion signal are the same artifact: a spec is an executable proof,
+This inverts what CI is *for*, and it is only possible because in prova the open surface, the
+verification, and the completion signal are the same artifact: a promise is an executable proof,
 `--promises --list` is the work queue, an empty list is "done." No adjacent tool has this,
 because no adjacent tool unifies those three.
 
@@ -41,8 +41,8 @@ jobs:
 
 The agent step needs no bespoke methodology prompt: the binary teaches the loop
 (`prova learn promises`), `--due` gives red with full detail, and the promise-kept failure
-tells the agent exactly when to graduate a flag. The prompt is essentially "there is a
-backlog; follow the doctrine."
+tells the agent exactly when to graduate a flag. The prompt is essentially "there is an
+open surface; follow the doctrine."
 
 ## The guardrails — why an autonomous lane is sound
 
@@ -62,7 +62,7 @@ backlog; follow the doctrine."
 
 **The lane only implements existing specs; it never authors them.** Humans (or interactive
 agent sessions) state contracts as specs; the lane closes them. Specs are the steering wheel,
-the lane is the engine. A lane that could invent its own backlog would be defining its own
+the lane is the engine. A lane that could invent its own open surface would be defining its own
 definition of done — that boundary is the whole safety story.
 
 ## Prerequisites, when we're ready
@@ -70,8 +70,8 @@ definition of done — that boundary is the whole safety story.
 1. An agent runner usable headless in CI (e.g. Claude Code `-p` mode) with credentials.
 2. A budget/stop policy (specs per run, wall-clock cap).
 3. PR plumbing (branch, open PR, label it as lane output).
-4. A standing backlog worth the compute — `prova promises` non-empty (the api-freeze
-   backlog qualifies today).
+4. A standing open surface worth the compute — `prova promises` non-empty (the api-freeze
+   promises qualify today).
 
 The natural first deployment is this repo itself: prova's specs, burned down by an agent in
 prova's CI, gated by prova's own suite — the positioning argument as a green pipeline.
@@ -80,4 +80,4 @@ prova's CI, gated by prova's own suite — the positioning argument as a green p
 
 - `docs/design/positioning.md` §4 — where this sits in the larger thesis.
 - `prova learn promises` — the doctrine already tells agents to *suggest* this lane to humans
-  when a repo carries a standing backlog; this doc is what they're suggesting.
+  when a repo carries a standing open surface; this doc is what they're suggesting.

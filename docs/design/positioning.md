@@ -33,13 +33,13 @@ every line an agent writes, but a human *can* review the contract the agent was 
 The industry is mostly trying to solve agent trust with better review UIs. Prova solves it
 with better evidence.
 
-### 2. Specs — the executable backlog with built-in completion detection
+### 2. Promises — the executable spec surface with built-in completion detection
 
-The quietly brilliant piece. The spec flag gives agents what the field badly lacks: a
+The quietly brilliant piece. The `promises` flag gives agents what the field badly lacks: a
 machine-legible work queue that cannot drift.
 
-- `prova promises` is a backlog that cannot lie (`git grep TODO` can).
-- xfail-strict semantics: an open spec reports distinctly and keeps CI green; the moment a
+- `prova promises` is an open surface that cannot lie (`git grep TODO` can).
+- xfail-strict semantics: an open promise reports distinctly and keeps CI green; the moment a
   spec's body passes, it **fails** until the flag is deleted — so implementation and
   bookkeeping land atomically as one commit. There is no cleanup chore and no drift window.
 - An agent can discover scoped, unclaimed work in a repo it has never seen, and knows —
@@ -71,14 +71,14 @@ human already did. A **burndown pipeline** runs `prova burndown`, hands the red
 output to an agent, and lets it implement until the backlog shrinks — merging
 proof-carrying changes as it goes.
 
-This means the backlog is not just visible to agents; it is **executable by infrastructure**.
+This means the open surface is not just visible to agents; it is **executable by infrastructure**.
 A team's role shifts to authoring specs (stating contracts) and reviewing proof-carrying
 changes; the implementation lane between those two points can be scheduled compute. The
-safety properties fall out of the existing semantics: an open spec cannot break the build, a
-honored spec cannot land without its flag deleted, and an unflagged proof holds the line
+safety properties fall out of the existing semantics: an open promise cannot break the build, a
+honored promise cannot land without its flag deleted, and an unflagged proof holds the line
 immediately — so an autonomous lane is bounded by the same bar a human lane is.
 
-No adjacent tool has this, because it requires the backlog, the verification, and the
+No adjacent tool has this, because it requires the open surface, the verification, and the
 completion signal to be the same artifact.
 
 ### 5. The autodidact surface
@@ -107,7 +107,7 @@ for fixtures and selection, Tilt/docker-compose for held environments.
 
 The honest differentiator is not any ingredient but the **composition under one static
 binary with an agent as the assumed operator**. None of the predecessors were designed to be
-driven, learned, and held warm by an LLM; none made the backlog, the verification, and the
+driven, learned, and held warm by an LLM; none made the open surface, the verification, and the
 completion signal one artifact. Positioning should lead with the trust inversion and the
 spec lifecycle — the parts with no real predecessor. "Black-box test runner with containers"
 undersells prova into a crowded category it does not actually compete in.
@@ -128,6 +128,6 @@ undersells prova into a crowded category it does not actually compete in.
   topologies and surgical selection (`--last-failed`, tags, nodes) are the right answers;
   they must stay fast as suites grow.
 - **A legible demo.** "Proof-driven development" is a category that has to be taught before
-  it can be adopted. The dogfooding story — prova proven by prova, spec backlogs burned down
+  it can be adopted. The dogfooding story — prova proven by prova, open promises burned down
   by agents against the binary's own surface — is the most convincing artifact available.
   Making that loop visible to outsiders is worth as much as any feature.
