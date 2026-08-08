@@ -16,7 +16,10 @@ pub enum Executed {
     Passed,
     Failed,
     /// An open promise: red by definition, and therefore not evidence of anything working.
-    Spec,
+    /// Serializes as `"promised"`; `alias = "spec"` still reads a pre-rename (schema 1) record so a
+    /// stale run record loads rather than erroring until the next run rewrites it.
+    #[serde(alias = "spec")]
+    Promised,
 }
 
 /// A leaf that ran into a gate before its body — and the gate's own words for why.
@@ -34,7 +37,7 @@ pub struct Counts {
     pub passed: usize,
     pub failed: usize,
     pub skipped: usize,
-    pub spec: usize,
+    pub promised: usize,
     pub deselected: usize,
 }
 
@@ -262,7 +265,7 @@ pub fn account(
     let active = || claims.iter().filter(|c| c.kind == Kind::Claim);
     let claimed = active().count();
     let bound = active().filter(|c| !bindings_for(&c.address).is_empty()).count();
-    let promised = proofs.iter().filter(|p| p.spec.is_some()).count();
+    let promised = proofs.iter().filter(|p| p.promises.is_some()).count();
     let attested = record.as_ref().map(|r| {
         active()
             .filter(|c| attest(r, &bindings_for(&c.address)).is_attested())
@@ -315,7 +318,7 @@ mod tests {
 
     #[test]
     fn an_open_spec_never_attests() {
-        let r = record_with(&[("drain", Executed::Spec)], &[], &[]);
+        let r = record_with(&[("drain", Executed::Promised)], &[], &[]);
         assert!(!attest(&r, &["drain".to_string()]).is_attested());
     }
 

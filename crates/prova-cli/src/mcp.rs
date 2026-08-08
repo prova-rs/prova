@@ -393,8 +393,8 @@ struct RunRequest {
     /// Promises fall due (CLI `--due`): open promises report as REAL failures with full
     /// detail instead of the CI-green `spec` outcome. The implementing agent's inner loop is
     /// `promises = true, due = true`; `due` alone refuses any open promise in the whole run.
-    /// `strict_specs` is the deprecated spelling (retires at 1.0).
-    #[serde(alias = "strict_specs")]
+    /// `due` is the deprecated spelling (retires at 1.0).
+    #[serde(alias = "due")]
     due: Option<bool>,
     /// Run up to N suites concurrently (CLI `--jobs N`). Ignored for warm runs (one held state).
     jobs: Option<u32>,
@@ -749,7 +749,7 @@ impl ProvaMcpServer {
 
     #[tool(
         name = "run",
-        description = "Run the package's test suite with an optional selection (the MCP mirror of the CLI's -k/--tags/--node/--last-failed/--promises/--due/--profile/--jobs flags). Burndown: promises=true selects only promised tests (proofs authored ahead of implementation); with due=true they fall due and fail loud — the implementing agent's inner loop (specs/strict_specs are deprecated aliases; see learn { topic = \"promises\" }). Vacuity hunt: falsify=true selects only tests declaring `falsified_by`, applies each mutation and INVERTS the verdict — a body that still passes with its falsifier applied is asserting nothing and fails as vacuous (see learn { topic = \"falsify\" }). With `topology`, run WARM against a topology held by a prior `up`: t:use resolves the held live instance instead of provisioning (never provisions implicitly — an un-held topology is an error). Returns compact JSON: { passed, failed, skipped, spec, deselected, duration_ms, failures: [{ path, message, file?, line? }] } (spec = open promises — red-by-definition proofs awaiting implementation; field name frozen) (file/line = the failing test's declaration site, when known). The result is marked isError when any node failed, and a selection that matches NOTHING is an error (usually a typo — mirror of the CLI's default; the CLI's --allow-empty has no MCP counterpart). Also records the failed nodes so a later run with last_failed=true (or CLI --last-failed) re-runs exactly them; last_failed with no recorded state runs everything and says so in a `note` field. Pass `package` (a directory or manifest path) to target ANOTHER package anywhere on disk — the server's startup package is only the default, and a `package` resolves fresh, so a manifest you just scaffolded works without a restart."
+        description = "Run the package's test suite with an optional selection (the MCP mirror of the CLI's -k/--tags/--node/--last-failed/--promises/--due/--profile/--jobs flags). Burndown: promises=true selects only promised tests (proofs authored ahead of implementation); with due=true they fall due and fail loud — the implementing agent's inner loop (see learn { topic = \"promises\" }). Vacuity hunt: falsify=true selects only tests declaring `falsified_by`, applies each mutation and INVERTS the verdict — a body that still passes with its falsifier applied is asserting nothing and fails as vacuous (see learn { topic = \"falsify\" }). With `topology`, run WARM against a topology held by a prior `up`: t:use resolves the held live instance instead of provisioning (never provisions implicitly — an un-held topology is an error). Returns compact JSON: { passed, failed, skipped, promised, deselected, duration_ms, failures: [{ path, message, file?, line? }] } (promised = open promises — red-by-definition proofs awaiting implementation) (file/line = the failing test's declaration site, when known). The result is marked isError when any node failed, and a selection that matches NOTHING is an error (usually a typo — mirror of the CLI's default; the CLI's --allow-empty has no MCP counterpart). Also records the failed nodes so a later run with last_failed=true (or CLI --last-failed) re-runs exactly them; last_failed with no recorded state runs everything and says so in a `note` field. Pass `package` (a directory or manifest path) to target ANOTHER package anywhere on disk — the server's startup package is only the default, and a `package` resolves fresh, so a manifest you just scaffolded works without a restart."
     )]
     async fn run(&self, Parameters(req): Parameters<RunRequest>) -> CallToolResult {
         let _serialized = self.run_lock.lock().await;
@@ -1037,9 +1037,9 @@ fn run_blocking(env: &McpEnv, req: RunRequest) -> Result<(serde_json::Value, boo
     let jobs = req.jobs.map(|n| (n as usize).max(1)).unwrap_or(call.jobs);
     let mut config = crate::engine_config(jobs, &call.dependencies, Some(&call.home), prova_core::progress::null())
         .with_capabilities(call.capabilities.clone())
-        .with_specs_only(req.selection.promises.unwrap_or(false))
+        .with_promises_only(req.selection.promises.unwrap_or(false))
         .with_falsify(req.selection.falsify.unwrap_or(false))
-        .with_strict_specs(req.due.unwrap_or(false));
+        .with_due(req.due.unwrap_or(false));
     config.selection = selection;
 
     let mut reporter = FailureCollector::default();
@@ -1048,7 +1048,7 @@ fn run_blocking(env: &McpEnv, req: RunRequest) -> Result<(serde_json::Value, boo
     // The CLI's empty-selection contract, mirrored: a selection that matched NOTHING is an error,
     // not a green run — it usually means a typo, and a typo must not read as success. Open
     // promises count as matched, exactly as on the CLI.
-    let ran = summary.passed + summary.failed + summary.skipped + summary.spec;
+    let ran = summary.passed + summary.failed + summary.skipped + summary.promised;
     if ran == 0 && !config.selection.is_empty() {
         return Err(format!(
             "selection matched no tests ({} deselected) — usually a typo; loosen the selection \
@@ -1066,7 +1066,7 @@ fn run_blocking(env: &McpEnv, req: RunRequest) -> Result<(serde_json::Value, boo
         "passed": summary.passed,
         "failed": summary.failed,
         "skipped": summary.skipped,
-        "spec": summary.spec,
+        "promised": summary.promised,
         "deselected": summary.deselected,
         "duration_ms": summary.duration.as_millis() as u64,
         "failures": failures,
@@ -1147,7 +1147,7 @@ fn attest_blocking(env: &McpEnv, req: AttestRequest) -> Result<(serde_json::Valu
             "address": address, "attested": false, "verdict": "red", "proof": path,
             "reason": match outcome {
                 crate::record::Executed::Failed => "the covering proof ran and failed",
-                crate::record::Executed::Spec => "the covering proof is an open promise, red by definition",
+                crate::record::Executed::Promised => "the covering proof is an open promise, red by definition",
                 crate::record::Executed::Passed => "unreachable",
             },
         }),
@@ -1212,7 +1212,7 @@ fn list_blocking(env: &McpEnv, req: SelectionArgs) -> Result<(serde_json::Value,
     let suites = crate::collect_suites(&call.base_dir, &call.declared, &call.proofs, true)?;
     let mut config = crate::engine_config(1, &call.dependencies, Some(&call.home), prova_core::progress::null())
         .with_capabilities(call.capabilities.clone())
-        .with_specs_only(req.promises.unwrap_or(false));
+        .with_promises_only(req.promises.unwrap_or(false));
     config.selection = selection;
 
     let mut nodes: Vec<serde_json::Value> = Vec::new();

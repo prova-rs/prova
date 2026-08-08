@@ -80,7 +80,7 @@ enum OwnedEvent {
         message: Option<String>,
         file: Option<String>,
         line: Option<u32>,
-        spec_reason: Option<String>,
+        promise_reason: Option<String>,
     },
 }
 
@@ -104,7 +104,7 @@ impl Reporter for ChannelReporter {
                 message,
                 file,
                 line,
-                spec_reason,
+                promise_reason,
             } => OwnedEvent::NodeFinished {
                 path: (*path).to_string(),
                 outcome: *outcome,
@@ -113,7 +113,7 @@ impl Reporter for ChannelReporter {
                 message: message.map(str::to_string),
                 file: file.map(str::to_string),
                 line: *line,
-                spec_reason: spec_reason.map(str::to_string),
+                promise_reason: promise_reason.map(str::to_string),
             },
             Event::RunStarted | Event::RunFinished { .. } => return,
         };
@@ -284,7 +284,7 @@ fn run_sequential(suites: &[Suite], reporter: &mut dyn Reporter, config: &RunCon
                 summary.passed += s.passed;
                 summary.failed += s.failed;
                 summary.skipped += s.skipped;
-                summary.spec += s.spec;
+                summary.promised += s.promised;
                 summary.deselected += s.deselected;
                 summary.deselected_paths.extend(s.deselected_paths);
                 summary.reminders_declared += s.reminders_declared;
@@ -320,7 +320,7 @@ fn run_pooled(suites: &[Suite], reporter: &mut dyn Reporter, config: &RunConfig)
                 match suite.run(&mut sink, &config) {
                     Ok(s) => {
                         // Plan-derived (not event-derived), so it crosses on its own channel:
-                        // `spec` re-tallies from forwarded events, deselection cannot — a leaf that
+                        // `promised` re-tallies from forwarded events, deselection cannot — a leaf that
                         // never ran emits nothing to re-tally FROM, which is the whole reason the
                         // run record has to be told about it explicitly. Reminder declarations are
                         // the same shape: not nodes, so no event ever carries them.
@@ -340,7 +340,7 @@ fn run_pooled(suites: &[Suite], reporter: &mut dyn Reporter, config: &RunConfig)
                             message: Some(&message),
                             file: file.as_deref(),
                             line: None,
-                            spec_reason: None,
+                            promise_reason: None,
                         });
                     }
                 }
@@ -380,7 +380,7 @@ fn forward(reporter: &mut dyn Reporter, summary: &mut Summary, event: OwnedEvent
             message,
             file,
             line,
-            spec_reason,
+            promise_reason,
         } => {
             summary.tally(outcome);
             reporter.event(&Event::NodeFinished {
@@ -391,7 +391,7 @@ fn forward(reporter: &mut dyn Reporter, summary: &mut Summary, event: OwnedEvent
                 message: message.as_deref(),
                 file: file.as_deref(),
                 line,
-                spec_reason: spec_reason.as_deref(),
+                promise_reason: promise_reason.as_deref(),
             });
         }
     }
@@ -414,6 +414,6 @@ fn report_suite_error(
         message: Some(message),
         file: file.as_deref(),
         line: None,
-        spec_reason: None,
+        promise_reason: None,
     });
 }

@@ -359,7 +359,7 @@ impl Reporter for GitHubReporter {
                         detail: detail.to_string(),
                     });
                 }
-                Outcome::Spec => {
+                Outcome::Promised => {
                     // An open promise is a notice, never an error — the whole point is a green CI
                     // while the promise surface burns down. And it is EXPECTED red: first error
                     // line only, no traceback noise (the console reporter's rule holds in
@@ -439,7 +439,7 @@ impl Reporter for HumanReporter {
                 message,
                 file,
                 line,
-                spec_reason,
+                promise_reason,
             } => {
                 // Quiet suppresses the routine (PASS/SKIP); an open SPEC is actionable state and
                 // stays visible.
@@ -488,10 +488,10 @@ impl Reporter for HumanReporter {
                             location,
                         });
                     }
-                    Outcome::Spec => {
+                    Outcome::Promised => {
                         // An open promise: expected-red, so no recap entry and no rerun line — the
                         // burndown meter (`--promises --list`, the tally) is its call to action.
-                        let why = spec_reason
+                        let why = promise_reason
                             .filter(|r| !r.is_empty())
                             .map(|r| format!("  {DIM}— {r}{DIM:#}"))
                             .unwrap_or_default();

@@ -1041,7 +1041,7 @@ fn attest_subcommand(args: Vec<String>) -> ExitCode {
         record::Attested::Red { path, outcome } => {
             let what = match outcome {
                 record::Executed::Failed => "failed",
-                record::Executed::Spec => "is an open promise, red by definition",
+                record::Executed::Promised => "is an open promise, red by definition",
                 record::Executed::Passed => unreachable!("a passing proof attests"),
             };
             println!("  ↳ NOT attested — {path} {what}");
@@ -1143,7 +1143,7 @@ fn evaluate_run_reminders(
         passed: summary.passed,
         failed: summary.failed,
         skipped: summary.skipped,
-        promised: summary.spec,
+        promised: summary.promised,
         owed,
         dated,
         measurements: measurements
@@ -1201,7 +1201,7 @@ fn spell_selection(config: &prova_core::RunConfig) -> Vec<String> {
     out.extend(sel.tags.iter().map(|t| format!("--tags {t}")));
     out.extend(sel.tag_excludes.iter().map(|t| format!("--tags !{t}")));
     out.extend(sel.nodes.iter().map(|n| format!("--node {n}")));
-    if config.specs_only {
+    if config.promises_only {
         out.push("--promises".to_string());
     }
     if config.falsify {
@@ -2523,13 +2523,13 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     // like `--list`, without executing) and overlay the recorded state — so the verb works before
     // any run and shows live states after one. Not a user-facing flag.
     let mut reminders_list = false;
-    let mut specs_only = false;
+    let mut promises_only = false;
     let mut falsify = false;
     // Held-topology attach (docs/design/topologies.md#attach-binds-by-name): `--fresh` opts a run
     // out of attaching to held topologies; `--topology NAME` insists on attaching to NAME.
     let mut fresh = false;
     let mut require_topology: Option<String> = None;
-    let mut strict_specs = false;
+    let mut due = false;
     let mut explicit_paths: Vec<String> = Vec::new();
     let mut profile: Option<String> = None;
     let mut manifest_path: Option<String> = None;
@@ -2704,8 +2704,8 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             "--last-failed" => last_failed = true,
             "--falsify" => falsify = true,
             "--fresh" => fresh = true,
-            "--promises" => specs_only = true,
-            "--due" => strict_specs = true,
+            "--promises" => promises_only = true,
+            "--due" => due = true,
             "--allow-empty" => allow_empty = true,
             "--update-snapshots" | "-u" => update_snapshots = true,
             "--update-baseline" => update_baseline = true,
@@ -2953,8 +2953,8 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     let measurement_registry: prova_core::MeasurementRegistry = std::sync::Arc::default();
     let mut config = engine_config(jobs, &packages_resolved, home.as_ref(), std::sync::Arc::clone(&progress_sink))
         .with_update_snapshots(update_snapshots)
-        .with_strict_specs(strict_specs)
-        .with_specs_only(specs_only)
+        .with_due(due)
+        .with_promises_only(promises_only)
         .with_falsify(falsify)
         .with_capabilities(capabilities)
         .with_globals_inject(globals_inject)
@@ -3224,7 +3224,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             // wipe the account; a full run with no declarations writes it empty (deleted reminders
             // must vanish).
             let full_run =
-                from_manifest && config.selection.is_empty() && !falsify && !specs_only;
+                from_manifest && config.selection.is_empty() && !falsify && !promises_only;
             let reminders: Vec<record::ReminderEntry> = match &home {
                 Some(h) if full_run => {
                     if summary.reminders_declared > 0 {
@@ -3240,7 +3240,9 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             record::store(
                 &home,
                 &record::Record {
-                    schema: 1,
+                    // 2: the open-promise executed value is `"promised"` (was `"spec"` in schema 1;
+                    // `Executed`'s `alias = "spec"` still reads an old record until the next run).
+                    schema: 2,
                     version: env!("CARGO_PKG_VERSION").to_string(),
                     binary: record::binary_fingerprint(),
                     selection: spell_selection(&config),
@@ -3249,7 +3251,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                         passed: summary.passed,
                         failed: summary.failed,
                         skipped: summary.skipped,
-                        spec: summary.spec,
+                        promised: summary.promised,
                         deselected: summary.deselected,
                     },
                     executed: std::mem::take(&mut reporter.executed),
@@ -3306,7 +3308,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             // Open promises COUNT as matched: `--node "<a promised test>"` selected and ran that
             // node — its body being expectedly red is the promise mechanism, not an empty
             // selection. Field-reported: the error fired after a PROMISED node was plainly shown.
-            let ran = summary.passed + summary.failed + summary.skipped + summary.spec;
+            let ran = summary.passed + summary.failed + summary.skipped + summary.promised;
             if ran == 0 && !config.selection.is_empty() && !allow_empty {
                 let mut asked: Vec<String> = Vec::new();
                 asked.extend(
@@ -4297,8 +4299,8 @@ impl Reporter for FailureRecorder {
                 prova_core::Outcome::Passed => {
                     self.executed.insert(key, record::Executed::Passed);
                 }
-                prova_core::Outcome::Spec => {
-                    self.executed.insert(key, record::Executed::Spec);
+                prova_core::Outcome::Promised => {
+                    self.executed.insert(key, record::Executed::Promised);
                 }
                 // Verbatim: a reason paraphrased by the recorder is a reason nobody can act on.
                 prova_core::Outcome::Skipped => self.skipped.push(record::Skipped {

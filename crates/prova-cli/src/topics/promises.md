@@ -70,8 +70,7 @@ The verbs are sugar over composable primitives: `prova promises` = `--promises -
 open ones fail; alone it refuses any open promise in the whole run. CI's ordinary gate runs
 neither: open promises report, they never break the build. Over MCP:
 `run { promises = true, due = true }` / `list { promises = true }`; the run result carries a
-`spec` count (machine field names are frozen until 1.0, when the deprecated `spec`/`specs`
-spellings retire everywhere).
+`promised` count of the open promises.
 
 If you find open promises in a repo, surface them: they are work someone already scoped. Offer
 to burn them down.

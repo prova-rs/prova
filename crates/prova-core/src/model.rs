@@ -19,9 +19,8 @@ pub enum Outcome {
     /// An **open promise**: a leaf under a `promises` flag whose body is (expectedly) red — a proof
     /// authored ahead of its implementation. Distinct from `Failed` so CI stays green while the
     /// promise is open; a promised leaf that *passes* is reported as `Failed` demanding graduation
-    /// to `proves`, so the flag can never outlive its implementation. (The variant is still named
-    /// `Spec` on the wire — the record-schema rename is a separate change.)
-    Spec,
+    /// to `proves`, so the flag can never outlive its implementation.
+    Promised,
 }
 
 /// The parameter bindings that make a node's identity unique.
@@ -77,22 +76,22 @@ pub struct UnitOpts {
     /// Capabilities this unit needs (e.g. `"docker"`). If any is unavailable the unit is **skipped**
     /// (not failed), with a reason — so a suite degrades gracefully where a dependency is missing.
     pub requires: Vec<String>,
-    /// The `spec` flag — **test-level only**: `Some(reason)` marks a proof authored ahead of its
+    /// The `promises` flag — **test-level only**: `Some(reason)` marks a proof authored ahead of its
     /// implementation. The reason is always a non-empty string — context is forced from day
-    /// one, and it graduates into the `proves` context. Red body → the `Spec` outcome; green
+    /// one, and it graduates into the `proves` context. Red body → the `Promised` outcome; green
     /// body → a failure demanding graduation (convert the flag to `proves` or remove it). A test
     /// either carries the flag or it is a full proof — there is no inheritance and no
-    /// `spec = false`.
-    pub spec: Option<String>,
+    /// `promises = false`.
+    pub promises: Option<String>,
     /// `covers` — addresses of the external obligations this proof discharges (a doc-claim anchor,
-    /// a ticket). Test-level, like `spec`: an obligation is discharged by an assertion, and a
+    /// a ticket). Test-level, like `promises`: an obligation is discharged by an assertion, and a
     /// container has none of its own. Plain data, so it lives here rather than beside the body.
     pub covers: Vec<String>,
     /// The `proves` attribute — **test-level only**: graduated context. `Some(context)` carries
-    /// the why behind a finished proof (usually the converted reason of a spec that graduated,
+    /// the why behind a finished proof (usually the converted reason of a promise that graduated,
     /// or retrofitted onto an existing test) in the test itself, where a reviewer cannot miss
-    /// it. Runtime-inert — pass is pass, fail is fail — and mutually exclusive with `spec`:
-    /// while the work is open its context lives in the spec flag.
+    /// it. Runtime-inert — pass is pass, fail is fail — and mutually exclusive with `promises`:
+    /// while the work is open its context lives in the promise flag.
     pub proves: Option<String>,
 }
 
@@ -246,10 +245,10 @@ pub struct Summary {
     pub passed: usize,
     pub failed: usize,
     pub skipped: usize,
-    /// Open specs: spec-flagged leaves whose bodies are (expectedly) red. Never counted as
-    /// failures — `is_success` ignores them (CI green) unless `--strict-specs` mapped them to
-    /// `failed` before tallying.
-    pub spec: usize,
+    /// Open promises: `promises`-flagged leaves whose bodies are (expectedly) red. Never counted as
+    /// failures — `is_success` ignores them (CI green) unless `--due` mapped them to `failed` before
+    /// tallying.
+    pub promised: usize,
     /// Leaves excluded by the run's selection (`-k` / `--tags` / `--node`) — never executed,
     /// distinct from `skipped` (which ran into a gate). Zero when no selection is active.
     pub deselected: usize,
@@ -271,7 +270,7 @@ impl Summary {
             Outcome::Passed => self.passed += 1,
             Outcome::Failed => self.failed += 1,
             Outcome::Skipped => self.skipped += 1,
-            Outcome::Spec => self.spec += 1,
+            Outcome::Promised => self.promised += 1,
         }
     }
     pub fn is_success(&self) -> bool {
@@ -300,10 +299,10 @@ pub enum Event<'a> {
         file: Option<&'a str>,
         /// 1-based line of the declaration call (`prova.test(...)` / `flow:step(...)`).
         line: Option<u32>,
-        /// For `Outcome::Spec`: the flag's reason string (empty when the flag was a bare `true`).
+        /// For `Outcome::Promised`: the flag's reason string (empty when the flag was a bare `true`).
         /// `None` for every other outcome. Reporters that render the spec distinctly (TAP's
         /// `# TODO`, JUnit's skip message) read it from here; `message` stays the failure text.
-        spec_reason: Option<&'a str>,
+        promise_reason: Option<&'a str>,
     },
     RunFinished {
         summary: &'a Summary,
@@ -338,14 +337,14 @@ impl Reporter for ConsoleReporter {
                     Outcome::Passed => "PASS",
                     Outcome::Failed => "FAIL",
                     Outcome::Skipped => "SKIP",
-                    Outcome::Spec => "PROMISED",
+                    Outcome::Promised => "PROMISED",
                 };
                 println!("  {mark}  {path}  ({duration:.1?}, {assertions} assert)");
                 if let (Outcome::Failed, Some(m)) = (outcome, message) {
                     println!("          ↳ {m}");
                 }
-                // An open spec is expected-red: first line only, no traceback noise.
-                if let (Outcome::Spec, Some(m)) = (outcome, message) {
+                // An open promise is expected-red: first line only, no traceback noise.
+                if let (Outcome::Promised, Some(m)) = (outcome, message) {
                     if let Some(first) = m.lines().next() {
                         println!("          ↳ {first}");
                     }
@@ -418,16 +417,16 @@ fn outcome_str(o: Outcome) -> &'static str {
         Outcome::Passed => "passed",
         Outcome::Failed => "failed",
         Outcome::Skipped => "skipped",
-        Outcome::Spec => "spec",
+        Outcome::Promised => "promised",
     }
 }
 
 /// The `, N promised` summary segment — present only while promises are open.
 pub fn spec_summary_segment(summary: &Summary) -> String {
-    if summary.spec == 0 {
+    if summary.promised == 0 {
         return String::new();
     }
-    format!(", {} promised", summary.spec)
+    format!(", {} promised", summary.promised)
 }
 
 /// Serialize an event to a stable JSON shape (the wire protocol for frontends).
@@ -444,7 +443,7 @@ pub fn event_to_json(event: &Event) -> serde_json::Value {
             message,
             file,
             line,
-            spec_reason,
+            promise_reason,
         } => json!({
             "type": "node_finished",
             "path": path,
@@ -454,14 +453,14 @@ pub fn event_to_json(event: &Event) -> serde_json::Value {
             "message": message,
             "file": file,
             "line": line,
-            "specReason": spec_reason,
+            "specReason": promise_reason,
         }),
         Event::RunFinished { summary } => json!({
             "type": "run_finished",
             "passed": summary.passed,
             "failed": summary.failed,
             "skipped": summary.skipped,
-            "spec": summary.spec,
+            "promised": summary.promised,
             "deselected": summary.deselected,
             "durationMs": summary.duration.as_secs_f64() * 1000.0,
         }),
@@ -483,8 +482,8 @@ struct JUnitCase {
     outcome: Outcome,
     duration: Duration,
     message: Option<String>,
-    /// The spec flag's reason, for `Outcome::Spec` cases (folded into the skip message).
-    spec_reason: Option<String>,
+    /// The spec flag's reason, for `Outcome::Promised` cases (folded into the skip message).
+    promise_reason: Option<String>,
     assertions: usize,
     /// Source location of the declaration, when the leaf has file backing — emitted as `file`/
     /// `line` attributes, which is how CI dashboards link a case back to its source.
@@ -574,7 +573,7 @@ impl<W: Write> Reporter for JUnitReporter<W> {
                 message,
                 file,
                 line,
-                spec_reason,
+                promise_reason,
             } => {
                 let (classname, name) = split_classname(path, &self.suite_name);
                 self.cases.push(JUnitCase {
@@ -583,7 +582,7 @@ impl<W: Write> Reporter for JUnitReporter<W> {
                     outcome: *outcome,
                     duration: *duration,
                     message: message.map(str::to_string),
-                    spec_reason: spec_reason.map(str::to_string),
+                    promise_reason: promise_reason.map(str::to_string),
                     assertions: *assertions,
                     file: file.map(str::to_string),
                     line: *line,
@@ -598,7 +597,7 @@ impl<W: Write> Reporter for JUnitReporter<W> {
                 let _ = writeln!(w, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
                 // Open specs count as skips at the JUnit level: not failures (CI green), but
                 // visibly not-run-to-success. Their `<skipped>` message carries the spec detail.
-                let skipped_attr = summary.skipped + summary.spec;
+                let skipped_attr = summary.skipped + summary.promised;
                 let _ = writeln!(
                     w,
                     "<testsuites tests=\"{}\" failures=\"{}\" errors=\"0\" skipped=\"{}\" time=\"{}\">",
@@ -677,12 +676,12 @@ impl<W: Write> Reporter for JUnitReporter<W> {
                             );
                             let _ = writeln!(w, "    </testcase>");
                         }
-                        Outcome::Spec => {
-                            // An open spec renders as a skip whose message names it — dashboards
+                        Outcome::Promised => {
+                            // An open promise renders as a skip whose message names it — dashboards
                             // show it as not-run-to-success without failing the build.
                             let _ = writeln!(w, "{head}>");
-                            let mut msg = String::from("open spec");
-                            if let Some(r) = c.spec_reason.as_deref().filter(|r| !r.is_empty()) {
+                            let mut msg = String::from("open promise");
+                            if let Some(r) = c.promise_reason.as_deref().filter(|r| !r.is_empty()) {
                                 msg.push_str(&format!(": {r}"));
                             }
                             if let Some(m) = c.message.as_deref() {
@@ -733,7 +732,7 @@ impl<W: Write> Reporter for TapReporter<W> {
                 message,
                 file,
                 line,
-                spec_reason,
+                promise_reason,
                 ..
             } => {
                 self.count += 1;
@@ -746,11 +745,11 @@ impl<W: Write> Reporter for TapReporter<W> {
                         let reason = message.map(|m| format!(" {m}")).unwrap_or_default();
                         let _ = writeln!(self.writer, "ok {n} - {path} # SKIP{reason}");
                     }
-                    Outcome::Failed | Outcome::Spec => {
-                        // An open spec is TAP's `# TODO` — the directive with exactly these
+                    Outcome::Failed | Outcome::Promised => {
+                        // An open promise is TAP's `# TODO` — the directive with exactly these
                         // semantics: an expected failure consumers do not count against the run.
                         let todo = match outcome {
-                            Outcome::Spec => match spec_reason {
+                            Outcome::Promised => match promise_reason {
                                 Some(r) if !r.is_empty() => format!(" # TODO {r}"),
                                 _ => " # TODO".to_string(),
                             },
@@ -822,7 +821,7 @@ mod tests {
     use super::*;
 
     /// A representative run: one pass, one fail (with a message containing XML/TAP metacharacters),
-    /// one skip, one open spec — driven through a reporter, capturing its bytes.
+    /// one skip, one open promise — driven through a reporter, capturing its bytes.
     fn drive<R: Reporter>(reporter: &mut R) {
         let d = Duration::from_millis(2);
         reporter.event(&Event::RunStarted);
@@ -834,7 +833,7 @@ mod tests {
             message: None,
             file: Some("/proj/proofs/orders_test.lua"),
             line: Some(12),
-            spec_reason: None,
+            promise_reason: None,
         });
         reporter.event(&Event::NodeFinished {
             path: "orders › rejects <bad> & \"quoted\"",
@@ -844,7 +843,7 @@ mod tests {
             message: Some("expected 200 got 500 <tag> & \"q\""),
             file: Some("/proj/proofs/orders_test.lua"),
             line: Some(31),
-            spec_reason: None,
+            promise_reason: None,
         });
         reporter.event(&Event::NodeFinished {
             path: "top-level check",
@@ -854,23 +853,23 @@ mod tests {
             message: Some("docker unavailable"),
             file: None,
             line: None,
-            spec_reason: None,
+            promise_reason: None,
         });
         reporter.event(&Event::NodeFinished {
             path: "formats › json round-trips",
-            outcome: Outcome::Spec,
+            outcome: Outcome::Promised,
             duration: d,
             assertions: 1,
             message: Some("expected 2, got 1"),
             file: Some("/proj/proofs/formats_test.lua"),
             line: Some(7),
-            spec_reason: Some("api-freeze §1"),
+            promise_reason: Some("api-freeze §1"),
         });
         let summary = Summary {
             passed: 1,
             failed: 1,
             skipped: 1,
-            spec: 1,
+            promised: 1,
             deselected: 0,
             deselected_paths: Vec::new(),
             reminders_declared: 0,
@@ -889,7 +888,7 @@ mod tests {
         }
         let xml = String::from_utf8(buf).unwrap();
 
-        // Document + suite totals. The open spec counts into `skipped` (not-run-to-success,
+        // Document + suite totals. The open promise counts into `skipped` (not-run-to-success,
         // never a failure), so dashboards stay green while the spec surface burns down.
         assert!(
             xml.contains(r#"<testsuites tests="4" failures="1" errors="0" skipped="2""#),
@@ -922,9 +921,9 @@ mod tests {
             xml.contains(r#"<skipped message="docker unavailable"/>"#),
             "{xml}"
         );
-        // An open spec renders as a skip naming the flag's reason and the red detail.
+        // An open promise renders as a skip naming the flag's reason and the red detail.
         assert!(
-            xml.contains(r#"<skipped message="open spec: api-freeze §1 — expected 2, got 1"/>"#),
+            xml.contains(r#"<skipped message="open promise: api-freeze §1 — expected 2, got 1"/>"#),
             "{xml}"
         );
         // Passed case is a self-closing testcase (no children), carrying its assertion count and
@@ -991,7 +990,7 @@ mod tests {
         assert_eq!(lines[6], "  line: 31");
         assert_eq!(lines[7], "  ...");
         assert_eq!(lines[8], "ok 3 - top-level check # SKIP docker unavailable");
-        // An open spec is TAP's `# TODO` directive — an expected failure consumers do not count
+        // An open promise is TAP's `# TODO` directive — an expected failure consumers do not count
         // against the run — with the flag's reason as the directive text and the red detail in
         // the YAML diagnostic block.
         assert_eq!(

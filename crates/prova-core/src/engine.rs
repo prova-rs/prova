@@ -233,12 +233,12 @@ pub struct RunConfig {
     /// resolved in one process don't share a vocabulary. Empty when there is no companion; built-in
     /// capabilities (`docker`, `unix`, tools on PATH) work regardless.
     capabilities: Capabilities,
-    /// `--strict-specs` (driver mode): open specs report as real failures — the implementing
+    /// `--due` (driver mode): open promises report as real failures — the implementing
     /// agent's loop sees full red. The graduate-on-pass inversion applies in both modes.
-    pub strict_specs: bool,
+    pub due: bool,
     /// `--specs` (the selector): narrow the run to leaves carrying an effective spec flag —
     /// graduated leaves and ordinary tests are deselected. Composes with `--list`.
-    pub specs_only: bool,
+    pub promises_only: bool,
     /// Run the falsification pass: select only leaves declaring `falsified_by`, apply the mutation
     /// before the body, and invert the verdict — a body that survives is vacuous.
     pub falsify: bool,
@@ -299,8 +299,8 @@ impl Default for RunConfig {
             project_dir: None,
             topology_registrations: Vec::new(),
             capabilities: Capabilities::default(),
-            strict_specs: false,
-            specs_only: false,
+            due: false,
+            promises_only: false,
             falsify: false,
             progress: std::sync::Arc::new(crate::progress::NullProgress),
             // Default to injecting the full bundled set, so any RunConfig that does not customize
@@ -379,15 +379,15 @@ impl RunConfig {
         self
     }
 
-    /// `--strict-specs` (driver mode): open specs report as real failures.
-    pub fn with_strict_specs(mut self, strict: bool) -> Self {
-        self.strict_specs = strict;
+    /// `--due` (driver mode): open promises report as real failures.
+    pub fn with_due(mut self, strict: bool) -> Self {
+        self.due = strict;
         self
     }
 
     /// `--specs` (the selector): run only the leaves carrying an effective spec flag.
-    pub fn with_specs_only(mut self, specs_only: bool) -> Self {
-        self.specs_only = specs_only;
+    pub fn with_promises_only(mut self, promises_only: bool) -> Self {
+        self.promises_only = promises_only;
         self
     }
 
@@ -807,7 +807,7 @@ fn teardown_results(
             file: file.map(str::to_string),
             line,
             teardown: true,
-            spec: None,
+            promises: None,
         })
         .collect()
 }
@@ -1049,9 +1049,9 @@ fn parse_opts(t: &mlua::Table) -> mlua::Result<UnitOpts> {
         .get::<Option<Vec<String>>>("requires")?
         .unwrap_or_default();
     let covers = parse_covers_opt(&t.get::<Value>("covers")?)?;
-    let spec = parse_promises_opt(&t.get::<Value>("promises")?)?;
+    let promises = parse_promises_opt(&t.get::<Value>("promises")?)?;
     let proves = parse_proves_opt(&t.get::<Value>("proves")?)?;
-    if spec.is_some() && proves.is_some() {
+    if promises.is_some() && proves.is_some() {
         return Err(mlua::Error::RuntimeError(
             "a test carries promises or proves, not both — while the work is open its context lives in the promise's reason; change the flag to proves when the promise is kept".into(),
         ));
@@ -1063,7 +1063,7 @@ fn parse_opts(t: &mlua::Table) -> mlua::Result<UnitOpts> {
         resources,
         serial,
         requires,
-        spec,
+        promises,
         proves,
         covers,
     })
@@ -3528,8 +3528,8 @@ struct Leaf {
     falsifiable: bool,
     /// `Some(reason)` when this leaf carries its own `spec` flag (always a non-empty reason)
     /// — test-level only, never inherited. Drives the outcome inversion: red body →
-    /// `Outcome::Spec`, green body → a failure demanding the flag's removal.
-    spec: Option<String>,
+    /// `Outcome::Promised`, green body → a failure demanding the flag's removal.
+    promises: Option<String>,
 }
 
 /// Group-level options that flow down to every contained leaf: `depends_on`, `resources`, `serial`,
@@ -3642,7 +3642,7 @@ fn push_leaf(leaves: &mut Vec<Leaf>, unit: PlanUnit, node: &Node, inherited: &In
         // Test-level only, by design: the leaf's own flag, never an ancestor's.
         falsifiable: node.falsifier.is_some(),
         covers: node.opts.covers.clone(),
-        spec: node.opts.spec.clone(),
+        promises: node.opts.promises.clone(),
     });
     id
 }
@@ -3681,7 +3681,7 @@ fn apply_specs_filter(plan: Plan, enabled: bool) -> (Plan, usize, Vec<(String, u
     if !enabled {
         return (plan, 0, Vec::new());
     }
-    let keep = plan.leaves.iter().map(|l| l.spec.is_some()).collect();
+    let keep = plan.leaves.iter().map(|l| l.promises.is_some()).collect();
     narrow_plan(plan, keep)
 }
 
@@ -3839,7 +3839,7 @@ fn build_plan(col: &Collector, caps: &Capabilities) -> mlua::Result<Plan> {
         } else {
             format!("group {:?}", node.name)
         };
-        if node.opts.spec.is_some() {
+        if node.opts.promises.is_some() {
             return Err(mlua::Error::RuntimeError(format!(
                 "promises is test-level only — flag each open test, not {name}"
             )));
@@ -3909,7 +3909,7 @@ fn resolve_requires(leaves: &mut [Leaf], caps: &Capabilities) {
                 // anywhere" are different facts with different remedies, and collapsing them into
                 // one bare `skipped:` hides a standing backlog from anyone reading the run. The
                 // skip stays a skip; it just stops pretending the spec isn't there.
-                leaf.precondition_skip = Some(match &leaf.spec {
+                leaf.precondition_skip = Some(match &leaf.promises {
                     Some(spec) => format!("skipped: {reason} — still promised: {spec}"),
                     None => format!("skipped: {reason}"),
                 });
@@ -4278,16 +4278,16 @@ struct NodeResult {
     /// makes that structural rather than positional — the first proof written here caught the
     /// alternative (keying on "any failed result") skipping a flow's remaining steps.
     teardown: bool,
-    /// The spec flag's reason for an `Outcome::Spec` result (set by the inversion, threaded into
-    /// `Event::NodeFinished::spec_reason`). `None` for every other outcome.
-    spec: Option<String>,
+    /// The spec flag's reason for an `Outcome::Promised` result (set by the inversion, threaded into
+    /// `Event::NodeFinished::promise_reason`). `None` for every other outcome.
+    promises: Option<String>,
 }
 
-/// The spec outcome inversion, applied to a spec-flagged leaf's results after it ran
+/// The spec outcome inversion, applied to a promises-flagged leaf's results after it ran
 /// (docs/plans/api-freeze.md §5). Teardown results are exempt — they report cleanup, not the work.
 ///
-/// - Any work result **failed** → the leaf is an **open spec**: each failure becomes
-///   `Outcome::Spec` (CI green) — unless `strict` (driver mode), where open specs stay failures.
+/// - Any work result **failed** → the leaf is an **open promise**: each failure becomes
+///   `Outcome::Promised` (CI green) — unless `strict` (driver mode), where open promises stay failures.
 /// - No failures and ≥1 pass → the spec is **honored**: each pass becomes a *failure* demanding
 ///   graduation — convert the flag to `proves = "<context>"` (preferred: the reason lives on in
 ///   the test) or remove it — so an implementation cannot land still flagged `spec`.
@@ -4302,8 +4302,8 @@ fn apply_spec_inversion(results: &mut [NodeResult], reason: &str, strict: bool) 
                 .iter_mut()
                 .filter(|r| !r.teardown && r.outcome == Outcome::Failed)
             {
-                r.outcome = Outcome::Spec;
-                r.spec = Some(reason.to_string());
+                r.outcome = Outcome::Promised;
+                r.promises = Some(reason.to_string());
             }
         }
         return;
@@ -4403,7 +4403,7 @@ async fn run_one(
                     file: file.clone(),
                     line: item.line,
                     teardown: false,
-                    spec: None,
+                    promises: None,
                 }];
                 out.extend(teardown_results(&item.path, errors, file.as_deref(), item.line));
                 return out;
@@ -4464,7 +4464,7 @@ async fn run_one(
         file: file.clone(),
         line: item.line,
         teardown: false,
-        spec: None,
+        promises: None,
     }];
     out.extend(teardown_results(&item.path, errors, file.as_deref(), item.line));
     out
@@ -4490,7 +4490,7 @@ async fn run_flow(lua: &Lua, steps: &[PlanItem], state: &Rc<RunState>) -> Vec<No
                 file: state.file_path_str(step.file),
                 line: step.line,
                 teardown: false,
-                spec: None,
+                promises: None,
             });
             continue;
         }
@@ -4543,11 +4543,11 @@ fn unit_outcome(results: &[NodeResult]) -> Outcome {
     // dependent's premise ("the upstream did its job") still holds when only a cleanup raised.
     // Gating on it would cascade-skip a whole subgraph over a leaked container.
     //
-    // An open spec (`Outcome::Spec`) gates like a failure: the upstream did NOT do its job — its
+    // An open promise (`Outcome::Promised`) gates like a failure: the upstream did NOT do its job — its
     // implementation doesn't exist yet — so a dependent's premise cannot hold. Only the *report*
-    // treats an open spec gently; the DAG does not.
+    // treats an open promise gently; the DAG does not.
     let work = || results.iter().filter(|r| !r.teardown);
-    if work().any(|r| matches!(r.outcome, Outcome::Failed | Outcome::Spec)) {
+    if work().any(|r| matches!(r.outcome, Outcome::Failed | Outcome::Promised)) {
         Outcome::Failed
     } else if work().any(|r| r.outcome == Outcome::Passed) {
         Outcome::Passed
@@ -4570,7 +4570,7 @@ fn skip_leaf(unit: &PlanUnit, reason: &str, state: &RunState) -> Vec<NodeResult>
             file: state.file_path_str(item.file),
             line: item.line,
             teardown: false,
-            spec: None,
+            promises: None,
         })
         .collect()
 }
@@ -4586,7 +4586,7 @@ fn emit_finished(reporter: &mut dyn Reporter, summary: &mut Summary, results: &[
             message: result.message.as_deref(),
             file: result.file.as_deref(),
             line: result.line,
-            spec_reason: result.spec.as_deref(),
+            promise_reason: result.promises.as_deref(),
         });
     }
 }
@@ -4730,11 +4730,11 @@ async fn run_plan(
 
         let (i, mut results) = in_flight.next().await.expect("in_flight is non-empty");
         resources.release(&leaves[i].reqs);
-        // A spec-flagged leaf's results are inverted BEFORE gating and reporting: red → open spec
-        // (or a real failure under --strict-specs), green → "graduate it". Gating sees the
-        // post-inversion truth, so a dependent of an open spec still cascade-skips.
-        if let Some(reason) = &leaves[i].spec {
-            apply_spec_inversion(&mut results, reason, config.strict_specs);
+        // A promises-flagged leaf's results are inverted BEFORE gating and reporting: red → open promise
+        // (or a real failure under --due), green → "graduate it". Gating sees the
+        // post-inversion truth, so a dependent of an open promise still cascade-skips.
+        if let Some(reason) = &leaves[i].promises {
+            apply_spec_inversion(&mut results, reason, config.due);
         }
         outcome[i] = Some(unit_outcome(&results));
         emit_finished(reporter, summary, &results);
@@ -5115,7 +5115,7 @@ fn execute_collected(
         let plan = build_plan(&col, &config.capabilities)?;
         let (plan, mut deselected, mut dropped) = apply_selection(plan, &config.selection);
         let (plan, falsify_deselected, falsify_dropped) = apply_falsify_filter(plan, config.falsify);
-        let (plan, spec_deselected, spec_dropped) = apply_specs_filter(plan, config.specs_only);
+        let (plan, spec_deselected, spec_dropped) = apply_specs_filter(plan, config.promises_only);
         deselected += falsify_deselected + spec_deselected;
         dropped.extend(falsify_dropped);
         dropped.extend(spec_dropped);
@@ -5891,7 +5891,7 @@ impl HeldTopology {
             let (plan, falsify_deselected, falsify_dropped) =
                 apply_falsify_filter(plan, self.config.falsify);
             let (plan, spec_deselected, spec_dropped) =
-                apply_specs_filter(plan, self.config.specs_only);
+                apply_specs_filter(plan, self.config.promises_only);
             deselected += falsify_deselected + spec_deselected;
             dropped.extend(falsify_dropped);
             dropped.extend(spec_dropped);
@@ -6152,8 +6152,8 @@ pub(crate) fn discover_suite_files(
 #[derive(Debug, Clone)]
 pub struct ProofObligation {
     pub path: String,
-    /// The `spec` reason, when this proof is still open.
-    pub spec: Option<String>,
+    /// The `promises` reason, when this proof is still open.
+    pub promises: Option<String>,
     /// Obligation addresses this proof claims to discharge.
     pub covers: Vec<String>,
 }
@@ -6177,10 +6177,10 @@ pub fn obligations_for_suite(
     Ok(plan
         .leaves
         .iter()
-        .filter(|leaf| leaf.spec.is_some() || !leaf.covers.is_empty())
+        .filter(|leaf| leaf.promises.is_some() || !leaf.covers.is_empty())
         .map(|leaf| ProofObligation {
             path: leaf.unit.leaf_paths().first().map(|s| s.to_string()).unwrap_or_default(),
-            spec: leaf.spec.clone(),
+            promises: leaf.promises.clone(),
             covers: leaf.covers.clone(),
         })
         .collect())
@@ -6192,7 +6192,7 @@ fn list_plan(col: &Collector, config: &RunConfig) -> mlua::Result<Vec<String>> {
     let (plan, _deselected, _dropped) =
         apply_selection(build_plan(col, &config.capabilities)?, &config.selection);
     let (plan, _falsify_deselected, _) = apply_falsify_filter(plan, config.falsify);
-    let (plan, _spec_deselected, _) = apply_specs_filter(plan, config.specs_only);
+    let (plan, _spec_deselected, _) = apply_specs_filter(plan, config.promises_only);
     Ok(plan
         .leaves
         .iter()

@@ -15,7 +15,7 @@ fn testdata(name: &str) -> PathBuf {
 fn promise_outcomes_tally() {
     let mut reporter = NullReporter;
     let summary = run_path(&testdata("promises.lua"), &mut reporter).expect("run promises.lua");
-    assert_eq!(summary.spec, 2, "open promises: assertion, raise");
+    assert_eq!(summary.promised, 2, "open promises: assertion, raise");
     assert_eq!(summary.failed, 1, "the honored promise demanding graduation");
     assert_eq!(summary.passed, 1, "the ordinary test holds the line");
     assert_eq!(summary.skipped, 1, "requires wins over an open promise");
@@ -32,7 +32,7 @@ fn open_promises_do_not_fail_the_run() {
     let mut reporter = NullReporter;
     let summary = run_path(&testdata("promises_open_only.lua"), &mut reporter)
         .expect("run promises_open_only.lua");
-    assert_eq!(summary.spec, 1);
+    assert_eq!(summary.promised, 1);
     assert_eq!(summary.passed, 1);
     assert_eq!(summary.failed, 0);
     assert!(summary.is_success(), "open promises are not failures");
@@ -42,10 +42,10 @@ fn open_promises_do_not_fail_the_run() {
 #[test]
 fn due_turns_open_promises_into_failures() {
     let mut reporter = NullReporter;
-    let config = RunConfig::default().with_strict_specs(true);
+    let config = RunConfig::default().with_due(true);
     let summary = run_path_with(&testdata("promises_open_only.lua"), &mut reporter, &config)
         .expect("run promises_open_only.lua due");
-    assert_eq!(summary.spec, 0, "no open-promise outcomes in due mode");
+    assert_eq!(summary.promised, 0, "no open-promise outcomes in due mode");
     assert_eq!(summary.failed, 1, "the open promise is a real failure");
     assert!(!summary.is_success());
 }
@@ -55,11 +55,11 @@ fn due_turns_open_promises_into_failures() {
 #[test]
 fn promises_selector_narrows_to_the_open_surface() {
     let mut reporter = NullReporter;
-    let config = RunConfig::default().with_specs_only(true);
+    let config = RunConfig::default().with_promises_only(true);
     let summary =
         run_path_with(&testdata("promises.lua"), &mut reporter, &config).expect("run promises-only");
     // Selected: 2 open + 1 honored + 1 requires-skip. Deselected: the ordinary test.
-    assert_eq!(summary.spec, 2);
+    assert_eq!(summary.promised, 2);
     assert_eq!(summary.failed, 1);
     assert_eq!(summary.skipped, 1);
     assert_eq!(summary.passed, 0, "unflagged tests are not run");

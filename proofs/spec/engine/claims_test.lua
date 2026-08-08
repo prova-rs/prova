@@ -87,7 +87,7 @@ prova.test("a covers pointing at no anchor is UNBOUND, and not fatal", {
   t:expect(r.code, "owed reports, it does not gate"):equals(0)
 end)
 
-prova.test("open specs and unproven claims share one list", {
+prova.test("open promises and unproven claims share one list", {
   proves = "an agent orienting in a repo asks one question — what is owed here? An answer living in two places has one that goes stale",
 }, function(t)
   local proj = t:use(sandbox)

@@ -1,5 +1,5 @@
 --- Black-box surface of the spec engine itself, driven through a sandbox child package that
---- carries one normal test, one open spec, and one honored spec. Two layers under proof here:
+--- carries one normal test, one open promise, and one honored promise. Two layers under proof here:
 ---
 ---   primitives : `--promises` the composable selector, `--promises --list` enumeration —
 ---                bootstrapped without proofs ("implemented first, spec'd by hand"); the
@@ -55,11 +55,11 @@ prova.test("`prova promises` enumerates the open surface — the no-flags spelli
   t:expect(r.stdout):never():contains("arithmetic")
 end)
 
-prova.test("`prova burndown` is the inner loop: spec-selected, open specs fail loud", function(t)
+prova.test("`prova burndown` is the inner loop: promise-selected, open promises fail loud", function(t)
   local proj = t:use(sandbox)
   local r = shell.run(prova.bin .. " burndown", { cwd = proj, merge_stderr = true })
-  t:expect(r.code):never():equals(0)                    -- open specs are real failures here
-  t:expect(r.stdout):contains("frobnicates")            -- the open spec, with its detail
+  t:expect(r.code):never():equals(0)                    -- open promises are real failures here
+  t:expect(r.stdout):contains("frobnicates")            -- the open promise, with its detail
   t:expect(r.stdout):contains("expected")               -- full failure detail, not a summary
   t:expect(r.stdout):contains("promise kept")           -- the kept promise demands graduation
   t:expect(r.stdout):never():contains("arithmetic holds")  -- unflagged tests are not selected

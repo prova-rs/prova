@@ -222,7 +222,7 @@ prova.group("prova mcp", function(g)
       -- The implementing agent's inner loop: strict mode makes the open spec fail LOUD.
       { jsonrpc = "2.0", id = 32, method = "tools/call",
         params = { name = "run",
-                   arguments = { specs = true, strict_specs = true, package = spec_project } } },
+                   arguments = { specs = true, due = true, package = spec_project } } },
       -- `list { specs }` enumerates the remaining surface without running anything.
       { jsonrpc = "2.0", id = 33, method = "tools/call",
         params = { name = "list", arguments = { specs = true, package = spec_project } } },
@@ -237,7 +237,7 @@ prova.group("prova mcp", function(g)
     t:expect(surface.spec):equals(1)
     t:expect(surface.deselected, "the finished proof is deselected"):equals(1)
 
-    local strict, strict_err = tool_json(by_id[32], "run{specs,strict_specs}")
+    local strict, strict_err = tool_json(by_id[32], "run{specs,due}")
     t:expect(strict.failed, "strict mode fails the open spec"):equals(1)
     t:expect(strict_err, "the driver loop sees isError"):is_true()
     t:expect(strict.failures[1].path):contains("future feature")

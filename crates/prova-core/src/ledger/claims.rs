@@ -6,7 +6,7 @@
 //!
 //! `prova owed` answers the one question an agent orienting in a repo should ask — **what is owed
 //! here?** — across every origin, because an answer that lives in two places has one that goes
-//! stale. Open specs and unproven claims are the same kind of thing: work someone scoped and
+//! stale. Open promises and unproven claims are the same kind of thing: work someone scoped and
 //! nobody finished.
 //!
 //! Reported, never fatal — with two exceptions, both defects that make an anchor impossible to
@@ -404,7 +404,7 @@ pub fn reconcile(claims: &[Claim], proofs: &[crate::ProofObligation]) -> Vec<Owe
                 });
             }
         }
-        if let Some(reason) = &proof.spec {
+        if let Some(reason) = &proof.promises {
             owed.push(Owed {
                 status: Status::Promised,
                 subject: proof.path.clone(),
