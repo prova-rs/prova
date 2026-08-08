@@ -1,8 +1,8 @@
 --- The manifest compatibility contract — how prova.toml survives prova getting better.
 ---
 --- Written as one file because these are one mechanism: picking them off individually produces a
---- version gate nobody can read, or strictness with no escape hatch. Authored as specs ahead of
---- the implementation; the graduated ones carry `proves`, and `prova specs` names what is left.
+--- version gate nobody can read, or strictness with no escape hatch. Authored as promises ahead of
+--- the implementation; the graduated ones carry `proves`, and `prova promises` names what is left.
 ---
 --- The shape, decided before 1.0 while there is still nothing to honor:
 ---

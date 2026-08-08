@@ -1049,26 +1049,7 @@ fn parse_opts(t: &mlua::Table) -> mlua::Result<UnitOpts> {
         .get::<Option<Vec<String>>>("requires")?
         .unwrap_or_default();
     let covers = parse_covers_opt(&t.get::<Value>("covers")?)?;
-    let promised = parse_promises_opt(&t.get::<Value>("promises")?)?;
-    let legacy = parse_spec_opt(&t.get::<Value>("spec")?)?;
-    if promised.is_some() && legacy.is_some() {
-        // The alias maps onto the same attribute, so both is one thing declared twice — and
-        // silently preferring either spelling would hide a genuine authoring mistake.
-        return Err(mlua::Error::RuntimeError(
-            "a test carries promises or its deprecated alias spec, not both — they are one attribute; keep `promises`".into(),
-        ));
-    }
-    if legacy.is_some() {
-        // Once per process, not per test: a 35-promise suite migrating gradually should read one
-        // line of guidance, not a wall of it.
-        static SPEC_DEPRECATED: std::sync::Once = std::sync::Once::new();
-        SPEC_DEPRECATED.call_once(|| {
-            eprintln!(
-                "prova: `spec` is deprecated — rename the flag to `promises` (it graduates to `proves` when kept)"
-            );
-        });
-    }
-    let spec = promised.or(legacy);
+    let spec = parse_promises_opt(&t.get::<Value>("promises")?)?;
     let proves = parse_proves_opt(&t.get::<Value>("proves")?)?;
     if spec.is_some() && proves.is_some() {
         return Err(mlua::Error::RuntimeError(
@@ -1130,24 +1111,6 @@ fn parse_promises_opt(v: &Value) -> mlua::Result<Option<String>> {
         )),
         _ => Err(mlua::Error::RuntimeError(
             "promises carries the reason a contract is still open — give it a non-empty string (the why/ticket), or remove the entry".into(),
-        )),
-    }
-}
-
-/// The deprecated `spec` alias — one release's bridge to `promises`. Same shape, same
-/// validation, so a legacy suite behaves identically while the (once-per-process) warning at the
-/// use site teaches the new spelling.
-fn parse_spec_opt(v: &Value) -> mlua::Result<Option<String>> {
-    match v {
-        Value::Nil => Ok(None),
-        Value::String(s) if !s.to_string_lossy().is_empty() => {
-            Ok(Some(s.to_string_lossy().to_string()))
-        }
-        Value::Boolean(false) => Err(mlua::Error::RuntimeError(
-            "spec = false is not a thing — a test without the flag is already a full proof; remove the entry (and note: `spec` is now `promises`)".into(),
-        )),
-        _ => Err(mlua::Error::RuntimeError(
-            "spec (deprecated — now `promises`) carries the reason a contract is still open — give it a non-empty string, or remove the entry".into(),
         )),
     }
 }
@@ -2993,12 +2956,10 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
                 if let Some(reqs) = opts.get::<Option<Vec<String>>>("requires")? {
                     c.nodes[0].opts.requires.extend(reqs);
                 }
-                for key in ["promises", "spec"] {
-                    if !matches!(opts.get::<Value>(key)?, Value::Nil) {
-                        return Err(mlua::Error::RuntimeError(
-                            "promises is test-level only — flag each open test, not the suite".into(),
-                        ));
-                    }
+                if !matches!(opts.get::<Value>("promises")?, Value::Nil) {
+                    return Err(mlua::Error::RuntimeError(
+                        "promises is test-level only — flag each open test, not the suite".into(),
+                    ));
                 }
                 if !matches!(opts.get::<Value>("proves")?, Value::Nil) {
                     return Err(mlua::Error::RuntimeError(

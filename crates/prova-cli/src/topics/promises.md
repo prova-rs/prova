@@ -24,8 +24,6 @@ Semantics are xfail-strict, per test:
 - `promises` is test/flow-level ONLY — on a group or in `suite.config` it is a validation
   error. `promises = false` is not a thing (an unflagged test is already a full proof), and
   neither is a bare `promises = true`: the reason is where the context lives while it is red.
-- `spec = "<reason>"` is the **deprecated** spelling — it still works, warns once per run, and
-  will be removed. Rename the flag; nothing else changes.
 
 ## proves — the kept promise
 

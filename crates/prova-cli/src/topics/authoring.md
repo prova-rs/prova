@@ -32,7 +32,7 @@ end)
   `prova.writes(x)` is an exclusive hold, `prova.reads(x)` a concurrent one, and either accepts a
   bare token or a ref the other made (`prova.reads(prova.port(5432))`). A bare string and
   `prova.port` are writers by default. Groups' `tags`/`requires` are inherited.
-  Tests and flows also take `spec = "reason"` — a proof authored ahead of its implementation
+  Tests and flows also take `promises = "reason"` — a proof authored ahead of its implementation
   (`prova learn promises`); never on a group or in `suite.config`.
 - Matchers on `t:expect(v, label?)` — negate any with `:never()`. Grouped by what the SUBJECT is,
   because a flat list hides which ones ask the filesystem:

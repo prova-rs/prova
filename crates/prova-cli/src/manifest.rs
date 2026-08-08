@@ -685,7 +685,7 @@ fn diagnose_unknown_key(err: &str) -> Option<String> {
 
 /// One warning per deprecated spelling per process, on stderr. The serde `alias` attributes keep
 /// the old spellings PARSING for one release; this is what keeps them TEACHING. Everything here
-/// retires together at 1.0 with the other pre-1.0 spellings (`spec`, `--strict-specs`).
+/// retires together at 1.0 with the other pre-1.0 spellings.
 ///
 /// Runs against the generic TOML (same trick as the version gate), because serde aliases are
 /// silent by design — after a successful parse there is no way to know which spelling was used.

@@ -125,7 +125,7 @@ pub fn path(home: &Home) -> PathBuf {
 
 /// This package's state directory, created on demand with its self-ignoring `.gitignore`.
 ///
-/// Call this from WRITE paths only. Read paths use [`path`], so an enumeration (`prova specs`,
+/// Call this from WRITE paths only. Read paths use [`path`], so an enumeration (`prova promises`,
 /// `--help`, a plugin directory with no proofs) never leaves a directory behind.
 pub fn dir(home: &Home) -> std::io::Result<PathBuf> {
     let d = path(home);

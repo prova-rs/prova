@@ -16,11 +16,11 @@ pub enum Outcome {
     Passed,
     Failed,
     Skipped,
-    /// An **open spec**: a leaf under a `spec` flag whose body is (expectedly) red — a proof
+    /// An **open promise**: a leaf under a `promises` flag whose body is (expectedly) red — a proof
     /// authored ahead of its implementation. Distinct from `Failed` so CI stays green while the
-    /// spec is open; a spec'd leaf that *passes* is reported as `Failed` demanding graduation
-    /// (`spec = false`), so the flag can never outlive its implementation. See
-    /// docs/plans/api-freeze.md §5.
+    /// promise is open; a promised leaf that *passes* is reported as `Failed` demanding graduation
+    /// to `proves`, so the flag can never outlive its implementation. (The variant is still named
+    /// `Spec` on the wire — the record-schema rename is a separate change.)
     Spec,
 }
 

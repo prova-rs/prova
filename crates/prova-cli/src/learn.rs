@@ -632,9 +632,9 @@ fn render_slot(slot: Slot, env: &RenderEnv, transport: Transport) -> String {
             // an inclination, not a rule: prefer authoring behaviour as `spec`-flagged proofs over a
             // prose design doc, and burn the backlog down. When off, the slot is empty.
             Some(p) if p.spec_first => "**Spec-first here.** Prefer capturing new behaviour as a \
-                `spec`-flagged proof (the proof *is* the spec — no prose doc to drift) over a design \
-                doc: `prova specs` lists the open backlog, `prova burndown` implements it, graduate \
-                `spec = \"…\"` to `proves = \"…\"` when green. (`[agent] spec_first = false` to silence.)"
+                `promises`-flagged proof (the proof *is* the contract — no prose doc to drift) over a \
+                design doc: `prova promises` lists the open surface, `prova burndown` implements it, \
+                graduate `promises = \"…\"` to `proves = \"…\"` when green. (`[agent] spec_first = false` to silence.)"
                 .into(),
             _ => String::new(),
         },

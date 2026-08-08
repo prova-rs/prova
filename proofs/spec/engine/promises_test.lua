@@ -86,43 +86,6 @@ end)
   t:expect(r.stdout):contains("not both")
 end)
 
-prova.test("spec still works, warns once, and names its successor", {
-  proves = "a deprecation must teach, not merely tolerate: existing suites keep running, and the warning carries the exact new spelling so the fix needs no documentation lookup",
-}, function(t)
-  local proj = t:use(sandbox)
-  fs.write(proj .. "/proofs/legacy_test.lua", [[
-prova.test("older suite", { spec = "written before the rename" }, function(t)
-  t:expect(1):equals(2)
-end)
-]])
-  local r = shell.run(prova.bin, { cwd = proj, merge_stderr = true })
-  fs.remove_all(proj .. "/proofs/legacy_test.lua")
-
-  -- Still an open promise: same semantics, same green run.
-  t:expect(r.code, "the alias preserves behaviour"):equals(0)
-  t:expect(r.stdout, "reported in the new vocabulary"):contains("PROMISED")
-  -- And the bridge teaches: deprecated, and here is the new name.
-  t:expect(r.stdout, "the warning names the rename"):contains("deprecated")
-  t:expect(r.stdout):contains("promises")
-end)
-
-prova.test("spec and promises on one test is a contradiction, not a merge", {
-  proves = "the alias maps onto the same attribute, so declaring both is declaring one thing twice — silently preferring either would hide a genuine authoring mistake",
-}, function(t)
-  local proj = t:use(sandbox)
-  fs.write(proj .. "/proofs/twice_test.lua", [[
-prova.test("declared twice", {
-  spec = "old spelling", promises = "new spelling",
-}, function(t)
-  t:expect(1):equals(1)
-end)
-]])
-  local r = shell.run(prova.bin, { cwd = proj, merge_stderr = true })
-  fs.remove_all(proj .. "/proofs/twice_test.lua")
-
-  t:expect(r.code):never():equals(0)
-end)
-
 prova.test("the run summary tallies promises in the new vocabulary", {
   proves = "the human tally and the machine fields part ways deliberately: consoles speak the vocabulary, while JSON/TAP/JUnit field names stay frozen for every parser already reading them",
 }, function(t)
@@ -142,24 +105,3 @@ end)
   t:expect(r.stdout):never():contains("spec open")
 end)
 
-prova.test("the specs verb and --specs flags still work, and teach their successors", {
-  proves = "retirement at 1.0 is survivable only if every deprecated spelling keeps working while naming its replacement — a break with no bridge just pins users to the old binary",
-}, function(t)
-  local proj = t:use(sandbox)
-  fs.write(proj .. "/proofs/open_test.lua", [[
-prova.test("still open", { promises = "not built yet" }, function(t)
-  t:expect(1):equals(2)
-end)
-]])
-  -- The deprecated verb: same listing, plus the pointer at the new spelling.
-  local verb = shell.run(prova.bin .. " specs", { cwd = proj, merge_stderr = true })
-  t:expect(verb.code):equals(0)
-  t:expect(verb.stdout, "still lists the surface"):contains("still open")
-  t:expect(verb.stdout, "and names its successor"):contains("prova promises")
-
-  -- The deprecated flags: same semantics, one teaching line.
-  local flags = shell.run(prova.bin .. " --specs --strict-specs", { cwd = proj, merge_stderr = true })
-  fs.remove_all(proj .. "/proofs/open_test.lua")
-  t:expect(flags.code, "due semantics under the old spelling"):never():equals(0)
-  t:expect(flags.stdout, "the warning names the new flags"):contains("--due")
-end)

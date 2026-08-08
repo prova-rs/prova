@@ -108,11 +108,6 @@ const VERBS: &[Verb] = &[
         run: promises_subcommand,
     },
     Verb {
-        name: "specs",
-        help: "  prova specs               deprecated spelling of `prova promises` (retires at 1.0)",
-        run: specs_subcommand,
-    },
-    Verb {
         name: "burndown",
         help: "  prova burndown [<sel>]    the implementing loop: run only promised tests, open promises fail\n\
                \x20                           loud with full detail (same as `--promises --due`)",
@@ -157,7 +152,7 @@ const VERBS: &[Verb] = &[
     Verb {
         name: "list",
         help: "  prova list [<sel>]        discover tests without running them (same as `--list`; respects\n\
-               \x20                           selection — `prova specs` is `list --specs`)",
+               \x20                           selection — `prova promises` is `list --promises`)",
         run: list_subcommand,
     },
     Verb {
@@ -400,20 +395,6 @@ fn promises_subcommand(args: Vec<String>) -> ExitCode {
     let mut full = vec!["--promises".to_string(), "--list".to_string()];
     full.extend(args);
     run(full)
-}
-
-/// The deprecated flag spellings teach once, like the `spec` attribute does.
-fn warn_specs_flag_deprecated() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        eprintln!("prova: `--specs`/`--strict-specs` are deprecated — use `--promises`/`--due` (retire at 1.0)");
-    });
-}
-
-/// The deprecated spelling — one release's bridge, retired at 1.0. Delegates after teaching.
-fn specs_subcommand(args: Vec<String>) -> ExitCode {
-    eprintln!("prova: `specs` is deprecated — use `prova promises` (retires at 1.0)");
-    promises_subcommand(args)
 }
 
 /// `prova list` — the run-axis discovery head. `promises` is this plus `--promises`: both list NODES,
@@ -2725,14 +2706,6 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             "--fresh" => fresh = true,
             "--promises" => specs_only = true,
             "--due" => strict_specs = true,
-            "--specs" => {
-                warn_specs_flag_deprecated();
-                specs_only = true;
-            }
-            "--strict-specs" => {
-                warn_specs_flag_deprecated();
-                strict_specs = true;
-            }
             "--allow-empty" => allow_empty = true,
             "--update-snapshots" | "-u" => update_snapshots = true,
             "--update-baseline" => update_baseline = true,

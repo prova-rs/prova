@@ -17,7 +17,7 @@ mean *no evidence was produced*:
 
 - **skipped** — reached a gate before the body (`requires` unavailable, a failed dependency), with
   the gate's own words for why.
-- **deselected** — never in the run at all (`-k`, `--tags`, `--node`, `--specs`, `--falsify`).
+- **deselected** — never in the run at all (`-k`, `--tags`, `--node`, `--promises`, `--falsify`).
   Narrowing a selection is the cheapest way there is to report green having tested nothing.
 
 ## attest — the question `owed` cannot answer

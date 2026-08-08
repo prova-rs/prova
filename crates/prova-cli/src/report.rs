@@ -360,8 +360,8 @@ impl Reporter for GitHubReporter {
                     });
                 }
                 Outcome::Spec => {
-                    // An open spec is a notice, never an error — the whole point is a green CI
-                    // while the spec surface burns down. And it is EXPECTED red: first error
+                    // An open promise is a notice, never an error — the whole point is a green CI
+                    // while the promise surface burns down. And it is EXPECTED red: first error
                     // line only, no traceback noise (the console reporter's rule holds in
                     // annotations too).
                     let detail = message
@@ -489,16 +489,16 @@ impl Reporter for HumanReporter {
                         });
                     }
                     Outcome::Spec => {
-                        // An open spec: expected-red, so no recap entry and no rerun line — the
-                        // burndown meter (`--specs --list`, the tally) is its call to action.
+                        // An open promise: expected-red, so no recap entry and no rerun line — the
+                        // burndown meter (`--promises --list`, the tally) is its call to action.
                         let why = spec_reason
                             .filter(|r| !r.is_empty())
                             .map(|r| format!("  {DIM}— {r}{DIM:#}"))
                             .unwrap_or_default();
                         let _ = writeln!(out, "{indent}{SKIP}PROMISED{SKIP:#}  {leaf}{why}{line_col}");
                         // First line only: the error is the call to action, but an EXPECTED
-                        // failure carries no traceback noise. `--strict-specs` (where an open
-                        // spec is being actively worked) reports it as FAIL with full detail.
+                        // failure carries no traceback noise. `--due` (where an open promise is
+                        // being actively worked) reports it as FAIL with full detail.
                         if let Some(first) = message.and_then(|m| m.lines().next()) {
                             write_message(out, &format!("{indent}      "), first);
                         }

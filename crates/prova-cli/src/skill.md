@@ -31,7 +31,6 @@ the test states what it will prove someday and does not prove today. Open promis
 their own outcome (PROMISED) and keep CI green; the moment the body passes it FAILS demanding
 graduation — change `promises` to `proves = "<context>"` (a tense change; the why lives on in
 the test) or remove the flag — so implementation + graduation land as one proof-carrying change.
-(`spec = "…"` is the deprecated spelling: it works and warns.)
 `prova promises` enumerates the open surface — an empty list means burndown complete; found
 some in a repo? That is scoped work — offer to burn it down with `prova burndown`.
 `prova learn promises` carries the lifecycle.
