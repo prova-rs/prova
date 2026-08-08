@@ -42,8 +42,8 @@ use futures::stream::StreamExt;
 use mlua::{Function, Lua, Table, UserData, UserDataFields, UserDataMethods, Value};
 
 use crate::model::{
-    parse_duration, Event, NodeIx, Outcome, Params, ReminderAccount, ReminderOutcome,
-    ReminderState, Reporter, ResourceReq, Summary, UnitOpts,
+    parse_duration, Event, NodeIx, Outcome, Params, ReminderAccount, ReminderListing,
+    ReminderOutcome, ReminderState, Reporter, ResourceReq, Summary, UnitOpts,
 };
 
 /// Throughput knob (never semantic). Defaults to sequential until the resource scheduler exists.
@@ -4982,6 +4982,49 @@ pub fn evaluate_reminders(
                 });
             }
         });
+    }
+    out
+}
+
+/// Collect every declared `prova.remind` — name, message, tags, file, line — WITHOUT evaluating
+/// its condition. The rows `prova reminders` shows before a run has produced states: loading is the
+/// same collection `--list` performs (bodies never execute), and no condition runs, so it works with
+/// no record at all. A run then fills each row's state in.
+pub fn collect_reminders(suites: &[crate::suite::Suite], config: &RunConfig) -> Vec<ReminderListing> {
+    let mut out = Vec::new();
+    for suite in suites {
+        let loaded = (|| -> mlua::Result<SharedCollector> {
+            if suite.setup.is_none() && suite.files.len() == 1 {
+                return read_and_collect(&suite.files[0], config).map(|(_, col)| col);
+            }
+            let (lua, col) = build_lua(suite.name.clone(), config)?;
+            if let Some(setup) = suite.setup.as_deref() {
+                let code = std::fs::read_to_string(setup).map_err(|e| {
+                    mlua::Error::RuntimeError(format!("cannot read {}: {e}", setup.display()))
+                })?;
+                lua.load(&code).set_name(file_chunk_name(setup)).exec()?;
+            }
+            load_member_files(&lua, &col, &suite.files)?;
+            Ok(col)
+        })();
+        let Ok(col) = loaded else { continue };
+        let (defs, file_paths) = {
+            let mut c = col.borrow_mut();
+            (std::mem::take(&mut c.reminders), c.file_paths.clone())
+        };
+        for def in defs {
+            let file = file_paths
+                .get(def.file)
+                .filter(|p| !p.as_os_str().is_empty())
+                .map(|p| p.to_string_lossy().into_owned());
+            out.push(ReminderListing {
+                name: def.name,
+                message: def.message,
+                tags: def.tags,
+                file,
+                line: def.line,
+            });
+        }
     }
     out
 }

@@ -812,67 +812,88 @@ fn reminders_subcommand(args: Vec<String>) -> ExitCode {
         if arg == "-h" || arg == "--help" {
             println!(
                 "usage: prova reminders\n\n\
-                 Lists every `prova.remind` with the state the last recorded run evaluated:\n\
+                 Lists every declared `prova.remind`, with the state the last run recorded overlaid:\n\
                  DUE (attention owed — with the condition's why and the instruction), WATCHING\n\
-                 (armed, the world holds still), or UNEVALUATED (could not run, with the reason).\n\n\
-                 Executes nothing: conditions evaluate during runs; this reads the record.\n\
-                 Exits non-zero when any reminder is due."
+                 (armed, the world holds still), UNEVALUATED (could not run, with the reason), or\n\
+                 — (declared, no run has evaluated it yet).\n\n\
+                 Collects the suite but executes nothing — so it works BEFORE any run (listing what\n\
+                 is declared) and shows live states AFTER one. Exits non-zero when any is due."
             );
             return ExitCode::SUCCESS;
         }
     }
-    let home = match resolve_home(None) {
-        Ok(h) => h,
-        Err(code) => return code,
-    };
-    let Some(record) = record::load(&home) else {
-        eprintln!(
-            "prova: no recorded run — conditions evaluate during runs; run `prova` first"
+    // Route through the run machinery to collect declared reminders (loading the suite, like
+    // `--list`, without executing), then overlay the recorded state. One command, before and after.
+    let mut full = vec!["--reminders-list".to_string()];
+    full.extend(args);
+    run(full)
+}
+
+/// Render the attention account as a listing: every declared reminder, with the last run's recorded
+/// state overlaid, or `—` when no run has evaluated it yet. The same rows before and after a run —
+/// a run only fills in the state. Exits non-zero only on a recorded DUE.
+fn list_reminders(
+    declared: &[prova_core::ReminderListing],
+    recorded: &[record::ReminderEntry],
+) -> ExitCode {
+    if declared.is_empty() {
+        println!(
+            "prova: no reminders declared — add `prova.remind(name, {{ when = … }}, message)` to a \
+             proof (`prova learn reminders`)"
         );
-        return ExitCode::from(2);
-    };
-    if record.reminders.is_empty() {
-        println!("prova: no reminders in the recorded run (none declared, or the record predates them)");
         return ExitCode::SUCCESS;
     }
+    let states: std::collections::BTreeMap<&str, &record::ReminderEntry> =
+        recorded.iter().map(|e| (e.name.as_str(), e)).collect();
 
-    let mut due = 0;
-    let mut unevaluated = 0;
-    let mut watching = 0;
-    // DUE first — the actionable rows lead; then the disarmed watchers; the watching tail last.
-    let mut ordered: Vec<&record::ReminderEntry> = record.reminders.iter().collect();
-    ordered.sort_by_key(|e| match e.state.as_str() {
-        "due" => 0,
-        "unevaluated" => 1,
-        _ => 2,
-    });
-    for e in ordered {
-        match e.state.as_str() {
-            "due" => {
+    // Worst-first: DUE, UNEVALUATED, WATCHING, then the never-run rows last.
+    let rank = |d: &prova_core::ReminderListing| match states.get(d.name.as_str()).map(|e| e.state.as_str()) {
+        Some("due") => 0,
+        Some("unevaluated") => 1,
+        Some(_) => 2,
+        None => 3,
+    };
+    let mut order: Vec<&prova_core::ReminderListing> = declared.iter().collect();
+    order.sort_by_key(|d| rank(d));
+
+    let (mut due, mut watching, mut unevaluated, mut pending) = (0, 0, 0, 0);
+    for d in order {
+        match states.get(d.name.as_str()) {
+            Some(e) if e.state == "due" => {
                 due += 1;
                 match &e.why {
-                    Some(w) => println!("  {:<12} {} — {w}", "DUE", e.name),
-                    None => println!("  {:<12} {}", "DUE", e.name),
+                    Some(w) => println!("  {:<12} {} — {w}", "DUE", d.name),
+                    None => println!("  {:<12} {}", "DUE", d.name),
                 }
-                println!("               ↳ {}", e.message);
+                println!("               ↳ {}", d.message);
             }
-            "unevaluated" => {
+            Some(e) if e.state == "unevaluated" => {
                 unevaluated += 1;
                 println!(
                     "  {:<12} {} — {}",
                     "UNEVALUATED",
-                    e.name,
+                    d.name,
                     e.why.as_deref().unwrap_or("could not evaluate")
                 );
             }
-            _ => {
+            Some(_) => {
                 watching += 1;
-                println!("  {:<12} {}", "WATCHING", e.name);
+                println!("  {:<12} {}", "WATCHING", d.name);
+            }
+            None => {
+                pending += 1;
+                println!("  {:<12} {}", "—", d.name);
             }
         }
     }
     println!();
-    println!("  {due} due, {unevaluated} unevaluated, {watching} watching");
+    println!(
+        "  {} declared · {due} due, {unevaluated} unevaluated, {watching} watching",
+        declared.len()
+    );
+    if pending > 0 {
+        println!("  {pending} not yet evaluated — run `prova` for live status");
+    }
     if due > 0 {
         ExitCode::FAILURE
     } else {
@@ -2517,6 +2538,10 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     let mut unreferenced = String::from("ignore"); // ignore | warn | delete
     let mut cli_config: Option<String> = None;
     let mut list = false;
+    // Internal: `prova reminders` routes here to COLLECT declared reminders (loading the suite,
+    // like `--list`, without executing) and overlay the recorded state — so the verb works before
+    // any run and shows live states after one. Not a user-facing flag.
+    let mut reminders_list = false;
     let mut specs_only = false;
     let mut falsify = false;
     // Held-topology attach (docs/design/topologies.md#attach-binds-by-name): `--fresh` opts a run
@@ -2690,6 +2715,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         }
         match arg.as_str() {
             "--list" => list = true,
+            "--reminders-list" => reminders_list = true,
             "--quiet" | "-q" => cli_quiet = true,
             // Promote this one invocation to heed the attention account — the ad-hoc form of the
             // manifest's `heed`; like every guarantee it can only tighten (All absorbs).
@@ -3066,6 +3092,19 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                 Err(err) => eprintln!("prova: IDE annotations: {err}"),
             }
         }
+    }
+
+    if reminders_list {
+        // The attention account, listed: every declared reminder, with the state the last run
+        // recorded overlaid (or "—" for one no run has evaluated yet). Collection loads the suite
+        // but executes nothing — so `prova reminders` works before a run and fills in after.
+        let declared = prova_core::collect_reminders(&suites, &config);
+        let recorded = home
+            .as_ref()
+            .and_then(record::load)
+            .map(|r| r.reminders)
+            .unwrap_or_default();
+        return list_reminders(&declared, &recorded);
     }
 
     if list {

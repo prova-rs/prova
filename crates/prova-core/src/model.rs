@@ -153,6 +153,18 @@ pub struct ReminderAccount {
     pub dated: Vec<DatedObligation>,
 }
 
+/// One declared `prova.remind`, as `collect_reminders` harvests it WITHOUT evaluating — the row
+/// `prova reminders` shows before a run has filled in a state. Same identity a `ReminderOutcome`
+/// carries (name/message/tags/file/line), minus the state a run produces.
+#[derive(Debug, Clone)]
+pub struct ReminderListing {
+    pub name: String,
+    pub message: String,
+    pub tags: Vec<String>,
+    pub file: Option<String>,
+    pub line: Option<u32>,
+}
+
 /// One dated obligation — an anchor carrying a draw-down date — as a reminder condition sees it.
 #[derive(Debug, Clone)]
 pub struct DatedObligation {

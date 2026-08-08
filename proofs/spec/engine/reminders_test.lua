@@ -214,6 +214,30 @@ prova.test("`prova reminders` reports every state and exits non-zero when any is
   t:expect(o.stdout):contains("upstream shipped")
 end)
 
+prova.test("`prova reminders` lists declared reminders BEFORE any run, then fills in state", {
+  proves = "the verb works pre-run — it collects what is declared (like `prova list`), so you can see WHICH reminders exist without running the whole suite; a run then fills each row's live state. One command, the same rows before and after",
+}, function(t)
+  local proj = t:tempdir() .. "/pkg"
+  fs.mkdir(proj .. "/proofs")
+  fs.write(proj .. "/prova.toml", '[run]\nproofs = ["proofs"]\n')
+  fs.write(proj .. "/proofs/gate_test.lua", [[
+prova.remind("a-gate", { when = function() return false end }, "do the thing")
+prova.test("t", function(t) t:expect(1):equals(1) end)
+]])
+
+  -- Before any run: the reminder is listed, marked not-yet-evaluated.
+  local pre = shell.run(prova.bin .. " reminders", { cwd = proj, merge_stderr = true })
+  t:expect(pre.stdout, "the declared reminder is listed with no run"):contains("a-gate")
+  t:expect(pre.stdout, "and flagged as not yet evaluated"):contains("not yet evaluated")
+  t:expect(pre.code, "nothing due, so it is clean"):equals(0)
+
+  -- After a run: the same reminder, now with its live state.
+  shell.run(prova.bin, { cwd = proj, merge_stderr = true })
+  local post = shell.run(prova.bin .. " reminders", { cwd = proj, merge_stderr = true })
+  t:expect(post.stdout, "the same reminder"):contains("a-gate")
+  t:expect(post.stdout, "state now filled in"):contains("WATCHING")
+end)
+
 prova.test("ledger conditions: the terminal item watches while work remains, due when nothing is owed", {
   covers = "docs/design/reminders.md#ledger-conditions",
   proves = "the checklist archetype's terminal item is a reminder, not a hijacked promise — watching while work remains, DUE exactly once, when deletion is all that is left",
