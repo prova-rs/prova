@@ -124,7 +124,7 @@ impl Reporter for ChannelReporter {
 
 /// Discover node paths for `suite`, loading its setup first — the `--list` view of exactly what a
 /// run of this suite would collect (same validations, same selection, same `--promises` filter).
-pub fn discover_suite(suite: &Suite, config: &RunConfig) -> mlua::Result<Vec<String>> {
+pub fn discover_suite(suite: &Suite, config: &RunConfig) -> mlua::Result<Vec<crate::engine::ListNode>> {
     crate::engine::discover_suite_files(&suite.name, suite.setup.as_deref(), &suite.files, config)
 }
 

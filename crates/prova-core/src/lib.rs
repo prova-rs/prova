@@ -88,7 +88,7 @@ pub use engine::{
     qualify_leaf_path, run_path, ProofObligation,
     run_path_with, unreferenced_snapshots, up, watch, AttachedRegistry, AttachedTopology,
     Capabilities, Endpoint, HeldTopology, Module,
-    PackageReport, PackageShape, PortMode, RunConfig, Selection, SnapshotRegistry,
+    ListNode, PackageReport, PackageShape, PortMode, RunConfig, Selection, SnapshotRegistry,
     TopologyRegistration,
 };
 pub use lanes::{Lane, LANES};

@@ -127,8 +127,8 @@ const VERBS: &[Verb] = &[
     },
     Verb {
         name: "tests",
-        help: "  prova tests               the tests lane: every proof and open promise; --promises\n\
-               \x20                           narrows to the open promises (query only)",
+        help: "  prova tests               the tests lane: every node, state-tagged PROMISE/PROOF;\n\
+               \x20                           --promises / --proofs narrow to one state (query only)",
         run: tests_subcommand,
     },
     Verb {
@@ -254,6 +254,8 @@ options:
                             judge the LIVE environment, never a silently fresh one
       --fresh               ignore held topologies: always provision fresh (the CI behavior)
       --promises            select only promised tests — the open surface (composes with --list)
+      --proofs              select only settled proofs — the mirror of --promises (composes; the
+                            two are mutually exclusive)
       --due                 promises fall due: open promises report as real failures (burndown's mode;
                             alone, the whole suite tolerates no open promise)
       --allow-empty         a selection matching no tests is OK (default: that is an error)
@@ -692,12 +694,12 @@ fn backlog_subcommand(args: Vec<String>) -> ExitCode {
     }
 }
 
-/// `prova tests` — the tests lane: every discovered proof and open promise (the run-axis node
-/// listing). A query verb; runs nothing. `--promises` narrows to the open promises. This is the
-/// lane report `prova list` stood in for; `list` retires in a later increment
-/// (docs/plans/query-consolidation.md).
+/// `prova tests` — the tests lane: every discovered node, state-tagged PROMISE (open, authored ahead
+/// of implementation) or PROOF (settled). A query verb; runs nothing. `--promises` / `--proofs`
+/// narrow to one state. This is the lane report `prova list` stood in for; `list` retires in a later
+/// increment (docs/plans/query-consolidation.md).
 fn tests_subcommand(args: Vec<String>) -> ExitCode {
-    let mut full = vec!["--list".to_string()];
+    let mut full = vec!["--list-tagged".to_string()];
     full.extend(args);
     run(full)
 }
@@ -2664,11 +2666,16 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     let mut unreferenced = String::from("ignore"); // ignore | warn | delete
     let mut cli_config: Option<String> = None;
     let mut list = false;
+    // Internal: `prova tests` routes here as `--list --list-tagged` so the listing renders each node
+    // with its promise⇄proof state (PROMISE / PROOF), while plain `--list` (and the retiring
+    // `prova list`) stays bare paths. Not a user-facing flag.
+    let mut list_tagged = false;
     // Internal: `prova reminders` routes here to COLLECT declared reminders (loading the suite,
     // like `--list`, without executing) and overlay the recorded state — so the verb works before
     // any run and shows live states after one. Not a user-facing flag.
     let mut reminders_list = false;
     let mut promises_only = false;
+    let mut proofs_only = false;
     let mut falsify = false;
     // Held-topology attach (docs/design/topologies.md#attach-binds-by-name): `--fresh` opts a run
     // out of attaching to held topologies; `--topology NAME` insists on attaching to NAME.
@@ -2841,6 +2848,10 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         }
         match arg.as_str() {
             "--list" => list = true,
+            "--list-tagged" => {
+                list = true;
+                list_tagged = true;
+            }
             "--reminders-list" => reminders_list = true,
             "--quiet" | "-q" => cli_quiet = true,
             // Promote this one invocation to heed the attention account — the ad-hoc form of the
@@ -2850,6 +2861,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             "--falsify" => falsify = true,
             "--fresh" => fresh = true,
             "--promises" => promises_only = true,
+            "--proofs" => proofs_only = true,
             "--due" => due = true,
             "--allow-empty" => allow_empty = true,
             "--update-snapshots" | "-u" => update_snapshots = true,
@@ -3096,10 +3108,18 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     // `measure.ratchet` call takes accumulates here, drained below into the record and, under
     // `--update-baseline`, into the guarded baseline writer.
     let measurement_registry: prova_core::MeasurementRegistry = std::sync::Arc::default();
+    if promises_only && proofs_only {
+        eprintln!(
+            "prova: --promises and --proofs are mutually exclusive — a test is a promise or a proof, \
+             not both"
+        );
+        return ExitCode::from(2);
+    }
     let mut config = engine_config(jobs, &packages_resolved, home.as_ref(), std::sync::Arc::clone(&progress_sink))
         .with_update_snapshots(update_snapshots)
         .with_due(due)
         .with_promises_only(promises_only)
+        .with_proofs_only(proofs_only)
         .with_falsify(falsify)
         .with_capabilities(capabilities)
         .with_globals_inject(globals_inject)
@@ -3230,7 +3250,13 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         // collection is exactly what a run would collect (suite-level `spec`/`requires`/name).
         for suite in &suites {
             match discover_suite(suite, &config) {
-                Ok(node_paths) => node_paths.iter().for_each(|p| println!("{p}")),
+                // `prova tests` (`--list-tagged`) state-tags each node with its side of the
+                // promise⇄proof duality; plain `--list` stays bare paths (stable, machine-friendly).
+                Ok(nodes) if list_tagged => nodes.iter().for_each(|n| {
+                    let tag = if n.promised { "PROMISE" } else { "PROOF" };
+                    println!("  {tag:<8} {}", n.path);
+                }),
+                Ok(nodes) => nodes.iter().for_each(|n| println!("{}", n.path)),
                 Err(err) => {
                     eprintln!("prova: {}: {err}", suite.name);
                     return ExitCode::from(2);

@@ -239,6 +239,10 @@ pub struct RunConfig {
     /// `--specs` (the selector): narrow the run to leaves carrying an effective spec flag —
     /// graduated leaves and ordinary tests are deselected. Composes with `--list`.
     pub promises_only: bool,
+    /// `--proofs` (the mirror selector): narrow to leaves that are NOT promised — the settled,
+    /// implemented proofs. The state complement of `promises_only`; the two are mutually exclusive
+    /// (the CLI rejects both). Composes with `--list` (the `prova tests --proofs` view).
+    pub proofs_only: bool,
     /// Run the falsification pass: select only leaves declaring `falsified_by`, apply the mutation
     /// before the body, and invert the verdict — a body that survives is vacuous.
     pub falsify: bool,
@@ -301,6 +305,7 @@ impl Default for RunConfig {
             capabilities: Capabilities::default(),
             due: false,
             promises_only: false,
+            proofs_only: false,
             falsify: false,
             progress: std::sync::Arc::new(crate::progress::NullProgress),
             // Default to injecting the full bundled set, so any RunConfig that does not customize
@@ -388,6 +393,12 @@ impl RunConfig {
     /// `--specs` (the selector): run only the leaves carrying an effective spec flag.
     pub fn with_promises_only(mut self, promises_only: bool) -> Self {
         self.promises_only = promises_only;
+        self
+    }
+
+    /// `--proofs` (the mirror selector): run only the settled leaves — those NOT promised.
+    pub fn with_proofs_only(mut self, proofs_only: bool) -> Self {
+        self.proofs_only = proofs_only;
         self
     }
 
@@ -3677,11 +3688,22 @@ fn apply_falsify_filter(plan: Plan, enabled: bool) -> (Plan, usize, Vec<(String,
     narrow_plan(plan, keep)
 }
 
-fn apply_specs_filter(plan: Plan, enabled: bool) -> (Plan, usize, Vec<(String, usize)>) {
-    if !enabled {
+/// Narrow to one side of the promise⇄proof state duality: `promises_only` keeps the open promises,
+/// `proofs_only` keeps the settled proofs (its mirror). At most one is set — the CLI rejects both —
+/// and neither set means no filter.
+fn apply_specs_filter(
+    plan: Plan,
+    promises_only: bool,
+    proofs_only: bool,
+) -> (Plan, usize, Vec<(String, usize)>) {
+    if !promises_only && !proofs_only {
         return (plan, 0, Vec::new());
     }
-    let keep = plan.leaves.iter().map(|l| l.promises.is_some()).collect();
+    let keep = plan
+        .leaves
+        .iter()
+        .map(|l| if proofs_only { l.promises.is_none() } else { l.promises.is_some() })
+        .collect();
     narrow_plan(plan, keep)
 }
 
@@ -5115,7 +5137,8 @@ fn execute_collected(
         let plan = build_plan(&col, &config.capabilities)?;
         let (plan, mut deselected, mut dropped) = apply_selection(plan, &config.selection);
         let (plan, falsify_deselected, falsify_dropped) = apply_falsify_filter(plan, config.falsify);
-        let (plan, spec_deselected, spec_dropped) = apply_specs_filter(plan, config.promises_only);
+        let (plan, spec_deselected, spec_dropped) =
+            apply_specs_filter(plan, config.promises_only, config.proofs_only);
         deselected += falsify_deselected + spec_deselected;
         dropped.extend(falsify_dropped);
         dropped.extend(spec_dropped);
@@ -5891,7 +5914,7 @@ impl HeldTopology {
             let (plan, falsify_deselected, falsify_dropped) =
                 apply_falsify_filter(plan, self.config.falsify);
             let (plan, spec_deselected, spec_dropped) =
-                apply_specs_filter(plan, self.config.promises_only);
+                apply_specs_filter(plan, self.config.promises_only, self.config.proofs_only);
             deselected += falsify_deselected + spec_deselected;
             dropped.extend(falsify_dropped);
             dropped.extend(spec_dropped);
@@ -6115,6 +6138,13 @@ pub fn discover_path(path: &Path) -> mlua::Result<Vec<String>> {
 /// global used there (e.g. `archetect.verify` registering tests) must exist during discovery too —
 /// pass the same `RunConfig` you would run with.
 pub fn discover_path_with(path: &Path, config: &RunConfig) -> mlua::Result<Vec<String>> {
+    Ok(list_path_nodes(path, config)?.into_iter().map(|n| n.path).collect())
+}
+
+/// The state-carrying discovery for one file — `discover_path_with` drops the state for its
+/// `Vec<String>` callers; the suite path keeps it. Shared so the single-file fast path in
+/// `discover_suite_files` and `discover_path_with` cannot diverge.
+fn list_path_nodes(path: &Path, config: &RunConfig) -> mlua::Result<Vec<ListNode>> {
     let (_lua, col) = read_and_collect(path, config)?;
     let col = col.borrow();
     list_plan(&col, config)
@@ -6130,9 +6160,9 @@ pub(crate) fn discover_suite_files(
     setup: Option<&Path>,
     files: &[PathBuf],
     config: &RunConfig,
-) -> mlua::Result<Vec<String>> {
+) -> mlua::Result<Vec<ListNode>> {
     if setup.is_none() && files.len() == 1 {
-        return discover_path_with(&files[0], config);
+        return list_path_nodes(&files[0], config);
     }
     let (lua, col) = build_lua(name.to_string(), config)?;
     if let Some(setup) = setup {
@@ -6186,17 +6216,34 @@ pub fn obligations_for_suite(
         .collect())
 }
 
+/// One discovered node: its path, plus which side of the promise⇄proof duality it sits on. The
+/// tests-lane report (`prova tests`) state-tags each; the plain path listing throws the flag away.
+#[derive(Debug, Clone)]
+pub struct ListNode {
+    pub path: String,
+    /// True when this leaf is an open promise (carries a `promises` reason), false when it is a
+    /// settled proof.
+    pub promised: bool,
+}
+
 /// The shared tail of discovery: build the plan (validations included), honor selection and the
-/// `--specs` filter, and return the surviving leaf paths.
-fn list_plan(col: &Collector, config: &RunConfig) -> mlua::Result<Vec<String>> {
+/// `--specs`/`--proofs` state filter, and return the surviving leaves as `ListNode`s (path + state).
+fn list_plan(col: &Collector, config: &RunConfig) -> mlua::Result<Vec<ListNode>> {
     let (plan, _deselected, _dropped) =
         apply_selection(build_plan(col, &config.capabilities)?, &config.selection);
     let (plan, _falsify_deselected, _) = apply_falsify_filter(plan, config.falsify);
-    let (plan, _spec_deselected, _) = apply_specs_filter(plan, config.promises_only);
+    let (plan, _spec_deselected, _) =
+        apply_specs_filter(plan, config.promises_only, config.proofs_only);
     Ok(plan
         .leaves
         .iter()
-        .flat_map(|leaf| leaf.unit.leaf_paths().into_iter().map(String::from))
+        .flat_map(|leaf| {
+            let promised = leaf.promises.is_some();
+            leaf.unit
+                .leaf_paths()
+                .into_iter()
+                .map(move |p| ListNode { path: p.to_string(), promised })
+        })
         .collect())
 }
 
