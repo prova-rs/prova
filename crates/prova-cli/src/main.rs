@@ -121,14 +121,14 @@ const VERBS: &[Verb] = &[
     },
     Verb {
         name: "specs",
-        help: "  prova specs               the specs lane: claims + backlog items in [specs] docs,\n\
-               \x20                           state-tagged; --claims / --backlog narrow (query only)",
+        help: "  prova specs               the specs lane: claims + backlog items, state-tagged;\n\
+               \x20                           --claims/--backlog narrow; `promote <id>` thaws one to a claim",
         run: specs_subcommand,
     },
     Verb {
         name: "tests",
         help: "  prova tests               the tests lane: every node, state-tagged PROMISE/PROOF;\n\
-               \x20                           --promises / --proofs narrow to one state (query only)",
+               \x20                           --promises/--proofs narrow; `burndown`/`falsify` drive",
         run: tests_subcommand,
     },
     Verb {
@@ -538,6 +538,77 @@ fn owed_subcommand(args: Vec<String>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// The specs lane's one state-transition write: thaw a backlog item into a claim, in place (a
+/// keyword flip — the id and prose stay put, only the state changes). Shared by `prova specs promote
+/// <id>` (the lane driver) and, transitionally, `prova backlog promote <id>`. Demotion is
+/// deliberately not a CLI verb: cooling a claim back is only safe when nothing binds it, a check that
+/// needs the proofs in hand.
+fn promote_claim(id: Option<String>) -> ExitCode {
+    let Some(id) = id else {
+        eprintln!("prova: promote <id> — which backlog item?\nusage: prova specs promote <doc.md#id | id>");
+        return ExitCode::from(2);
+    };
+    let home = match resolve_home(None) {
+        Ok(h) => h,
+        Err(code) => return code,
+    };
+    let manifest = match std::fs::read_to_string(&home.manifest)
+        .map_err(|e| e.to_string())
+        .and_then(|text| Manifest::parse(&text))
+    {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("prova: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let docs = spec_scan_roots(&manifest);
+    let scanned = match claims::scan(&home.dir, &docs) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("prova: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    // Resolve by full address when the arg carries a `#`, else by bare id — the courtesy `attest`
+    // extends, since a human has the id but not always the path.
+    let candidates: Vec<&claims::Claim> = if id.contains('#') {
+        scanned.iter().filter(|c| c.address == id).collect()
+    } else {
+        claims::matching_id(&scanned, &id)
+    };
+    let target = match candidates.as_slice() {
+        [one] => *one,
+        [] => {
+            eprintln!("prova: no backlog item or claim with id {id:?}");
+            return ExitCode::FAILURE;
+        }
+        many => {
+            eprintln!("prova: ambiguous — {} anchors carry {id:?}:", many.len());
+            for m in many {
+                eprintln!("    {}", m.address);
+            }
+            eprintln!("  name the full address to disambiguate");
+            return ExitCode::from(2);
+        }
+    };
+    if target.kind == claims::Kind::Claim {
+        println!("prova: {} is already a claim — nothing to promote", target.address);
+        return ExitCode::SUCCESS;
+    }
+    match claims::promote(target, &home.dir) {
+        Ok(()) => {
+            println!("prova: promoted {} — backlog → claim", target.address);
+            println!("  it is now owed; write a proof that `covers = \"{}\"` to discharge it", target.address);
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("prova: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 /// `prova backlog` — the cold shelf. Every `<!-- backlog: id -->` anchor in the configured docs:
 /// work captured in place but deliberately NOT owed. Backlog and claim are the two states of one
 /// prose obligation; a backlog item is a claim a human has not yet decided to make active. It never
@@ -588,49 +659,10 @@ fn backlog_subcommand(args: Vec<String>) -> ExitCode {
         }
     };
 
-    // `promote <id>` — the one write. Everything else is a listing.
+    // `promote <id>` — the one write, shared with `prova specs promote`. Everything else is a
+    // listing. (promote_claim re-scans; promote is a rare manual step, so the second scan is cheap.)
     if first.as_deref() == Some("promote") {
-        let Some(id) = it.next() else {
-            eprintln!("prova: backlog promote <id> — which backlog item?\nusage: prova backlog promote <doc.md#id | id>");
-            return ExitCode::from(2);
-        };
-        // Resolve by full address when the arg carries a `#`, else by bare id — the same courtesy
-        // `attest` extends, since a human has the id but not always the path.
-        let candidates: Vec<&claims::Claim> = if id.contains('#') {
-            scanned.iter().filter(|c| c.address == id).collect()
-        } else {
-            claims::matching_id(&scanned, &id)
-        };
-        let target = match candidates.as_slice() {
-            [one] => *one,
-            [] => {
-                eprintln!("prova: no backlog item or claim with id {id:?}");
-                return ExitCode::FAILURE;
-            }
-            many => {
-                eprintln!("prova: ambiguous — {} anchors carry {id:?}:", many.len());
-                for m in many {
-                    eprintln!("    {}", m.address);
-                }
-                eprintln!("  name the full address to disambiguate");
-                return ExitCode::from(2);
-            }
-        };
-        if target.kind == claims::Kind::Claim {
-            println!("prova: {} is already a claim — nothing to promote", target.address);
-            return ExitCode::SUCCESS;
-        }
-        match claims::promote(target, &home.dir) {
-            Ok(()) => {
-                println!("prova: promoted {} — backlog → claim", target.address);
-                println!("  it is now owed; write a proof that `covers = \"{}\"` to discharge it", target.address);
-                ExitCode::SUCCESS
-            }
-            Err(e) => {
-                eprintln!("prova: {e}");
-                ExitCode::FAILURE
-            }
-        }
+        promote_claim(it.next())
     } else {
         // Listing — bare, or filtered to `--undated`. Any other argument is an error.
         let undated_only = match first.as_deref() {
@@ -699,9 +731,18 @@ fn backlog_subcommand(args: Vec<String>) -> ExitCode {
 /// narrow to one state. This is the lane report `prova list` stood in for; `list` retires in a later
 /// increment (docs/plans/query-consolidation.md).
 fn tests_subcommand(args: Vec<String>) -> ExitCode {
-    let mut full = vec!["--list-tagged".to_string()];
-    full.extend(args);
-    run(full)
+    // Drivers: `prova tests <driver>` acts on the lane. burndown/falsify are red→green worklists that
+    // delegate to the run engine. Any other first arg (a `--flag`, or a file/dir path) falls through
+    // to the report — `prova tests`, `prova tests --promises`, `prova tests path/to/dir`.
+    match args.split_first() {
+        Some((first, rest)) if first == "burndown" => burndown_subcommand(rest.to_vec()),
+        Some((first, rest)) if first == "falsify" => falsify_subcommand(rest.to_vec()),
+        _ => {
+            let mut full = vec!["--list-tagged".to_string()];
+            full.extend(args);
+            run(full)
+        }
+    }
 }
 
 /// `prova specs` — the specs lane: every claim and backlog item in the `[specs]` docs, each
@@ -711,6 +752,14 @@ fn tests_subcommand(args: Vec<String>) -> ExitCode {
 /// state (docs/plans/query-consolidation.md). Selectors (`-k`/`--tags`) arrive with the shared
 /// query engine in a later increment.
 fn specs_subcommand(args: Vec<String>) -> ExitCode {
+    // Driver: `prova specs promote <id>` thaws a backlog item into a claim (the one state-write,
+    // shared with `prova backlog promote`). `backfill` (proofs with no backing claim) lands in a
+    // later increment — it needs per-node `covers` in discovery.
+    if let Some((first, rest)) = args.split_first() {
+        if first == "promote" {
+            return promote_claim(rest.first().cloned());
+        }
+    }
     let mut want: Option<claims::Kind> = None;
     for arg in &args {
         match arg.as_str() {
@@ -718,9 +767,10 @@ fn specs_subcommand(args: Vec<String>) -> ExitCode {
                 println!(
                     "usage: prova specs                 list the specs lane: every claim and backlog item\n\
                      \x20      prova specs --claims        only the claims (owed obligations)\n\
-                     \x20      prova specs --backlog       only the backlog (captured, not yet owed)\n\n\
+                     \x20      prova specs --backlog       only the backlog (captured, not yet owed)\n\
+                     \x20      prova specs promote <id>    thaw a backlog item into a claim, in place\n\n\
                      Claims and backlog are the two states of one prose obligation, sharing the\n\
-                     `[specs]` sources. `prova backlog promote <id>` flips a backlog item to a claim."
+                     `[specs]` sources. Promotion is a keyword flip: the id and prose stay put."
                 );
                 return ExitCode::SUCCESS;
             }
@@ -950,7 +1000,17 @@ fn reminders_subcommand(args: Vec<String>) -> ExitCode {
             return ExitCode::SUCCESS;
         }
     }
-    // Route through the run machinery to collect declared reminders (loading the suite, like
+    // Driver: `prova reminders burndown` drives DUE reminders to green — a run with `--heed`, so due
+    // reminders fail loud (a run is the only thing that freshly evaluates conditions). Consistent
+    // with `prova tests burndown`: a red→green worklist that delegates to the run engine.
+    if let Some((first, rest)) = args.split_first() {
+        if first == "burndown" {
+            let mut full = vec!["--heed".to_string()];
+            full.extend(rest.iter().cloned());
+            return run(full);
+        }
+    }
+    // Report: route through the run machinery to collect declared reminders (loading the suite, like
     // `--list`, without executing), then overlay the recorded state. One command, before and after.
     let mut full = vec!["--reminders-list".to_string()];
     full.extend(args);

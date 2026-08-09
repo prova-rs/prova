@@ -275,9 +275,17 @@ The invariants to encode (each a unit test, wrapped as a deputed proof):
    first real instance of "unit-test verdicts as first-class proofs" (`terminology.md §2`,
    candidate home `docs/design/verifiers.md`). Its own increment because it is a mechanism, not a
    rename; decide the test-runner coupling (nextest vs. a hand-rolled junit emitter) explicitly.
-2. **Lane-polymorphic `Query`.** Extract `Selection` into a `Query { lane, selectors, state }` the
-   engine resolves per lane; fold the reminders selector in (invariant 5). Wire the tests lane through
-   it unchanged (guardrail: existing selection proofs stay green).
+2. **Tests-lane state model.** *(LANDED 2026-08-08 — commit `6a4fa`.)* Discovery now carries per-node
+   promise state: `list_plan` returns `Vec<ListNode>{path, promised}`; `discover_suite`/
+   `discover_suite_files` follow; `discover_path*` keep `Vec<String>` so the MCP `list` tool and the
+   core `discover_path` tests don't ripple. `--proofs` is the mirror selector of `--promises` (settled
+   proofs, via a symmetric `apply_specs_filter` + `RunConfig::proofs_only`; mutually exclusive).
+   `prova tests` state-tags each node PROMISE/PROOF (internal `--list-tagged`); plain `--list` stays
+   bare. Verified: 93 unit tests, clippy `-D warnings`, core discover tests, 144 black-box proofs
+   (spec/engine incl. promises/burndown/falsify, mcp, introspection), and a synthetic PROMISE/PROOF
+   filter teeth check. **Deferred (was bundled under the old "lane-polymorphic Query" heading):**
+   folding the reminders selector (`ledger.rs:74`) and adding selectors to the obligation family into
+   one shared grammar — separable, and it rides with increments 4/5.
 3. **The lane reporters.** *(LANDED 2026-08-08 — additive half.)* `prova specs` (new — claims +
    backlog side by side, state-tagged, `--claims`/`--backlog` narrow, over `claims::scan`) and
    `prova tests` (new — the tests-lane node listing, delegates to the `--list` path; `--promises`
