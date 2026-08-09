@@ -239,6 +239,62 @@ prova.test("the reminders tool takes the same selector axes the CLI verb takes",
   t:expect(excl.reminders[1].name):equals("cert-expiry")
 end)
 
+-- ── the selection axes: one grammar, both surfaces ───────────────────────────────────────────
+
+prova.test("every selection axis narrows the tests lane identically on both surfaces",
+  { covers = "docs/design/mcp-mode.md#selection-axes-parity" }, function(t)
+  local root = t:use(scratch)()
+  fs.mkdir(root .. "/proofs")
+  fs.write(root .. "/prova.toml", '[run]\nproofs = ["proofs"]\n')
+  fs.write(root .. "/proofs/axes_test.lua", [[
+prova.test("alpha api", { tags = { "api" } }, function(t) t:expect(true):is_true() end)
+prova.test("beta ops", { tags = { "ops" } }, function(t) t:expect(true):is_true() end)
+]])
+
+  local function cli(flags)
+    local r = shell.run(prova.bin .. " --list " .. flags, { cwd = root })
+    local out = {}
+    for line in r.stdout:gmatch("[^\n]+") do out[#out + 1] = line end
+    table.sort(out)
+    return out
+  end
+  local full = cli("--allow-empty")
+  t:expect(#full):equals(2)
+  local alpha_node
+  for _, p in ipairs(full) do
+    if p:find("alpha", 1, true) then alpha_node = p end
+  end
+
+  local by_id = mcp(root, {
+    call(2, "tests", '{"keywords":["alpha"]}'),
+    call(3, "tests", '{"keyword_excludes":["alpha"]}'),
+    call(4, "tests", '{"tags":["ops"]}'),
+    call(5, "tests", '{"tag_excludes":["ops"]}'),
+    call(6, "tests", json.encode({ nodes = { alpha_node } })),
+  })
+  local function tool_paths(id)
+    local out = {}
+    for _, n in ipairs(tool_json(by_id[id]).nodes) do out[#out + 1] = n.path end
+    table.sort(out)
+    return out
+  end
+  -- Each CLI narrowing must actually narrow (1 of 2) — otherwise an axis BOTH surfaces dropped
+  -- would compare equal vacuously — and the MCP spelling must select the same set.
+  local cases = {
+    { id = 2, flags = "-k alpha", axis = "keywords" },
+    { id = 3, flags = "-k '!alpha'", axis = "keyword_excludes" },
+    { id = 4, flags = "--tags ops", axis = "tags" },
+    { id = 5, flags = "--tags '!ops'", axis = "tag_excludes" },
+    { id = 6, flags = '--node "' .. alpha_node .. '"', axis = "nodes" },
+  }
+  for _, case in ipairs(cases) do
+    local narrowed = cli(case.flags)
+    t:expect(#narrowed, case.axis .. " narrows on the CLI"):equals(1)
+    t:expect(json.encode(tool_paths(case.id)), case.axis .. " selects the same set over MCP")
+      :equals(json.encode(narrowed))
+  end
+end)
+
 -- ── one skill, three doors ───────────────────────────────────────────────────────────────────
 
 prova.test("the one embedded skill: printed, served as instructions, and installed",

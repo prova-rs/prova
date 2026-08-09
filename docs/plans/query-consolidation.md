@@ -355,8 +355,15 @@ The invariants to encode (each a unit test, wrapped as a deputed proof):
    set (invariant 3 — the inc-1 under-assertion); and `lane_surface_parity`'s **MCP leg closed** —
    every lane now gates verb ∧ topic ∧ tool. Each MCP tool shares its data source with the CLI verb
    (claims::scan, collect_reminders, builtin_capability_names, registry::search_entries), so the two
-   surfaces cannot drift on content. **Remaining:** invariant (2) — the selector-parity unit test
-   (CLI `SelectionArgs` ↔ core `Selection` axes), so `to_selection` can't silently drop an axis.
+   surfaces cannot drift on content. **Invariant (2) LANDED 2026-08-09:** `selection_axes_parity`
+   (mcp.rs) — the axis list is an exhaustive `Selection` destructure (a new axis fails compilation
+   until named), each spoken axis is probed behaviorally through `to_selection` (a dropped, renamed,
+   or mis-wired field is red), and the wire-schema field sets are matched exactly against the
+   classified axis/modifier lists, `RemindersRequest` included. Claimed as
+   `docs/design/mcp-mode.md#selection-axes-parity`, covered black-box by an MCP↔CLI
+   narrowing-equality proof over every axis. The reminders lane also joined the query grammar the
+   same day (state filters + selectors, `docs/design/reminders.md`), retiring the parse-and-ignore
+   selector hole — increment 8 is complete.
 
 ## Settled naming decisions (all ratified 2026-08-08)
 

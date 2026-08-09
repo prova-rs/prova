@@ -1079,3 +1079,130 @@ impl Reporter for FailureCollector {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// CLI↔MCP alignment, invariant 2 (docs/design/mcp-mode.md#selection-axes-parity,
+    /// docs/plans/query-consolidation.md): every core `Selection` axis reaches the MCP selection
+    /// surface under its own name, or sits on the explicit MCP-absent allowlist with the reason.
+    ///
+    /// Three interlocking checks, so no direction can drift silently:
+    ///   1. The core axis list is derived by exhaustively destructuring `Selection` — a new axis
+    ///      refuses to compile until named in AXES.
+    ///   2. Each spoken axis is probed BEHAVIORALLY: a JSON argument named for the axis must land
+    ///      on that axis after `to_selection` — catching a missing field, a renamed field, and a
+    ///      field wired to the wrong axis alike. (`SelectionArgs` tolerates unknown fields, so a
+    ///      dropped field would swallow the probe and surface here as an empty axis.)
+    ///   3. The WIRE field sets (from the JSON schema the server serves) are matched exactly
+    ///      against the classified lists, so an MCP field that maps to no core axis — or a new
+    ///      one nobody classified — is red.
+    #[test]
+    fn selection_axes_parity() {
+        // Lane axes are a manifest/CLI concept the raw MCP surface deliberately does not speak:
+        // a profile resolves CLI-side, and `to_selection` pins these empty.
+        const MCP_ABSENT: &[&str] = &["lane_tags", "lane_tag_excludes"];
+
+        let Selection {
+            keywords: _,
+            keyword_excludes: _,
+            tags: _,
+            tag_excludes: _,
+            nodes: _,
+            lane_tags: _,
+            lane_tag_excludes: _,
+        } = Selection::default();
+        const AXES: &[&str] = &[
+            "keywords",
+            "keyword_excludes",
+            "tags",
+            "tag_excludes",
+            "nodes",
+            "lane_tags",
+            "lane_tag_excludes",
+        ];
+        let axis_of = |sel: &Selection, axis: &str| -> Vec<String> {
+            match axis {
+                "keywords" => sel.keywords.clone(),
+                "keyword_excludes" => sel.keyword_excludes.clone(),
+                "tags" => sel.tags.clone(),
+                "tag_excludes" => sel.tag_excludes.clone(),
+                "nodes" => sel.nodes.clone(),
+                "lane_tags" => sel.lane_tags.clone(),
+                "lane_tag_excludes" => sel.lane_tag_excludes.clone(),
+                other => panic!("axis_of misses `{other}` — extend it alongside AXES"),
+            }
+        };
+
+        for axis in AXES {
+            let probe: SelectionArgs = serde_json::from_value(json!({ *axis: ["probe"] }))
+                .unwrap_or_else(|e| panic!("SelectionArgs rejects `{axis}`: {e}"));
+            let landed = axis_of(&to_selection(&probe), axis);
+            if MCP_ABSENT.contains(axis) {
+                assert!(
+                    landed.is_empty(),
+                    "axis `{axis}` is listed MCP-absent but an MCP argument reached it — delete \
+                     its MCP_ABSENT row (the axis is spoken now; graduate it)."
+                );
+            } else {
+                assert_eq!(
+                    landed,
+                    vec!["probe".to_string()],
+                    "core Selection axis `{axis}` is not reachable from the MCP surface under its \
+                     own name — add the `SelectionArgs` field and wire it in `to_selection`, or \
+                     list it in MCP_ABSENT with the reason \
+                     (docs/design/mcp-mode.md#selection-axes-parity)."
+                );
+            }
+        }
+
+        // The reverse direction, over WIRE names (the schema the server actually serves): the
+        // selection fields are exactly the spoken axes, and everything else is a classified
+        // modifier. A new or renamed field lands in neither set and fails the exact match.
+        const MCP_SELECTION_FIELDS: &[&str] =
+            &["keywords", "keyword_excludes", "tags", "tag_excludes", "nodes"];
+        const MCP_MODIFIERS: &[&str] = &["last_failed", "promises", "falsify", "profile", "package"];
+        for field in MCP_SELECTION_FIELDS {
+            assert!(
+                AXES.contains(field) && !MCP_ABSENT.contains(field),
+                "MCP selection field `{field}` names no MCP-spoken core axis — rename it to match \
+                 the axis it feeds, or reclassify it as a modifier."
+            );
+        }
+        let wire_fields = |schema: schemars::Schema| -> std::collections::BTreeSet<String> {
+            schema
+                .as_value()
+                .get("properties")
+                .and_then(|p| p.as_object())
+                .map(|m| m.keys().cloned().collect())
+                .unwrap_or_default()
+        };
+        let classified: std::collections::BTreeSet<String> = MCP_SELECTION_FIELDS
+            .iter()
+            .chain(MCP_MODIFIERS)
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            wire_fields(schemars::schema_for!(SelectionArgs)),
+            classified,
+            "SelectionArgs' wire fields drifted from the classified sets — a selection field must \
+             name a core axis, and anything else is declared in MCP_MODIFIERS."
+        );
+
+        // The reminders lane's request speaks the same five axis names — the shared grammar's
+        // tool-level mirror (docs/design/reminders.md#reminders-selectors-narrow); `state` and
+        // `package` are its lane modifiers.
+        let reminders_expected: std::collections::BTreeSet<String> = MCP_SELECTION_FIELDS
+            .iter()
+            .chain(&["state", "package"])
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            wire_fields(schemars::schema_for!(RemindersRequest)),
+            reminders_expected,
+            "RemindersRequest's wire fields drifted from the shared selector axes + its lane \
+             modifiers (state, package)."
+        );
+    }
+}
