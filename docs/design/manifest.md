@@ -109,7 +109,18 @@ added later cannot creep into `prova run ut`, and the bare run stays the total c
 everything unswitch'd, so an unclassified addition always runs somewhere. The residual hole —
 a switched class no profile throws, or a profile throwing a switch nobody declares — is an
 alignment invariant in the `lane_surface_parity` mold: a unit test iterating declared switches ↔
-profile `switches` lists, adopted into the account by the ut leg. Recorded 2026-08-09.
+profile `switches` lists, adopted into the account by the ut leg. **One primitive, standard
+doors — not two mechanisms:** the switch is the authorization bit; `prova -s ut` and a profile's
+`switches = ["ut"]` are its CLI and baked doors, the same shape as `--heed` vs `heed_reminders`.
+The invocations differ by the ratified strictness split, not by mechanism: `prova run ut` is the
+CONTRACT (exactly the profile's positive scope, its guarantees), `prova -s ut` is the COURTESY
+WIDENED (the bare catch-all plus one class authorized). The CLI door is severable — it earns its
+place only for multi-class sweeps (`-s ut -s soak`; profiles run one at a time), classes too
+small for a profile, and ad-hoc iteration on one heavy test; if those never materialize, drop it.
+**Open sub-decision:** does positively naming a switched test throw its switch implicitly? Exact
+`--node` should (deselecting a test the caller named precisely is the swallowed-selector
+dishonesty the reminders lane just killed); fuzzy `-k`/`--tags` must not (a grazing keyword must
+never conduct a workspace compile by accident). Recorded 2026-08-09.
 
 <!-- backlog: spec-sources-are-queryable -->
 **A package's spec sources must be answerable to whoever has to write one, and say which are
