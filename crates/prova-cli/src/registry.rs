@@ -582,6 +582,26 @@ options: --offline (cache only) · -U/--update (force-refresh registry sources)"
 
 /// The `prova packages` verb. Discovery works without a manifest on purpose — like
 /// `prova init --list`, an agent explores before a package exists.
+/// Search the configured registries for the MCP `packages` tool: load every entry (cached, default
+/// freshness — no forced fetch), optionally filter by `query` with the SAME substring match `run`
+/// uses (name + description + keywords), and return the hits plus any per-entry warnings. Sharing
+/// `load_all` + `matches` is what keeps the MCP `packages` tool and the CLI `prova packages` verb
+/// searching identically — one registry, one result, two front-ends.
+pub(crate) fn search_entries(
+    layout: &dyn SystemLayout,
+    query: Option<&str>,
+) -> Result<(Vec<Entry>, Vec<String>), String> {
+    let loaded = load_all(layout, &GitFetchOptions::default())?;
+    let entries = match query {
+        Some(q) if !q.trim().is_empty() => {
+            let q = q.trim();
+            loaded.entries.into_iter().filter(|e| matches(e, q)).collect()
+        }
+        _ => loaded.entries,
+    };
+    Ok((entries, loaded.warnings))
+}
+
 pub fn run(args: Vec<String>) -> ExitCode {
     let mut offline = false;
     let mut force = false;

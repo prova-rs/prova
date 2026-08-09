@@ -598,3 +598,29 @@ pub(super) fn reminders_blocking(env: &McpEnv, req: RemindersRequest) -> Result<
         .collect();
     Ok((json!({ "reminders": rows }), any_due))
 }
+
+/// `packages` tool body — registry search as JSON, the twin of `prova packages <query>`. Shares
+/// `registry::search_entries` (hence load_all + matches) with the CLI verb, so both surfaces return
+/// the same hits. `query` is an optional substring over name + description + keywords; omit to list
+/// every entry. `add`/`info` stay CLI-side — they write the manifest.
+pub(super) fn packages_blocking(env: &McpEnv, req: PackagesRequest) -> Result<(serde_json::Value, bool), String> {
+    let (entries, _warnings) = crate::registry::search_entries(&env.layout, req.query.as_deref())?;
+    let rows: Vec<serde_json::Value> = entries
+        .iter()
+        .map(|e| {
+            json!({
+                "name": e.name,
+                "registry": e.registry,
+                "repo": e.repo,
+                "description": e.description,
+                "keywords": e.keywords,
+                "latest": e.latest,
+                "namespaces": e.namespaces,
+                "topologies": e.topologies,
+                "shapes": e.shapes,
+                "requires": e.requires,
+            })
+        })
+        .collect();
+    Ok((json!({ "packages": rows }), false))
+}

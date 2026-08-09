@@ -96,7 +96,7 @@ prova.test("the tool surface mirrors the CLI verbs, warm holder included",
   -- view (increment 7 reconciles its name with the CLI's `ps`).
   for _, expected in ipairs({
     "run", "tests", "specs", "reminders", "eval", "learn", "introspect", "capabilities",
-    "attest", "evidence", "owed", "up", "down", "status",
+    "packages", "attest", "evidence", "owed", "up", "down", "status",
   }) do
     t:expect(names[expected], "tool " .. expected .. " is served"):is_truthy()
   end

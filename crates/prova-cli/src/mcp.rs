@@ -57,8 +57,8 @@ use prova_core::{
 mod blocking;
 use blocking::{
     attest_blocking, capabilities_blocking, down_blocking, eval_blocking, evidence_blocking,
-    list_blocking, owed_blocking, reminders_blocking, run_blocking, specs_blocking, up_blocking,
-    warm_eval_blocking, warm_run_blocking,
+    list_blocking, owed_blocking, packages_blocking, reminders_blocking, run_blocking,
+    specs_blocking, up_blocking, warm_eval_blocking, warm_run_blocking,
 };
 
 /// `prova mcp [--profile NAME] [--manifest PATH] [-P name=source]` — resolve the environment once
@@ -504,6 +504,13 @@ struct RemindersRequest {
     package: Option<String>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+#[serde(deny_unknown_fields)]
+struct PackagesRequest {
+    /// A substring to search over name + description + keywords. Omit to list every entry.
+    query: Option<String>,
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct LearnRequest {
@@ -923,6 +930,16 @@ impl ProvaMcpServer {
         let _serialized = self.run_lock.lock().await;
         let env = self.env.clone();
         blocking(move || reminders_blocking(&env, req)).await
+    }
+
+    #[tool(
+        name = "packages",
+        description = "Search the configured package registries — the discovery surface for plugins the core doesn't ship (postgres, kafka, jwt, …). `query` is a substring over name + description + keywords; omit to list everything. Returns compact JSON: { packages: [{ name, registry, repo, description, keywords, latest, namespaces, topologies, shapes, requires }] }. The agent twin of `prova packages <query>` — BEFORE hand-writing a capability, search here for a package that already provides it. `add`/`info` stay CLI-side (they write the manifest). See learn { topic = \"packages\" }."
+    )]
+    async fn packages(&self, Parameters(req): Parameters<PackagesRequest>) -> CallToolResult {
+        let _serialized = self.run_lock.lock().await;
+        let env = self.env.clone();
+        blocking(move || packages_blocking(&env, req)).await
     }
 
     #[tool(
