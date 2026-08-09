@@ -519,3 +519,82 @@ pub(super) fn capabilities_blocking() -> Result<(serde_json::Value, bool), Strin
         .collect();
     Ok((json!({ "capabilities": rows }), false))
 }
+
+/// `specs` tool body — the specs lane (claims + backlog items) as JSON, the twin of `prova specs`.
+/// Reads the same source as the CLI verb (`claims::scan` over the `[specs]` docs), so the two
+/// cannot disagree on what is anchored. `state` narrows to one side of the duality.
+pub(super) fn specs_blocking(env: &McpEnv, req: SpecsRequest) -> Result<(serde_json::Value, bool), String> {
+    let call = env.resolve_call(None, req.package.as_deref())?;
+    let manifest = std::fs::read_to_string(&call.home.manifest)
+        .map_err(|e| e.to_string())
+        .and_then(|t| crate::manifest::Manifest::parse(&t))?;
+    let want = match req.state.as_deref() {
+        None => None,
+        Some("backlog") => Some(crate::claims::Kind::Backlog),
+        Some("claim") | Some("claims") => Some(crate::claims::Kind::Claim),
+        Some(other) => {
+            return Err(format!(
+                "unknown specs state {other:?} — expected \"backlog\" or \"claim\""
+            ))
+        }
+    };
+    let docs = manifest.specs.as_ref().map(|s| s.scan_roots()).unwrap_or_default();
+    let scanned = crate::claims::scan(&call.home.dir, &docs).map_err(|e| e.to_string())?;
+    let rows: Vec<serde_json::Value> = scanned
+        .iter()
+        .filter(|c| match want {
+            Some(k) => c.kind == k,
+            None => true,
+        })
+        .map(|c| {
+            let state = match c.kind {
+                crate::claims::Kind::Claim => "claim",
+                crate::claims::Kind::Backlog => "backlog",
+            };
+            let mut v = json!({
+                "state": state,
+                "address": c.address,
+                "file": c.file.display().to_string(),
+                "line": c.line,
+            });
+            if let Some(d) = &c.date {
+                v["date"] = json!(d);
+            }
+            v
+        })
+        .collect();
+    Ok((json!({ "specs": rows }), false))
+}
+
+/// `reminders` tool body — the attention account as JSON, the twin of `prova reminders`: every
+/// declared `prova.remind` with the state the last run recorded overlaid (due / watching /
+/// unevaluated / pending). Same declared+recorded overlay the CLI's `list_reminders` renders.
+/// `isError` when any is DUE — mirroring the CLI verb's non-zero exit on a due reminder.
+pub(super) fn reminders_blocking(env: &McpEnv, req: RemindersRequest) -> Result<(serde_json::Value, bool), String> {
+    let call = env.resolve_call(None, req.package.as_deref())?;
+    let suites = crate::collect_suites(&call.base_dir, &call.declared, &call.proofs, true)?;
+    let config = crate::engine_config(1, &call.dependencies, Some(&call.home), prova_core::progress::null())
+        .with_capabilities(call.capabilities.clone());
+    let declared = prova_core::collect_reminders(&suites, &config);
+    let recorded = crate::record::load(&call.home)
+        .map(|r| r.reminders)
+        .unwrap_or_default();
+    let states: std::collections::BTreeMap<&str, &crate::record::ReminderEntry> =
+        recorded.iter().map(|e| (e.name.as_str(), e)).collect();
+    let mut any_due = false;
+    let rows: Vec<serde_json::Value> = declared
+        .iter()
+        .map(|d| match states.get(d.name.as_str()) {
+            Some(e) if e.state == "due" => {
+                any_due = true;
+                json!({ "name": d.name, "state": "due", "message": d.message, "why": e.why })
+            }
+            Some(e) if e.state == "unevaluated" => {
+                json!({ "name": d.name, "state": "unevaluated", "message": d.message, "why": e.why })
+            }
+            Some(_) => json!({ "name": d.name, "state": "watching", "message": d.message }),
+            None => json!({ "name": d.name, "state": "pending", "message": d.message }),
+        })
+        .collect();
+    Ok((json!({ "reminders": rows }), any_due))
+}

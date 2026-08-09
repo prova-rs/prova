@@ -57,7 +57,8 @@ use prova_core::{
 mod blocking;
 use blocking::{
     attest_blocking, capabilities_blocking, down_blocking, eval_blocking, evidence_blocking,
-    list_blocking, owed_blocking, run_blocking, up_blocking, warm_eval_blocking, warm_run_blocking,
+    list_blocking, owed_blocking, reminders_blocking, run_blocking, specs_blocking, up_blocking,
+    warm_eval_blocking, warm_run_blocking,
 };
 
 /// `prova mcp [--profile NAME] [--manifest PATH] [-P name=source]` — resolve the environment once
@@ -486,6 +487,23 @@ struct OwedRequest {
     package: Option<String>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+#[serde(deny_unknown_fields)]
+struct SpecsRequest {
+    /// Narrow to one state of the specs lane: `"backlog"` (captured, not yet owed) or `"claim"`
+    /// (owed). Omit for both.
+    state: Option<String>,
+    /// A directory or manifest path: report THAT package's specs. Resolves fresh.
+    package: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+#[serde(deny_unknown_fields)]
+struct RemindersRequest {
+    /// A directory or manifest path: report THAT package's reminders. Resolves fresh.
+    package: Option<String>,
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct LearnRequest {
@@ -885,6 +903,26 @@ impl ProvaMcpServer {
     async fn capabilities(&self) -> CallToolResult {
         let _serialized = self.run_lock.lock().await;
         blocking(capabilities_blocking).await
+    }
+
+    #[tool(
+        name = "specs",
+        description = "The specs lane — every claim and backlog item anchored in the [specs] docs, each state-tagged. `state` narrows to one side of the duality: \"claim\" (an owed obligation) or \"backlog\" (captured but not yet owed). Returns compact JSON: { specs: [{ state, address, file, line, date? }] } where address is the `path#id` a proof names in `covers` and date is the optional YYYY-MM-DD draw-down deadline. A report; executes nothing. The agent twin of `prova specs`. Pass `package` to target another package. See learn { topic = \"claims\" }."
+    )]
+    async fn specs(&self, Parameters(req): Parameters<SpecsRequest>) -> CallToolResult {
+        let _serialized = self.run_lock.lock().await;
+        let env = self.env.clone();
+        blocking(move || specs_blocking(&env, req)).await
+    }
+
+    #[tool(
+        name = "reminders",
+        description = "The attention account — every `prova.remind` declared in the suite, with the state the last run recorded overlaid: due (attention owed — carries the condition's `why` and the instruction `message`), watching (armed, condition holds), unevaluated (could not run), or pending (declared, no run has evaluated it yet). Returns compact JSON: { reminders: [{ name, state, message, why? }] }. The result is marked isError when ANY reminder is due — the same signal the CLI's non-zero exit gives. Collects the suite but executes no test. The agent twin of `prova reminders`. Pass `package` to target another package. See learn { topic = \"reminders\" }."
+    )]
+    async fn reminders(&self, Parameters(req): Parameters<RemindersRequest>) -> CallToolResult {
+        let _serialized = self.run_lock.lock().await;
+        let env = self.env.clone();
+        blocking(move || reminders_blocking(&env, req)).await
     }
 
     #[tool(
