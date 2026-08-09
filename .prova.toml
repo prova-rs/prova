@@ -25,6 +25,18 @@ must_run = ["quality"]
 [profiles.quality.env]
 PROVA_QUALITY = "1"
 
+# The deputed unit-test leg: `prova run ut` conducts `cargo nextest` ONCE (a file-scoped fixture
+# compiles + runs the workspace's unit tests, emitting junit), adopts every case into the account,
+# and case-granular readers bind claims to named unit tests — the conduct-once-read-many pattern
+# (docs/design/verifiers.md#conduct-once-read-many). Opt-in for the same reason as `quality`
+# (conducting compiles); `must_run` both facts so under this profile a missing nextest FAILS
+# rather than skips — `prova run ut` is a contract, not a courtesy.
+[profiles.ut]
+proofs   = ["ut"]
+must_run = ["ut", "cargo-nextest"]
+[profiles.ut.env]
+PROVA_UT = "1"
+
 # Prova's own specs — the prose layer. The point of declaring this is not bookkeeping — it is that
 # prova must be the exemplar of a proven application, and a lifecycle nobody has run end-to-end on a
 # real project is a design rather than a practice. Claim and backlog anchors live in the design

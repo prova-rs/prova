@@ -29,6 +29,17 @@ runtime.capability("quality", function()
   return os.getenv("PROVA_QUALITY") ~= nil
 end)
 
+-- `ut` — the OPT-IN gate on the deputed unit-test adoption under proofs/ut/ (cargo nextest via the
+-- conduct-once-read-many pattern, docs/design/verifiers.md#conduct-once-read-many). Conducting
+-- nextest compiles the workspace, so — exactly like `quality` — it must never happen because a
+-- person typed `prova`. The `ut` profile switches this on (its env sets PROVA_UT) and `must_run`s
+-- it so it cannot silently skip once selected. The deputy itself is a second, separate fact:
+-- proofs also `requires = { "cargo-nextest" }` (a PATH probe), so "nobody asked for ut" and
+-- "nextest is not installed" stay two different answers with two different remedies.
+runtime.capability("ut", function()
+  return os.getenv("PROVA_UT") ~= nil
+end)
+
 -- There is no `placement_broker` gate anymore. The placement conformance suite
 -- (proofs/spec/placement/) is hermetic: with no PROVA_PLACEMENT_BROKER named it spawns the MIT
 -- reference broker (`prova broker`, through prova.bin) per test, so the suite runs — and the

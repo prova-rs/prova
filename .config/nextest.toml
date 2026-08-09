@@ -1,0 +1,15 @@
+# Nextest profiles for prova's own workspace.
+#
+# `prova` — the profile the `prova run ut` gate conducts (proofs/ut/nextest_test.lua): its junit
+# artifact is what `junit.verify` adopts into the account, per the conduct-once-read-many pattern
+# (docs/design/verifiers.md#conduct-once-read-many). The artifact lands at
+# target/nextest/prova/junit.xml.
+#
+# fail-fast is OFF so one conduct adopts the COMPLETE picture: each conduct costs a workspace
+# compilation, so an agent burning down red cases must see every failure per run, not the first
+# one followed by cancelled (and therefore unattested) cases.
+[profile.prova]
+fail-fast = false
+
+[profile.prova.junit]
+path = "junit.xml"
