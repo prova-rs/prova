@@ -4,7 +4,7 @@
 -- .prova/baselines/quality.json (lower is better). No new ones allowed; removing them is welcome —
 -- run `prova --profile quality --update-baseline` to tighten the floor once you have.
 --
--- HEAVY (recompiles with the restriction lints enabled): requires the `quality` capability, same as
+-- HEAVY (recompiles with the restriction lints enabled): behind the `quality` switch, same as
 -- the clippy gate. One clippy invocation feeds both counts via a file-scoped fixture.
 
 local restrict = prova.fixture("clippy_restrict", Scope.File, function()
@@ -23,10 +23,10 @@ local function count(out, needle)
   return n
 end
 
-prova.test("production .unwrap() count does not regress past the baseline", { requires = { "quality" } }, function(t)
+prova.test("production .unwrap() count does not regress past the baseline", { switch = "quality" }, function(t)
   measure.ratchet(t, "rust.unwrap.production", count(t:use(restrict), "used `unwrap%(%)`"), { set = "quality" })
 end)
 
-prova.test("production .expect() count does not regress past the baseline", { requires = { "quality" } }, function(t)
+prova.test("production .expect() count does not regress past the baseline", { switch = "quality" }, function(t)
   measure.ratchet(t, "rust.expect.production", count(t:use(restrict), "used `expect%(%)`"), { set = "quality" })
 end)

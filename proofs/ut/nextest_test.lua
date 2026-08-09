@@ -4,10 +4,11 @@
 --- account, and sibling readers bind claims to named cases at zero additional compilations.
 ---
 --- HEAVY: conducting compiles the workspace, so this must never fire because a person typed
---- `prova`. It requires the `ut` capability (.prova/config.lua, gated on PROVA_UT, switched on by
---- the `ut` profile) and `cargo-nextest` (a PATH probe) — two facts, two remedies, kept separate
---- per the soak/quality doctrine. The profile `must_run`s both, so `prova run ut` fails rather
---- than skips when either is missing: a profile is a contract, not a courtesy.
+--- `prova`. The whole file sits behind the `ut` switch (suite.lua) — off unless thrown, thrown by
+--- the `ut` profile or `-s ut` — while `cargo-nextest` stays a `requires` world fact: intent and
+--- world are two facts with two remedies (docs/design/manifest.md#switches-not-env-capabilities).
+--- The profile `must_run`s the deputy, so `prova run ut` fails rather than skips when nextest is
+--- missing: a profile is a contract, not a courtesy.
 
 -- Conduct the deputy once. The stale artifact is removed FIRST, so a deputy that dies before
 -- emitting (a compile error) leaves nothing behind and the adoption fails loudly on "matched
@@ -25,7 +26,7 @@ local deputy = prova.fixture("nextest-junit", Scope.File, function()
 end)
 
 prova.test("the workspace's unit-test account holds — every nextest case adopted", {
-  requires = { "ut", "cargo-nextest" },
+  requires = { "cargo-nextest" },
   covers = "docs/design/verifiers.md#conduct-once-read-many",
   proves = "one compilation feeds the whole adoption: the fixture conducts, this proof ledgers every case as deputed rows, and the readers below pay only a parse",
 }, function(t)
@@ -49,7 +50,7 @@ local function expect_passed(t, report, name)
 end
 
 prova.test("the lane alignment invariants hold, spoken for by the account", {
-  requires = { "ut", "cargo-nextest" },
+  requires = { "cargo-nextest" },
   covers = "docs/design/mcp-mode.md#mcp-cli-parity",
   proves = "increment 1 deferred exactly this: the parity unit tests existed but evidence/owed/attest could not speak for them — now the account adopts their verdicts",
 }, function(t)
@@ -59,7 +60,7 @@ prova.test("the lane alignment invariants hold, spoken for by the account", {
 end)
 
 prova.test("selection-axes parity holds at the unit level, bound to its claim", {
-  requires = { "ut", "cargo-nextest" },
+  requires = { "cargo-nextest" },
   covers = "docs/design/mcp-mode.md#selection-axes-parity",
   proves = "the structural half of the parity claim (the exhaustive destructure + wire-schema match) reaches the account beside the behavioral black-box half",
 }, function(t)

@@ -33,6 +33,16 @@ The one rule both obey: an unmet capability is never silently "green". `requires
 reason is in the report); `must_run` fails loudly. A typo'd constraint is a config **error**, not a
 skip — a gate that never matched would read as passing, the vacuous green this contract exists to remove.
 
+## Not a capability: the opt-in switch
+
+"Someone asked for this expensive class" is **intent**, not a host fact — so it is never a
+capability. A test that must not fire unasked carries `switch = "<class>"` (off unless thrown
+with `-s <class>` or a profile's `switches = [...]`), and keeps `requires` for what the WORLD
+must provide. Two facts, two remedies: `prova run ut` on a box without nextest fails the
+`must_run` guarantee (install it); bare `prova` simply holds the class back (throw it when you
+mean it). Registering an env-var-probing capability to gate a test class is the old pattern this
+replaced (docs/design/manifest.md#switches-not-env-capabilities).
+
 ## One meaning — the registry uses `keywords`
 
 "Capability" names exactly this: a host fact a test needs. It is deliberately NOT the registry's

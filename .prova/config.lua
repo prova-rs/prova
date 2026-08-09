@@ -2,43 +2,12 @@
 -- A marker capability so a proof can demonstrate the companion is wired.
 runtime.capability("prova_selftest", function() return true end)
 
--- `soak` — the OPT-IN gate on the long-running container-runtime soaks under proofs/soak/.
---
--- It means exactly one thing: "someone asked for a soak". Soaks take minutes to hours and hammer
--- the container runtime, so they must never happen because a person typed `prova`.
---
--- It deliberately does NOT also check for docker. A soak proof asks for both — `requires = { "soak",
--- "docker" }` — because those are two separate facts with two separate remedies: one is fixed by
--- setting the variable, the other by installing a runtime. Folding them into one predicate would
--- report "soak unavailable" for a machine that simply has no docker, and a capability that can be
--- false for two unrelated reasons cannot tell you which.
---
--- A capability rather than a tag because this is what capabilities already mean: `requires` skips
--- gracefully where something is unavailable, which is the wanted behaviour, and needs no new
--- selection flags at the call site.
-runtime.capability("soak", function()
-  return os.getenv("PROVA_SOAK") ~= nil
-end)
-
--- `quality` — the OPT-IN gate on the heavy, cargo-based code-quality proofs under proofs/quality/
--- (the clippy gate, the unwrap/expect census). Each recompiles the workspace, so — exactly like
--- `soak` — they must never happen because a person typed `prova`. The `quality` profile switches
--- this on (its env sets PROVA_QUALITY) and `must_run`s it so it can't silently skip once selected;
--- a plain `prova` skips them. The fast file-size gate in the same directory needs no capability.
-runtime.capability("quality", function()
-  return os.getenv("PROVA_QUALITY") ~= nil
-end)
-
--- `ut` — the OPT-IN gate on the deputed unit-test adoption under proofs/ut/ (cargo nextest via the
--- conduct-once-read-many pattern, docs/design/verifiers.md#conduct-once-read-many). Conducting
--- nextest compiles the workspace, so — exactly like `quality` — it must never happen because a
--- person typed `prova`. The `ut` profile switches this on (its env sets PROVA_UT) and `must_run`s
--- it so it cannot silently skip once selected. The deputy itself is a second, separate fact:
--- proofs also `requires = { "cargo-nextest" }` (a PATH probe), so "nobody asked for ut" and
--- "nextest is not installed" stay two different answers with two different remedies.
-runtime.capability("ut", function()
-  return os.getenv("PROVA_UT") ~= nil
-end)
+-- The opt-in test classes (soak / quality / ut) used to be registered here as env-var-gated
+-- capabilities. They are `switch = "<class>"` declarations on the proofs themselves now —
+-- fail-closed at the declaration site, thrown by `-s <class>` or a profile's `switches`, with
+-- `requires` back to meaning world facts only (docker, cargo-nextest). See
+-- docs/design/manifest.md#switches-not-env-capabilities for why intent is a selection fact,
+-- never a capability.
 
 -- There is no `placement_broker` gate anymore. The placement conformance suite
 -- (proofs/spec/placement/) is hermetic: with no PROVA_PLACEMENT_BROKER named it spawns the MIT

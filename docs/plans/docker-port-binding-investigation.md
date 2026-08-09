@@ -105,19 +105,19 @@ rather than the client, the framing changes again.
 
 ```sh
 # Both arms, current runtime
-PROVA_SOAK=1 PROVA_SOAK_WORKERS=8 PROVA_SOAK_STARTS=800 prova -j 8 -k "soak "
+PROVA_SOAK_WORKERS=8 PROVA_SOAK_STARTS=800 prova -s soak -j 8 -k "soak "
 
 # One arm, aimed at a specific runtime
-PROVA_SOAK=1 PROVA_SOAK_CLIENT=cli PROVA_SOAK_WORKERS=8 PROVA_SOAK_STARTS=800 \
+PROVA_SOAK_CLIENT=cli PROVA_SOAK_WORKERS=8 PROVA_SOAK_STARTS=800 \
   DOCKER_HOST="unix://$HOME/.docker/run/docker.sock" prova -j 8 -k "soak "
 
 # The grpcbin workload (emulated, long-lived, with readiness)
-PROVA_SOAK=1 PROVA_SOAK_IMAGE=moul/grpcbin PROVA_SOAK_PORT=9000 \
+PROVA_SOAK_IMAGE=moul/grpcbin PROVA_SOAK_PORT=9000 \
   PROVA_SOAK_LIFETIME=none PROVA_SOAK_WAIT=1 \
   PROVA_SOAK_WORKERS=8 PROVA_SOAK_STARTS=200 prova -j 8 -k "soak "
 ```
 
-Knobs: `PROVA_SOAK` (opt-in gate), `PROVA_SOAK_CLIENT` (`prova`|`cli`|`both`), `PROVA_SOAK_WORKERS`,
+Knobs: `-s soak` (the opt-in switch), `PROVA_SOAK_CLIENT` (`prova`|`cli`|`both`), `PROVA_SOAK_WORKERS`,
 `PROVA_SOAK_STARTS`, `PROVA_SOAK_IMAGE`, `PROVA_SOAK_PORT`, `PROVA_SOAK_LIFETIME` (`none` = run the
 image's own entrypoint), `PROVA_SOAK_WAIT`.
 
@@ -150,7 +150,7 @@ that never existed. Keep `docker.diagnostics()` either way; it is what makes any
   `prova-agents@`; the feature it specified has since landed, so the whole suite is green. If you
   read an older note calling it red, that note is stale.
 - Rust: 164 passing. Proof suite: 17 passing, 0 failing, 2 skipped (the soak arms, correctly gated
-  off without `PROVA_SOAK`).
+  off without `-s soak`).
 - `cargo fmt --check` clean workspace-wide.
 - Other workspaces (`prova-agents@`, `prova-mocks@`) are active on this line — check
   `jj workspace list` before restructuring anything, and prefer rebasing your own commits over

@@ -4,7 +4,8 @@
 prova                        # the whole suite (manifest found by walking up)
 prova -k MySQL               # nodes whose path contains MySQL (repeatable; !PAT excludes)
 prova --tags '!build'        # by tag, own or inherited (repeatable; !tag excludes)
-prova --node "exact › path"  # precisely the node a report named
+prova --node "exact › path"  # precisely the node a report named (implies its switch, if any)
+prova -s heavy               # throw an opt-in switch: run the `heavy` class too (repeatable, a,b)
 prova --last-failed          # exactly what was red last run — YOUR MAIN ITERATION VERB
 prova --list                 # discover without running (respects selection)
 prova --promises             # only promised tests — the open spec surface (`prova learn promises`)
@@ -15,6 +16,12 @@ prova <file-or-dir>...       # explicit paths bypass the manifest
 Selection pulls dependencies in automatically, keeps flows atomic, and never provisions
 fixtures for deselected work. Deselected ≠ skipped: the tally says `N deselected`. A selection
 matching nothing is an error unless `--allow-empty`.
+
+A test/group/suite marked `switch = "<class>"` is an **opt-in class**: off unless thrown (`-s`,
+or `switches = [...]` on `[run]`/a profile — the doors union). The bare tally reports held-back
+classes on one line ("switched off: ut (3) …"). Exact `--node` implies the throw; fuzzy `-k`/
+`--tags` never do. Intent lives here, on the selection axis — `requires` stays the world's facts
+(`prova learn capabilities`).
 
 ## Exit codes — what the loop keys on
 

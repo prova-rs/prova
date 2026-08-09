@@ -236,7 +236,8 @@ remains equally valid — pick per fixture.
 prova                       # the whole suite (prova.toml, found by walking up)
 prova -k MySQL              # only nodes whose path mentions MySQL (repeatable; !PAT excludes)
 prova --tags '!build'       # skip a tier by tag (own or inherited from groups)
-prova --node "exact › path" # precisely the node a report named
+prova --node "exact › path" # precisely the node a report named (implies its switch, if any)
+prova -s heavy              # throw an opt-in switch: include the `heavy` class this run
 prova --last-failed         # exactly what was red last run — your main iteration verb
 prova tests                 # the tests lane, state-tagged PROMISE/PROOF (respects selection)
 prova tests --promises      # just the open spec surface · `prova tests burndown` drives it red-loud
@@ -289,7 +290,7 @@ call tools. Tools mirror the CLI one-to-one and **everything else is identical**
 
 | MCP tool | CLI equivalent |
 |---|---|
-| `run { keywords?, keyword_excludes?, tags?, tag_excludes?, nodes?, last_failed?, promises?, due?, profile?, jobs?, topology? }` | `prova -k … --tags … --node … --last-failed --promises --due --profile … --jobs …` |
+| `run { keywords?, keyword_excludes?, tags?, tag_excludes?, nodes?, switches?, last_failed?, promises?, due?, profile?, jobs?, topology? }` | `prova -k … --tags … --node … -s … --last-failed --promises --due --profile … --jobs …` |
 | `list { same selection fields }` | `prova --list` (same flags) |
 | `eval { code, topology? }` | `prova eval '<code>'` |
 | `evidence { package? }` / `owed { package? }` | `prova evidence` / `prova owed` — the account and its debts |

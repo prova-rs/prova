@@ -75,9 +75,9 @@
 --
 -- GATING. `soak` (opt-in, PROVA_SOAK) and `docker` (present). Absent either, this skips.
 --
---   PROVA_SOAK=1 PROVA_SOAK_WORKERS=8 prova -j 8 -k soak            # both arms, current runtime
---   PROVA_SOAK=1 PROVA_SOAK_CLIENT=cli prova -j 8 -k soak           # one arm only
---   PROVA_SOAK=1 DOCKER_HOST=unix://$HOME/.orbstack/run/docker.sock prova -j 8 -k soak
+--   PROVA_SOAK_WORKERS=8 prova -s soak -j 8 -k soak                 # both arms, current runtime
+--   PROVA_SOAK_CLIENT=cli prova -s soak -j 8 -k soak                # one arm only
+--   DOCKER_HOST=unix://$HOME/.orbstack/run/docker.sock prova -s soak -j 8 -k soak
 --
 -- Select with `-k`, not by path. An explicit path bypasses the manifest, and the companion that
 -- registers `soak` goes with it — so `prova proofs/soak` skips this every time, for a reason that
@@ -201,7 +201,7 @@ end
 for w = 1, WORKERS do
   if want("prova") then
     prova.test(string.format("soak [prova/bollard] worker %d/%d: %d starts", w, WORKERS, PER_WORKER),
-               { requires = { "soak", "docker" } }, function(t)
+               { switch = "soak", requires = { "docker" } }, function(t)
       local before = docker.diagnostics()
       local usable, errors = 0, {}
 
@@ -234,7 +234,7 @@ for w = 1, WORKERS do
 
   if want("cli") then
     prova.test(string.format("soak [docker CLI] worker %d/%d: %d starts", w, WORKERS, PER_WORKER),
-               { requires = { "soak", "docker" } }, function(t)
+               { switch = "soak", requires = { "docker" } }, function(t)
       local published, bound_nothing, never, errors = 0, 0, 0, {}
 
       for i = 1, PER_WORKER do

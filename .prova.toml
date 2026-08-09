@@ -12,30 +12,27 @@ packages     = ".prova/packages"     # this project's own local packages (root-r
 [dependencies]
 parallels = { git = "https://github.com/prova-rs/prova-parallels", tag = "v1" }
 
-# The heavy, cargo-based quality gates (clippy, unwrap/expect census under proofs/quality/) are
-# opt-in: each recompiles the workspace, so they never run in the default `prova` loop — they
-# `requires = { "quality" }`, a capability that stays false unless PROVA_QUALITY is set. This profile
-# sets it and `must_run`s it, so `prova --profile quality` (and CI's quality leg) runs them and they
-# cannot silently skip. `proofs = ["quality"]` scopes the profile to the proofs/quality/ dir (a
-# dir-name pattern, like the default ["proofs"]), so `prova --profile quality` runs exactly the
-# gates — the fast file-size gate included — and nothing else.
+# The heavy, cargo-based quality gates (clippy, unwrap/expect census under proofs/quality/) sit
+# behind the `quality` switch — each recompiles the workspace, so they never run in the default
+# `prova` loop (docs/design/manifest.md#switches-not-env-capabilities). This profile scopes to the
+# proofs/quality/ dir (positive selection: nothing else can creep in) and throws the switch; the
+# fast file-size gate in the same dir carries no switch, so it runs in the default loop too.
+# Ad hoc: `prova -s quality -k clippy`.
 [profiles.quality]
 proofs   = ["quality"]
-must_run = ["quality"]
-[profiles.quality.env]
-PROVA_QUALITY = "1"
+switches = ["quality"]
 
 # The deputed unit-test leg: `prova run ut` conducts `cargo nextest` ONCE (a file-scoped fixture
 # compiles + runs the workspace's unit tests, emitting junit), adopts every case into the account,
 # and case-granular readers bind claims to named unit tests — the conduct-once-read-many pattern
-# (docs/design/verifiers.md#conduct-once-read-many). Opt-in for the same reason as `quality`
-# (conducting compiles); `must_run` both facts so under this profile a missing nextest FAILS
-# rather than skips — `prova run ut` is a contract, not a courtesy.
+# (docs/design/verifiers.md#conduct-once-read-many). The whole leg sits behind the `ut` switch
+# (proofs/ut/suite.lua) for the same reason as `quality` (conducting compiles); `must_run` keeps
+# the WORLD fact, so under this profile a missing nextest FAILS rather than skips — `prova run ut`
+# is a contract, not a courtesy.
 [profiles.ut]
 proofs   = ["ut"]
-must_run = ["ut", "cargo-nextest"]
-[profiles.ut.env]
-PROVA_UT = "1"
+switches = ["ut"]
+must_run = ["cargo-nextest"]
 
 # Prova's own specs — the prose layer. The point of declaring this is not bookkeeping — it is that
 # prova must be the exemplar of a proven application, and a lifecycle nobody has run end-to-end on a

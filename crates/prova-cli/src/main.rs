@@ -247,6 +247,9 @@ options:
   -k PATTERN                select nodes whose path contains PATTERN (repeatable; !PAT excludes)
       --tags a,b            select nodes tagged with any listed tag (repeatable; !tag excludes)
       --node PATH           select an exact node path (repeatable) — re-run what a report named
+                            (naming a switched test implies its switch)
+  -s, --switch a,b          throw opt-in switches: run tests marked `switch = ...`, which are
+                            otherwise held back (repeatable; unions with [run]/profile `switches`)
       --last-failed         select only the nodes that failed in the previous run
       --topology NAME       require attaching to the held topology NAME (error when not running) —
                             judge the LIVE environment, never a silently fresh one
