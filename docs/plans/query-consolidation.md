@@ -346,8 +346,17 @@ The invariants to encode (each a unit test, wrapped as a deputed proof):
    the `must_run` gate (so it reports unmet rather than failing on it).
 7. **Topology lifecycle unification** (`up --detach` absorbs `start`; MCP `status`→`ps`; `up`
    strictness matches doctrine and the comment). Its own increment — largest infra surface.
-8. **MCP parity sweep.** One `query` tool with `lane`; `packages` tool; `introspect` CLI spelling or
-   retirement; invariants (2) and (3), with the surface proof asserting the full set.
+8. **MCP parity sweep.** *(LANDED 2026-08-09, mostly — commits `67b90`…`942c1`.)* Decision:
+   **tool-per-lane, matching CLI verb names** (not one `query` tool) — so an agent and a user share
+   one vocabulary. Slices: split `mcp.rs` (extract `mcp/blocking.rs`, 1492→1003, room for tools);
+   `prova introspect` CLI verb (graduated `introspect` out of the MCP-only allowlist); MCP tools for
+   `capabilities`, `specs`, `reminders`, `packages` (every CLI verb now has agent reach); MCP `list`
+   → `tests` + retire the CLI `list` verb; `surface_test.lua` tightened to assert the **full** tool
+   set (invariant 3 — the inc-1 under-assertion); and `lane_surface_parity`'s **MCP leg closed** —
+   every lane now gates verb ∧ topic ∧ tool. Each MCP tool shares its data source with the CLI verb
+   (claims::scan, collect_reminders, builtin_capability_names, registry::search_entries), so the two
+   surfaces cannot drift on content. **Remaining:** invariant (2) — the selector-parity unit test
+   (CLI `SelectionArgs` ↔ core `Selection` axes), so `to_selection` can't silently drop an axis.
 
 ## Settled naming decisions (all ratified 2026-08-08)
 
