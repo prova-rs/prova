@@ -14,6 +14,7 @@ mod modules;
 mod packages;
 pub mod progress;
 mod suite;
+pub mod lanes;
 pub mod ledger;
 
 /// The reserved-name registry (api-freeze §2): every bundled namespace name, including kernel
@@ -90,6 +91,7 @@ pub use engine::{
     PackageReport, PackageShape, PortMode, RunConfig, Selection, SnapshotRegistry,
     TopologyRegistration,
 };
+pub use lanes::{Lane, LANES};
 pub use layout::{RootedSystemLayout, SystemLayout, XdgSystemLayout};
 pub use progress::{Activity, Kind as ActivityKind, NullProgress, Progress};
 pub use model::{

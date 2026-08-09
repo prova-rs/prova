@@ -10,6 +10,14 @@ lands, its outcome is folded into the design docs and the plan trimmed to a `LAN
 
 ## Active plans
 
+- [query-consolidation.md](query-consolidation.md) — **drafted 2026-08-08.** The sequel to
+  terminology.md: nails the *commands, selectors, and cross-surface parity* on top of the settled
+  nouns. Three lanes (specs / tests / reminders), each a medium with a two-state duality; one
+  lane-polymorphic query engine with lane + state-filter verbs as sugar; strict-by-default
+  capabilities for named lanes (only bare `prova` opportunistic); a new `prova capabilities` verb;
+  topology lifecycle unified to one vocabulary across CLI and MCP; and alignment proofs
+  (engine ↔ CLI ↔ MCP) as unit tests adopted into the account via junit. Eight proof-carrying
+  increments; two open naming sub-decisions (`tests` vs `proofs`; `query` user-facing or engine-only).
 - [autodidact.md](autodidact.md) — **open, drafted 2026-07-21.** The progressive-disclosure
   learning system: `prova skill` as entry/router, `prova learn <topic>` + MCP `learn` tool over
   one embedded topic catalog (static doctrine + dynamic slots rendered per-project), a `context`

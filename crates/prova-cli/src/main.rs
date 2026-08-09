@@ -120,6 +120,18 @@ const VERBS: &[Verb] = &[
         run: owed_subcommand,
     },
     Verb {
+        name: "specs",
+        help: "  prova specs               the specs lane: claims + backlog items in [specs] docs,\n\
+               \x20                           state-tagged; --claims / --backlog narrow (query only)",
+        run: specs_subcommand,
+    },
+    Verb {
+        name: "tests",
+        help: "  prova tests               the tests lane: every proof and open promise; --promises\n\
+               \x20                           narrows to the open promises (query only)",
+        run: tests_subcommand,
+    },
+    Verb {
         name: "reminders",
         help: "  prova reminders           the attention account: every `prova.remind` with its recorded\n\
                \x20                           state (DUE / WATCHING / UNEVALUATED); exits non-zero when any is due",
@@ -678,6 +690,139 @@ fn backlog_subcommand(args: Vec<String>) -> ExitCode {
         }
         ExitCode::SUCCESS
     }
+}
+
+/// `prova tests` — the tests lane: every discovered proof and open promise (the run-axis node
+/// listing). A query verb; runs nothing. `--promises` narrows to the open promises. This is the
+/// lane report `prova list` stood in for; `list` retires in a later increment
+/// (docs/plans/query-consolidation.md).
+fn tests_subcommand(args: Vec<String>) -> ExitCode {
+    let mut full = vec!["--list".to_string()];
+    full.extend(args);
+    run(full)
+}
+
+/// `prova specs` — the specs lane: every claim and backlog item in the `[specs]` docs, each
+/// state-tagged. The lane report that unifies what `prova backlog` (cold shelf) and the obligation
+/// family (`owed`/`attest`) each saw only one slice of — CLAIM and BACKLOG side by side. A query
+/// verb: it reads anchors and reports, gating nothing. `--claims` / `--backlog` narrow to one
+/// state (docs/plans/query-consolidation.md). Selectors (`-k`/`--tags`) arrive with the shared
+/// query engine in a later increment.
+fn specs_subcommand(args: Vec<String>) -> ExitCode {
+    let mut want: Option<claims::Kind> = None;
+    for arg in &args {
+        match arg.as_str() {
+            "-h" | "--help" => {
+                println!(
+                    "usage: prova specs                 list the specs lane: every claim and backlog item\n\
+                     \x20      prova specs --claims        only the claims (owed obligations)\n\
+                     \x20      prova specs --backlog       only the backlog (captured, not yet owed)\n\n\
+                     Claims and backlog are the two states of one prose obligation, sharing the\n\
+                     `[specs]` sources. `prova backlog promote <id>` flips a backlog item to a claim."
+                );
+                return ExitCode::SUCCESS;
+            }
+            "--claims" | "--claim" => {
+                if want == Some(claims::Kind::Backlog) {
+                    eprintln!("prova: specs: --claims and --backlog are mutually exclusive");
+                    return ExitCode::from(2);
+                }
+                want = Some(claims::Kind::Claim);
+            }
+            "--backlog" => {
+                if want == Some(claims::Kind::Claim) {
+                    eprintln!("prova: specs: --claims and --backlog are mutually exclusive");
+                    return ExitCode::from(2);
+                }
+                want = Some(claims::Kind::Backlog);
+            }
+            other => {
+                eprintln!("prova: specs: unexpected argument {other:?}\nusage: prova specs [--claims | --backlog]");
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    let home = match resolve_home(None) {
+        Ok(h) => h,
+        Err(code) => return code,
+    };
+    let manifest = match std::fs::read_to_string(&home.manifest)
+        .map_err(|e| e.to_string())
+        .and_then(|text| Manifest::parse(&text))
+    {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("prova: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let docs = spec_scan_roots(&manifest);
+
+    // No spec source at all: invoking `prova specs` IS the signal you want the feature, so a pointer
+    // to how to declare one is help, not a lecture (the same courtesy `prova backlog` extends).
+    if docs.is_empty() {
+        println!("prova: no spec source configured — prova does not know where your claims and backlog items live.");
+        println!("  Declare one in prova.toml:");
+        println!();
+        println!("      [[specs.source]]");
+        println!("      type = \"directory\"");
+        println!("      path = \"docs\"");
+        println!();
+        println!("  then `prova specs` lists them. See `prova learn spec`.");
+        return ExitCode::SUCCESS;
+    }
+
+    let scanned = match claims::scan(&home.dir, &docs) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("prova: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let items: Vec<&claims::Claim> = scanned
+        .iter()
+        .filter(|c| match &want {
+            Some(k) => c.kind == *k,
+            None => true,
+        })
+        .collect();
+
+    if items.is_empty() {
+        match want {
+            Some(claims::Kind::Claim) => {
+                println!("prova: no claims — no `<!-- claim: id -->` anchors in the spec sources")
+            }
+            Some(claims::Kind::Backlog) => {
+                println!("prova: nothing in the backlog — no `<!-- backlog: id -->` anchors in the spec sources")
+            }
+            None => {
+                println!("prova: the specs lane is empty — no claim or backlog anchors in the spec sources")
+            }
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    for c in &items {
+        let tag = match c.kind {
+            claims::Kind::Claim => "CLAIM",
+            claims::Kind::Backlog => "BACKLOG",
+        };
+        let loc = format!("{}:{}", c.file.display(), c.line);
+        match &c.date {
+            Some(d) => println!("  {tag:<8} {:<40} {loc}  ({d})", c.address),
+            None => println!("  {tag:<8} {:<40} {loc}", c.address),
+        }
+    }
+    let claim_n = items.iter().filter(|c| c.kind == claims::Kind::Claim).count();
+    let backlog_n = items.len() - claim_n;
+    println!();
+    match want {
+        Some(claims::Kind::Claim) => println!("  {claim_n} claim(s)"),
+        Some(claims::Kind::Backlog) => println!("  {backlog_n} in backlog"),
+        None => println!("  {claim_n} claim(s), {backlog_n} in backlog"),
+    }
+    ExitCode::SUCCESS
 }
 
 /// `prova run [<lane>]` — the lanes front door. A lane is a `[profiles.<name>]` table; the verb
@@ -4258,6 +4403,102 @@ mod tests {
         let help = help_text();
         for verb in VERBS {
             assert!(help.contains(verb.help), "help_text() dropped `{}`", verb.name);
+        }
+    }
+
+    /// Lane–surface parity (docs/plans/query-consolidation.md, increment 1). The three lanes
+    /// (`prova_core::LANES`) are prova's top-level vocabulary; each must be reachable the same way on
+    /// every surface it fronts — a `prova <lane>` verb and a `prova learn <lane>` topic. This is the
+    /// sibling of `every_verb_resolves_in_learn`: a correspondence between in-process source tables
+    /// (`LANES` ↔ `VERBS` ↔ `Topic::resolve`), so a unit test reads it directly rather than parsing
+    /// `--help`.
+    ///
+    /// The MCP leg is intentionally NOT gated here: whether each lane earns its own MCP tool or is
+    /// reached through one lane-parameterized `query` tool is increment 8's open call, so asserting a
+    /// tool named `<lane>` today would bake in an undecided shape. `mcp_tools_are_real_verbs` holds
+    /// the CLI↔MCP surface to one vocabulary in the meantime.
+    ///
+    /// Legs the plan wires in a later increment live in `KNOWN_GAPS`. A row there is a promise, not a
+    /// mute: the minimality check below FAILS once the leg is wired, so closing a gap forces deleting
+    /// its row — graduation, exactly as an honored promise fails until its flag is removed.
+    #[test]
+    fn lane_surface_parity() {
+        // (lane, surface) legs not yet wired, each with the increment that closes it. Empty now:
+        // increment 3 landed `prova specs` and `prova tests`, so the verb legs of all three lanes
+        // are wired. The MCP leg is not gated here (see the doc comment); it burns down in increment 8.
+        const KNOWN_GAPS: &[(&str, &str)] = &[];
+        let has_verb = |lane: &str| VERBS.iter().any(|v| v.name == lane);
+        let has_topic = |lane: &str| learn::Topic::resolve(lane).is_some();
+
+        for lane in prova_core::LANES {
+            if !KNOWN_GAPS.contains(&(lane.key, "verb")) {
+                assert!(
+                    has_verb(lane.key),
+                    "lane `{key}` has no `prova {key}` verb — add it to VERBS, or list \
+                     (\"{key}\", \"verb\") in KNOWN_GAPS with the increment that will \
+                     (docs/plans/query-consolidation.md).",
+                    key = lane.key,
+                );
+            }
+            // Topic leg: no known gaps — every lane must teach itself today, like every verb does.
+            assert!(
+                has_topic(lane.key),
+                "lane `{key}` has no `prova learn {key}` topic — `prova learn {key}` would dead-end.",
+                key = lane.key,
+            );
+        }
+
+        // Minimality / graduation: every listed gap must still be an actual gap.
+        for (lane, surface) in KNOWN_GAPS {
+            let still_gapped = match *surface {
+                "verb" => !has_verb(lane),
+                "topic" => !has_topic(lane),
+                other => panic!("KNOWN_GAPS names an unknown surface {other:?}"),
+            };
+            assert!(
+                still_gapped,
+                "lane `{lane}` surface `{surface}` is now wired — delete its KNOWN_GAPS row (the gap \
+                 is closed; graduate it).",
+            );
+        }
+    }
+
+    /// CLI↔MCP alignment: every tool the MCP server exposes maps to a real CLI verb of the same name
+    /// — the two surfaces name the same capabilities identically. The mirror of
+    /// `skill_and_topics_only_name_real_verbs` (the docs an agent reads) for the tools an agent
+    /// calls. Reads the LIVE router (`mcp::tool_names`), so a tool added or renamed in a `#[tool]`
+    /// attribute is caught without touching this test.
+    ///
+    /// Deliberately MCP-only tools live in `KNOWN_MCP_ONLY` with their reason; the minimality check
+    /// fails if the router stops exposing one, so the list cannot rot. (docs/plans/query-consolidation.md)
+    #[test]
+    fn mcp_tools_are_real_verbs() {
+        // MCP tools with no same-named CLI verb, and why. `status` is drift — the CLI spells the same
+        // capability `ps`; increment 7 unifies the topology lifecycle and retires this name.
+        // `introspect` is intentionally MCP-only (the CLI reaches the same surface via
+        // `eval 'return prova.help()'`); increment 8 decides whether it earns a CLI spelling.
+        const KNOWN_MCP_ONLY: &[&str] = &["introspect", "status"];
+        let known: std::collections::BTreeSet<&str> = VERBS.iter().map(|v| v.name).collect();
+
+        let tools = mcp::tool_names();
+        assert!(!tools.is_empty(), "the MCP router exposes no tools — the wiring is broken");
+
+        for tool in &tools {
+            assert!(
+                known.contains(tool.as_str()) || KNOWN_MCP_ONLY.contains(&tool.as_str()),
+                "MCP exposes a `{tool}` tool with no `prova {tool}` CLI verb — add the verb, rename \
+                 the tool to match, or list it in KNOWN_MCP_ONLY with a reason \
+                 (docs/plans/query-consolidation.md).",
+            );
+        }
+
+        // Minimality: don't let KNOWN_MCP_ONLY carry a name the router no longer exposes.
+        for name in KNOWN_MCP_ONLY {
+            assert!(
+                tools.iter().any(|t| t == name),
+                "KNOWN_MCP_ONLY lists `{name}`, which the MCP router no longer exposes — delete the \
+                 row.",
+            );
         }
     }
 }

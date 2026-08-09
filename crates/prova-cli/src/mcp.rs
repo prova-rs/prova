@@ -914,6 +914,19 @@ impl ProvaMcpServer {
     }
 }
 
+/// Every tool name the MCP server exposes, read from the live router — never a hand-kept list that
+/// could drift from the `#[tool]` attributes. Feeds the CLI↔MCP alignment proof
+/// (`mcp_tools_are_real_verbs` in `main.rs`), which holds the two surfaces to one vocabulary.
+/// Building the router is side-effect-free (it only registers routes), so this is safe off-runtime.
+#[cfg(test)]
+pub(crate) fn tool_names() -> Vec<String> {
+    ProvaMcpServer::tool_router()
+        .list_all()
+        .into_iter()
+        .map(|t| t.name.into_owned())
+        .collect()
+}
+
 /// Endpoints as the `resources` JSON array every warm result shape shares.
 fn endpoints_json(endpoints: &[Endpoint]) -> Vec<serde_json::Value> {
     endpoints
