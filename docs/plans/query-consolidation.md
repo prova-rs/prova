@@ -308,9 +308,11 @@ The invariants to encode (each a unit test, wrapped as a deputed proof):
    mentions across skill.md + 6 topics, guarded by the doc-verb lint) + proof-suite migration (~15
    sites, 6 files) + a tombstone proof. mcp.rs kept under the 1500 gate (tool_router→pub(crate), test
    reads the router directly, `tool_names` helper dropped). Verified: 93 unit tests, clippy, 184
-   black-box proofs. **Still retiring (entangled, own pass):** `list` (rename/retire the MCP `list`
-   tool → increment 8) and `backlog` (migrate `--undated` to `prova specs --backlog --undated`; its
-   `promote` already rehomed to `prova specs promote`).
+   black-box proofs. **`backlog` retired 2026-08-08 — commit `3ba4f`:** verb removed +
+   tombstone → `prova specs --backlog`; `backlog_subcommand` deleted (listing/`--undated`/`promote`
+   all covered by `specs`); `prova specs` gained `--undated` and kept the undated-count nudge; docs +
+   proofs migrated + a tombstone proof. **Still retiring:** `list` — coupled to the MCP `list` tool,
+   so it retires with increment 8.
 4. **Drivers as red→green worklists.** *(4a LANDED 2026-08-08 — commit `e1e97`.)* The
    `prova <lane> <driver>` dispatch grammar: `prova specs promote <id>` (rehomed via a shared
    `promote_claim()` that `prova backlog promote` now also calls), `prova tests burndown|falsify`
