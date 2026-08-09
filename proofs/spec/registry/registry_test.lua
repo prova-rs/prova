@@ -19,7 +19,7 @@ schema       = 1
 name         = "postgres"
 repo         = "https://github.com/prova-rs/prova-postgres"
 description  = "Postgres containers and direct SQL assertion via psql-in-image"
-capabilities = ["postgres", "sql", "database", "container"]
+keywords     = ["postgres", "sql", "database", "container"]
 latest       = "v2"
 namespaces   = ["postgres"]
 shapes       = ["resource"]
@@ -31,7 +31,7 @@ schema          = 1
 name            = "rabbitmq"
 repo            = "https://github.com/prova-rs/prova-rabbitmq"
 description     = "RabbitMQ resource over rabbitmqadmin"
-capabilities    = ["rabbitmq", "amqp", "queue"]
+keywords        = ["rabbitmq", "amqp", "queue"]
 latest          = "v1"
 from_the_future = { shiny = true }
 ]])
@@ -149,9 +149,9 @@ prova.test("search matches on name", function(t)
   t:expect(r.stdout):never():contains("rabbitmq")
 end)
 
-prova.test("search matches on capabilities, not just name", function(t)
+prova.test("search matches on keywords, not just name", function(t)
   local sb = t:use(sandbox)
-  -- "database" appears only in postgres's capabilities — never in a name or description.
+  -- "database" appears only in postgres's keywords — never in a name or description.
   local r = plugins(sb, "database")
   t:expect(r.stdout):contains("postgres")
   t:expect(r.stdout):never():contains("rabbitmq")

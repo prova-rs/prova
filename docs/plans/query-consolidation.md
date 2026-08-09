@@ -183,10 +183,14 @@ This is a lane-shaped listing in spirit (list + per-item state = met/unmet/too-o
 obeys the same grammar. It is what makes the strict-by-default flip humane: a failed `run ci` points
 at `prova capabilities` and the answer is one line.
 
-**Naming hazard:** `capabilities` is *already* a noun in the package registry — a package advertises
-descriptive `capabilities` tags for `prova packages <query>` search (`registry.rs`). That is discovery
-metadata, a different thing from host-capability matching. The command must not blur them; the help
-text and `learn capabilities` topic disambiguate explicitly (host match vs. registry advertisement).
+**Naming hazard — RESOLVED (2026-08-08) by eliminating the collision, not documenting it.** The
+package registry used to carry a `capabilities` field (descriptive search tags). Decision: the
+registry has no business owning "capabilities" — it was renamed to **`keywords`** (`registry.rs`
+`Entry`/`EntryFile`, the search + `info` display + help + `docs/design/registry.md` + the registry
+proof fixtures). Now "capability" means exactly one thing across prova — a host fact probed by
+`requires`/`must_run`/`prova capabilities` — and a package's discovery metadata is `keywords`, its
+host needs still `requires`. Clean cut, no alias (prova's own registry didn't use the field). The
+`learn capabilities` topic teaches the single meaning + the `keywords` split.
 
 ## Topology lifecycle — unify to one vocabulary
 
@@ -327,8 +331,15 @@ The invariants to encode (each a unit test, wrapped as a deputed proof):
    selection. Prereq for the run vision; couples to increment 1b.
 5. **Strict-by-default capabilities** + the `when_absent`/`allow_skips` opt-out + migration note for
    consumers. Breaking; its own increment because it touches consumer `prova.toml`s.
-6. **`prova capabilities`** command + `learn capabilities` topic (disambiguated from registry
-   capabilities).
+6. **`prova capabilities`.** *(v1 LANDED 2026-08-08 — commit `4f661`.)* Reports prova's built-in
+   capability vocabulary (docker/github/OS/network + compiled natives) with each one's host status
+   (MET/UNMET + reason). A reporter, exit 0. `engine::builtin_capability_names()` single-sources the
+   list (drift-guarded by a unit test vs. `is_builtin_capability`); `Topic::Capabilities` +
+   `topics/capabilities.md` teach requires(skip)/must_run(fail) and disambiguate from the registry's
+   advertised `capabilities`. Proof: `capabilities_test.lua` (4). **v2 (needs the run context to load
+   `prova.lua` registrations):** fold in THIS package's declared `must_run`/topology-`requires`/
+   per-test `requires` with status — hook `resolve_from_manifest` after the capability load, before
+   the `must_run` gate (so it reports unmet rather than failing on it).
 7. **Topology lifecycle unification** (`up --detach` absorbs `start`; MCP `status`→`ps`; `up`
    strictness matches doctrine and the comment). Its own increment — largest infra surface.
 8. **MCP parity sweep.** One `query` tool with `lane`; `packages` tool; `introspect` CLI spelling or

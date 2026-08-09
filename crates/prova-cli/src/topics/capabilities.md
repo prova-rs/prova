@@ -33,8 +33,10 @@ The one rule both obey: an unmet capability is never silently "green". `requires
 reason is in the report); `must_run` fails loudly. A typo'd constraint is a config **error**, not a
 skip — a gate that never matched would read as passing, the vacuous green this contract exists to remove.
 
-## Not the same as a package's "capabilities"
+## One meaning — the registry uses `keywords`
 
-A package advertises descriptive `capabilities` tags for `prova packages <query>` search — discovery
-metadata ("this package speaks kafka"). That is a *label*, unrelated to whether **your** host can do
-a thing. `prova capabilities` is the host check; the registry field is a catalog keyword.
+"Capability" names exactly this: a host fact a test needs. It is deliberately NOT the registry's
+discovery vocabulary — a package advertises `keywords` for `prova packages <query>` search
+("kafka", "messaging"), pure catalog metadata unrelated to whether *your* host can do a thing. What
+a package needs from the host still lives in its `requires` (the same words as here). So the word
+has one job: `prova capabilities` and `requires`/`must_run` probe the host; `keywords` find a package.

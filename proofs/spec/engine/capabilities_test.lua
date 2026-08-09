@@ -27,14 +27,15 @@ prova.test("capabilities is a no-argument report", function(t)
   t:expect(r.stdout):contains("unexpected argument")
 end)
 
-prova.test("the binary teaches capabilities, and separates it from the registry's `capabilities`", {
-  proves = "the naming hazard is real — a package's advertised `capabilities` tag (packages search) \
-is catalog metadata, not a host probe; the topic must keep them apart or an agent conflates them",
+prova.test("the binary teaches capabilities as ONE meaning — the registry uses `keywords`", {
+  proves = "the former naming hazard (a registry `capabilities` field vs. the host vocabulary) was \
+removed by renaming the registry field to `keywords`; the topic teaches the single meaning and the \
+`keywords` split so an agent never conflates 'find a package' with 'probe this host'",
 }, function(t)
   local catalog = shell.run(prova.bin .. " learn", { merge_stderr = true })
   t:expect(catalog.stdout, "the catalog names the topic"):contains("capabilities")
   local topic = shell.run(prova.bin .. " learn capabilities", { merge_stderr = true })
   t:expect(topic.code):equals(0)
   t:expect(topic.stdout, "the two directions"):contains("must_run")
-  t:expect(topic.stdout, "disambiguated from registry metadata"):contains("prova packages")
+  t:expect(topic.stdout, "discovery is keywords, not capabilities"):contains("keywords")
 end)

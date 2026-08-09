@@ -75,7 +75,10 @@ pub struct Entry {
     pub name: String,
     pub repo: String,
     pub description: String,
-    pub capabilities: Vec<String>,
+    /// Free-text discovery keywords (`prova packages <query>` search). Catalog metadata — NOT the
+    /// runtime capability vocabulary (`requires`/`must_run`/`prova capabilities`); the package's
+    /// host-capability needs live in `requires` below. See docs/design/registry.md.
+    pub keywords: Vec<String>,
     pub latest: Option<String>,
     pub namespaces: Vec<String>,
     pub topologies: Vec<String>,
@@ -93,7 +96,7 @@ struct EntryFile {
     name: Option<String>,
     repo: Option<String>,
     description: Option<String>,
-    capabilities: Vec<String>,
+    keywords: Vec<String>,
     latest: Option<String>,
     namespaces: Vec<String>,
     topologies: Vec<String>,
@@ -217,7 +220,7 @@ fn load_entries(reg: &RegistryRef, dir: &Path, warnings: &mut Vec<String>) -> Ve
             name,
             repo,
             description,
-            capabilities: file.capabilities,
+            keywords: file.keywords,
             latest: file.latest,
             namespaces: file.namespaces,
             topologies: file.topologies,
@@ -427,13 +430,13 @@ fn load_all(layout: &dyn SystemLayout, git_opts: &GitFetchOptions) -> Result<Loa
     Ok(Loaded { entries, warnings, errors, registry_count })
 }
 
-/// Whether an entry matches a search term: substring over name, description, and capabilities,
+/// Whether an entry matches a search term: substring over name, description, and keywords,
 /// case-insensitive. A few hundred entries in memory — no index, no query language.
 fn matches(e: &Entry, q: &str) -> bool {
     let q = q.to_lowercase();
     e.name.to_lowercase().contains(&q)
         || e.description.to_lowercase().contains(&q)
-        || e.capabilities.iter().any(|c| c.to_lowercase().contains(&q))
+        || e.keywords.iter().any(|c| c.to_lowercase().contains(&q))
 }
 
 /// Rows on stdout so it pipes, key-column aligned like the init catalog; the serving registry is
@@ -454,8 +457,8 @@ fn print_info(e: &Entry) {
     println!("{}  ({})", e.name, e.registry);
     println!("  repo:          {}", e.repo);
     println!("  description:   {}", e.description);
-    if !e.capabilities.is_empty() {
-        println!("  capabilities:  {}", e.capabilities.join(", "));
+    if !e.keywords.is_empty() {
+        println!("  keywords:      {}", e.keywords.join(", "));
     }
     if let Some(latest) = &e.latest {
         println!("  latest:        {latest}");
@@ -572,7 +575,7 @@ fn add(spec: &str, entries: &[Entry]) -> Result<String, String> {
 
 const USAGE: &str = "usage:
   prova packages                    list every entry across configured registries
-  prova packages <query>            search (name, description, capabilities)
+  prova packages <query>            search (name, description, keywords)
   prova packages info <name>        one entry, full detail
   prova packages add <name>[@ref]   pin into this package's [dependencies] (registry:name to disambiguate)
 options: --offline (cache only) · -U/--update (force-refresh registry sources)";

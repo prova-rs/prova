@@ -95,19 +95,21 @@ schema       = 1
 name         = "postgres"
 repo         = "https://github.com/prova-rs/prova-postgres"
 description  = "Postgres containers, seeded schemas, and direct SQL assertion via psql-in-image"
-capabilities = ["postgres", "sql", "database", "container"]
+keywords     = ["postgres", "sql", "database", "container"]
 latest       = "v2"
 
 # optional — derived from the package's own manifest at registration time
 namespaces = ["postgres"]        # what require() will return
 topologies = []                  # topologies the package advertises
 shapes     = ["resource"]        # resource | library | client | composite (package-shapes table)
-requires   = ["docker"]          # capability gates the package declares
+requires   = ["docker"]          # host-capability gates the package declares (runtime, probed)
 ```
 
-`name`, `repo`, and `description` are required; everything else optional. `capabilities` is the
-search surface — free-form terms an agent would reach for ("postgres", "database", "queue",
-"jwt"), matched together with name and description. `latest` is the **recommended pin**, not a
+`name`, `repo`, and `description` are required; everything else optional. `keywords` is the
+search surface — free-form discovery terms an agent would reach for ("postgres", "database",
+"queue", "jwt"), matched together with name and description. It is **catalog metadata only**, not
+the runtime capability vocabulary: what a host must actually provide lives in `requires` (the same
+words `requires`/`must_run`/`prova capabilities` use). `latest` is the **recommended pin**, not a
 constraint: it is what `prova packages add` writes into the manifest when no `@ref` is given.
 
 ### The archetype entry
@@ -186,7 +188,7 @@ for topologies:
 
 ```bash
 prova packages                    # list all entries across configured registries
-prova packages postgres           # search: name + description + capabilities substring match
+prova packages postgres           # search: name + description + keywords substring match
 prova packages info postgres      # one entry, full detail (namespaces, shapes, requires, latest)
 prova packages add postgres       # write pinned [dependencies] entry (latest) into prova.toml
 prova packages add postgres@v1    # explicit ref wins over latest
@@ -211,7 +213,7 @@ vehicle (this is the registry slot [autodidact.md](../plans/autodidact.md) defer
 - A `Slot::Registries` renders the configured registries and entry counts into the relevant
   topics (`packages`, `project`), with the standing instruction: **before hand-writing a
   capability, search the registries** — `prova packages <term>`.
-- The flow the topic teaches: need postgres → `prova packages postgres` → read capabilities →
+- The flow the topic teaches: need postgres → `prova packages postgres` → read keywords/description →
   `prova packages add postgres` → `require("postgres")` in the proof. Search to in-use, no human
   in the loop beyond the trust already granted by listing the registry.
 
