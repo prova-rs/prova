@@ -246,6 +246,10 @@ pub struct RunConfig {
     /// Run the falsification pass: select only leaves declaring `falsified_by`, apply the mutation
     /// before the body, and invert the verdict — a body that survives is vacuous.
     pub falsify: bool,
+    /// The thrown opt-in switches (`-s`, `[run]`/profile `switches` — union across all doors). A
+    /// leaf carrying a `switch` not in this set is held back from the run, deselected-not-skipped
+    /// (docs/design/manifest.md#switches-not-env-capabilities).
+    pub switches: std::collections::BTreeSet<String>,
     /// Where activity during a blocking pause is reported (see [`crate::progress`]). Deliberately
     /// here rather than on the reporter: activity is stderr-only and ephemeral, while the reporter
     /// carries durable results to stdout. Defaults to a silent sink, so a library consumer or a test
@@ -307,6 +311,7 @@ impl Default for RunConfig {
             promises_only: false,
             proofs_only: false,
             falsify: false,
+            switches: std::collections::BTreeSet::new(),
             progress: std::sync::Arc::new(crate::progress::NullProgress),
             // Default to injecting the full bundled set, so any RunConfig that does not customize
             // injection (eval, up, watch) still exposes the ambient globals — matching the old
@@ -404,6 +409,13 @@ impl RunConfig {
 
     pub fn with_falsify(mut self, falsify: bool) -> Self {
         self.falsify = falsify;
+        self
+    }
+
+    /// Throw opt-in switches for this run (union across the doors: CLI `-s`, `[run]`/profile
+    /// `switches`). Leaves gated on an unthrown switch are held back, deselected-not-skipped.
+    pub fn with_switches<I: IntoIterator<Item = String>>(mut self, switches: I) -> Self {
+        self.switches.extend(switches);
         self
     }
 
@@ -1059,6 +1071,16 @@ fn parse_opts(t: &mlua::Table) -> mlua::Result<UnitOpts> {
     let requires = t
         .get::<Option<Vec<String>>>("requires")?
         .unwrap_or_default();
+    let switch = match t.get::<Option<String>>("switch")? {
+        Some(s) if s.trim().is_empty() => {
+            return Err(mlua::Error::RuntimeError(
+                "switch takes the opt-in class's name — `switch = \"ut\"` (off unless thrown \
+                 with -s or a profile's switches)"
+                    .into(),
+            ))
+        }
+        other => other,
+    };
     let covers = parse_covers_opt(&t.get::<Value>("covers")?)?;
     let promises = parse_promises_opt(&t.get::<Value>("promises")?)?;
     let proves = parse_proves_opt(&t.get::<Value>("proves")?)?;
@@ -1074,6 +1096,7 @@ fn parse_opts(t: &mlua::Table) -> mlua::Result<UnitOpts> {
         resources,
         serial,
         requires,
+        switch,
         promises,
         proves,
         covers,
@@ -2967,6 +2990,17 @@ fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, Shared
                 if let Some(reqs) = opts.get::<Option<Vec<String>>>("requires")? {
                     c.nodes[0].opts.requires.extend(reqs);
                 }
+                // `switch` gates the whole suite as an opt-in class: it folds into the root node,
+                // so every test inherits it and the suite is off unless the class is thrown
+                // (docs/design/manifest.md#switches-not-env-capabilities).
+                if let Some(s) = opts.get::<Option<String>>("switch")? {
+                    if s.trim().is_empty() {
+                        return Err(mlua::Error::RuntimeError(
+                            "switch takes the opt-in class's name — `switch = \"ut\"`".into(),
+                        ));
+                    }
+                    c.nodes[0].opts.switch = Some(s);
+                }
                 if !matches!(opts.get::<Value>("promises")?, Value::Nil) {
                     return Err(mlua::Error::RuntimeError(
                         "promises is test-level only — flag each open test, not the suite".into(),
@@ -3533,6 +3567,9 @@ struct Leaf {
     precondition_skip: Option<String>,
     /// Effective tags: the unit's own plus every enclosing group's (selection matches on these).
     tags: Vec<String>,
+    /// Effective opt-in classes (own `switch` + every enclosing scope's). Off unless every one is
+    /// thrown; empty means always eligible.
+    switches: Vec<String>,
     /// Obligation addresses this leaf discharges (`covers`).
     covers: Vec<String>,
     /// Whether this leaf declares a `falsified_by` mutation — the selector for `prova falsify`.
@@ -3552,6 +3589,9 @@ struct Inherited {
     serial: bool,
     requires: Vec<String>,
     tags: Vec<String>,
+    /// Opt-in classes from enclosing scopes (`switch = "…"` on a group or `suite.config`). A leaf
+    /// runs only when EVERY switch on its path is thrown — nested classes intersect.
+    switches: Vec<String>,
 }
 
 /// The executable plan: a flat list of leaves plus the leaf-level dependency DAG.
@@ -3590,6 +3630,7 @@ fn collect_leaves(
                 .requires
                 .extend(node.opts.requires.iter().cloned());
             child_inherited.tags.extend(node.opts.tags.iter().cloned());
+            child_inherited.switches.extend(node.opts.switch.iter().cloned());
             let mut ids = Vec::new();
             for &child in &node.children {
                 ids.extend(collect_leaves(
@@ -3640,6 +3681,8 @@ fn push_leaf(leaves: &mut Vec<Leaf>, unit: PlanUnit, node: &Node, inherited: &In
     requires.extend(node.opts.requires.iter().cloned());
     let mut tags = inherited.tags.clone();
     tags.extend(node.opts.tags.iter().cloned());
+    let mut switches = inherited.switches.clone();
+    switches.extend(node.opts.switch.iter().cloned());
     let id = leaves.len();
     leaves.push(Leaf {
         unit,
@@ -3650,6 +3693,7 @@ fn push_leaf(leaves: &mut Vec<Leaf>, unit: PlanUnit, node: &Node, inherited: &In
         requires,
         precondition_skip: None,
         tags,
+        switches,
         // Test-level only, by design: the leaf's own flag, never an ancestor's.
         falsifiable: node.falsifier.is_some(),
         covers: node.opts.covers.clone(),
@@ -3686,6 +3730,45 @@ fn apply_falsify_filter(plan: Plan, enabled: bool) -> (Plan, usize, Vec<(String,
     }
     let keep = plan.leaves.iter().map(|l| l.falsifiable).collect();
     narrow_plan(plan, keep)
+}
+
+/// Hold back the opt-in classes nobody asked for: a leaf carrying switches runs only when every
+/// one is thrown (docs/design/manifest.md#switches-not-env-capabilities). Two escapes, by design:
+/// a thrown switch (`-s`, or a profile's/`[run]`'s `switches`), and an exact `--node` naming the
+/// leaf — deselecting a test the caller named precisely would be the swallowed-selector
+/// dishonesty; fuzzy `-k`/`--tags` matches never imply a throw. Returns the per-class held-back
+/// counts beside the usual narrowing facts, for the one-line summary.
+/// Per-class held-back counts: switch class → how many leaves it kept out of this run.
+type SwitchedOff = std::collections::BTreeMap<String, usize>;
+
+fn apply_switch_filter(
+    plan: Plan,
+    thrown: &std::collections::BTreeSet<String>,
+    sel: &Selection,
+) -> (Plan, usize, Vec<(String, usize)>, SwitchedOff) {
+    let mut off: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let keep: Vec<bool> = plan
+        .leaves
+        .iter()
+        .map(|l| {
+            if l.switches.iter().all(|s| thrown.contains(s)) {
+                return true;
+            }
+            if l.unit
+                .leaf_paths()
+                .iter()
+                .any(|p| sel.nodes.iter().any(|n| n == p))
+            {
+                return true;
+            }
+            for s in l.switches.iter().filter(|s| !thrown.contains(*s)) {
+                *off.entry(s.clone()).or_insert(0) += 1;
+            }
+            false
+        })
+        .collect();
+    let (plan, deselected, dropped) = narrow_plan(plan, keep);
+    (plan, deselected, dropped, off)
 }
 
 /// Narrow to one side of the promise⇄proof state duality: `promises_only` keeps the open promises,
@@ -5156,14 +5239,19 @@ fn execute_collected(
     reporter: &mut dyn Reporter,
     config: &RunConfig,
 ) -> mlua::Result<Summary> {
-    let (plan, deselected, dropped, state) = {
+    let (plan, deselected, dropped, switched_off, state) = {
         let col = col.borrow();
         let plan = build_plan(&col, &config.capabilities)?;
+        // Switches first: held-back classes are not part of this run's membership at all, so the
+        // selection below never counts them among what `-k` deselected.
+        let (plan, switch_deselected, switch_dropped, switched_off) =
+            apply_switch_filter(plan, &config.switches, &config.selection);
         let (plan, mut deselected, mut dropped) = apply_selection(plan, &config.selection);
         let (plan, falsify_deselected, falsify_dropped) = apply_falsify_filter(plan, config.falsify);
         let (plan, spec_deselected, spec_dropped) =
             apply_specs_filter(plan, config.promises_only, config.proofs_only);
-        deselected += falsify_deselected + spec_deselected;
+        deselected += switch_deselected + falsify_deselected + spec_deselected;
+        dropped.extend(switch_dropped);
         dropped.extend(falsify_dropped);
         dropped.extend(spec_dropped);
         let dropped = qualify_all(dropped, &col.file_paths);
@@ -5176,7 +5264,7 @@ fn execute_collected(
             snapshot_registry: config.snapshot_registry.clone(),
             falsify: config.falsify,
         });
-        (plan, deselected, dropped, state)
+        (plan, deselected, dropped, switched_off, state)
     };
 
     // Held-topology attach (docs/design/topologies.md#attach-binds-by-name): rehydrate each
@@ -5209,6 +5297,7 @@ fn execute_collected(
     let mut summary = Summary {
         deselected,
         deselected_paths: dropped,
+        switched_off,
         reminders_declared: col.borrow().reminders.len(),
         ..Summary::default()
     };
@@ -5931,15 +6020,19 @@ impl HeldTopology {
             exec_topology_registrations(&self.lua, &cfg)?;
         }
 
-        let (plan, deselected, dropped, state) = {
+        let (plan, deselected, dropped, switched_off, state) = {
             let col = self.col.borrow();
             let plan = build_plan(&col, &self.config.capabilities)?;
+            // Same order as the cold path: held-back classes leave the membership before selection.
+            let (plan, switch_deselected, switch_dropped, switched_off) =
+                apply_switch_filter(plan, &self.config.switches, selection);
             let (plan, mut deselected, mut dropped) = apply_selection(plan, selection);
             let (plan, falsify_deselected, falsify_dropped) =
                 apply_falsify_filter(plan, self.config.falsify);
             let (plan, spec_deselected, spec_dropped) =
                 apply_specs_filter(plan, self.config.promises_only, self.config.proofs_only);
-            deselected += falsify_deselected + spec_deselected;
+            deselected += switch_deselected + falsify_deselected + spec_deselected;
+            dropped.extend(switch_dropped);
             dropped.extend(falsify_dropped);
             dropped.extend(spec_dropped);
             let dropped = qualify_all(dropped, &col.file_paths);
@@ -5978,7 +6071,7 @@ impl HeldTopology {
                     .cache
                     .insert(id, self.value.clone());
             }
-            (plan, deselected, dropped, state)
+            (plan, deselected, dropped, switched_off, state)
         };
 
         let mut config = self.config.clone();
@@ -5988,6 +6081,7 @@ impl HeldTopology {
         let mut summary = Summary {
             deselected,
             deselected_paths: dropped,
+            switched_off,
             ..Summary::default()
         };
         // The holder's runtime, not a fresh one: held resources may be bound to it.

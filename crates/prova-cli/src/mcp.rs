@@ -134,7 +134,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
         }
     };
 
-    let (mut packages_resolved, sources, proofs, declared, jobs, capabilities, topologies) =
+    let (mut packages_resolved, sources, proofs, declared, jobs, capabilities, topologies, switches) =
         match &home {
             Some(home) => {
                 match crate::resolve_from_manifest(
@@ -148,6 +148,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
                         r.jobs,
                         r.capabilities,
                         r.topologies,
+                        r.switches,
                     ),
                     Err(code) => return code,
                 }
@@ -160,6 +161,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
                 1,
                 prova_core::Capabilities::default(),
                 BTreeMap::new(),
+                Vec::new(),
             ),
         };
     if let Err(code) =
@@ -178,6 +180,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
         dependencies: packages_resolved,
         capabilities,
         topologies,
+        switches,
     });
 
     // A current-thread runtime, deliberately: warm tools are stateful (up → run → down), so tool
@@ -249,6 +252,8 @@ struct McpEnv {
     capabilities: prova_core::Capabilities,
     /// Manifest `[topologies]` registrations — the only door the inhabited `up` resolves through.
     topologies: BTreeMap<String, TopologyDecl>,
+    /// The startup resolution's thrown switches (`[run] switches`, plus the startup profile's).
+    switches: Vec<String>,
 }
 
 /// The manifest-resolved inputs one tool call runs with.
@@ -266,6 +271,9 @@ struct CallEnv {
     capabilities: prova_core::Capabilities,
     /// The call's `[topologies]` registrations — what `up` may stand up (and nothing else).
     topologies: BTreeMap<String, TopologyDecl>,
+    /// The resolution's thrown switches — a `run` call unions its own `switches` argument on top
+    /// (docs/design/manifest.md#switches-not-env-capabilities).
+    switches: Vec<String>,
 }
 
 impl McpEnv {
@@ -319,6 +327,7 @@ impl McpEnv {
                 dependencies: self.dependencies.clone(),
                 capabilities: self.capabilities.clone(),
                 topologies: self.topologies.clone(),
+                switches: self.switches.clone(),
             }),
             Some(p) => {
                 let p = if p.is_empty() {
@@ -353,6 +362,7 @@ impl McpEnv {
                     dependencies: run.dependencies,
                     capabilities: run.capabilities,
                     topologies: run.topologies,
+                    switches: run.switches,
                 })
             }
         }
@@ -375,6 +385,11 @@ struct SelectionArgs {
     nodes: Option<Vec<String>>,
     /// Also select the nodes that failed in the previous run (CLI `--last-failed`).
     last_failed: Option<bool>,
+    /// Throw opt-in switches for this run (CLI `-s a,b`): authorize tests carrying
+    /// `switch = "<class>"`, which are otherwise held back — deselected, never skipped
+    /// (docs/design/manifest.md#switches-not-env-capabilities). Unions with the manifest's
+    /// `[run]`/profile `switches`.
+    switches: Option<Vec<String>>,
     /// Select ONLY promised tests — the open promise surface (CLI `--promises`). Composes with
     /// `list` to enumerate the surface without running; an empty selection there means the
     /// burndown is complete. See `learn { topic = "promises" }`.
@@ -1162,7 +1177,8 @@ mod tests {
         // modifier. A new or renamed field lands in neither set and fails the exact match.
         const MCP_SELECTION_FIELDS: &[&str] =
             &["keywords", "keyword_excludes", "tags", "tag_excludes", "nodes"];
-        const MCP_MODIFIERS: &[&str] = &["last_failed", "promises", "falsify", "profile", "package"];
+        const MCP_MODIFIERS: &[&str] =
+            &["last_failed", "promises", "falsify", "profile", "package", "switches"];
         for field in MCP_SELECTION_FIELDS {
             assert!(
                 AXES.contains(field) && !MCP_ABSENT.contains(field),

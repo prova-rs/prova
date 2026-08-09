@@ -295,6 +295,25 @@ prova.test("beta ops", { tags = { "ops" } }, function(t) t:expect(true):is_true(
   end
 end)
 
+prova.test("the run tool throws switches — the MCP door to the opt-in classes",
+  { covers = "docs/design/manifest.md#switches-not-env-capabilities" }, function(t)
+  local root = t:use(scratch)()
+  fs.mkdir(root .. "/proofs")
+  fs.write(root .. "/prova.toml", '[run]\nproofs = ["proofs"]\n')
+  fs.write(root .. "/proofs/gated_test.lua", [[
+prova.test("ordinary", function(t) t:expect(true):is_true() end)
+prova.test("heavy", { switch = "heavy" }, function(t) t:expect(true):is_true() end)
+]])
+  local by_id = mcp(root, {
+    call(2, "run"),
+    call(3, "run", '{"switches":["heavy"]}'),
+  })
+  local bare = tool_json(by_id[2])
+  t:expect(bare.passed, "the class is off unless thrown, over MCP exactly as on the CLI"):equals(1)
+  local thrown = tool_json(by_id[3])
+  t:expect(thrown.passed):equals(2)
+end)
+
 -- ── one skill, three doors ───────────────────────────────────────────────────────────────────
 
 prova.test("the one embedded skill: printed, served as instructions, and installed",

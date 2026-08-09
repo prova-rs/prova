@@ -78,7 +78,7 @@ Where a CLI flag or environment variable exists for the same knob, precedence is
 | `[updates]` | Git-source freshness for `[dependencies]`: `interval` (default `"1d"`; `"12h"`/`"30m"`/bare seconds), `force` (also `-U/--update`), `retention` (default 90 days for unused materialized trees). `--offline` forbids the network entirely. |
 | `context = ["docs/agent.md"]` | **Top-level**, not under `[run]`: team docs (home-relative, `~/` expands) served by `prova learn` as `ctx:<stem>` topics — the project's own doctrine on the same discovery rail. A declared-but-missing file is reported loudly. |
 
-<!-- backlog: switches-not-env-capabilities -->
+<!-- claim: switches-not-env-capabilities -->
 **Opt-in test classes want a first-class switch, not an env-var capability.** Three gates in this
 repo (`soak`, `quality`, `ut`) express the same intent fact — "someone asked for this expensive
 class" — by conscripting the capability axis: a `runtime.capability` probing an env var, the env

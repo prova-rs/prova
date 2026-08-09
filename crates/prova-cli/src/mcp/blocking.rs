@@ -49,6 +49,14 @@ pub(super) fn run_blocking(env: &McpEnv, req: RunRequest) -> Result<(serde_json:
         .with_capabilities(call.capabilities.clone())
         .with_promises_only(req.selection.promises.unwrap_or(false))
         .with_falsify(req.selection.falsify.unwrap_or(false))
+        // Thrown switches: the resolution's ([run] ∪ profile) ∪ the call's own — same union the
+        // CLI's `-s` performs (docs/design/manifest.md#switches-not-env-capabilities).
+        .with_switches(
+            call.switches
+                .iter()
+                .cloned()
+                .chain(req.selection.switches.clone().unwrap_or_default()),
+        )
         .with_due(req.due.unwrap_or(false));
     config.selection = selection;
 

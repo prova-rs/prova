@@ -547,6 +547,13 @@ pub struct Profile {
     /// profile's non-empty list replaces `[run]`'s, like `proofs`.
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Opt-in switches this context throws (docs/design/manifest.md#switches-not-env-capabilities):
+    /// tests carrying `switch = "<class>"` are off unless their class appears here (or in `-s`).
+    /// A throw AUTHORIZES a class, it never widens scope — this composes with the positive
+    /// selection above. **Union** across `[run]` + profile + CLI, like `must_run`: a baked throw
+    /// cannot be silently un-thrown by a laxer context.
+    #[serde(default)]
+    pub switches: Vec<String>,
 }
 
 /// `[globals]` — the closed shape of the globals-injection knobs. `inject` lists the modules (bundled
@@ -602,6 +609,9 @@ pub struct Resolved {
     pub must_run: Vec<String>,
     /// The lane's baked tag selection — the profile's `tags` (non-empty replaces `[run]`'s).
     pub lane_tags: Vec<String>,
+    /// The thrown opt-in switches — union of `[run]` and the profile's `switches` (the CLI's `-s`
+    /// unions on top at run time).
+    pub switches: Vec<String>,
     /// Which DUE reminders fail the run — the union of `[run] heed` and the selected profile's
     /// (and the CLI's `--heed`). Additive/tightening for the same reason `must_run` is: a laxer
     /// profile must not silence a promised bar.
@@ -950,6 +960,17 @@ impl Manifest {
             Some(p) if !p.tags.is_empty() => p.tags.clone(),
             _ => base.tags.clone(),
         };
+        // Thrown switches are authorization, so they UNION like the guarantees — a laxer context
+        // can never silently un-throw what the package baseline threw
+        // (docs/design/manifest.md#switches-not-env-capabilities).
+        let mut switches = base.switches.clone();
+        if let Some(p) = overlay {
+            for s in &p.switches {
+                if !switches.contains(s) {
+                    switches.push(s.clone());
+                }
+            }
+        }
 
         // The reserved-name registry (api-freeze §2): a dependency bearing a bundled namespace name
         // is a validation error, never a silent shadow — in either direction, so the check runs on
@@ -1003,6 +1024,7 @@ impl Manifest {
             globals_inject,
             must_run,
             lane_tags,
+            switches,
             heed,
             context: self.context.clone(),
         })
@@ -1065,6 +1087,7 @@ proofs = ["tests/smoke"]
                 globals_inject: prova_core::default_inject(),
                 must_run: Vec::new(),
                 lane_tags: Vec::new(),
+                switches: Vec::new(),
                 heed: Heed::None,
                 context: Vec::new(),
             }

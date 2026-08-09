@@ -76,6 +76,12 @@ pub struct UnitOpts {
     /// Capabilities this unit needs (e.g. `"docker"`). If any is unavailable the unit is **skipped**
     /// (not failed), with a reason — so a suite degrades gracefully where a dependency is missing.
     pub requires: Vec<String>,
+    /// The opt-in class this unit belongs to (`switch = "ut"`): **off unless thrown** — deselected
+    /// from every run whose thrown-switch set does not include it, fail-closed at the declaration
+    /// site (docs/design/manifest.md#switches-not-env-capabilities). Intent, not a host fact:
+    /// `requires` says what the WORLD must provide, a switch says someone must ASK. Inherits down
+    /// from groups and `suite.config`; a leaf under several switched scopes needs them all thrown.
+    pub switch: Option<String>,
     /// The `promises` flag — **test-level only**: `Some(reason)` marks a proof authored ahead of its
     /// implementation. The reason is always a non-empty string — context is forced from day
     /// one, and it graduates into the `proves` context. Red body → the `Promised` outcome; green
@@ -252,6 +258,11 @@ pub struct Summary {
     /// Leaves excluded by the run's selection (`-k` / `--tags` / `--node`) — never executed,
     /// distinct from `skipped` (which ran into a gate). Zero when no selection is active.
     pub deselected: usize,
+    /// Switched-off classes this run held back: class → leaf count. Rendered as ONE summary line
+    /// ("switched off: ut (3) — throw with -s or a profile") so the classes stay discoverable
+    /// without a wall of SKIP rows. The leaves are also counted in `deselected` and named in
+    /// `deselected_paths` — this map only adds the per-class grouping.
+    pub switched_off: std::collections::BTreeMap<String, usize>,
     /// The reported path of every deselected leaf. The count above answers "how many"; the run
     /// record needs "which", because a selection is the cheapest way of all to report green having
     /// tested nothing in particular.
@@ -872,6 +883,7 @@ mod tests {
             promised: 1,
             deselected: 0,
             deselected_paths: Vec::new(),
+            switched_off: std::collections::BTreeMap::new(),
             reminders_declared: 0,
             duration: Duration::from_millis(6),
         };

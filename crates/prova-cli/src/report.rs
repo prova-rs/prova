@@ -545,6 +545,21 @@ impl Reporter for HumanReporter {
                     },
                     dur(summary.duration)
                 );
+                // The switched-off classes, as ONE line — discoverable without a wall of SKIP
+                // rows, truthful about why they did not run, and gone entirely once thrown
+                // (docs/design/manifest.md#switches-not-env-capabilities).
+                if !summary.switched_off.is_empty() {
+                    let classes = summary
+                        .switched_off
+                        .iter()
+                        .map(|(class, n)| format!("{class} ({n})"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let _ = writeln!(
+                        out,
+                        "{DIM}switched off: {classes} — throw with -s <switch> or a profile's switches{DIM:#}"
+                    );
+                }
             }
             _ => {}
         }

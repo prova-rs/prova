@@ -2761,6 +2761,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     let mut cli_progress: Option<progress::Mode> = None;
     let mut cli_quiet = false;
     let mut cli_heed = crate::manifest::Heed::None;
+    let mut cli_switches: Vec<String> = Vec::new();
     let mut cli_junit: Option<String> = None;
     let mut cli_gha: Option<report::GhaMode> = None;
     let mut cli_jobs: Option<usize> = None;
@@ -2836,6 +2837,15 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         // node a report named.
         if let Some(v) = value_flag(&arg, &mut args, &["--node"]) {
             selection.nodes.push(v);
+            continue;
+        }
+        // `-s class` / `--switch a,b` (repeatable): throw opt-in switches — authorize the named
+        // classes for this run (docs/design/manifest.md#switches-not-env-capabilities). Unions
+        // with `[run]`/profile `switches`; a throw authorizes, it never widens a profile's scope.
+        if let Some(v) = value_flag(&arg, &mut args, &["--switch", "-s"]) {
+            for s in v.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                cli_switches.push(s.to_string());
+            }
             continue;
         }
         if let Some(v) = value_flag(&arg, &mut args, &["--jobs", "-j"]) {
@@ -3056,6 +3066,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         manifest_broker,
         heed,
         lane_tags,
+        manifest_switches,
     ) = if !explicit_paths.is_empty() {
         match &home {
             // The named paths belong to a package: borrow its environment (plugins, capabilities,
@@ -3091,6 +3102,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                     r.placement_broker,
                     r.heed,
                     r.lane_tags,
+                    r.switches,
                 ),
                 Err(code) => return code,
             },
@@ -3116,6 +3128,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                 None,       // no manifest, no [placement]; the env var is still honoured below
                 crate::manifest::Heed::None, // heed — no manifest, nothing promised attention
                 Vec::new(), // lane tags — no manifest, no lanes
+                Vec::new(), // switches — no manifest, nothing thrown
             ),
         }
     } else {
@@ -3158,6 +3171,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                 r.placement_broker,
                 r.heed,
                 r.lane_tags,
+                r.switches,
             ),
             Err(code) => return code,
         }
@@ -3234,6 +3248,9 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         .with_promises_only(promises_only)
         .with_proofs_only(proofs_only)
         .with_falsify(falsify)
+        // Thrown switches: the manifest's ([run] ∪ profile) ∪ the CLI's `-s` — all doors union
+        // (docs/design/manifest.md#switches-not-env-capabilities).
+        .with_switches(manifest_switches.iter().cloned().chain(cli_switches.iter().cloned()))
         .with_capabilities(capabilities)
         .with_globals_inject(globals_inject)
         .with_deputed_tracking(deputed_registry.clone())
@@ -3797,6 +3814,9 @@ struct ManifestRun {
     /// The lane's baked tag selection (`tags` on `[run]`/the profile) — folded into the run's
     /// Selection as an independent gate the CLI narrows within.
     lane_tags: Vec<String>,
+    /// The thrown opt-in switches (`switches` on `[run]`/the profile, unioned) — the CLI's `-s`
+    /// unions on top at the wiring site.
+    switches: Vec<String>,
 }
 
 /// If a linted plugin ships no LuaCATS stub (`library/<canonical>.lua`), return an advisory message.
@@ -4450,6 +4470,7 @@ fn resolve_from_manifest(
         placement_broker: manifest.placement.as_ref().and_then(|p| p.broker.clone()),
         heed: resolved.heed,
         lane_tags: resolved.lane_tags,
+        switches: resolved.switches,
     })
 }
 
