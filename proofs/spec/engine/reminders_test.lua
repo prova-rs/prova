@@ -297,6 +297,90 @@ prova.remind("second", {
   t:expect(recorded.reminders[2].state):equals("due")
 end)
 
+prova.test("state filters narrow the report to one state, and the exit follows what is listed", {
+  covers = "docs/design/reminders.md#reminders-state-filters",
+  proves = "states are adjectives on their lane — and a narrowed report that answered for rows it hid would make --watching a liar whenever anything else is due",
+}, function(t)
+  local proj = mkpkg(t:use(scratch), MANIFEST, DUE_PROOF)
+  shell.run(prova.bin, { cwd = proj, merge_stderr = true })
+  -- --due: only the due row, and the gate survives the narrowing.
+  local due = shell.run(prova.bin .. " reminders --due", { cwd = proj, merge_stderr = true })
+  t:expect(due.code, "a listed DUE still gates"):never():equals(0)
+  t:expect(due.stdout):contains("upstream shipped")
+  t:expect(due.stdout):never():contains("nothing to see")
+  t:expect(due.stdout):contains("1 due of 2 declared")
+  -- --watching: only the armed row, exit 0 even while something else is due — that is not
+  -- what was asked.
+  local watching = shell.run(prova.bin .. " reminders --watching", { cwd = proj, merge_stderr = true })
+  t:expect(watching.code, "--watching answers only for what it lists"):equals(0)
+  t:expect(watching.stdout):contains("nothing to see")
+  t:expect(watching.stdout):never():contains("upstream shipped")
+  -- One state per report: the pair is mutually exclusive, a usage error.
+  local both = shell.run(prova.bin .. " reminders --due --watching", { cwd = proj, merge_stderr = true })
+  t:expect(both.code):equals(2)
+  t:expect(both.stdout):contains("mutually exclusive")
+  -- An empty narrowed report is a normal answer, stated honestly.
+  local calm = mkpkg(t:use(scratch) .. "/calm", MANIFEST, [[
+prova.test("green", function(t) t:expect(true):is_true() end)
+prova.remind("armed", { when = function() return false end }, "n/a")
+]])
+  shell.run(prova.bin, { cwd = calm, merge_stderr = true })
+  local none = shell.run(prova.bin .. " reminders --due", { cwd = calm, merge_stderr = true })
+  t:expect(none.code, "nothing due is good news, not a failure"):equals(0)
+  t:expect(none.stdout):contains("nothing due")
+end)
+
+-- Two reminders with distinct names, files and tags — the selector axes made observable.
+local SELECTABLE = [[
+prova.test("green", function(t) t:expect(true):is_true() end)
+
+prova.remind("deps-current", {
+  when = function() return false end,
+  tags = { "deps" },
+}, "bump the pins")
+
+prova.remind("cert-expiry", {
+  when = function() return "expired yesterday" end,
+  tags = { "ops" },
+}, "rotate the cert")
+]]
+
+prova.test("the one selector grammar narrows the lane; a selector is never accepted-and-ignored", {
+  covers = "docs/design/reminders.md#reminders-selectors-narrow",
+  proves = "`prova reminders -k foo` used to parse the selector and list the whole lane anyway — a narrowed report that lies about being narrowed",
+}, function(t)
+  local proj = mkpkg(t:use(scratch), MANIFEST, SELECTABLE)
+  shell.run(prova.bin, { cwd = proj, merge_stderr = true })
+  -- -k: substring over the name (and declaring file).
+  local k = shell.run(prova.bin .. " reminders -k deps", { cwd = proj, merge_stderr = true })
+  t:expect(k.stdout):contains("deps-current")
+  t:expect(k.stdout, "-k narrows, it does not decorate"):never():contains("cert-expiry")
+  -- --tags: the reminder's own tags, same meaning as the tests lane.
+  local tags = shell.run(prova.bin .. " reminders --tags ops", { cwd = proj, merge_stderr = true })
+  t:expect(tags.stdout):contains("cert-expiry")
+  t:expect(tags.stdout):never():contains("deps-current")
+  -- --node: the exact address — a reminder's address is its name.
+  local node = shell.run(prova.bin .. " reminders --node deps-current", { cwd = proj, merge_stderr = true })
+  t:expect(node.stdout):contains("deps-current")
+  t:expect(node.stdout):never():contains("cert-expiry")
+  -- Excludes narrow from the other side.
+  local excl = shell.run(prova.bin .. " reminders -k '!deps'", { cwd = proj, merge_stderr = true })
+  t:expect(excl.stdout):contains("cert-expiry")
+  t:expect(excl.stdout):never():contains("deps-current")
+  -- A selector that matches nothing says so — never the whole lane with a straight face.
+  local none = shell.run(prova.bin .. " reminders -k zzz-nomatch", { cwd = proj, merge_stderr = true })
+  t:expect(none.code):equals(0)
+  t:expect(none.stdout):contains("no reminder matches the selection")
+  t:expect(none.stdout):never():contains("deps-current")
+  -- Selectors compose with the state filters: same grammar, one query.
+  local compose = shell.run(prova.bin .. " reminders --due --tags deps", { cwd = proj, merge_stderr = true })
+  t:expect(compose.code, "deps-current is watching, so the due slice of deps is empty"):equals(0)
+  t:expect(compose.stdout):contains("nothing due")
+  local hit = shell.run(prova.bin .. " reminders --due --tags ops", { cwd = proj, merge_stderr = true })
+  t:expect(hit.code, "the due slice of ops is the cert"):never():equals(0)
+  t:expect(hit.stdout):contains("cert-expiry")
+end)
+
 prova.test("the binary teaches the account: `prova learn reminders` names the verbs and the rule", {
   proves = "the autodidact surface is where an arriving agent learns that attention is not implementation",
 }, function(t)

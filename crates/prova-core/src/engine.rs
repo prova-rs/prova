@@ -5011,6 +5011,19 @@ pub fn collect_reminders(suites: &[crate::suite::Suite], config: &RunConfig) -> 
                 .get(def.file)
                 .filter(|p| !p.as_os_str().is_empty())
                 .map(|p| p.to_string_lossy().into_owned());
+            // The one selector grammar narrows this lane like every lane
+            // (docs/design/reminders.md#reminders-selectors-narrow): `-k` is a substring over the
+            // name and declaring file, `--node` the exact address, `--tags` the reminder's tags.
+            let selected = {
+                let mut paths: Vec<&str> = vec![def.name.as_str()];
+                if let Some(f) = file.as_deref() {
+                    paths.push(f);
+                }
+                config.selection.selects(&paths, &def.tags)
+            };
+            if !selected {
+                continue;
+            }
             out.push(ReminderListing {
                 name: def.name,
                 message: def.message,

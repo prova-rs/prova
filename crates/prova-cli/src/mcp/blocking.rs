@@ -571,10 +571,32 @@ pub(super) fn specs_blocking(env: &McpEnv, req: SpecsRequest) -> Result<(serde_j
 /// unevaluated / pending). Same declared+recorded overlay the CLI's `list_reminders` renders.
 /// `isError` when any is DUE — mirroring the CLI verb's non-zero exit on a due reminder.
 pub(super) fn reminders_blocking(env: &McpEnv, req: RemindersRequest) -> Result<(serde_json::Value, bool), String> {
+    // The lane's state filter (docs/design/reminders.md#reminders-state-filters): due/watching are
+    // the lane states; pending/unevaluated are evaluation outcomes, visible only in the full report.
+    let state = match req.state.as_deref() {
+        None => None,
+        Some(s @ ("due" | "watching")) => Some(s.to_string()),
+        Some(other) => {
+            return Err(format!(
+                "reminders: unknown state {other:?} — the lane states are \"due\" and \"watching\""
+            ))
+        }
+    };
     let call = env.resolve_call(None, req.package.as_deref())?;
     let suites = crate::collect_suites(&call.base_dir, &call.declared, &call.proofs, true)?;
-    let config = crate::engine_config(1, &call.dependencies, Some(&call.home), prova_core::progress::null())
+    let mut config = crate::engine_config(1, &call.dependencies, Some(&call.home), prova_core::progress::null())
         .with_capabilities(call.capabilities.clone());
+    // The same selection axes the CLI verb takes, filtered where the CLI filters (in
+    // collect_reminders), so the two surfaces cannot drift on what a narrowed lane shows.
+    config.selection = prova_core::Selection {
+        keywords: req.keywords.unwrap_or_default(),
+        keyword_excludes: req.keyword_excludes.unwrap_or_default(),
+        tags: req.tags.unwrap_or_default(),
+        tag_excludes: req.tag_excludes.unwrap_or_default(),
+        nodes: req.nodes.unwrap_or_default(),
+        lane_tags: Vec::new(),
+        lane_tag_excludes: Vec::new(),
+    };
     let declared = prova_core::collect_reminders(&suites, &config);
     let recorded = crate::record::load(&call.home)
         .map(|r| r.reminders)
@@ -584,16 +606,27 @@ pub(super) fn reminders_blocking(env: &McpEnv, req: RemindersRequest) -> Result<
     let mut any_due = false;
     let rows: Vec<serde_json::Value> = declared
         .iter()
-        .map(|d| match states.get(d.name.as_str()) {
-            Some(e) if e.state == "due" => {
+        .filter_map(|d| {
+            let row = match states.get(d.name.as_str()) {
+                Some(e) if e.state == "due" => {
+                    json!({ "name": d.name, "state": "due", "message": d.message, "why": e.why })
+                }
+                Some(e) if e.state == "unevaluated" => {
+                    json!({ "name": d.name, "state": "unevaluated", "message": d.message, "why": e.why })
+                }
+                Some(_) => json!({ "name": d.name, "state": "watching", "message": d.message }),
+                None => json!({ "name": d.name, "state": "pending", "message": d.message }),
+            };
+            // The narrowed report answers only for what it lists: rows outside the asked state
+            // drop, and `any_due` below counts LISTED rows, so `state: "watching"` is never an
+            // error even while something else is due.
+            if state.as_deref().is_some_and(|w| w != row["state"]) {
+                return None;
+            }
+            if row["state"] == "due" {
                 any_due = true;
-                json!({ "name": d.name, "state": "due", "message": d.message, "why": e.why })
             }
-            Some(e) if e.state == "unevaluated" => {
-                json!({ "name": d.name, "state": "unevaluated", "message": d.message, "why": e.why })
-            }
-            Some(_) => json!({ "name": d.name, "state": "watching", "message": d.message }),
-            None => json!({ "name": d.name, "state": "pending", "message": d.message }),
+            Some(row)
         })
         .collect();
     Ok((json!({ "reminders": rows }), any_due))

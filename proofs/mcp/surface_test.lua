@@ -175,6 +175,70 @@ prova.test("eval runs one-shot code in the full environment on both transports",
   t:expect(value, "modules are available, same as the CLI"):contains("ok")
 end)
 
+-- ── the reminders lane, narrowed the same way on both surfaces ───────────────────────────────
+
+--- A package with one due and one watching reminder, its record populated by a CLI run — the
+--- MCP tool reads the same record the CLI verb reads.
+local function reminded(root)
+  fs.mkdir(root .. "/proofs")
+  fs.write(root .. "/prova.toml", '[run]\nproofs = ["proofs"]\n')
+  fs.write(root .. "/proofs/watch_test.lua", [[
+prova.test("green", function(t) t:expect(true):is_true() end)
+prova.remind("cert-expiry", { when = function() return "expired" end, tags = { "ops" } }, "rotate")
+prova.remind("deps-current", { when = function() return false end, tags = { "deps" } }, "bump")
+]])
+  shell.run(prova.bin, { cwd = root, merge_stderr = true })
+end
+
+prova.test("the reminders tool narrows by state, and isError answers only for what is listed",
+  { covers = "docs/design/reminders.md#reminders-state-filters" }, function(t)
+  local root = t:use(scratch)()
+  reminded(root)
+  local by_id = mcp(root, {
+    call(2, "reminders"),
+    call(3, "reminders", '{"state":"watching"}'),
+    call(4, "reminders", '{"state":"due"}'),
+    call(5, "reminders", '{"state":"snoozed"}'),
+  })
+  local full, full_err = tool_json(by_id[2])
+  t:expect(#full.reminders):equals(2)
+  t:expect(full_err, "a due reminder marks the full report"):is_truthy()
+  local watching, watching_err = tool_json(by_id[3])
+  t:expect(#watching.reminders):equals(1)
+  t:expect(watching.reminders[1].name):equals("deps-current")
+  t:expect(watching_err, "the narrowed report answers only for what it lists"):never():is_truthy()
+  local due, due_err = tool_json(by_id[4])
+  t:expect(#due.reminders):equals(1)
+  t:expect(due.reminders[1].name):equals("cert-expiry")
+  t:expect(due_err):is_truthy()
+  t:expect(by_id[5].result.isError, "an unknown state is an error, not an empty list"):is_truthy()
+  t:expect(by_id[5].result.content[1].text):contains("due")
+end)
+
+prova.test("the reminders tool takes the same selector axes the CLI verb takes",
+  { covers = "docs/design/reminders.md#reminders-selectors-narrow" }, function(t)
+  local root = t:use(scratch)()
+  reminded(root)
+  local by_id = mcp(root, {
+    call(2, "reminders", '{"keywords":["deps"]}'),
+    call(3, "reminders", '{"tags":["ops"]}'),
+    call(4, "reminders", '{"nodes":["deps-current"]}'),
+    call(5, "reminders", '{"keyword_excludes":["deps"]}'),
+  })
+  local k = tool_json(by_id[2])
+  t:expect(#k.reminders):equals(1)
+  t:expect(k.reminders[1].name):equals("deps-current")
+  local tags = tool_json(by_id[3])
+  t:expect(#tags.reminders):equals(1)
+  t:expect(tags.reminders[1].name):equals("cert-expiry")
+  local node = tool_json(by_id[4])
+  t:expect(#node.reminders):equals(1)
+  t:expect(node.reminders[1].name):equals("deps-current")
+  local excl = tool_json(by_id[5])
+  t:expect(#excl.reminders):equals(1)
+  t:expect(excl.reminders[1].name):equals("cert-expiry")
+end)
+
 -- ── one skill, three doors ───────────────────────────────────────────────────────────────────
 
 prova.test("the one embedded skill: printed, served as instructions, and installed",

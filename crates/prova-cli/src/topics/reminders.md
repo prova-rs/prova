@@ -77,7 +77,12 @@ nothing. `prova reminders` works **before and after** a run: it collects the *de
 reminders (loading the suite, like `--list`, executing nothing) and overlays the state the
 last run recorded — DUE first (with why and instruction), then WATCHING, then `—` for any no
 run has evaluated yet, with a prompt to run for live status. It exits non-zero when any is due
-— one exit-code answer for a pipeline. So "what reminders exist?" never requires a run. DUE
+— one exit-code answer for a pipeline. `--due` / `--watching` narrow the report to one state
+(mutually exclusive; the narrowed report answers only for what it lists, so `--watching` stays
+exit 0 even while something else is due), and the one selector grammar narrows here like every
+lane: `-k` over name and declaring file, `--node` the exact name, `--tags` the reminder's tags,
+`!` excludes — composing with the state filters (`prova reminders --due -k deps`). So "what
+reminders exist?" never requires a run. DUE
 reminders also join `prova owed` (an arriving agent asks one question), and `prova evidence`
 carries the counts. Cadence is run cadence: prova is a runner, not a daemon — "whenever the
 world moves" means *at every evaluation*, so give CI a scheduled run if you want the wall

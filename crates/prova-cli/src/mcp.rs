@@ -500,6 +500,20 @@ struct SpecsRequest {
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[serde(deny_unknown_fields)]
 struct RemindersRequest {
+    /// Narrow to one lane state: `"due"` or `"watching"` (CLI `--due` / `--watching`). The
+    /// narrowed report answers only for what it lists — `isError` only when a DUE row is shown.
+    state: Option<String>,
+    /// Select reminders whose name or declaring file contains any of these substrings (CLI `-k`).
+    keywords: Option<Vec<String>>,
+    /// Exclude reminders whose name or declaring file contains any of these substrings
+    /// (CLI `-k '!PATTERN'`).
+    keyword_excludes: Option<Vec<String>>,
+    /// Select reminders carrying any of these tags (CLI `--tags a,b`).
+    tags: Option<Vec<String>>,
+    /// Exclude reminders carrying any of these tags (CLI `--tags '!tag'`).
+    tag_excludes: Option<Vec<String>>,
+    /// Select by exact reminder name (CLI `--node NAME`) — a reminder's address is its name.
+    nodes: Option<Vec<String>>,
     /// A directory or manifest path: report THAT package's reminders. Resolves fresh.
     package: Option<String>,
 }
@@ -924,7 +938,7 @@ impl ProvaMcpServer {
 
     #[tool(
         name = "reminders",
-        description = "The attention account — every `prova.remind` declared in the suite, with the state the last run recorded overlaid: due (attention owed — carries the condition's `why` and the instruction `message`), watching (armed, condition holds), unevaluated (could not run), or pending (declared, no run has evaluated it yet). Returns compact JSON: { reminders: [{ name, state, message, why? }] }. The result is marked isError when ANY reminder is due — the same signal the CLI's non-zero exit gives. Collects the suite but executes no test. The agent twin of `prova reminders`. Pass `package` to target another package. See learn { topic = \"reminders\" }."
+        description = "The attention account — every `prova.remind` declared in the suite, with the state the last run recorded overlaid: due (attention owed — carries the condition's `why` and the instruction `message`), watching (armed, condition holds), unevaluated (could not run), or pending (declared, no run has evaluated it yet). Returns compact JSON: { reminders: [{ name, state, message, why? }] }. `state: \"due\" | \"watching\"` narrows to one lane state; `keywords`/`tags`/`nodes` (+ excludes) narrow by the same selector grammar every lane speaks. The result is marked isError when a due reminder is LISTED — the same signal the CLI's non-zero exit gives, scoped to what was asked. Collects the suite but executes no test. The agent twin of `prova reminders`. Pass `package` to target another package. See learn { topic = \"reminders\" }."
     )]
     async fn reminders(&self, Parameters(req): Parameters<RemindersRequest>) -> CallToolResult {
         let _serialized = self.run_lock.lock().await;

@@ -986,13 +986,18 @@ fn reminders_subcommand(args: Vec<String>) -> ExitCode {
     for arg in &args {
         if arg == "-h" || arg == "--help" {
             println!(
-                "usage: prova reminders\n\n\
+                "usage: prova reminders [--due | --watching] [-k PATTERN] [--tags TAGS] [--node NAME]\n\
+                 \x20      prova reminders burndown       drive DUE reminders to green (a run with --heed)\n\n\
                  Lists every declared `prova.remind`, with the state the last run recorded overlaid:\n\
                  DUE (attention owed — with the condition's why and the instruction), WATCHING\n\
                  (armed, the world holds still), UNEVALUATED (could not run, with the reason), or\n\
                  — (declared, no run has evaluated it yet).\n\n\
+                 `--due` / `--watching` narrow to one state; the narrowed report answers only for\n\
+                 what it lists, so `--watching` exits 0 even while something else is due. Selectors\n\
+                 narrow like every lane: `-k` over name and declaring file, `--node` the exact name,\n\
+                 `--tags` the reminder's tags, `!` excludes — composing with the state filters.\n\n\
                  Collects the suite but executes nothing — so it works BEFORE any run (listing what\n\
-                 is declared) and shows live states AFTER one. Exits non-zero when any is due."
+                 is declared) and shows live states AFTER one. Exits non-zero when a DUE is listed."
             );
             return ExitCode::SUCCESS;
         }
@@ -1007,10 +1012,31 @@ fn reminders_subcommand(args: Vec<String>) -> ExitCode {
             return run(full);
         }
     }
+    // States are adjectives on the lane (docs/design/reminders.md#reminders-state-filters). The
+    // spellings are rewritten to internal flags before forwarding because the run parser already
+    // owns `--due` for something else entirely (promises falling due by decree).
+    let mut state: Option<&str> = None;
+    let mut rest: Vec<String> = Vec::new();
+    for arg in args {
+        match arg.as_str() {
+            "--due" | "--watching" => {
+                let want = if arg == "--due" { "due" } else { "watching" };
+                if state.is_some_and(|s| s != want) {
+                    eprintln!("prova: reminders: --due and --watching are mutually exclusive");
+                    return ExitCode::from(2);
+                }
+                state = Some(want);
+            }
+            _ => rest.push(arg),
+        }
+    }
     // Report: route through the run machinery to collect declared reminders (loading the suite, like
     // `--list`, without executing), then overlay the recorded state. One command, before and after.
     let mut full = vec!["--reminders-list".to_string()];
-    full.extend(args);
+    if let Some(want) = state {
+        full.push(format!("--reminders-{want}"));
+    }
+    full.extend(rest);
     run(full)
 }
 
@@ -1020,6 +1046,7 @@ fn reminders_subcommand(args: Vec<String>) -> ExitCode {
 fn list_reminders(
     declared: &[prova_core::ReminderListing],
     recorded: &[record::ReminderEntry],
+    state: Option<&str>,
 ) -> ExitCode {
     if declared.is_empty() {
         println!(
@@ -1039,6 +1066,19 @@ fn list_reminders(
         None => 3,
     };
     let mut order: Vec<&prova_core::ReminderListing> = declared.iter().collect();
+    // `--due` / `--watching` narrow to one lane state; the narrowed report speaks only for what it
+    // lists (docs/design/reminders.md#reminders-state-filters), so pending/unevaluated rows appear
+    // only in the full report and the exit code follows the shown rows.
+    if let Some(want) = state {
+        order.retain(|d| states.get(d.name.as_str()).is_some_and(|e| e.state == want));
+        if order.is_empty() {
+            match want {
+                "due" => println!("prova: nothing due — the world holds still"),
+                _ => println!("prova: nothing watching"),
+            }
+            return ExitCode::SUCCESS;
+        }
+    }
     order.sort_by_key(|d| rank(d));
 
     let (mut due, mut watching, mut unevaluated, mut pending) = (0, 0, 0, 0);
@@ -1072,12 +1112,17 @@ fn list_reminders(
         }
     }
     println!();
-    println!(
-        "  {} declared · {due} due, {unevaluated} unevaluated, {watching} watching",
-        declared.len()
-    );
-    if pending > 0 {
-        println!("  {pending} not yet evaluated — run `prova` for live status");
+    match state {
+        Some(want) => println!("  {} {want} of {} declared", due + watching, declared.len()),
+        None => {
+            println!(
+                "  {} declared · {due} due, {unevaluated} unevaluated, {watching} watching",
+                declared.len()
+            );
+            if pending > 0 {
+                println!("  {pending} not yet evaluated — run `prova` for live status");
+            }
+        }
     }
     if due > 0 {
         ExitCode::FAILURE
@@ -2736,6 +2781,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     // like `--list`, without executing) and overlay the recorded state — so the verb works before
     // any run and shows live states after one. Not a user-facing flag.
     let mut reminders_list = false;
+    let mut reminders_state: Option<&str> = None;
     let mut promises_only = false;
     let mut proofs_only = false;
     let mut falsify = false;
@@ -2916,6 +2962,10 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             }
             "--backfill" => backfill = true,
             "--reminders-list" => reminders_list = true,
+            // Internal spellings of the reminders lane's state filters (`prova reminders --due`);
+            // rewritten by reminders_subcommand because bare `--due` is the promise decree below.
+            "--reminders-due" => reminders_state = Some("due"),
+            "--reminders-watching" => reminders_state = Some("watching"),
             "--quiet" | "-q" => cli_quiet = true,
             // Promote this one invocation to heed the attention account — the ad-hoc form of the
             // manifest's `heed`; like every guarantee it can only tighten (All absorbs).
@@ -3300,12 +3350,18 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         // recorded overlaid (or "—" for one no run has evaluated yet). Collection loads the suite
         // but executes nothing — so `prova reminders` works before a run and fills in after.
         let declared = prova_core::collect_reminders(&suites, &config);
+        // A selection that matched nothing gets its own honest line — the courtesy message below
+        // ("no reminders declared") would misread a narrow filter as an undeclared lane.
+        if declared.is_empty() && !config.selection.is_empty() {
+            println!("prova: no reminder matches the selection");
+            return ExitCode::SUCCESS;
+        }
         let recorded = home
             .as_ref()
             .and_then(record::load)
             .map(|r| r.reminders)
             .unwrap_or_default();
-        return list_reminders(&declared, &recorded);
+        return list_reminders(&declared, &recorded, reminders_state);
     }
 
     if backfill {
