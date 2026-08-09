@@ -4532,22 +4532,30 @@ mod tests {
     /// (`LANES` ↔ `VERBS` ↔ `Topic::resolve`), so a unit test reads it directly rather than parsing
     /// `--help`.
     ///
-    /// The MCP leg is intentionally NOT gated here: whether each lane earns its own MCP tool or is
-    /// reached through one lane-parameterized `query` tool is increment 8's open call, so asserting a
-    /// tool named `<lane>` today would bake in an undecided shape. `mcp_tools_are_real_verbs` holds
-    /// the CLI↔MCP surface to one vocabulary in the meantime.
+    /// Three legs now: a `prova <lane>` verb, a `prova learn <lane>` topic, AND a same-named MCP
+    /// tool — the correspondence is `LANES` ↔ `VERBS` ↔ `Topic::resolve` ↔ the MCP router. The MCP
+    /// leg landed in increment 8 once tool-per-lane was settled (the alternative, one
+    /// lane-parameterized `query` tool, was rejected — matching verb names is what lets an agent and
+    /// a user share one lane vocabulary). A lane that loses any leg fails here.
     ///
     /// Legs the plan wires in a later increment live in `KNOWN_GAPS`. A row there is a promise, not a
     /// mute: the minimality check below FAILS once the leg is wired, so closing a gap forces deleting
     /// its row — graduation, exactly as an honored promise fails until its flag is removed.
     #[test]
     fn lane_surface_parity() {
-        // (lane, surface) legs not yet wired, each with the increment that closes it. Empty now:
-        // increment 3 landed `prova specs` and `prova tests`, so the verb legs of all three lanes
-        // are wired. The MCP leg is not gated here (see the doc comment); it burns down in increment 8.
+        // All three legs are wired, so KNOWN_GAPS is empty. A row here is a promise, not a mute: the
+        // minimality check below FAILS once a listed leg is wired, forcing its deletion (graduation).
         const KNOWN_GAPS: &[(&str, &str)] = &[];
         let has_verb = |lane: &str| VERBS.iter().any(|v| v.name == lane);
         let has_topic = |lane: &str| learn::Topic::resolve(lane).is_some();
+        // The live MCP tool surface, read from the router (never a hand-kept list). Every lane must
+        // be reachable by a same-named tool, so an agent and a user share one lane vocabulary.
+        let tools: std::collections::BTreeSet<String> = mcp::ProvaMcpServer::tool_router()
+            .list_all()
+            .into_iter()
+            .map(|t| t.name.into_owned())
+            .collect();
+        let has_tool = |lane: &str| tools.contains(lane);
 
         for lane in prova_core::LANES {
             if !KNOWN_GAPS.contains(&(lane.key, "verb")) {
@@ -4565,6 +4573,14 @@ mod tests {
                 "lane `{key}` has no `prova learn {key}` topic — `prova learn {key}` would dead-end.",
                 key = lane.key,
             );
+            if !KNOWN_GAPS.contains(&(lane.key, "mcp")) {
+                assert!(
+                    has_tool(lane.key),
+                    "lane `{key}` has no MCP tool named `{key}` — an agent cannot reach the {key} \
+                     lane, breaking CLI↔MCP parity (docs/plans/query-consolidation.md).",
+                    key = lane.key,
+                );
+            }
         }
 
         // Minimality / graduation: every listed gap must still be an actual gap.
@@ -4572,6 +4588,7 @@ mod tests {
             let still_gapped = match *surface {
                 "verb" => !has_verb(lane),
                 "topic" => !has_topic(lane),
+                "mcp" => !has_tool(lane),
                 other => panic!("KNOWN_GAPS names an unknown surface {other:?}"),
             };
             assert!(
