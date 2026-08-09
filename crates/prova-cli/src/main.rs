@@ -102,6 +102,12 @@ const VERBS: &[Verb] = &[
         run: learn::run,
     },
     Verb {
+        name: "introspect",
+        help: "  prova introspect [<filter>]  the API surface: every function/value as signature +\n\
+               \x20                           summary (the CLI twin of `prova.help()`; learn's shapes sibling)",
+        run: introspect_subcommand,
+    },
+    Verb {
         name: "owed",
         help: "  prova owed                what this package still owes: open promises, unproven claims,\n\
                \x20                           covers pointing at prose that is not there, and due reminders",
@@ -453,6 +459,64 @@ fn capabilities_subcommand(args: Vec<String>) -> ExitCode {
         "  {met}/{} met · a package's `must_run`/`requires` name more (`prova learn capabilities`)",
         names.len()
     );
+    ExitCode::SUCCESS
+}
+
+/// `prova introspect [<filter>]` — the API surface: every function/method/value prova exposes, as
+/// its signature + one-line summary, parsed from the LuaCATS stubs (so it cannot drift from editor
+/// completion). The CLI twin of the MCP `introspect` tool and the human-facing form of
+/// `prova.help()`; paired with `prova learn`, it is prova's discovery duo — shapes and concepts.
+/// `<filter>` narrows by substring over name + summary. v1 shows the CORE surface; declared-plugin
+/// APIs (which need package resolution) are a tracked follow-up.
+fn introspect_subcommand(args: Vec<String>) -> ExitCode {
+    let mut filter: Option<String> = None;
+    for arg in args {
+        if arg == "-h" || arg == "--help" {
+            println!(
+                "usage: prova introspect [<filter>]\n\n\
+                 The prova API surface — every function/method/value as its signature + one-line\n\
+                 summary, parsed from the LuaCATS stubs (never drifts from editor completion).\n\
+                 `<filter>` narrows by substring (e.g. `shell`, `postgres`, `tempdir`). The CLI twin\n\
+                 of the MCP `introspect` tool and `prova.help()`; pair it with `prova learn`\n\
+                 (concepts). Shows the core surface; declared-plugin APIs are a follow-up."
+            );
+            return ExitCode::SUCCESS;
+        }
+        if arg.starts_with('-') {
+            eprintln!("prova: introspect: unexpected flag {arg:?}\nusage: prova introspect [<filter>]");
+            return ExitCode::from(2);
+        }
+        if filter.is_some() {
+            eprintln!("prova: introspect: one filter at a time\nusage: prova introspect [<filter>]");
+            return ExitCode::from(2);
+        }
+        filter = Some(arg);
+    }
+    let all = prova_core::help::core_entries();
+    let entries = match filter.as_deref() {
+        Some(n) => prova_core::help::filter(&all, n),
+        None => all,
+    };
+    if entries.is_empty() {
+        match &filter {
+            Some(n) => println!("prova: nothing in the API surface matches {n:?}"),
+            None => println!("prova: no API entries"),
+        }
+        return ExitCode::SUCCESS;
+    }
+    for e in &entries {
+        // name + signature on one line (`shell.run(cmd, opts?) -> string`); the summary indented
+        // under it. Without the name the signature is unattributable — the bug this format avoids.
+        println!("  {}{}", e.name, e.signature);
+        if !e.summary.is_empty() {
+            println!("      {}", e.summary);
+        }
+    }
+    println!();
+    match &filter {
+        Some(n) => println!("  {} entries matching {n:?}", entries.len()),
+        None => println!("  {} entries in the core API surface", entries.len()),
+    }
     ExitCode::SUCCESS
 }
 
@@ -4542,9 +4606,8 @@ mod tests {
     fn mcp_tools_are_real_verbs() {
         // MCP tools with no same-named CLI verb, and why. `status` is drift — the CLI spells the same
         // capability `ps`; increment 7 unifies the topology lifecycle and retires this name.
-        // `introspect` is intentionally MCP-only (the CLI reaches the same surface via
-        // `eval 'return prova.help()'`); increment 8 decides whether it earns a CLI spelling.
-        const KNOWN_MCP_ONLY: &[&str] = &["introspect", "status"];
+        // (`introspect` graduated: it now has a `prova introspect` CLI verb — increment 8.)
+        const KNOWN_MCP_ONLY: &[&str] = &["status"];
         let known: std::collections::BTreeSet<&str> = VERBS.iter().map(|v| v.name).collect();
 
         // Read the LIVE router (never a hand-kept list) — a tool added or renamed in a `#[tool]`

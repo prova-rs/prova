@@ -124,6 +124,8 @@ impl Topic {
         ("tests", Topic::Authoring),
         ("dsl", Topic::Authoring),
         ("matchers", Topic::Authoring),
+        ("introspect", Topic::Authoring),
+        ("api", Topic::Authoring),
         ("snapshots", Topic::Authoring),
         ("fixture", Topic::Fixtures),
         ("scopes", Topic::Fixtures),
