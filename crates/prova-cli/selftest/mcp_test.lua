@@ -4,9 +4,9 @@
 --- server to its contract:
 ---
 ---   * initialize returns serverInfo.name "prova" and the embedded agent skill as `instructions`
----   * tools/list exposes exactly the CLI-parity cold tools: run, list, eval
+---   * tools/list exposes exactly the CLI-parity cold tools: run, tests, eval
 ---   * every tool returns ONE text content item whose text is JSON (the stable machine contract)
----   * `list` honors selection; `run` returns counts + per-failure detail; `eval` evaluates in
+---   * `tests` honors selection; `run` returns counts + per-failure detail; `eval` evaluates in
 ---     the full environment; the server exits 0 on stdin EOF
 ---
 --- The binary under test is `prova.bin` (the runtime injects it); the launcher
@@ -97,7 +97,7 @@ prova.group("prova mcp", function(g)
     for _, tool in ipairs(tools) do names[tool.name] = true end
     t:expect_all(function()
       t:expect(names.run, "run tool"):is_true()
-      t:expect(names.list, "list tool"):is_true()
+      t:expect(names.tests, "tests tool"):is_true()
       t:expect(names.eval, "eval tool"):is_true()
     end)
   end)
@@ -111,16 +111,16 @@ prova.group("prova mcp", function(g)
     t:expect(value):equals(42)
   end)
 
-  g:test("list discovers the project's nodes and honors selection", function(t)
+  g:test("tests discovers the project's nodes and honors selection", function(t)
     local by_id = mcp({
       { jsonrpc = "2.0", id = 4, method = "tools/call",
-        params = { name = "list", arguments = {} } },
+        params = { name = "tests", arguments = {} } },
       { jsonrpc = "2.0", id = 5, method = "tools/call",
-        params = { name = "list", arguments = { tags = { "slow" } } } },
+        params = { name = "tests", arguments = { tags = { "slow" } } } },
     })
-    local all = tool_json(by_id[4], "list")
+    local all = tool_json(by_id[4], "tests")
     t:expect(#all.nodes):equals(3)
-    local slow = tool_json(by_id[5], "list selected")
+    local slow = tool_json(by_id[5], "tests selected")
     t:expect(#slow.nodes):equals(1)
     t:expect(slow.nodes[1].path):contains("tagged slow")
   end)
@@ -223,9 +223,9 @@ prova.group("prova mcp", function(g)
       { jsonrpc = "2.0", id = 32, method = "tools/call",
         params = { name = "run",
                    arguments = { promises = true, due = true, package = spec_project } } },
-      -- `list { promises }` enumerates the remaining surface without running anything.
+      -- `tests { promises }` enumerates the remaining surface without running anything.
       { jsonrpc = "2.0", id = 33, method = "tools/call",
-        params = { name = "list", arguments = { promises = true, package = spec_project } } },
+        params = { name = "tests", arguments = { promises = true, package = spec_project } } },
     })
 
     local ci, ci_err = tool_json(by_id[30], "run (CI shape)")
@@ -242,7 +242,7 @@ prova.group("prova mcp", function(g)
     t:expect(strict_err, "the driver loop sees isError"):is_true()
     t:expect(strict.failures[1].path):contains("future feature")
 
-    local open = tool_json(by_id[33], "list{promises}")
+    local open = tool_json(by_id[33], "tests{promises}")
     t:expect(#open.nodes, "exactly the open surface"):equals(1)
     t:expect(open.nodes[1].path):contains("future feature")
   end)
