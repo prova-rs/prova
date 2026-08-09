@@ -27,8 +27,8 @@ A report, never a gate: exit 0, executes no proof body, safe on any machine. The
 | `prova attest` | every claim | is everything we claim evidenced? **The CI gate.** |
 
 A bare claim id resolves when it is unique (`prova attest lease-ttl`); an ambiguous one lists
-the candidates. These list **obligations** and never execute a proof. `prova promises` looks similar but lists
-**nodes** — it is `prova list --promises`, on the run axis.
+the candidates. These list **obligations** and never execute a proof. `prova tests --promises` looks
+similar but lists **nodes** — the run axis, not obligations.
 
 ## The stages, one line each
 
@@ -43,7 +43,7 @@ the candidates. These list **obligations** and never execute a proof. `prova pro
 
 - **UNPROVEN** — an anchored claim no proof covers. Work someone scoped in prose.
 - **DANGLING** — a `covers` naming prose that is not there (not written yet, or deleted).
-- **PROMISED** — the open surface: `prova burndown` drives it.
+- **PROMISED** — the open surface: `prova tests burndown` drives it.
 - **STALE** — a pinned claim whose text changed since the pin (`prova owed --pin`).
 
 ## Wiring CI

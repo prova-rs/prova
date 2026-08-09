@@ -66,7 +66,7 @@ prova.test("a reminder is not a promise: invisible to the spec surface, never de
   proves = "the promise-body-as-trigger hack made every dormant tripwire an open promise; keeping the constructs separate is what keeps `promises` pure",
 }, function(t)
   local proj = t:use(due_pkg)
-  local p = shell.run(prova.bin .. " promises", { cwd = proj, merge_stderr = true })
+  local p = shell.run(prova.bin .. " tests --promises", { cwd = proj, merge_stderr = true })
   t:expect(p.stdout):never():contains("upstream shipped")
   local l = shell.run(prova.bin .. " list", { cwd = proj, merge_stderr = true })
   t:expect(l.stdout, "a reminder is not a node"):never():contains("upstream shipped")
@@ -90,7 +90,7 @@ prova.remind("world moved", {
 }, "act on it")
 ]])
   -- The implementing loop selects the open promise and never the reminder.
-  local b = shell.run(prova.bin .. " burndown", { cwd = proj, merge_stderr = true })
+  local b = shell.run(prova.bin .. " tests burndown", { cwd = proj, merge_stderr = true })
   t:expect(b.stdout):contains("built later")
   t:expect(b.stdout, "burndown must not hand a reminder to the agent"):never():contains("world moved")
   -- `--due` makes PROMISES fall due; a due REMINDER is not an open promise and fails nothing.

@@ -18,7 +18,7 @@ end)
 ```
 
 ```bash
-prova falsify      # select only tests declaring a mutation; apply it; INVERT the verdict
+prova tests falsify   # select only tests declaring a mutation; apply it; INVERT the verdict
 ```
 
 Red under mutation is the passing result — what is being proven is the body's capacity to fail. A
@@ -30,9 +30,9 @@ FAIL  two plus two
     the mutation breaks. Sharpen the assertion, or fix the falsifier.
 ```
 
-The verb is the selection, exactly like `burndown`: a proof without a falsifier is not a failure
-(most never declare one), it is simply not what this pass is about. `prova falsify` = `--falsify
---allow-empty`; the flag composes with any selection. **A declared falsifier costs nothing on the
+The driver is the selection, exactly like `tests burndown`: a proof without a falsifier is not a
+failure (most never declare one), it is simply not what this pass is about. `prova tests falsify` =
+`--falsify --allow-empty`; the flag composes with any selection. **A declared falsifier costs nothing on the
 ordinary path** — the mutation runs only under the verb that asks for it, because if a bare
 `prova` started perturbing systems nobody would ever declare one.
 

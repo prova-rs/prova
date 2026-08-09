@@ -112,7 +112,7 @@ prova.test("`prova promises` enumerates only the open surface — proven tests a
     'prova.test("still open", { promises = "not built yet" }, function(t)\n' ..
     '  t:expect(1):equals(2)\n' ..
     'end)\n')
-  local r = shell.run(prova.bin .. " promises", { cwd = proj, merge_stderr = true })
+  local r = shell.run(prova.bin .. " tests --promises", { cwd = proj, merge_stderr = true })
   t:expect(r.code):equals(0)
   t:expect(r.stdout):contains("still open")
   t:expect(r.stdout):never():contains("finished")

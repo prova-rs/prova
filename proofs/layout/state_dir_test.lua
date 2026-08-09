@@ -147,7 +147,7 @@ end)
 prova.test("a read-only invocation never creates a state directory",
   { covers = "docs/design/ide-and-layout.md#state-dir-self-owning" }, function(t)
   local pkg = t:use(sandbox) .. "/pkg"
-  local r = run(pkg, "promises")
+  local r = run(pkg, "tests --promises")
   t:expect(r.code):equals(0)
   t:expect(fs.exists(pkg .. "/.prova/var"), "nothing written by an enumeration"):equals(false)
 end)

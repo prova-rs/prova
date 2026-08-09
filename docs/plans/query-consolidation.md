@@ -301,9 +301,15 @@ The invariants to encode (each a unit test, wrapped as a deputed proof):
    verbs (states are `--flags` now). Ripples: MCP `list` tool → `tests` (or KNOWN_MCP_ONLY), `skill.md`
    + topics + the doc-verb lint. Breaking, pre-1.0 clean cut — its own commit so the additive reporters
    land green first.
-4. **Drivers as red→green worklists.** `prova tests burndown|falsify`, `prova specs backfill`,
-   `prova reminders burndown` — each with its red policy (`gate`/`xfail` per the *Drivers* table).
-   burndown/falsify delegate to the run engine; backfill is a static coverage gate (reverse-`owed`).
+4. **Drivers as red→green worklists.** *(4a LANDED 2026-08-08 — commit `e1e97`.)* The
+   `prova <lane> <driver>` dispatch grammar: `prova specs promote <id>` (rehomed via a shared
+   `promote_claim()` that `prova backlog promote` now also calls), `prova tests burndown|falsify`
+   (delegate to the run engine), `prova reminders burndown` (= `run --heed`). Additive — the
+   top-level `burndown`/`falsify`/`backlog promote` stay until 3b. Verified: 93 unit tests, clippy,
+   backlog proofs 13/13 (factored promote), end-to-end smoke incl. a specs-promote happy path.
+   **4b (deferred):** `prova specs backfill` — the reverse-`owed` coverage gate (proofs with no
+   backing claim). Needs per-node `covers` surfaced in discovery (add to `ListNode`) + a gate render
+   (exit ≠0 while any proof is unbacked). Its own focused pass.
 5. **Selectors on the cross-lane account.** `owed`/`attest`/`evidence` take the shared grammar;
    reconcile the owed-vs-evidence DUE-reminder discrepancy; settle evidence(reporter) vs
    owed/attest(drivers) — the parked question, now with the red→green lens.

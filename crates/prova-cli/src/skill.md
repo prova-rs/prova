@@ -31,15 +31,15 @@ the test states what it will prove someday and does not prove today. Open promis
 their own outcome (PROMISED) and keep CI green; the moment the body passes it FAILS demanding
 graduation — change `promises` to `proves = "<context>"` (a tense change; the why lives on in
 the test) or remove the flag — so implementation + graduation land as one proof-carrying change.
-`prova promises` enumerates the open surface — an empty list means burndown complete; found
-some in a repo? That is scoped work — offer to burn it down with `prova burndown`.
+`prova tests --promises` enumerates the open surface — an empty list means burndown complete; found
+some in a repo? That is scoped work — offer to burn it down with `prova tests burndown`.
 `prova learn promises` carries the lifecycle.
 
 **Falsifiers — proving the proof can fail.** A proof that has only ever been green is not
 evidence: it may be checking the contract, or checking nothing (an assertion over a value that
 cannot vary, a bar a stub already satisfies), and the two are indistinguishable in a report.
 Declare the mutation that MUST break it — `{ falsified_by = function(t) … end }` — and
-`prova falsify` applies it and inverts the verdict: red is the passing result. A body that
+`prova tests falsify` applies it and inverts the verdict: red is the passing result. A body that
 survives its own falsifier is reported **vacuous** and fails the run. Reach for one when a proof
 asserts an *absence* (no anonymous control, no leaked handle), and especially when the
 implementation was written after the proof — a stub that refuses everything satisfies a great
@@ -86,8 +86,8 @@ Everything below is the crash course; depth is one call away, computed for THIS 
 | An API's shape: what to call, what comes back | `prova.help("<filter>")` in any test/eval · MCP `introspect { filter }` |
 | Which archetypes `init` can scaffold | `prova init --list` (or `prova learn init`) |
 | A live value's shape | probe it with `eval` |
-| The open promises (proofs ahead of implementation) | `prova promises` · `prova learn promises` |
-| Whether the proofs can actually fail (vacuous-proof hunt) | `prova falsify` · `prova learn falsify` |
+| The open promises (proofs ahead of implementation) | `prova tests --promises` · `prova learn promises` |
+| Whether the proofs can actually fail (vacuous-proof hunt) | `prova tests falsify` · `prova learn falsify` |
 | Where the project stands — the whole account | `prova evidence` · `prova learn evidence` |
 | Everything this package owes, from every origin | `prova owed` · `prova learn claims` |
 | Whether a claim's proof actually RAN (not just "0 failed") | `prova attest <doc.md#id>` · `prova learn record` |
@@ -121,7 +121,7 @@ end)
   upstream failure **skips** downstream, never fails it, never passes state.
 - opts: `tags`, `requires`, `timeout = "60s"`,
   `resources = { prova.port(N), prova.writes("db"), prova.reads("cache") }` (say what the test does
-  to the resource: `writes` = exclusive, `reads` = concurrent), `serial = true`, `falsified_by = fn` (the mutation that must break it — `prova falsify`),
+  to the resource: `writes` = exclusive, `reads` = concurrent), `serial = true`, `falsified_by = fn` (the mutation that must break it — `prova tests falsify`),
   `promises = "reason"` (a
   proof authored ahead of its implementation — `prova learn promises`). `--jobs` is throughput
   only — it can never change what a run means.
@@ -238,8 +238,8 @@ prova -k MySQL              # only nodes whose path mentions MySQL (repeatable; 
 prova --tags '!build'       # skip a tier by tag (own or inherited from groups)
 prova --node "exact › path" # precisely the node a report named
 prova --last-failed         # exactly what was red last run — your main iteration verb
-prova list                  # discover without running (respects selection; = --list)
-prova promises              # list the open spec surface · `prova burndown` drives it red-loud
+prova tests                 # the tests lane, state-tagged PROMISE/PROOF (respects selection)
+prova tests --promises      # just the open spec surface · `prova tests burndown` drives it red-loud
 prova --promises            # the composable selector underneath (only promised tests)
 prova eval 'return require("postgres").container(ctx).url'   # one-shot probe, auto-teardown
 ```

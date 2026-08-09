@@ -102,18 +102,6 @@ const VERBS: &[Verb] = &[
         run: learn::run,
     },
     Verb {
-        name: "promises",
-        help: "  prova promises            list the open promises — proofs authored ahead of implementation\n\
-               \x20                           (same as `list --promises`; composes with selection)",
-        run: promises_subcommand,
-    },
-    Verb {
-        name: "burndown",
-        help: "  prova burndown [<sel>]    the implementing loop: run only promised tests, open promises fail\n\
-               \x20                           loud with full detail (same as `--promises --due`)",
-        run: burndown_subcommand,
-    },
-    Verb {
         name: "owed",
         help: "  prova owed                what this package still owes: open promises, unproven claims,\n\
                \x20                           covers pointing at prose that is not there, and due reminders",
@@ -144,12 +132,6 @@ const VERBS: &[Verb] = &[
         run: backlog_subcommand,
     },
     Verb {
-        name: "falsify",
-        help: "  prova falsify [<sel>]     prove the proofs can fail: run only tests declaring `falsified_by`,\n\
-               \x20                           applying the mutation — a body that survives it is vacuous",
-        run: falsify_subcommand,
-    },
-    Verb {
         name: "attest",
         help: "  prova attest [<address>]  did the proof covering this claim actually RUN? Fails when it was\n\
                \x20                           skipped, deselected or absent; no address gates EVERY claim (CI)",
@@ -163,8 +145,8 @@ const VERBS: &[Verb] = &[
     },
     Verb {
         name: "list",
-        help: "  prova list [<sel>]        discover tests without running them (same as `--list`; respects\n\
-               \x20                           selection — `prova promises` is `list --promises`)",
+        help: "  prova list [<sel>]        discover tests without running (same as `--list`); retiring —\n\
+               \x20                           `prova tests` is the lane-named successor (state-tagged)",
         run: list_subcommand,
     },
     Verb {
@@ -220,6 +202,16 @@ const VERBS: &[Verb] = &[
 /// with the other pre-1.0 spellings. Dispatch still lands on the canonical verb; the warning is
 /// what teaches the rename.
 const DEPRECATED_VERBS: &[(&str, &str)] = &[("plugin", "package"), ("plugins", "packages")];
+
+/// Retired verb spellings — the state-verb surface the lane grammar replaced (query consolidation).
+/// Unlike a deprecation, these do NOT dispatch: a state is a `--flag` on its lane now, not its own
+/// verb. The tombstone refuses and names the new spelling — kinder to muscle memory (agents most of
+/// all) than the run path's "no such file", and honest that the old command is gone.
+const RETIRED_VERBS: &[(&str, &str)] = &[
+    ("promises", "prova tests --promises"),
+    ("burndown", "prova tests burndown"),
+    ("falsify", "prova tests falsify"),
+];
 
 /// `prova --help`, assembled from the verb table so the two cannot disagree.
 fn help_text() -> String {
@@ -324,6 +316,10 @@ fn main() -> ExitCode {
             raw.next();
             return (verb.run)(raw.collect());
         }
+        if let Some((old, replacement)) = RETIRED_VERBS.iter().find(|(old, _)| old == first) {
+            eprintln!("prova: `prova {old}` was retired — use `{replacement}` (a state is a flag on its lane now)");
+            return ExitCode::from(2);
+        }
     }
     run(std::env::args().skip(1).collect())
 }
@@ -401,18 +397,8 @@ fn package_subcommand(args: Vec<String>) -> ExitCode {
     }
 }
 
-/// `prova promises` — the no-flags spelling of `--promises --list`: enumerate the open promises
-/// without running anything. The flags remain the composable primitives; this is the verb an
-/// agent remembers (activities are subcommands, and the no-arg form lists its domain, like
-/// `prova up` / `prova plugin`). Extra args pass through, so selection still composes.
-fn promises_subcommand(args: Vec<String>) -> ExitCode {
-    let mut full = vec!["--promises".to_string(), "--list".to_string()];
-    full.extend(args);
-    run(full)
-}
-
-/// `prova list` — the run-axis discovery head. `promises` is this plus `--promises`: both list NODES,
-/// which is what separates them from the evidence family (`evidence`/`owed`/`attest` list
+/// `prova list` — the run-axis discovery head (retiring: `prova tests` is its lane-named successor).
+/// Lists NODES, which is what separates it from the evidence family (`evidence`/`owed`/`attest` list
 /// OBLIGATIONS and never load a selection).
 fn list_subcommand(args: Vec<String>) -> ExitCode {
     let mut full = vec!["--list".to_string()];
@@ -420,10 +406,10 @@ fn list_subcommand(args: Vec<String>) -> ExitCode {
     run(full)
 }
 
-/// `prova burndown` — the implementing inner loop: `--promises --due`, so open
-/// promises fail loud with full detail and kept promises demand graduation. `--allow-empty`
-/// rides along because an empty surface here means the burndown is COMPLETE — exit 0, not a
-/// selection error.
+/// `prova tests burndown` — the implementing inner loop: `--promises --due`, so open promises fail
+/// loud with full detail and kept promises demand graduation. `--allow-empty` rides along because an
+/// empty surface here means the burndown is COMPLETE — exit 0, not a selection error. (The
+/// tests-lane driver; the retired top-level `prova burndown` is gone.)
 fn burndown_subcommand(args: Vec<String>) -> ExitCode {
     let mut full = vec![
         "--promises".to_string(),
@@ -1688,12 +1674,13 @@ fn proof_files(home: &home::Home, manifest: &Manifest) -> Result<Vec<PathBuf>, S
     Ok(out)
 }
 
-/// `prova falsify [<sel>]` — the falsification pass. Selects only tests declaring `falsified_by`,
-/// applies each mutation before its body, and inverts the verdict: going red is the proof
-/// succeeding, and a body that survives its own falsifier is reported vacuous.
+/// `prova tests falsify [<sel>]` — the falsification pass. Selects only tests declaring
+/// `falsified_by`, applies each mutation before its body, and inverts the verdict: going red is the
+/// proof succeeding, and a body that survives its own falsifier is reported vacuous.
 ///
 /// `--allow-empty` because a suite where nothing declares a mutation is not an error — most proofs
-/// never will. It is, however, worth noticing, which is what the empty tally says.
+/// never will. It is, however, worth noticing, which is what the empty tally says. (The tests-lane
+/// driver; the retired top-level `prova falsify` is gone.)
 fn falsify_subcommand(args: Vec<String>) -> ExitCode {
     let mut full = vec!["--falsify".to_string(), "--allow-empty".to_string()];
     full.extend(args);
@@ -4566,7 +4553,13 @@ mod tests {
         const KNOWN_MCP_ONLY: &[&str] = &["introspect", "status"];
         let known: std::collections::BTreeSet<&str> = VERBS.iter().map(|v| v.name).collect();
 
-        let tools = mcp::tool_names();
+        // Read the LIVE router (never a hand-kept list) — a tool added or renamed in a `#[tool]`
+        // attribute is caught without touching this test. Building the router is side-effect-free.
+        let tools: Vec<String> = mcp::ProvaMcpServer::tool_router()
+            .list_all()
+            .into_iter()
+            .map(|t| t.name.into_owned())
+            .collect();
         assert!(!tools.is_empty(), "the MCP router exposes no tools — the wiring is broken");
 
         for tool in &tools {

@@ -7,8 +7,8 @@
 --- surfaces when something breaks in production that the suite swore was covered.
 ---
 --- `falsified_by` closes that gap by making the negative case declarable instead of remembered:
---- a mutation that MUST turn the body red. `prova falsify` applies it and inverts the verdict, so a
---- body that survives its own falsifier is reported as vacuous.
+--- a mutation that MUST turn the body red. `prova tests falsify` applies it and inverts the verdict,
+--- so a body that survives its own falsifier is reported as vacuous.
 ---
 --- This is the atom that would have caught two real holes: a version-constraint proof satisfied by
 --- a broker that refuses every constraint outright, and an accessibility bar that passed with a
@@ -50,7 +50,7 @@ prova.test("a falsifier that bites proves the assertion is load-bearing", {
   proves = "the inversion is the whole mechanism: under falsification a red body is the PASSING result, because what is being proven is the body's capacity to fail",
 }, function(t)
   local proj = t:use(sandbox)
-  local r = shell.run(prova.bin .. " falsify", { cwd = proj, merge_stderr = true })
+  local r = shell.run(prova.bin .. " tests falsify", { cwd = proj, merge_stderr = true })
 
   -- Red under mutation is the PASSING result here: the verdict is inverted, because what is being
   -- proven is the body's capacity to fail.
@@ -62,7 +62,7 @@ prova.test("a body that survives its falsifier is reported as vacuous", {
   proves = "the reason this exists. A proof that cannot fail still reports green forever, and is indistinguishable from one that works until something it swore was covered breaks",
 }, function(t)
   local proj = t:use(sandbox)
-  local r = shell.run(prova.bin .. " falsify", { cwd = proj, merge_stderr = true })
+  local r = shell.run(prova.bin .. " tests falsify", { cwd = proj, merge_stderr = true })
 
   -- The whole point. `2 + 2 == 4` is true no matter what the falsifier does, so the proof asserts
   -- nothing about the system and must say so out loud rather than adding to the green count.
@@ -75,7 +75,7 @@ prova.test("falsify selects only what declares a falsifier", {
   proves = "the verb IS the selection, as with burndown. Most proofs will never declare a mutation, and treating their absence as failure would make the pass unusable",
 }, function(t)
   local proj = t:use(sandbox)
-  local r = shell.run(prova.bin .. " falsify", { cwd = proj, merge_stderr = true })
+  local r = shell.run(prova.bin .. " tests falsify", { cwd = proj, merge_stderr = true })
 
   -- Mirrors `burndown`: the verb IS the selection. A proof with no falsifier is not a failure —
   -- most proofs will never declare one — it is simply not what this pass is about.
@@ -107,7 +107,7 @@ prova.test("the binary teaches the verb, catalog and topic alike", {
   -- Step two: the topic must actually teach the verb and the attribute.
   local topic = shell.run(prova.bin .. " learn falsify", { cwd = proj, merge_stderr = true })
   t:expect(topic.code):equals(0)
-  t:expect(topic.stdout, "the verb"):contains("prova falsify")
+  t:expect(topic.stdout, "the driver"):contains("prova tests falsify")
   t:expect(topic.stdout, "the attribute"):contains("falsified_by")
 
   -- And the spec lifecycle points at it, so an agent reading about specs finds the next step.

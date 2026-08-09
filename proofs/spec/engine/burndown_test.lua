@@ -4,11 +4,10 @@
 ---   primitives : `--promises` the composable selector, `--promises --list` enumeration —
 ---                bootstrapped without proofs ("implemented first, spec'd by hand"); the
 ---                guardrail below closes that gap.
----   verbs      : `prova promises` and `prova burndown` — the memorable entry points, subsuming
----                `--promises --list` / `--promises --due`. Activities are subcommands in
----                prova's grammar (`prova up`, `prova plugin`), and no-arg subcommands list
----                their domain; the spec lifecycle gets the same ergonomics. An empty surface
----                under `burndown` means COMPLETE (exit 0), not a selection error.
+---   grammar    : `prova tests --promises` (the report, state-filtered) and `prova tests burndown`
+---                (the driver), subsuming `--promises --list` / `--promises --due`. A lane is a
+---                noun (`prova tests`), a `--flag` narrows it, a bare word is a driver; an empty
+---                surface under `burndown` means COMPLETE (exit 0), not a selection error.
 
 local sandbox = prova.fixture("spec-engine-sandbox", Scope.File, function(ctx)
   local root = ctx:tempdir()
@@ -46,18 +45,18 @@ end)
 
 -- ── the verbs, spec'd ────────────────────────────────────────────────────────────────────────
 
-prova.test("`prova promises` enumerates the open surface — the no-flags spelling", function(t)
+prova.test("`prova tests --promises` enumerates the open surface", function(t)
   local proj = t:use(sandbox)
-  local r = shell.run(prova.bin .. " promises", { cwd = proj, merge_stderr = true })
+  local r = shell.run(prova.bin .. " tests --promises", { cwd = proj, merge_stderr = true })
   t:expect(r.code):equals(0)
   t:expect(r.stdout):contains("frobnicates")
   t:expect(r.stdout):contains("already exists")
   t:expect(r.stdout):never():contains("arithmetic")
 end)
 
-prova.test("`prova burndown` is the inner loop: promise-selected, open promises fail loud", function(t)
+prova.test("`prova tests burndown` is the inner loop: promise-selected, open promises fail loud", function(t)
   local proj = t:use(sandbox)
-  local r = shell.run(prova.bin .. " burndown", { cwd = proj, merge_stderr = true })
+  local r = shell.run(prova.bin .. " tests burndown", { cwd = proj, merge_stderr = true })
   t:expect(r.code):never():equals(0)                    -- open promises are real failures here
   t:expect(r.stdout):contains("frobnicates")            -- the open promise, with its detail
   t:expect(r.stdout):contains("expected")               -- full failure detail, not a summary
@@ -78,10 +77,26 @@ node whose redness is the mechanism, so it counts as matched",
   t:expect(r.stdout):never():contains("matched no tests")
 end)
 
-prova.test("the binary teaches the verbs: `prova learn promises` names them", function(t)
+prova.test("the binary teaches the grammar: `prova learn promises` names the spellings", function(t)
   local proj = t:use(sandbox)
   local r = shell.run(prova.bin .. " learn promises", { cwd = proj, merge_stderr = true })
   t:expect(r.code):equals(0)
-  t:expect(r.stdout):contains("prova promises")
-  t:expect(r.stdout):contains("prova burndown")
+  t:expect(r.stdout):contains("prova tests --promises")
+  t:expect(r.stdout):contains("prova tests burndown")
+end)
+
+prova.test("the retired state-verbs tombstone toward their lane spelling, never dispatch", {
+  proves = "a state is a --flag on its lane now, not its own verb; muscle memory (agents most of \
+all) meets a redirect, not the run path's cryptic 'no such file' — and never the old behavior",
+}, function(t)
+  local proj = t:use(sandbox)
+  for _, pair in ipairs({
+    { "promises", "prova tests --promises" },
+    { "burndown", "prova tests burndown" },
+    { "falsify", "prova tests falsify" },
+  }) do
+    local r = shell.run(prova.bin .. " " .. pair[1], { cwd = proj, merge_stderr = true })
+    t:expect(r.code, pair[1] .. " no longer dispatches"):equals(2)
+    t:expect(r.stdout, pair[1] .. " names its successor"):contains(pair[2])
+  end
 end)
