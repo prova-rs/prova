@@ -81,4 +81,10 @@ text changed and someone re-accepted it,"* which is the signal a reviewer wants.
 A claim is owed the moment you anchor it. When you want to capture something *without* owing it yet
 — a bug found mid-task, a spec section worth shaping but not now — anchor it `<!-- backlog: id -->`
 instead. Same shape, same id namespace, one keyword apart: a backlog item is the muted, cold state
-of a claim, out of `owed` entirely until you `prova backlog promote` it. See `prova learn backlog`.
+of a claim, out of `owed` entirely until you `prova specs promote` it. See `prova learn backlog`.
+
+## The other direction — backfill
+
+The mirror of `owed` (claim → proof) runs proof → claim: `prova specs backfill` lists every proof no
+claim backs (empty `covers`) and gates — a red→green worklist for full spec-coverage. It names the
+proof; you anchor the claim that means something (never auto-stubbed — that would be vacuous prose).

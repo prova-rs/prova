@@ -6216,14 +6216,19 @@ pub fn obligations_for_suite(
         .collect())
 }
 
-/// One discovered node: its path, plus which side of the promise⇄proof duality it sits on. The
-/// tests-lane report (`prova tests`) state-tags each; the plain path listing throws the flag away.
+/// One discovered node: its path plus the two state axes a proof carries — which side of the
+/// promise⇄proof duality it sits on, and whether a claim backs it. `prova tests` state-tags on
+/// `promised`; `prova specs backfill` gates on `backed`; the plain path listing throws both away.
 #[derive(Debug, Clone)]
 pub struct ListNode {
     pub path: String,
     /// True when this leaf is an open promise (carries a `promises` reason), false when it is a
     /// settled proof.
     pub promised: bool,
+    /// True when this leaf declares at least one `covers` binding — a claim backs it. False is the
+    /// backfill red condition: a proof tied to no documented claim (a dangling `covers` still counts
+    /// as backed here — the missing claim is `owed`'s concern, not backfill's).
+    pub backed: bool,
 }
 
 /// The shared tail of discovery: build the plan (validations included), honor selection and the
@@ -6239,10 +6244,11 @@ fn list_plan(col: &Collector, config: &RunConfig) -> mlua::Result<Vec<ListNode>>
         .iter()
         .flat_map(|leaf| {
             let promised = leaf.promises.is_some();
+            let backed = !leaf.covers.is_empty();
             leaf.unit
                 .leaf_paths()
                 .into_iter()
-                .map(move |p| ListNode { path: p.to_string(), promised })
+                .map(move |p| ListNode { path: p.to_string(), promised, backed })
         })
         .collect())
 }

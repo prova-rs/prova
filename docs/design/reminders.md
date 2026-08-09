@@ -240,6 +240,18 @@ composition, taught by `learn` and rendered by archetypes, never grown into core
   then re-fired" is just the condition's value over time, readable from run records. If real
   event semantics are ever wanted, that is a different design and should say so.
 
+<!-- backlog: reminder-gating-follows-scope -->
+Capability gating on a reminder is per-declaration only — `requires` on the `remind` call is the
+entire surface. A test inherits its gating from the scope it lives in: `suite.config { requires =
+{ "docker" } }` folds into the root node, so every test in the suite skips with one sentence naming
+the missing capability. Reminders are collected beside the nodes rather than in the tree, so that
+same suite's reminders still evaluate on a machine with no docker — and report UNEVALUATED with
+whatever the condition happened to raise (`docker: command not found`) instead of `requires
+"docker" (unavailable)`. The disarmed-watcher contract holds either way, so nothing is unsound; the
+gap is that the author must repeat the suite's capability on every reminder to get the honest
+reason, and forgetting it is invisible. Make scope-level `requires` reach the reminders declared in
+that scope.
+
 ## Decided, and open
 
 - **Decided: separate construct** (`prova.remind`), never a test flag — the promise flag

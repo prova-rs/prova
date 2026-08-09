@@ -110,7 +110,7 @@ const VERBS: &[Verb] = &[
     Verb {
         name: "specs",
         help: "  prova specs               the specs lane: claims + backlog items, state-tagged;\n\
-               \x20                           --claims/--backlog narrow; `promote <id>` thaws one to a claim",
+               \x20                           --claims/--backlog narrow; drivers: `promote <id>`, `backfill`",
         run: specs_subcommand,
     },
     Verb {
@@ -738,12 +738,19 @@ fn tests_subcommand(args: Vec<String>) -> ExitCode {
 /// state (docs/plans/query-consolidation.md). Selectors (`-k`/`--tags`) arrive with the shared
 /// query engine in a later increment.
 fn specs_subcommand(args: Vec<String>) -> ExitCode {
-    // Driver: `prova specs promote <id>` thaws a backlog item into a claim (the one state-write,
-    // shared with `prova backlog promote`). `backfill` (proofs with no backing claim) lands in a
-    // later increment — it needs per-node `covers` in discovery.
+    // Drivers on the specs lane. `promote <id>` thaws a backlog item into a claim (the one
+    // state-write, shared with `prova backlog promote`). `backfill` is the reverse-`owed` worklist:
+    // proofs no claim backs — a red→green gate the agent drives by writing the missing specs. It
+    // routes through the run/discover machinery (it reads the tests lane's `covers`), so it delegates
+    // to `run(--backfill)` rather than the `[specs]` scan the report below uses.
     if let Some((first, rest)) = args.split_first() {
         if first == "promote" {
             return promote_claim(rest.first().cloned());
+        }
+        if first == "backfill" {
+            let mut full = vec!["--backfill".to_string()];
+            full.extend(rest.iter().cloned());
+            return run(full);
         }
     }
     let mut want: Option<claims::Kind> = None;
@@ -754,9 +761,11 @@ fn specs_subcommand(args: Vec<String>) -> ExitCode {
                     "usage: prova specs                 list the specs lane: every claim and backlog item\n\
                      \x20      prova specs --claims        only the claims (owed obligations)\n\
                      \x20      prova specs --backlog       only the backlog (captured, not yet owed)\n\
-                     \x20      prova specs promote <id>    thaw a backlog item into a claim, in place\n\n\
+                     \x20      prova specs promote <id>    thaw a backlog item into a claim, in place\n\
+                     \x20      prova specs backfill        proofs no claim backs — the reverse of `owed`\n\n\
                      Claims and backlog are the two states of one prose obligation, sharing the\n\
-                     `[specs]` sources. Promotion is a keyword flip: the id and prose stay put."
+                     `[specs]` sources. Promotion is a keyword flip: the id and prose stay put.\n\
+                     Backfill gates (exit non-zero) while any proof is unbacked — a worklist to drive down."
                 );
                 return ExitCode::SUCCESS;
             }
@@ -2717,6 +2726,10 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     // with its promise⇄proof state (PROMISE / PROOF), while plain `--list` (and the retiring
     // `prova list`) stays bare paths. Not a user-facing flag.
     let mut list_tagged = false;
+    // Internal: `prova specs backfill` routes here to list the proofs no claim backs (empty `covers`)
+    // — the reverse of `owed`, a red→green worklist that gates (exit ≠0 while any is unbacked). Not a
+    // user-facing flag.
+    let mut backfill = false;
     // Internal: `prova reminders` routes here to COLLECT declared reminders (loading the suite,
     // like `--list`, without executing) and overlay the recorded state — so the verb works before
     // any run and shows live states after one. Not a user-facing flag.
@@ -2899,6 +2912,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                 list = true;
                 list_tagged = true;
             }
+            "--backfill" => backfill = true,
             "--reminders-list" => reminders_list = true,
             "--quiet" | "-q" => cli_quiet = true,
             // Promote this one invocation to heed the attention account — the ad-hoc form of the
@@ -3259,12 +3273,12 @@ fn run(cli_args: Vec<String>) -> ExitCode {
         None
     };
 
-    // IDE integration: on a manifest run (not read-only `--list`), refresh the annotation folder
-    // (core + plugin `---@meta` stubs) and manage `.luarc.json` per `[luals] manage`, so
-    // `require("<plugin>")` completes in the editor with no manual wiring. Never blocks the run — a
-    // sync error is a warning, not a failure — and all output goes to stderr so `--format json`
-    // stdout stays a clean event stream.
-    if !list {
+    // IDE integration: on a manifest run (not a read-only discovery — `--list`, or the `backfill`
+    // gate), refresh the annotation folder (core + plugin `---@meta` stubs) and manage `.luarc.json`
+    // per `[luals] manage`, so `require("<plugin>")` completes in the editor with no manual wiring.
+    // Never blocks the run — a sync error is a warning, not a failure — and all output goes to stderr
+    // so `--format json` stdout stays a clean event stream.
+    if !list && !backfill {
         if let Some(home) = &home {
             match annotations::setup(
                 home,
@@ -3290,6 +3304,36 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             .map(|r| r.reminders)
             .unwrap_or_default();
         return list_reminders(&declared, &recorded);
+    }
+
+    if backfill {
+        // `prova specs backfill` — the reverse of `owed`: every proof no claim backs (empty
+        // `covers`). A red→green worklist that GATES — exit non-zero while any proof is unbacked —
+        // so an agent can drive coverage to complete. It never writes a spec: it names the proof and
+        // the agent infers the claim (an auto-stubbed `<!-- claim -->` would be vacuous prose).
+        let mut unbacked: Vec<String> = Vec::new();
+        for suite in &suites {
+            match discover_suite(suite, &config) {
+                Ok(nodes) => unbacked.extend(nodes.into_iter().filter(|n| !n.backed).map(|n| n.path)),
+                Err(err) => {
+                    eprintln!("prova: {}: {err}", suite.name);
+                    return ExitCode::from(2);
+                }
+            }
+        }
+        if unbacked.is_empty() {
+            println!("prova: every proof is backed by a claim — nothing to backfill");
+            return ExitCode::SUCCESS;
+        }
+        println!("proofs no claim backs — write a `<!-- claim: id -->` in a [specs] doc, then add");
+        println!("`covers = \"doc.md#id\"` to the proof (`prova learn claims`):");
+        println!();
+        for path in &unbacked {
+            println!("  UNBACKED  {path}");
+        }
+        println!();
+        println!("  {} unbacked", unbacked.len());
+        return ExitCode::from(1);
     }
 
     if list {
