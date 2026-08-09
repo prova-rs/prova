@@ -78,6 +78,39 @@ Where a CLI flag or environment variable exists for the same knob, precedence is
 | `[updates]` | Git-source freshness for `[dependencies]`: `interval` (default `"1d"`; `"12h"`/`"30m"`/bare seconds), `force` (also `-U/--update`), `retention` (default 90 days for unused materialized trees). `--offline` forbids the network entirely. |
 | `context = ["docs/agent.md"]` | **Top-level**, not under `[run]`: team docs (home-relative, `~/` expands) served by `prova learn` as `ctx:<stem>` topics — the project's own doctrine on the same discovery rail. A declared-but-missing file is reported loudly. |
 
+<!-- backlog: switches-not-env-capabilities -->
+**Opt-in test classes want a first-class switch, not an env-var capability.** Three gates in this
+repo (`soak`, `quality`, `ut`) express the same intent fact — "someone asked for this expensive
+class" — by conscripting the capability axis: a `runtime.capability` probing an env var, the env
+var set in a profile's `[env]`, `requires = { "<class>" }` on every test, `must_run` in the
+profile. Four pieces, three files, and `prova capabilities` misreports intent as a host gap ("ut
+UNMET" on a machine that lacks nothing). Capabilities are for **world** facts; intent belongs on
+the **selection** axis — the lane model's own distinction. The primitive: `switch = "<class>"` on
+a test or suite (archetect consonance is deliberate — its `-s` switches toggle optional
+functionality the same way; the two tools should rhyme). A switched test is **off unless thrown**
+— fail-closed at the declaration site, unlike a tag whose exclusion must be remembered in `[run]
+tags = ["!…"]`. Doors to throw it, matching the `heed_reminders` three-door shape: a profile
+(`[profiles.ut] switches = ["ut"]`), the CLI (`prova -s ut`, ad hoc), `[run]` for a repo where a
+class is on by default. The bare run reports switched-off classes as ONE summary line ("switched
+off: ut (3), quality (3), soak (2) — throw with -s or a profile"), which teaches better than N
+SKIP rows and truer than silent deselection. `requires`/`must_run` keep their proper job — world
+facts only (`cargo-nextest`, `docker`) — and the strict-profiles increment composes unchanged.
+Migration: the three gates convert, their `config.lua` registrations and profile env vars delete,
+and `prova capabilities` stops listing pseudo-capabilities. The switch is one half of a dual pair,
+and its complement already ships: tags + the `!` grammar (every selector axis, plus `[run] tags =
+["!…"]` as the baked form) give **on-unless-excluded** — right for narrowing what legitimately
+belongs to the default run (a flaky class quarantined for a week, a CI shard). Switches give
+**off-unless-thrown** — right for classes that must never fire unasked. The design should present
+them as the two postures of one membership model, and choosing between them is part of authoring
+a class: "would a forgotten manifest edit running this by accident be a bug?" — if yes, it is a
+switch, not a tag. **Membership doctrine (the drift concern):** a thrown switch AUTHORIZES a
+class, it never widens scope — profiles keep selecting positively (`proofs`/`tags`), so a proof
+added later cannot creep into `prova run ut`, and the bare run stays the total catch-all of
+everything unswitch'd, so an unclassified addition always runs somewhere. The residual hole —
+a switched class no profile throws, or a profile throwing a switch nobody declares — is an
+alignment invariant in the `lane_surface_parity` mold: a unit test iterating declared switches ↔
+profile `switches` lists, adopted into the account by the ut leg. Recorded 2026-08-09.
+
 <!-- backlog: spec-sources-are-queryable -->
 **A package's spec sources must be answerable to whoever has to write one, and say which are
 writable.** `[[specs.source]]` decides where prose obligations live, and `scan_roots()` is read all
