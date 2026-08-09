@@ -54,6 +54,29 @@ doors: `up` stands up a `[topologies]` registration on both transports, and noth
 | Failure detail | console/JSONL + `proc:output()` | failures carry attached output tails | Failure bundles ride the structured results |
 | Know Prova | `prova skill` *(new)* | the server's `instructions` field | Same embedded document |
 
+<!-- claim: selection-axes-parity -->
+The table's "Same `Selection` struct" cell is enforced structurally, not by review. Every core
+`Selection` axis is either exposed on the MCP selection surface under the same name or on an
+explicit MCP-absent allowlist with its reason stated (the lane axes: a manifest/CLI concept the
+raw MCP surface deliberately does not speak). A unit test walks the axes both directions —
+core-axis-without-MCP-field is red, MCP-field-without-core-axis is red — and the axis list itself
+is derived by exhaustively destructuring `Selection`, so adding an axis refuses to compile until
+the test answers for it. `to_selection` was the one place the surfaces could drift silently
+(`docs/plans/query-consolidation.md` invariant 2); a new axis now either reaches both surfaces or
+names why not.
+
+<!-- backlog: state-filters-from-lane-registry -->
+**A lane's state filters should be generated from the lane registry, not hand-rolled per verb.**
+Each lane verb currently parses its own state flags — `specs` hand-checks `--claims`/`--backlog`
+mutual exclusion, `tests` hand-checks `--promises`/`--proofs`, `reminders` grew its pair last and
+latest — and the MCP twin re-declares each as an argument. `prova_core::lanes::LANES` already
+carries every lane's two state names; derive the flags from it (one optional `state` slot per lane
+report, populated from the registry) and mutual exclusion becomes structural, a new lane cannot
+ship without its filters on both surfaces, and alignment invariant 4 (state-filter parity,
+`docs/plans/query-consolidation.md`) reduces to "the registry is consulted." Rides best with the
+lane-polymorphic `Query { lane, selectors, state }` when the shared engine lands. Recorded
+2026-08-09.
+
 ### Warm re-run: the one engine feature this needs
 
 <!-- claim: warm-rerun-held-injection -->

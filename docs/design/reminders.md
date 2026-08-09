@@ -157,12 +157,33 @@ UNEVALUATED appear only in `reminders` and `evidence`.
 
 The naming follows the vocabulary decision `lifecycle.md` already made — name the query after
 its object: `promises` lists nodes, `owed` lists obligations, `reminders` lists reminders.
-(`--due` is untouched and unrelated despite the rhyme: it makes *promises* fall due by
-decree; a reminder falls due by the world. Both mean "the time is now", which is consonance,
-not collision. **WATCHING** replaced the draft's QUIET — quiet named the *output behavior*
-rather than the state, and misread as muted/snoozed; watching says what the reminder is doing
-and makes the armed/disarmed pair against UNEVALUATED legible at a glance. Its consonance with
-`prova watch` is the `--due` kind: both mean "respond when it changes".)
+(The run flag `--due` is unrelated despite sharing a spelling with the state filter below: bare
+`prova --due` makes *promises* fall due by decree; `prova reminders --due` narrows this lane to
+what the world made due. The lane scopes the adjective, so the rhyme cannot collide. **WATCHING**
+replaced the draft's QUIET — quiet named the *output behavior* rather than the state, and misread
+as muted/snoozed; watching says what the reminder is doing and makes the armed/disarmed pair
+against UNEVALUATED legible at a glance. Its consonance with `prova watch` is the `--due` kind:
+both mean "respond when it changes".)
+
+<!-- claim: reminders-state-filters -->
+States are adjectives on their lane, here as everywhere: `prova reminders --due` and
+`prova reminders --watching` narrow the report to one state, mutually exclusive, exactly as
+`specs --backlog` and `tests --promises` narrow theirs. A narrowed report speaks only for what
+it lists, so the exit contract follows the listing: non-zero only when a DUE row is *shown* —
+`--due` keeps the pipeline gate ("is anything owed attention?" narrowed loses nothing), while
+`--watching` answers "what is armed?" and exits 0 even while something else is due, because
+that is not what was asked. UNEVALUATED and not-yet-evaluated are evaluation outcomes, not lane
+states — always visible in the full report, never flag-narrowed. The MCP `reminders` tool takes
+the same `state` argument, because the two surfaces are one surface.
+
+<!-- claim: reminders-selectors-narrow -->
+The one selector grammar narrows this lane like every lane, each axis keeping its natural
+reading: `-k` is a substring over the reminder's name and declaring file, `--node` is the exact
+name (a reminder's address is its name), `--tags` matches its tags, and `!` excludes — composing
+with the state filters (`prova reminders --due -k deps`). A selector is never
+accepted-and-ignored: a filter that silently binds to nothing turns a narrowed report into a lie
+about the whole lane, which is exactly the drift the shared grammar exists to kill. The MCP
+`reminders` tool carries the same selection axes.
 
 ### Cadence, honestly
 
@@ -251,6 +272,18 @@ whatever the condition happened to raise (`docker: command not found`) instead o
 gap is that the author must repeat the suite's capability on every reminder to get the honest
 reason, and forgetting it is invisible. Make scope-level `requires` reach the reminders declared in
 that scope. Recorded 2026-08-08.
+
+<!-- backlog: heed-selector-is-the-one-grammar -->
+**`--heed <selector>` still speaks a private grammar — fold it into the one `Selection`.**
+`ledger.rs`'s `matches_selector` (substring-of-name OR exact tag, two lines) is its own selector
+dialect, "mirroring selection in spirit" — the second grammar alignment invariant 5
+(`docs/plans/query-consolidation.md`) exists to kill. With the reminders *report* now narrowing
+through the shared grammar (#reminders-selectors-narrow), heed is the last private selector in the
+tree. Fold it: a heed narrowing should construct the same `Selection` value the report constructs,
+so `--heed` gains `-k`-style excludes and tag semantics for free and the grammar cannot drift
+between reading the lane and gating on it. Wants care at the record boundary — heed evaluates
+against *recorded* entries (`ReminderEntry`), the report against *declared* rows, so the fold
+decides where the shared matcher lives. Recorded 2026-08-09.
 
 ## Decided, and open
 
