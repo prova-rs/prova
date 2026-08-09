@@ -44,6 +44,7 @@ pub enum Topic {
     Packages,
     PackageAuthoring,
     Running,
+    Capabilities,
     Mcp,
 }
 
@@ -70,6 +71,7 @@ impl Topic {
         Topic::Packages,
         Topic::PackageAuthoring,
         Topic::Running,
+        Topic::Capabilities,
         Topic::Mcp,
     ];
 
@@ -181,6 +183,7 @@ impl Topic {
             Topic::Packages => "packages",
             Topic::PackageAuthoring => "package-authoring",
             Topic::Running => "running",
+            Topic::Capabilities => "capabilities",
             Topic::Mcp => "mcp",
         }
     }
@@ -210,6 +213,7 @@ impl Topic {
             Topic::Packages => include_str!("topics/packages.md"),
             Topic::PackageAuthoring => include_str!("topics/package-authoring.md"),
             Topic::Running => include_str!("topics/running.md"),
+            Topic::Capabilities => include_str!("topics/capabilities.md"),
             Topic::Mcp => include_str!("topics/mcp.md"),
         }
     }

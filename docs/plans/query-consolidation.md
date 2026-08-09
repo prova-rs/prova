@@ -313,9 +313,12 @@ The invariants to encode (each a unit test, wrapped as a deputed proof):
    (delegate to the run engine), `prova reminders burndown` (= `run --heed`). Additive — the
    top-level `burndown`/`falsify`/`backlog promote` stay until 3b. Verified: 93 unit tests, clippy,
    backlog proofs 13/13 (factored promote), end-to-end smoke incl. a specs-promote happy path.
-   **4b (deferred):** `prova specs backfill` — the reverse-`owed` coverage gate (proofs with no
-   backing claim). Needs per-node `covers` surfaced in discovery (add to `ListNode`) + a gate render
-   (exit ≠0 while any proof is unbacked). Its own focused pass.
+   **4b LANDED 2026-08-08 — commit `ca901`:** `prova specs backfill` — the reverse-`owed` coverage
+   gate. `ListNode` gained `backed` (leaf has non-empty `covers`); `--backfill` lists every proof no
+   claim backs and gates (exit 1 until all backed, 0 when complete). Read-only (skips IDE wiring +
+   run state), and it NEVER fabricates a stub — proven by `backfill_test.lua`'s writes-nothing test.
+   Taught in `prova learn claims`. Verified: 93 unit tests, clippy, spec/engine proofs, file_size +
+   terseness gates.
 5. **Selectors on the cross-lane account.** `owed`/`attest`/`evidence` take the shared grammar;
    reconcile the owed-vs-evidence DUE-reminder discrepancy; settle evidence(reporter) vs
    owed/attest(drivers) — the parked question, now with the red→green lens.

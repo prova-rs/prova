@@ -4029,6 +4029,17 @@ pub fn is_builtin_capability(name: &str) -> bool {
     ) || native_capability_compiled(name).is_some()
 }
 
+/// The built-in capability vocabulary prova probes by name — the enumerable core behind
+/// `prova capabilities`. Beyond these, any executable on `PATH` is a capability, and a project
+/// registers more via `runtime.capability`. Every entry satisfies `is_builtin_capability`
+/// (guarded by a unit test) — this list is the single place the host report enumerates from.
+pub fn builtin_capability_names() -> &'static [&'static str] {
+    &[
+        "docker", "github", "network", "internet", "unix", "windows", // named host probes
+        "http", "sqlite", "grpc", "graphql", "yaml", // compiled-in native clients
+    ]
+}
+
 /// A capability expression: a name, optionally with a semver constraint — `"docker"`,
 /// `"dotnet >= 9"`, `"node ^20"`, `"git >= 1.0, < 3.0"`.
 ///

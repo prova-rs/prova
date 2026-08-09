@@ -144,6 +144,12 @@ const VERBS: &[Verb] = &[
         run: evidence_subcommand,
     },
     Verb {
+        name: "capabilities",
+        help: "  prova capabilities        what prova can detect on THIS host: the built-in capability\n\
+               \x20                           vocabulary (docker, github, native clients…), each met or unmet",
+        run: capabilities_subcommand,
+    },
+    Verb {
         name: "list",
         help: "  prova list [<sel>]        discover tests without running (same as `--list`); retiring —\n\
                \x20                           `prova tests` is the lane-named successor (state-tagged)",
@@ -404,6 +410,53 @@ fn list_subcommand(args: Vec<String>) -> ExitCode {
     let mut full = vec!["--list".to_string()];
     full.extend(args);
     run(full)
+}
+
+/// `prova capabilities` — what can prova detect on THIS machine? Lists the built-in capability
+/// vocabulary (the names `requires`/`must_run` probe for) with each one's host status: MET, or UNMET
+/// with the reason (an absent daemon, a missing token, the wrong OS). A report, exit 0 — never a
+/// gate; the gate is `must_run` at run time. Beyond these, any executable on PATH is a capability,
+/// and a package registers its own via `runtime.capability` (`prova learn capabilities`).
+///
+/// v1 reports the host vocabulary, which needs no package. Folding in this package's declared
+/// `must_run`/`requires` (which needs the run context to load `prova.lua`'s registrations) is a
+/// tracked follow-up — see docs/plans/query-consolidation.md.
+fn capabilities_subcommand(args: Vec<String>) -> ExitCode {
+    if args.iter().any(|a| a == "-h" || a == "--help") {
+        println!(
+            "usage: prova capabilities\n\n\
+             Lists prova's built-in capability vocabulary with each one's status on THIS host — MET,\n\
+             or UNMET with the reason. Beyond these, any executable on PATH is a capability, and a\n\
+             package registers its own with `runtime.capability` in prova.lua. A report, never a gate\n\
+             (the gate is `must_run` at run time). See `prova learn capabilities`."
+        );
+        return ExitCode::SUCCESS;
+    }
+    if let Some(bad) = args.iter().find(|a| !a.starts_with('-')) {
+        eprintln!("prova: capabilities: unexpected argument {bad:?} (this verb takes none)");
+        return ExitCode::from(2);
+    }
+    let caps = prova_core::Capabilities::default();
+    let names = prova_core::builtin_capability_names();
+    println!("built-in capabilities on this host (any binary on PATH is also a capability):");
+    println!();
+    let mut met = 0usize;
+    for name in names {
+        match caps.expr_status(name) {
+            Ok(None) => {
+                met += 1;
+                println!("  MET    {name}");
+            }
+            Ok(Some(reason)) => println!("  UNMET  {name:<9} {reason}"),
+            Err(e) => println!("  ERROR  {name:<9} {e}"),
+        }
+    }
+    println!();
+    println!(
+        "  {met}/{} met · a package's `must_run`/`requires` name more (`prova learn capabilities`)",
+        names.len()
+    );
+    ExitCode::SUCCESS
 }
 
 /// `prova tests burndown` — the implementing inner loop: `--promises --due`, so open promises fail
@@ -4621,6 +4674,19 @@ mod tests {
                 tools.iter().any(|t| t == name),
                 "KNOWN_MCP_ONLY lists `{name}`, which the MCP router no longer exposes — delete the \
                  row.",
+            );
+        }
+    }
+
+    /// `prova capabilities` enumerates from `builtin_capability_names()`; that list must not drift
+    /// from what the engine actually treats as built-in — every name it advertises must satisfy
+    /// `is_builtin_capability`, or the report would claim a probe prova cannot perform.
+    #[test]
+    fn builtin_capability_names_are_all_builtin() {
+        for name in prova_core::builtin_capability_names() {
+            assert!(
+                prova_core::is_builtin_capability(name),
+                "`{name}` is in builtin_capability_names() but is_builtin_capability disagrees",
             );
         }
     }
