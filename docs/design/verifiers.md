@@ -94,6 +94,36 @@ down — "the deputy passed" becomes checkable, case by case, from the same file
 this upstream case actually execute and pass in the recorded run? A red, skipped, or absent
 case attests nothing — same contract as every other address, one exit code for a pipeline.
 
+## Conducting an expensive deputy — conduct once, read many
+
+<!-- claim: conduct-once-read-many -->
+A deputy whose invocation is expensive — `cargo nextest` compiles the workspace before a single
+verdict lands — is conducted **once per scope**, never once per claim. A suite- or file-scoped
+fixture runs the deputy and returns the artifact path; **one** proof adopts the whole report
+(`junit.verify { results }` — the artifact flow, freshness held by construction because the
+fixture produced it this run); and any number of sibling proofs `junit.load` the same artifact to
+bind one claim to one named case (`covers` on the reader, the assertion on the deputy's own case
+name). Claim-granular spec coverage therefore never multiplies compilations: the deputy runs
+once, the account adopts every case once, and each additional binding costs a parse. This is also
+the v1-compliant answer to "covers binds proofs, not deputed cases": the reader proof *is* the
+binding, and living with it is what will inform whether `covers = "junit:…"` ever needs to exist.
+
+Cheap deputies do not need the split — pytest with `--junitxml` conducts fine inside a single
+`junit.verify` per proof — so the pattern is per-ecosystem: Rust pays a compilation and gets the
+fixture; Python and .NET conduct directly. Choosing the shape is part of instrumenting a project,
+and the manifest profile that runs the gate names the choice.
+
+<!-- backlog: exclusive-quality-interface -->
+**Prova should be this repo's exclusive quality interface; build tooling keeps only artifacts.**
+Today the quality surface is split: `cargo xtask test`/`test-crate` wrap cargo directly, CI runs
+separate legs, and only the lint gates flow through `prova run quality`. Converge: `prova run ut`
+(nextest deputed via the conduct-once pattern), `prova run quality`, `prova run smoke` — every
+verdict-producing invocation a profile, every verdict in the account, so burndown/backfill/owed
+see the whole bar. xtask keeps `build`/`install`/`sweep` (artifacts, per the two-provenances
+boundary: "if it doesn't produce a verdict, it isn't prova's job" — and the converse). The `ut`
+profile is the first leg (landing with this claim); `it`, CI-leg consolidation, and retiring the
+xtask test wrappers follow. Recorded 2026-08-09.
+
 ## The facet convention (for the verifiers that follow)
 
 `junit` is first-party because parsing is native; verifier *packages* (TLA+/TLC over a pinned
