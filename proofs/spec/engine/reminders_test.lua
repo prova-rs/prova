@@ -68,7 +68,7 @@ prova.test("a reminder is not a promise: invisible to the spec surface, never de
   local proj = t:use(due_pkg)
   local p = shell.run(prova.bin .. " tests --promises", { cwd = proj, merge_stderr = true })
   t:expect(p.stdout):never():contains("upstream shipped")
-  local l = shell.run(prova.bin .. " list", { cwd = proj, merge_stderr = true })
+  local l = shell.run(prova.bin .. " tests", { cwd = proj, merge_stderr = true })
   t:expect(l.stdout, "a reminder is not a node"):never():contains("upstream shipped")
   -- A condition holding true is DUE — never a kept promise demanding its flag removed.
   local r = shell.run(prova.bin, { cwd = proj, merge_stderr = true })
@@ -215,7 +215,7 @@ prova.test("`prova reminders` reports every state and exits non-zero when any is
 end)
 
 prova.test("`prova reminders` lists declared reminders BEFORE any run, then fills in state", {
-  proves = "the verb works pre-run — it collects what is declared (like `prova list`), so you can see WHICH reminders exist without running the whole suite; a run then fills each row's live state. One command, the same rows before and after",
+  proves = "the verb works pre-run — it collects what is declared (like `prova tests`), so you can see WHICH reminders exist without running the whole suite; a run then fills each row's live state. One command, the same rows before and after",
 }, function(t)
   local proj = t:tempdir() .. "/pkg"
   fs.mkdir(proj .. "/proofs")

@@ -150,12 +150,6 @@ const VERBS: &[Verb] = &[
         run: capabilities_subcommand,
     },
     Verb {
-        name: "list",
-        help: "  prova list [<sel>]        discover tests without running (same as `--list`); retiring —\n\
-               \x20                           `prova tests` is the lane-named successor (state-tagged)",
-        run: list_subcommand,
-    },
-    Verb {
         name: "mcp",
         help: "  prova mcp                 serve an MCP stdio server whose tools mirror the CLI (run, list, eval)",
         run: mcp::run,
@@ -220,6 +214,9 @@ const RETIRED_VERBS: &[(&str, &str)] = &[
     // `backlog` was the specs lane's cold-state view; it is now `prova specs --backlog` (and its
     // one write moved to `prova specs promote <id>`).
     ("backlog", "prova specs --backlog"),
+    // `list` was the tests-lane node listing; `prova tests` is its lane-named, state-tagged
+    // successor (and the MCP `list` tool renamed to `tests` in step).
+    ("list", "prova tests"),
 ];
 
 /// `prova --help`, assembled from the verb table so the two cannot disagree.
@@ -404,15 +401,6 @@ fn package_subcommand(args: Vec<String>) -> ExitCode {
             ExitCode::from(2)
         }
     }
-}
-
-/// `prova list` — the run-axis discovery head (retiring: `prova tests` is its lane-named successor).
-/// Lists NODES, which is what separates it from the evidence family (`evidence`/`owed`/`attest` list
-/// OBLIGATIONS and never load a selection).
-fn list_subcommand(args: Vec<String>) -> ExitCode {
-    let mut full = vec!["--list".to_string()];
-    full.extend(args);
-    run(full)
 }
 
 /// `prova capabilities` — what can prova detect on THIS machine? Lists the built-in capability

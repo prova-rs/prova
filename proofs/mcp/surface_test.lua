@@ -90,7 +90,14 @@ prova.test("the tool surface mirrors the CLI verbs, warm holder included",
   local by_id = mcp(root, { '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' })
   local names = {}
   for _, tool in ipairs(by_id[2].result.tools) do names[tool.name] = true end
-  for _, expected in ipairs({ "run", "list", "eval", "up", "down", "status", "learn", "introspect" }) do
+  -- The FULL surface, not a sample: a tool silently dropped from the server would slip past a
+  -- partial list (the gap query-consolidation increment 1 flagged). Lanes + account + drivers +
+  -- the warm holder. `tests` is the tests lane (formerly `list`); `status` is the held-registry
+  -- view (increment 7 reconciles its name with the CLI's `ps`).
+  for _, expected in ipairs({
+    "run", "tests", "specs", "reminders", "eval", "learn", "introspect", "capabilities",
+    "attest", "evidence", "owed", "up", "down", "status",
+  }) do
     t:expect(names[expected], "tool " .. expected .. " is served"):is_truthy()
   end
 end)

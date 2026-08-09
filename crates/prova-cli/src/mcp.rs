@@ -785,10 +785,10 @@ impl ProvaMcpServer {
     }
 
     #[tool(
-        name = "list",
-        description = "Discover the package's test nodes without running them (the MCP mirror of `prova --list`), honoring the same selection fields as `run`. Returns compact JSON: { nodes: [{ path }] }. Pass `package` (a directory or manifest path) to target ANOTHER package anywhere on disk — the server's startup package is only the default, and a `package` resolves fresh, so a manifest you just scaffolded works without a restart."
+        name = "tests",
+        description = "The tests lane — discover the package's test nodes without running them (the MCP mirror of `prova tests`), honoring the same selection fields as `run`. Returns compact JSON: { nodes: [{ path }] }. Narrow with `promises` (open promises only) as on `run`. Pass `package` (a directory or manifest path) to target ANOTHER package anywhere on disk — the server's startup package is only the default, and a `package` resolves fresh, so a manifest you just scaffolded works without a restart."
     )]
-    async fn list(&self, Parameters(req): Parameters<SelectionArgs>) -> CallToolResult {
+    async fn tests(&self, Parameters(req): Parameters<SelectionArgs>) -> CallToolResult {
         let _serialized = self.run_lock.lock().await;
         let env = self.env.clone();
         blocking(move || list_blocking(&env, req)).await
