@@ -502,3 +502,20 @@ fn not_held(topology: &str) -> String {
          (warm run/eval never provision implicitly)"
     )
 }
+
+/// `capabilities` tool body — the host capability report as JSON, the twin of `prova capabilities`.
+/// Host-only (no manifest/package resolution), reading the same single sources the CLI verb does
+/// (`builtin_capability_names` + `Capabilities::expr_status`), so the two cannot disagree on which
+/// capabilities exist or whether each is met — only on rendering (JSON vs. text).
+pub(super) fn capabilities_blocking() -> Result<(serde_json::Value, bool), String> {
+    let caps = prova_core::Capabilities::default();
+    let rows: Vec<serde_json::Value> = prova_core::builtin_capability_names()
+        .iter()
+        .map(|name| match caps.expr_status(name) {
+            Ok(None) => json!({ "name": name, "met": true }),
+            Ok(Some(reason)) => json!({ "name": name, "met": false, "reason": reason }),
+            Err(e) => json!({ "name": name, "met": false, "reason": e }),
+        })
+        .collect();
+    Ok((json!({ "capabilities": rows }), false))
+}

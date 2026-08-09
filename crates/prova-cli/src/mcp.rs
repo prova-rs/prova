@@ -56,8 +56,8 @@ use prova_core::{
 /// The `*_blocking` tool bodies, split out to keep this file under the size gate (see the module).
 mod blocking;
 use blocking::{
-    attest_blocking, down_blocking, eval_blocking, evidence_blocking, list_blocking, owed_blocking,
-    run_blocking, up_blocking, warm_eval_blocking, warm_run_blocking,
+    attest_blocking, capabilities_blocking, down_blocking, eval_blocking, evidence_blocking,
+    list_blocking, owed_blocking, run_blocking, up_blocking, warm_eval_blocking, warm_run_blocking,
 };
 
 /// `prova mcp [--profile NAME] [--manifest PATH] [-P name=source]` — resolve the environment once
@@ -876,6 +876,15 @@ impl ProvaMcpServer {
         let _serialized = self.run_lock.lock().await;
         let env = self.env.clone();
         blocking(move || owed_blocking(&env, req)).await
+    }
+
+    #[tool(
+        name = "capabilities",
+        description = "What can prova detect on THIS host? The built-in capability vocabulary — docker (a daemon that answers AND runs linux containers), github (GITHUB_TOKEN), the OS (unix/windows), network/internet, and the compiled-in native clients (http/sqlite/grpc/graphql/yaml) — each with its status: met, or unmet with the reason. Beyond these, any executable on PATH is a capability, and a package registers its own via runtime.capability in prova.lua. Returns compact JSON: { capabilities: [{ name, met, reason? }] }. A report, never a gate — the gate is a profile's must_run at run time. The CLI twin is `prova capabilities`. See learn { topic = \"capabilities\" }."
+    )]
+    async fn capabilities(&self) -> CallToolResult {
+        let _serialized = self.run_lock.lock().await;
+        blocking(capabilities_blocking).await
     }
 
     #[tool(

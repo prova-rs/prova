@@ -224,8 +224,10 @@ fall out for free: the lane-polymorphic `query` tool takes a `lane` argument, so
 (or `list` with `lane`) covers `specs`/`tests`/`reminders` at once, and `packages` gets its own tool.
 
 - Every lane is reachable over MCP by the same name the CLI uses.
-- MCP `introspect` gains a CLI spelling (or is retired in favor of `eval 'return prova.help()'` — a
-  minor call, but the asymmetry should not just persist).
+- MCP `introspect` gained a CLI spelling — *(LANDED 2026-08-08, commit `0bc21`)* `prova introspect
+  [<filter>]` reuses `prova_core::help::core_entries`; graduated out of `mcp_tools_are_real_verbs`'
+  allowlist (only `status` remains). Completes the CLI discovery duo (`learn` concepts + `introspect`
+  shapes), the human/agent-shared surface. v1 is core-only; plugin APIs are a follow-up.
 - MCP re-implements the selection *wiring* in `to_selection()` (`mcp.rs:493`); once the engine takes a
   single `Query` value, both front-ends construct the *same* value and the wiring can't drift.
 
