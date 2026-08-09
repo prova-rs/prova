@@ -78,6 +78,22 @@ Where a CLI flag or environment variable exists for the same knob, precedence is
 | `[updates]` | Git-source freshness for `[dependencies]`: `interval` (default `"1d"`; `"12h"`/`"30m"`/bare seconds), `force` (also `-U/--update`), `retention` (default 90 days for unused materialized trees). `--offline` forbids the network entirely. |
 | `context = ["docs/agent.md"]` | **Top-level**, not under `[run]`: team docs (home-relative, `~/` expands) served by `prova learn` as `ctx:<stem>` topics — the project's own doctrine on the same discovery rail. A declared-but-missing file is reported loudly. |
 
+<!-- backlog: spec-sources-are-queryable -->
+**A package's spec sources must be answerable to whoever has to write one, and say which are
+writable.** `[[specs.source]]` decides where prose obligations live, and `scan_roots()` is read all
+over the CLI and MCP — but nothing *reports* it: `prova learn project` tells an agent where a new
+proof, package, topology and local package go, and never where a new claim or backlog item goes;
+the manifest table above does not list `[specs]` at all. So the one question that must be answered
+before capturing an obligation — "where may I write it?" — is answerable only by opening
+`prova.toml`, which is exactly the guess-the-file failure
+`docs/design/mcp-mode.md#backlog-capture-is-a-taught-procedure` describes. Writability is the second
+half and is not cosmetic: today every source is a local `directory`, read/write by construction (it
+is what lets `prova backlog promote` rewrite an anchor in place), but `docs/plans/spec-sources.md`
+holds room for `jira`/`github` sources, and an agent that writes an anchor into a read-only source
+has captured nothing. Surface both — the sources, and which accept a write — on the discovery rail
+that already exists (`learn project`'s "Where new things go"), not as a new verb. Recorded
+2026-08-08.
+
 ## Worked example
 
 ```toml

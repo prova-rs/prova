@@ -250,7 +250,7 @@ whatever the condition happened to raise (`docker: command not found`) instead o
 "docker" (unavailable)`. The disarmed-watcher contract holds either way, so nothing is unsound; the
 gap is that the author must repeat the suite's capability on every reminder to get the honest
 reason, and forgetting it is invisible. Make scope-level `requires` reach the reminders declared in
-that scope.
+that scope. Recorded 2026-08-08.
 
 ## Decided, and open
 

@@ -25,6 +25,31 @@ Three origins, and the distinction is not decoration — it decides who can reti
 An external obligation is the only one that can outlive everyone who remembers it, which is why
 it is the only one that needs an anchor.
 
+<!-- backlog: anchor-records-when-it-was-captured -->
+**An anchor's date should record when the item was captured; deadlines should be computed, not
+written.** Today the optional `YYYY-MM-DD` after the id means *deadline* and `backlog-drawdown`
+fires on `date.past(o.date)`, which puts the burden in the wrong place: every item wants a
+hand-picked date nobody can honestly choose at capture time, pushing one back means editing the
+doc, and the item's **age** — the thing that actually says the shelf is rotting — is recorded
+nowhere. Invert it. The anchor stamps *when*, written once at capture and never edited again, and
+draw-down becomes a policy the condition computes: `date.days_since(o.recorded) > 30`. Then a lane
+slides all its deadlines by changing one number in one reminder, "everything older than two months"
+is a query rather than a bulk rewrite of anchors, and a policy can differ per lane or per doc
+without the items knowing. `date.days_since` already ships for exactly this; what changes is the
+anchor's meaning, the `dated` row's field (`recorded`, beside `kind`), the `prova backlog` wording
+(its column and the `--undated` nudge stop meaning "no deadline" and start meaning "captured before
+we recorded when"), `prova learn backlog`, and prova's own `backlog-drawdown`. The date belongs to
+the **anchor**, not to the cold state, so promotion leaves it untouched — the keyword flips, the
+date does not — and its meaning does not shift either: it is when the obligation was first written
+down, which on a claim is precisely the fact worth keeping (when this was specified). `dated` rows
+already carry `kind`, so the mirror policy on the owed side — "no claim has sat unproven for more
+than N months" — is the same one-liner against the same field. One question to
+settle before the parser moves, because it decides positional-date versus keyed-pair: a genuinely
+**external** deadline — the deprecation bridges' "gone by 2027-01-01", a compatibility commitment
+rather than a function of age — either keeps an optional `due=` beside the recorded date, or
+becomes an age policy of its own ("no deprecation bridge older than twelve months"). Migration is
+cheap right now: exactly one anchor in this tree carries a date. Recorded 2026-08-08.
+
 ## How far it has travelled
 
 <!-- claim: lifecycle-stages -->

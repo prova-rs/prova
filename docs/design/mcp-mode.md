@@ -101,6 +101,20 @@ Structure (universal-first, transport notes last — avoiding duplicated skills)
   `--last-failed` until green; hold a topology when iterating against live infra.
 - **Driving Prova (the only transport-specific section):** the parity table above, ~15 lines.
 
+<!-- backlog: backlog-capture-is-a-taught-procedure -->
+**"Add a backlog item" must be a taught procedure, not a syntax an agent reassembles.** The skill
+and `prova learn backlog` teach the anchor's *shape* — the keyword, promotion, the draw-down date —
+and neither teaches *where it goes*, so an agent told to capture something guesses at a file, and a
+plausible guess (a plan, a README, a scratch note) lands the item somewhere the ledger never scans:
+capture that silently does not capture. Three steps, taught as one: **(1)** ask the config which
+spec sources exist and which of them can be written to
+(`docs/design/manifest.md#spec-sources-are-queryable`); **(2)** locate the spec file whose subject
+the item belongs to, or create one under a writable source; **(3)** write the anchor with the date
+it was captured (`docs/design/lifecycle.md#anchor-records-when-it-was-captured` — until that lands,
+the capture date goes in the item's prose, because the anchor's one date slot means *deadline*).
+The same three steps are what an MCP `backlog` tool would have to perform, so the procedure is the
+tool's spec as much as the skill's text. Recorded 2026-08-08.
+
 ## Phasing
 
 1. **`prova skill` + `prova eval`** — pure CLI, immediate agent value, no MCP dependency. The
