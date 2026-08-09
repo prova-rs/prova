@@ -126,12 +126,6 @@ const VERBS: &[Verb] = &[
         run: reminders_subcommand,
     },
     Verb {
-        name: "backlog",
-        help: "  prova backlog             the cold shelf: `<!-- backlog: id -->` items captured in place but\n\
-               \x20                           muted from `owed`; `promote <id>` flips one to a claim (query only)",
-        run: backlog_subcommand,
-    },
-    Verb {
         name: "attest",
         help: "  prova attest [<address>]  did the proof covering this claim actually RUN? Fails when it was\n\
                \x20                           skipped, deselected or absent; no address gates EVERY claim (CI)",
@@ -217,6 +211,9 @@ const RETIRED_VERBS: &[(&str, &str)] = &[
     ("promises", "prova tests --promises"),
     ("burndown", "prova tests burndown"),
     ("falsify", "prova tests falsify"),
+    // `backlog` was the specs lane's cold-state view; it is now `prova specs --backlog` (and its
+    // one write moved to `prova specs promote <id>`).
+    ("backlog", "prova specs --backlog"),
 ];
 
 /// `prova --help`, assembled from the verb table so the two cannot disagree.
@@ -648,123 +645,6 @@ fn promote_claim(id: Option<String>) -> ExitCode {
     }
 }
 
-/// `prova backlog` — the cold shelf. Every `<!-- backlog: id -->` anchor in the configured docs:
-/// work captured in place but deliberately NOT owed. Backlog and claim are the two states of one
-/// prose obligation; a backlog item is a claim a human has not yet decided to make active. It never
-/// appears in `owed`, never fails CI, and is invisible to an agent driving the doc — the whole
-/// point being that a bug or a half-formed spec can be parked *where it belongs*, without shuffling
-/// files and without adding to what is owed right now.
-///
-/// A query verb: it reads anchors and reports, gating nothing. `prova backlog promote <id>` is the
-/// one write — it flips the keyword in place, thawing a backlog item into a claim the burndown will
-/// then see. (Demotion is left to a human with the proofs in hand: cooling a claim back is only
-/// safe when nothing binds it.)
-fn backlog_subcommand(args: Vec<String>) -> ExitCode {
-    let mut it = args.into_iter();
-    let first = it.next();
-    if matches!(first.as_deref(), Some("-h") | Some("--help")) {
-        println!(
-            "usage: prova backlog                 list every backlog item, with its draw-down date\n\
-             \x20      prova backlog --undated       list only the backlog items that carry no date\n\
-             \x20      prova backlog promote <id>    thaw a backlog item into a claim, in place\n\n\
-             A `<!-- backlog: id -->` anchor captures work in a doc without owing it; add an optional\n\
-             `YYYY-MM-DD` as a draw-down deadline (`<!-- backlog: id 2026-09-01 -->`). It shares the\n\
-             `[specs]` sources and one id namespace with claims, so promotion is a keyword flip: the\n\
-             id and its prose stay put, only the state changes."
-        );
-        return ExitCode::SUCCESS;
-    }
-
-    let home = match resolve_home(None) {
-        Ok(h) => h,
-        Err(code) => return code,
-    };
-    let manifest = match std::fs::read_to_string(&home.manifest)
-        .map_err(|e| e.to_string())
-        .and_then(|text| Manifest::parse(&text))
-    {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("prova: {e}");
-            return ExitCode::from(2);
-        }
-    };
-    let docs = spec_scan_roots(&manifest);
-    let scanned = match claims::scan(&home.dir, &docs) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("prova: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    // `promote <id>` — the one write, shared with `prova specs promote`. Everything else is a
-    // listing. (promote_claim re-scans; promote is a rare manual step, so the second scan is cheap.)
-    if first.as_deref() == Some("promote") {
-        promote_claim(it.next())
-    } else {
-        // Listing — bare, or filtered to `--undated`. Any other argument is an error.
-        let undated_only = match first.as_deref() {
-            None => false,
-            Some("--undated") => true,
-            Some(unexpected) => {
-                eprintln!("prova: backlog: unexpected argument {unexpected:?}\nusage: prova backlog [--undated | promote <id>]");
-                return ExitCode::from(2);
-            }
-        };
-
-        // No spec source at all: invoking `prova backlog` IS the signal you want the feature, so a
-        // pointer to how to declare one is help, not a lecture (bare `prova` stays silent). This is
-        // the one place the "absence is the point" silence gives way — because you asked.
-        if docs.is_empty() {
-            println!("prova: no spec source configured — prova does not know where your backlog items and claims live.");
-            println!("  Declare one in prova.toml:");
-            println!();
-            println!("      [[specs.source]]");
-            println!("      type = \"directory\"");
-            println!("      path = \"docs\"");
-            println!();
-            println!("  then `prova backlog` lists them. See `prova learn spec`.");
-            return ExitCode::SUCCESS;
-        }
-
-        let all: Vec<&claims::Claim> = claims::backlog(&scanned);
-        let undated = all.iter().filter(|c| c.date.is_none()).count();
-        let items: Vec<&claims::Claim> = if undated_only {
-            all.iter().copied().filter(|c| c.date.is_none()).collect()
-        } else {
-            all.clone()
-        };
-
-        if items.is_empty() {
-            if undated_only {
-                println!("prova: no undated backlog items — every backlog item carries a draw-down date");
-            } else {
-                println!("prova: nothing in the backlog — no `<!-- backlog: id -->` anchors in the spec sources");
-            }
-            return ExitCode::SUCCESS;
-        }
-
-        for item in &items {
-            let date = item.date.as_deref().unwrap_or("(undated)");
-            println!("  {date:<11} {:<44} {}:{}", item.address, item.file.display(), item.line);
-        }
-        println!();
-        if undated_only {
-            println!("  {} undated of {} in backlog — a date makes an item drawable-down", items.len(), all.len());
-        } else {
-            print!("  {} in backlog — `prova backlog promote <id>` to make one a claim", all.len());
-            // Nudge toward dating: a dated item can be drawn down by a reminder; an undated one
-            // cannot. Reported, never enforced — dates stay optional.
-            if undated > 0 {
-                print!("; {undated} undated (`prova backlog --undated`)");
-            }
-            println!();
-        }
-        ExitCode::SUCCESS
-    }
-}
-
 /// `prova tests` — the tests lane: every discovered node, state-tagged PROMISE (open, authored ahead
 /// of implementation) or PROOF (settled). A query verb; runs nothing. `--promises` / `--proofs`
 /// narrow to one state. This is the lane report `prova list` stood in for; `list` retires in a later
@@ -807,6 +687,9 @@ fn specs_subcommand(args: Vec<String>) -> ExitCode {
         }
     }
     let mut want: Option<claims::Kind> = None;
+    // `--undated`: only items carrying no `YYYY-MM-DD` draw-down date (a date is what lets a reminder
+    // draw an item down). Composes with the state filter — `prova specs --backlog --undated`.
+    let mut undated_only = false;
     for arg in &args {
         match arg.as_str() {
             "-h" | "--help" => {
@@ -814,6 +697,7 @@ fn specs_subcommand(args: Vec<String>) -> ExitCode {
                     "usage: prova specs                 list the specs lane: every claim and backlog item\n\
                      \x20      prova specs --claims        only the claims (owed obligations)\n\
                      \x20      prova specs --backlog       only the backlog (captured, not yet owed)\n\
+                     \x20      prova specs --undated       only items with no draw-down date (composes)\n\
                      \x20      prova specs promote <id>    thaw a backlog item into a claim, in place\n\
                      \x20      prova specs backfill        proofs no claim backs — the reverse of `owed`\n\n\
                      Claims and backlog are the two states of one prose obligation, sharing the\n\
@@ -836,8 +720,9 @@ fn specs_subcommand(args: Vec<String>) -> ExitCode {
                 }
                 want = Some(claims::Kind::Backlog);
             }
+            "--undated" => undated_only = true,
             other => {
-                eprintln!("prova: specs: unexpected argument {other:?}\nusage: prova specs [--claims | --backlog]");
+                eprintln!("prova: specs: unexpected argument {other:?}\nusage: prova specs [--claims | --backlog] [--undated]");
                 return ExitCode::from(2);
             }
         }
@@ -886,17 +771,21 @@ fn specs_subcommand(args: Vec<String>) -> ExitCode {
             Some(k) => c.kind == *k,
             None => true,
         })
+        .filter(|c| !undated_only || c.date.is_none())
         .collect();
 
     if items.is_empty() {
-        match want {
-            Some(claims::Kind::Claim) => {
+        match (want, undated_only) {
+            (_, true) => {
+                println!("prova: nothing undated — every matching item carries a draw-down date")
+            }
+            (Some(claims::Kind::Claim), _) => {
                 println!("prova: no claims — no `<!-- claim: id -->` anchors in the spec sources")
             }
-            Some(claims::Kind::Backlog) => {
+            (Some(claims::Kind::Backlog), _) => {
                 println!("prova: nothing in the backlog — no `<!-- backlog: id -->` anchors in the spec sources")
             }
-            None => {
+            (None, _) => {
                 println!("prova: the specs lane is empty — no claim or backlog anchors in the spec sources")
             }
         }
@@ -916,11 +805,19 @@ fn specs_subcommand(args: Vec<String>) -> ExitCode {
     }
     let claim_n = items.iter().filter(|c| c.kind == claims::Kind::Claim).count();
     let backlog_n = items.len() - claim_n;
+    let undated_n = items.iter().filter(|c| c.date.is_none()).count();
     println!();
-    match want {
-        Some(claims::Kind::Claim) => println!("  {claim_n} claim(s)"),
-        Some(claims::Kind::Backlog) => println!("  {backlog_n} in backlog"),
-        None => println!("  {claim_n} claim(s), {backlog_n} in backlog"),
+    let head = match want {
+        Some(claims::Kind::Claim) => format!("{claim_n} claim(s)"),
+        Some(claims::Kind::Backlog) => format!("{backlog_n} in backlog"),
+        None => format!("{claim_n} claim(s), {backlog_n} in backlog"),
+    };
+    // Nudge toward dating — a date is what lets a reminder draw an item down by its deadline. Skip
+    // the nudge when already filtered to the undated ones (there the count IS the list).
+    if !undated_only && undated_n > 0 {
+        println!("  {head} · {undated_n} undated (`prova specs --undated`)");
+    } else {
+        println!("  {head}");
     }
     ExitCode::SUCCESS
 }

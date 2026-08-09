@@ -28,8 +28,8 @@ its time comes. Promotion is a **keyword flip in place**: the id and its prose d
 state changes.
 
 ```bash
-prova backlog                       # the cold shelf — every backlog item, muted from `owed`
-prova backlog promote flaky-teardown  # thaw it into a claim; the burndown sees it now, not before
+prova specs --backlog                  # the cold shelf — every backlog item, muted from `owed`
+prova specs promote flaky-teardown     # thaw it into a claim; the burndown sees it now, not before
 ```
 
 After promoting, `<!-- backlog: flaky-teardown -->` becomes `<!-- claim: flaky-teardown -->` on its
@@ -51,9 +51,8 @@ An anchor can carry a `YYYY-MM-DD` after the id — a deadline by which the item
 
 It is optional, but **set one**: a dated item is something a reminder can draw down by its deadline
 (WATCHING while there is time, DUE once it passes, fatal under `--heed`); an undated one just sits.
-`prova backlog` shows each item's date and nudges you with the undated count; `prova backlog
---undated` lists exactly the ones missing a date, so a team can keep the shelf accountable without
-forcing a date on anything. The date survives promotion — it lives after the id, untouched by the
+`prova specs --backlog` shows each item's date; `prova specs --backlog --undated` lists exactly the
+ones missing a date, so a team can keep the shelf accountable without forcing a date on anything. The date survives promotion — it lives after the id, untouched by the
 keyword flip, so a claim inherits the deadline set while it was cold.
 
 ## Only a claim can be bound
@@ -64,7 +63,7 @@ a backlog item and the ledger says so rather than pretending the cold item is di
 ```
 BACKLOGGED  docs/design.md#not-ready
             contract_test › … covers it, but it is still a backlog item —
-            `prova backlog promote not-ready` to make it a claim a proof can discharge
+            `prova specs promote not-ready` to make it a claim a proof can discharge
 ```
 
 ## Opting in
@@ -76,7 +75,7 @@ because they live in the same files.
 ## Priming a burndown, and draw-down schemes
 
 The intended rhythm: burn down to green, then open the backlog, pick a theme (backlog items in one
-file are one `prova backlog` away from being read together), and `promote` the few you are ready to
+file are one `prova specs --backlog` away from being read together), and `promote` the few you are ready to
 take on. Now the next burndown is staged — and nothing was owed until you chose it.
 
 Backlog is data and a query; it enforces nothing on its own. Enforcement — *draw a backlog item down

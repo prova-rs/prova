@@ -4,7 +4,7 @@
 --- the two states of one prose obligation: same shape, same id namespace, one keyword apart. The
 --- backlog state is *muted* — out of `owed`, never failing `attest`, invisible to a bare run — so a
 --- bug or a half-formed spec can be parked where it belongs without adding to what is owed right
---- now. `prova backlog promote <id>` thaws one into a claim, in place; the burndown sees it then and
+--- now. `prova specs promote <id>` thaws one into a claim, in place; the burndown sees it then and
 --- not before.
 ---
 --- The invariant that keeps the state machine legible: only a claim can be bound. A proof that
@@ -43,11 +43,11 @@ prova.test("a backlog item is muted from `owed`", {
   t:expect(r.code, "owed reports, it does not gate"):equals(0)
 end)
 
-prova.test("`prova backlog` lists exactly what `owed` hides", {
+prova.test("`prova specs --backlog` lists exactly what `owed` hides", {
   proves = "the cold shelf needs its own query — muting from `owed` would be a memory hole otherwise; the value of a human-driven lane is entirely in being able to review and promote it",
 }, function(t)
   local proj = project(t, TWO_STATES)
-  local r = shell.run(prova.bin .. " backlog", { cwd = proj, merge_stderr = true })
+  local r = shell.run(prova.bin .. " specs --backlog", { cwd = proj, merge_stderr = true })
 
   t:expect(r.stdout, "the backlog item is listed"):contains("flaky-teardown")
   t:expect(r.stdout, "a claim is not a backlog item"):never():contains("kept-promise")
@@ -59,7 +59,7 @@ prova.test("`promote` thaws a backlog item into a claim, in place", {
 }, function(t)
   local proj = project(t, TWO_STATES)
 
-  local p = shell.run(prova.bin .. " backlog promote flaky-teardown", { cwd = proj, merge_stderr = true })
+  local p = shell.run(prova.bin .. " specs promote flaky-teardown", { cwd = proj, merge_stderr = true })
   t:expect(p.code):equals(0)
   t:expect(p.stdout):contains("backlog → claim")
 
@@ -73,7 +73,7 @@ prova.test("`promote` thaws a backlog item into a claim, in place", {
   t:expect(owed.stdout, "the promoted claim is now owed"):contains("flaky-teardown")
   t:expect(owed.stdout):contains("UNPROVEN")
 
-  local backlog = shell.run(prova.bin .. " backlog", { cwd = proj, merge_stderr = true })
+  local backlog = shell.run(prova.bin .. " specs --backlog", { cwd = proj, merge_stderr = true })
   t:expect(backlog.stdout, "it left the backlog"):never():contains("flaky-teardown")
 end)
 
@@ -149,14 +149,14 @@ Second.
   t:expect(r.stdout):contains("twice")
 end)
 
-prova.test("`prova backlog` with no spec source points to setup, and does not fail", {
+prova.test("`prova specs --backlog` with no spec source points to setup, and does not fail", {
   proves = "invoking a spec verb IS the signal you want the feature — so with nothing configured, a pointer to how to declare a source is help, not a silent empty answer; bare `prova` stays silent, this verb does not, because you asked",
 }, function(t)
   local proj = t:tempdir() .. "/pkg"
   fs.mkdir(proj .. "/proofs")
   fs.write(proj .. "/prova.toml", '[run]\nproofs = ["proofs"]\n')  -- no [specs] at all
 
-  local r = shell.run(prova.bin .. " backlog", { cwd = proj, merge_stderr = true })
+  local r = shell.run(prova.bin .. " specs --backlog", { cwd = proj, merge_stderr = true })
 
   t:expect(r.code, "a pointer, not a failure"):equals(0)
   t:expect(r.stdout, "names the missing thing"):contains("no spec source")
@@ -174,13 +174,13 @@ Has a deadline.
 <!-- backlog: bare-item -->
 No deadline yet.
 ]])
-  local listed = shell.run(prova.bin .. " backlog", { cwd = proj, merge_stderr = true })
+  local listed = shell.run(prova.bin .. " specs --backlog", { cwd = proj, merge_stderr = true })
   t:expect(listed.stdout, "the date is shown"):contains("2026-09-01")
   t:expect(listed.stdout, "the dated item is listed"):contains("dated-item")
   t:expect(listed.stdout, "the bare item too"):contains("bare-item")
   t:expect(listed.stdout, "the undated count is nudged"):contains("1 undated")
 
-  local undated = shell.run(prova.bin .. " backlog --undated", { cwd = proj, merge_stderr = true })
+  local undated = shell.run(prova.bin .. " specs --backlog --undated", { cwd = proj, merge_stderr = true })
   t:expect(undated.stdout, "only the undated one"):contains("bare-item")
   t:expect(undated.stdout, "not the dated one"):never():contains("dated-item")
 end)
@@ -192,7 +192,7 @@ prova.test("promoting a dated backlog item keeps its date", {
 <!-- backlog: soon 2026-09-01 -->
 Due soon.
 ]])
-  shell.run(prova.bin .. " backlog promote soon", { cwd = proj, merge_stderr = true })
+  shell.run(prova.bin .. " specs promote soon", { cwd = proj, merge_stderr = true })
   local doc = fs.read(proj .. "/docs/design.md")
   t:expect(doc, "now a claim, still dated"):contains("<!-- claim: soon 2026-09-01 -->")
 end)
@@ -208,6 +208,16 @@ prova.test("the binary teaches the backlog: catalog and topic", {
   local topic = shell.run(prova.bin .. " learn backlog", { cwd = proj, merge_stderr = true })
   t:expect(topic.code):equals(0)
   t:expect(topic.stdout, "the anchor form"):contains("<!-- backlog:")
-  t:expect(topic.stdout, "the verb"):contains("prova backlog")
+  t:expect(topic.stdout, "the lane view"):contains("prova specs --backlog")
   t:expect(topic.stdout, "the promotion"):contains("promote")
+end)
+
+prova.test("the retired `prova backlog` verb tombstones toward its lane spelling, never dispatches", {
+  proves = "backlog was a state-view of the specs lane, so it became `prova specs --backlog`; a state \
+is a --flag on its lane now, not its own verb, and muscle memory meets a redirect, not silence",
+}, function(t)
+  local proj = project(t, TWO_STATES)
+  local r = shell.run(prova.bin .. " backlog", { cwd = proj, merge_stderr = true })
+  t:expect(r.code, "backlog no longer dispatches"):equals(2)
+  t:expect(r.stdout, "it names its successor"):contains("prova specs --backlog")
 end)

@@ -23,4 +23,4 @@ prova.remind("backlog-drawdown", {
       return #late .. " backlog item(s) past their draw-down date: " .. table.concat(late, ", ")
     end
   end,
-}, "promote, remove, or reschedule the overdue backlog items (`prova backlog`)")
+}, "promote, remove, or reschedule the overdue backlog items (`prova specs --backlog`)")
