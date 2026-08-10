@@ -617,6 +617,64 @@ pub(crate) fn search_entries(
     Ok((entries, loaded.warnings))
 }
 
+/// Dispatch the verb's word forms: bare (list all), `info <name>`, `add <spec>`, and anything
+/// else as a search query over the loaded entries.
+fn dispatch_words(words: &[String], entries: &[Entry], multi: bool) -> ExitCode {
+    match words.first().map(String::as_str) {
+        None => {
+            print_rows(entries, multi);
+            ExitCode::SUCCESS
+        }
+        Some("info") => match words.get(1) {
+            None => {
+                eprintln!("prova: packages: info needs a name\n{USAGE}");
+                ExitCode::from(2)
+            }
+            Some(name) => {
+                let hits: Vec<&Entry> = entries.iter().filter(|e| &e.name == name).collect();
+                if hits.is_empty() {
+                    eprintln!(
+                        "prova: packages: no package \"{name}\" in any configured registry — \
+                         search first: `prova plugins {name}`"
+                    );
+                    ExitCode::FAILURE
+                } else {
+                    for e in hits {
+                        print_info(e);
+                    }
+                    ExitCode::SUCCESS
+                }
+            }
+        },
+        Some("add") => match words.get(1) {
+            None => {
+                eprintln!("prova: packages: add needs a name\n{USAGE}");
+                ExitCode::from(2)
+            }
+            Some(spec) => match add(spec, entries) {
+                Ok(msg) => {
+                    println!("{msg}");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("prova: packages: {e}");
+                    ExitCode::FAILURE
+                }
+            },
+        },
+        Some(_) => {
+            let query = words.join(" ");
+            let hits: Vec<Entry> = entries.iter().filter(|e| matches(e, &query)).cloned().collect();
+            if hits.is_empty() {
+                println!("no packages matching \"{query}\" — `prova packages` lists everything");
+            } else {
+                print_rows(&hits, multi);
+            }
+            ExitCode::SUCCESS
+        }
+    }
+}
+
 pub fn run(args: Vec<String>) -> ExitCode {
     let mut offline = false;
     let mut force = false;
@@ -662,59 +720,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
     }
     let multi = registry_count > 1;
 
-    let code = match words.first().map(String::as_str) {
-        None => {
-            print_rows(&entries, multi);
-            ExitCode::SUCCESS
-        }
-        Some("info") => match words.get(1) {
-            None => {
-                eprintln!("prova: packages: info needs a name\n{USAGE}");
-                ExitCode::from(2)
-            }
-            Some(name) => {
-                let hits: Vec<&Entry> = entries.iter().filter(|e| &e.name == name).collect();
-                if hits.is_empty() {
-                    eprintln!(
-                        "prova: packages: no package \"{name}\" in any configured registry — \
-                         search first: `prova plugins {name}`"
-                    );
-                    ExitCode::FAILURE
-                } else {
-                    for e in hits {
-                        print_info(e);
-                    }
-                    ExitCode::SUCCESS
-                }
-            }
-        },
-        Some("add") => match words.get(1) {
-            None => {
-                eprintln!("prova: packages: add needs a name\n{USAGE}");
-                ExitCode::from(2)
-            }
-            Some(spec) => match add(spec, &entries) {
-                Ok(msg) => {
-                    println!("{msg}");
-                    ExitCode::SUCCESS
-                }
-                Err(e) => {
-                    eprintln!("prova: packages: {e}");
-                    ExitCode::FAILURE
-                }
-            },
-        },
-        Some(_) => {
-            let query = words.join(" ");
-            let hits: Vec<Entry> = entries.iter().filter(|e| matches(e, &query)).cloned().collect();
-            if hits.is_empty() {
-                println!("no packages matching \"{query}\" — `prova packages` lists everything");
-            } else {
-                print_rows(&hits, multi);
-            }
-            ExitCode::SUCCESS
-        }
-    };
+    let code = dispatch_words(&words, &entries, multi);
 
     // A registry that could not be served at all fails the command loud — after showing what DID
     // load, so a partial outage never silently narrows discovery.

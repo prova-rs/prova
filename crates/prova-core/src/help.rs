@@ -66,6 +66,38 @@ fn collapse(prose: &[String]) -> String {
 /// `---@class Name`, `---@field n ty`, and the `function name(args) end` / `function C:m() end`
 /// declarations they document. Anything else is ignored — this reads documentation, it does not
 /// type-check Lua.
+/// A class stays open across its `---@field` lines and flushes when the block ends:
+/// (name, summary, fields as (name, type, note), deprecated).
+type OpenClass = (String, String, Vec<(String, String, Option<String>)>, bool);
+
+/// Close an open `---@class` block into a `{ field: ty, ... }` entry — unless it was
+/// `---@deprecated`, which keeps the stub resolving in an editor while the help surface stops
+/// advertising it.
+fn flush_class(class: &mut Option<OpenClass>, out: &mut Vec<HelpEntry>) {
+    if let Some((name, summary, fields, deprecated)) = class.take() {
+        if deprecated {
+            return;
+        }
+        let body = fields
+            .iter()
+            .map(|(n, ty, note)| match note {
+                Some(note) => format!("{n}: {ty}  -- {note}"),
+                None => format!("{n}: {ty}"),
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.push(HelpEntry {
+            name,
+            signature: if body.is_empty() {
+                "{}".into()
+            } else {
+                format!("{{ {body} }}")
+            },
+            summary,
+        });
+    }
+}
+
 pub fn parse_stub(src: &str) -> Vec<HelpEntry> {
     let mut out = Vec::new();
     let mut prose: Vec<String> = Vec::new();
@@ -76,37 +108,7 @@ pub fn parse_stub(src: &str) -> Vec<HelpEntry> {
     // strikethrough, not a red undefined-field), while the agent-facing surface stops advertising it
     // — so a rename can land without either breaking suites or teaching the old word to newcomers.
     let mut deprecated = false;
-    // A class stays open across its `---@field` lines and flushes when the block ends:
-    // (name, summary, fields as (name, type, note), deprecated).
-    type OpenClass = (String, String, Vec<(String, String, Option<String>)>, bool);
     let mut class: Option<OpenClass> = None;
-
-    let flush_class =
-        |class: &mut Option<OpenClass>,
-         out: &mut Vec<HelpEntry>| {
-            if let Some((name, summary, fields, deprecated)) = class.take() {
-                if deprecated {
-                    return;
-                }
-                let body = fields
-                    .iter()
-                    .map(|(n, ty, note)| match note {
-                        Some(note) => format!("{n}: {ty}  -- {note}"),
-                        None => format!("{n}: {ty}"),
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                out.push(HelpEntry {
-                    name,
-                    signature: if body.is_empty() {
-                        "{}".into()
-                    } else {
-                        format!("{{ {body} }}")
-                    },
-                    summary,
-                });
-            }
-        };
 
     for line in src.lines() {
         let t = line.trim();

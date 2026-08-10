@@ -308,6 +308,75 @@ fn summary_cell(s: &str) -> String {
     }
 }
 
+impl GitHubReporter {
+    /// One annotation plus its step-summary row — the shared shape of every non-pass outcome.
+    fn annotate(
+        &mut self,
+        level: &str,
+        mark: &'static str,
+        detail: &str,
+        file: Option<&str>,
+        line: Option<u32>,
+        path: &str,
+    ) {
+        println!(
+            "::{level} {}::{}",
+            self.props(file, line, path),
+            gha_escape_data(detail)
+        );
+        self.rows.push(SummaryRow {
+            mark,
+            path: path.to_string(),
+            location: file.map(|f| {
+                let f = self.rel(f);
+                match line {
+                    Some(l) => format!("{f}:{l}"),
+                    None => f,
+                }
+            }),
+            detail: detail.to_string(),
+        });
+    }
+
+    /// The step summary: the tally line plus a row per annotation. Append, never truncate —
+    /// other steps share this file.
+    fn write_step_summary(&self, summary: &prova_core::Summary) {
+        let Some(path) = &self.step_summary else {
+            return;
+        };
+        let mut md = String::new();
+        let mark = if summary.failed > 0 { "❌" } else { "✅" };
+        md.push_str(&format!(
+            "### {mark} prova — {} passed, {} failed, {} skipped{} in {:.1?}\n",
+            summary.passed,
+            summary.failed,
+            summary.skipped,
+            spec_summary_segment(summary),
+            summary.duration
+        ));
+        if !self.rows.is_empty() {
+            md.push_str("\n| | test | location | detail |\n|---|---|---|---|\n");
+            for row in &self.rows {
+                md.push_str(&format!(
+                    "| {} | {} | {} | {} |\n",
+                    row.mark,
+                    summary_cell(&row.path),
+                    row.location
+                        .as_deref()
+                        .map(|l| format!("`{l}`"))
+                        .unwrap_or_default(),
+                    summary_cell(&row.detail)
+                ));
+            }
+        }
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .and_then(|mut f| f.write_all(md.as_bytes()));
+    }
+}
+
 impl Reporter for GitHubReporter {
     fn event(&mut self, event: &Event) {
         match event {
@@ -320,44 +389,10 @@ impl Reporter for GitHubReporter {
                 ..
             } => match outcome {
                 Outcome::Failed => {
-                    let detail = message.unwrap_or("test failed");
-                    println!(
-                        "::error {}::{}",
-                        self.props(*file, *line, path),
-                        gha_escape_data(detail)
-                    );
-                    self.rows.push(SummaryRow {
-                        mark: "❌",
-                        path: path.to_string(),
-                        location: file.map(|f| {
-                            let f = self.rel(f);
-                            match line {
-                                Some(l) => format!("{f}:{l}"),
-                                None => f,
-                            }
-                        }),
-                        detail: detail.to_string(),
-                    });
+                    self.annotate("error", "❌", message.unwrap_or("test failed"), *file, *line, path);
                 }
                 Outcome::Skipped => {
-                    let detail = message.unwrap_or("skipped");
-                    println!(
-                        "::notice {}::{}",
-                        self.props(*file, *line, path),
-                        gha_escape_data(detail)
-                    );
-                    self.rows.push(SummaryRow {
-                        mark: "⏭️",
-                        path: path.to_string(),
-                        location: file.map(|f| {
-                            let f = self.rel(f);
-                            match line {
-                                Some(l) => format!("{f}:{l}"),
-                                None => f,
-                            }
-                        }),
-                        detail: detail.to_string(),
-                    });
+                    self.annotate("notice", "⏭️", message.unwrap_or("skipped"), *file, *line, path);
                 }
                 Outcome::Promised => {
                     // An open promise is a notice, never an error — the whole point is a green CI
@@ -367,63 +402,152 @@ impl Reporter for GitHubReporter {
                     let detail = message
                         .map(|m| m.lines().next().unwrap_or(m))
                         .unwrap_or("promised");
-                    println!(
-                        "::notice {}::{}",
-                        self.props(*file, *line, path),
-                        gha_escape_data(detail)
-                    );
-                    self.rows.push(SummaryRow {
-                        mark: "📝",
-                        path: path.to_string(),
-                        location: file.map(|f| {
-                            let f = self.rel(f);
-                            match line {
-                                Some(l) => format!("{f}:{l}"),
-                                None => f,
-                            }
-                        }),
-                        detail: detail.to_string(),
-                    });
+                    self.annotate("notice", "📝", detail, *file, *line, path);
                 }
                 Outcome::Passed => {}
             },
-            Event::RunFinished { summary } => {
-                let Some(path) = &self.step_summary else {
-                    return;
-                };
-                let mut md = String::new();
-                let mark = if summary.failed > 0 { "❌" } else { "✅" };
-                md.push_str(&format!(
-                    "### {mark} prova — {} passed, {} failed, {} skipped{} in {:.1?}\n",
-                    summary.passed,
-                    summary.failed,
-                    summary.skipped,
-                    spec_summary_segment(summary),
-                    summary.duration
-                ));
-                if !self.rows.is_empty() {
-                    md.push_str("\n| | test | location | detail |\n|---|---|---|---|\n");
-                    for row in &self.rows {
-                        md.push_str(&format!(
-                            "| {} | {} | {} | {} |\n",
-                            row.mark,
-                            summary_cell(&row.path),
-                            row.location
-                                .as_deref()
-                                .map(|l| format!("`{l}`"))
-                                .unwrap_or_default(),
-                            summary_cell(&row.detail)
-                        ));
-                    }
-                }
-                // Append, never truncate — other steps share this file.
-                let _ = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(path)
-                    .and_then(|mut f| f.write_all(md.as_bytes()));
-            }
+            Event::RunFinished { summary } => self.write_step_summary(summary),
             _ => {}
+        }
+    }
+}
+
+impl HumanReporter {
+    /// One leaf's console row(s): the PASS/SKIP/FAIL/PROMISED line, the failure detail, and the
+    /// recap bookkeeping.
+    #[allow(clippy::too_many_arguments)]
+    fn node_finished(
+        &mut self,
+        path: &str,
+        outcome: Outcome,
+        duration: std::time::Duration,
+        assertions: usize,
+        message: Option<&str>,
+        file: Option<&str>,
+        line: Option<u32>,
+        promise_reason: Option<&str>,
+    ) {
+        // Quiet suppresses the routine (PASS/SKIP); an open SPEC is actionable state and
+        // stays visible.
+        if matches!(outcome, Outcome::Passed | Outcome::Skipped) && self.quiet {
+            return;
+        }
+        let (sections, leaf) = self.sections_for(path, file);
+        self.enter(&sections, file.is_some());
+        // Leaves indent one level below their headers (min one level, so a header-less
+        // leaf — a file-less run — still reads as a row, not a heading).
+        let indent = "  ".repeat(sections.len().max(1));
+        // `:line` only — the file is the section header above.
+        let line_col = line
+            .map(|l| format!("  {DIM}:{l}{DIM:#}"))
+            .unwrap_or_default();
+        let location = self.location(file, line);
+        let out = &mut self.out;
+        match outcome {
+            Outcome::Passed => {
+                let n = assertions;
+                let plural = if n == 1 { "assert" } else { "asserts" };
+                let _ = writeln!(
+                    out,
+                    "{indent}{PASS}PASS{PASS:#}  {leaf}  {DIM}({}, {n} {plural}){DIM:#}{line_col}",
+                    dur(duration)
+                );
+            }
+            Outcome::Skipped => {
+                let reason = message
+                    .map(|m| format!("  {DIM}— {m}{DIM:#}"))
+                    .unwrap_or_default();
+                let _ = writeln!(out, "{indent}{SKIP}SKIP{SKIP:#}  {leaf}{reason}{line_col}");
+            }
+            Outcome::Failed => {
+                let _ = writeln!(
+                    out,
+                    "{indent}{FAIL}FAIL{FAIL:#}  {leaf}  {DIM}({}){DIM:#}{line_col}",
+                    dur(duration)
+                );
+                if let Some(m) = message {
+                    write_message(out, &format!("{indent}      "), m);
+                }
+                self.failures.push(Recap {
+                    path: path.to_string(),
+                    message: message.map(str::to_string),
+                    location,
+                });
+            }
+            Outcome::Promised => {
+                // An open promise: expected-red, so no recap entry and no rerun line — the
+                // burndown meter (`--promises --list`, the tally) is its call to action.
+                let why = promise_reason
+                    .filter(|r| !r.is_empty())
+                    .map(|r| format!("  {DIM}— {r}{DIM:#}"))
+                    .unwrap_or_default();
+                let _ = writeln!(out, "{indent}{SKIP}PROMISED{SKIP:#}  {leaf}{why}{line_col}");
+                // First line only: the error is the call to action, but an EXPECTED
+                // failure carries no traceback noise. `--due` (where an open promise is
+                // being actively worked) reports it as FAIL with full detail.
+                if let Some(first) = message.and_then(|m| m.lines().next()) {
+                    write_message(out, &format!("{indent}      "), first);
+                }
+            }
+        }
+        self.printed_any = true;
+    }
+
+    /// The run's tail: the failure recap (with copy-pasteable rerun lines), the tally sentence,
+    /// and the switched-off classes line.
+    fn run_finished(&mut self, summary: &prova_core::Summary) {
+        let out = &mut self.out;
+        // The recap: every failure re-stated at the end, where the eye lands — with a
+        // copy-pasteable exact-node rerun line, so "find the red again" is never a grep.
+        if !self.failures.is_empty() {
+            let _ = writeln!(out, "\n{FAIL}failures:{FAIL:#}");
+            for f in &self.failures {
+                let _ = write!(out, "\n  {FAIL}FAIL{FAIL:#}  {}", f.path);
+                if let Some(loc) = &f.location {
+                    let _ = write!(out, "  {DIM}{loc}{DIM:#}");
+                }
+                let _ = writeln!(out);
+                if let Some(m) = &f.message {
+                    write_message(out, "        ", m);
+                }
+                let _ = writeln!(
+                    out,
+                    "        {DIM}rerun: prova --node {:?}{DIM:#}",
+                    f.path
+                );
+            }
+        }
+        // The tally sentence keeps its exact uncolored text (proofs and scripts match on
+        // "N passed"); color only flags the failed count, and only when it is non-zero.
+        let failed_style = if summary.failed > 0 { FAIL } else { Style::new() };
+        let _ = writeln!(
+            out,
+            "\n{PASS}{}{PASS:#} passed, {failed_style}{}{failed_style:#} failed, {} skipped{}{}   in {}",
+            summary.passed,
+            summary.failed,
+            summary.skipped,
+            spec_summary_segment(summary),
+            if summary.deselected > 0 {
+                format!(", {} deselected", summary.deselected)
+            } else {
+                String::new()
+            },
+            dur(summary.duration)
+        );
+        // The switched-off classes, as ONE line — discoverable without a wall of SKIP
+        // rows, truthful about why they did not run, and gone entirely once thrown
+        // (docs/design/manifest.md#switches-not-env-capabilities).
+        if !summary.switched_off.is_empty() {
+            let classes = summary
+                .switched_off
+                .iter()
+                .map(|(class, n)| format!("{class} ({n})"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let _ = writeln!(
+                out,
+                "{DIM}switched off: {classes} — throw with -s <switch> or a profile's switches{DIM:#}"
+            );
         }
     }
 }
@@ -440,127 +564,17 @@ impl Reporter for HumanReporter {
                 file,
                 line,
                 promise_reason,
-            } => {
-                // Quiet suppresses the routine (PASS/SKIP); an open SPEC is actionable state and
-                // stays visible.
-                if matches!(outcome, Outcome::Passed | Outcome::Skipped) && self.quiet {
-                    return;
-                }
-                let (sections, leaf) = self.sections_for(path, *file);
-                self.enter(&sections, file.is_some());
-                // Leaves indent one level below their headers (min one level, so a header-less
-                // leaf — a file-less run — still reads as a row, not a heading).
-                let indent = "  ".repeat(sections.len().max(1));
-                // `:line` only — the file is the section header above.
-                let line_col = line
-                    .map(|l| format!("  {DIM}:{l}{DIM:#}"))
-                    .unwrap_or_default();
-                let location = self.location(*file, *line);
-                let out = &mut self.out;
-                match outcome {
-                    Outcome::Passed => {
-                        let n = *assertions;
-                        let plural = if n == 1 { "assert" } else { "asserts" };
-                        let _ = writeln!(
-                            out,
-                            "{indent}{PASS}PASS{PASS:#}  {leaf}  {DIM}({}, {n} {plural}){DIM:#}{line_col}",
-                            dur(*duration)
-                        );
-                    }
-                    Outcome::Skipped => {
-                        let reason = message
-                            .map(|m| format!("  {DIM}— {m}{DIM:#}"))
-                            .unwrap_or_default();
-                        let _ = writeln!(out, "{indent}{SKIP}SKIP{SKIP:#}  {leaf}{reason}{line_col}");
-                    }
-                    Outcome::Failed => {
-                        let _ = writeln!(
-                            out,
-                            "{indent}{FAIL}FAIL{FAIL:#}  {leaf}  {DIM}({}){DIM:#}{line_col}",
-                            dur(*duration)
-                        );
-                        if let Some(m) = message {
-                            write_message(out, &format!("{indent}      "), m);
-                        }
-                        self.failures.push(Recap {
-                            path: path.to_string(),
-                            message: message.map(str::to_string),
-                            location,
-                        });
-                    }
-                    Outcome::Promised => {
-                        // An open promise: expected-red, so no recap entry and no rerun line — the
-                        // burndown meter (`--promises --list`, the tally) is its call to action.
-                        let why = promise_reason
-                            .filter(|r| !r.is_empty())
-                            .map(|r| format!("  {DIM}— {r}{DIM:#}"))
-                            .unwrap_or_default();
-                        let _ = writeln!(out, "{indent}{SKIP}PROMISED{SKIP:#}  {leaf}{why}{line_col}");
-                        // First line only: the error is the call to action, but an EXPECTED
-                        // failure carries no traceback noise. `--due` (where an open promise is
-                        // being actively worked) reports it as FAIL with full detail.
-                        if let Some(first) = message.and_then(|m| m.lines().next()) {
-                            write_message(out, &format!("{indent}      "), first);
-                        }
-                    }
-                }
-                self.printed_any = true;
-            }
-            Event::RunFinished { summary } => {
-                let out = &mut self.out;
-                // The recap: every failure re-stated at the end, where the eye lands — with a
-                // copy-pasteable exact-node rerun line, so "find the red again" is never a grep.
-                if !self.failures.is_empty() {
-                    let _ = writeln!(out, "\n{FAIL}failures:{FAIL:#}");
-                    for f in &self.failures {
-                        let _ = write!(out, "\n  {FAIL}FAIL{FAIL:#}  {}", f.path);
-                        if let Some(loc) = &f.location {
-                            let _ = write!(out, "  {DIM}{loc}{DIM:#}");
-                        }
-                        let _ = writeln!(out);
-                        if let Some(m) = &f.message {
-                            write_message(out, "        ", m);
-                        }
-                        let _ = writeln!(
-                            out,
-                            "        {DIM}rerun: prova --node {:?}{DIM:#}",
-                            f.path
-                        );
-                    }
-                }
-                // The tally sentence keeps its exact uncolored text (proofs and scripts match on
-                // "N passed"); color only flags the failed count, and only when it is non-zero.
-                let failed_style = if summary.failed > 0 { FAIL } else { Style::new() };
-                let _ = writeln!(
-                    out,
-                    "\n{PASS}{}{PASS:#} passed, {failed_style}{}{failed_style:#} failed, {} skipped{}{}   in {}",
-                    summary.passed,
-                    summary.failed,
-                    summary.skipped,
-                    spec_summary_segment(summary),
-                    if summary.deselected > 0 {
-                        format!(", {} deselected", summary.deselected)
-                    } else {
-                        String::new()
-                    },
-                    dur(summary.duration)
-                );
-                // The switched-off classes, as ONE line — discoverable without a wall of SKIP
-                // rows, truthful about why they did not run, and gone entirely once thrown
-                // (docs/design/manifest.md#switches-not-env-capabilities).
-                if !summary.switched_off.is_empty() {
-                    let classes = summary
-                        .switched_off
-                        .iter()
-                        .map(|(class, n)| format!("{class} ({n})"))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    let _ = writeln!(
-                        out,
-                        "{DIM}switched off: {classes} — throw with -s <switch> or a profile's switches{DIM:#}"
-                    );
-                }
-            }
+            } => self.node_finished(
+                path,
+                *outcome,
+                *duration,
+                *assertions,
+                *message,
+                *file,
+                *line,
+                *promise_reason,
+            ),
+            Event::RunFinished { summary } => self.run_finished(summary),
             _ => {}
         }
     }

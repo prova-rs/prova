@@ -19,7 +19,7 @@
       "direction": "lower_is_better"
     },
     "rust.expect.production": {
-      "value": 24.0,
+      "value": 23.0,
       "direction": "lower_is_better",
       "goal": 0.0
     },
@@ -28,9 +28,8 @@
       "direction": "lower_is_better"
     },
     "rust.functions.too_long": {
-      "value": 11.0,
-      "direction": "lower_is_better",
-      "goal": 0.0
+      "value": 0.0,
+      "direction": "lower_is_better"
     },
     "rust.unwrap.production": {
       "value": 0.0,

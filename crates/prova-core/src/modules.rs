@@ -493,34 +493,9 @@ fn path_trim_trailing(p: &str) -> &str {
     &p[..end]
 }
 
-fn make_path(lua: &Lua) -> mlua::Result<Table> {
-    let path = lua.create_table()?;
-
-    // path.join(a, b, …) — segments joined with `/`; empty segments contribute nothing, and an
-    // absolute later segment resets the join (the std::path law: predictable, not surprising).
-    path.set(
-        "join",
-        lua.create_function(|_, segments: mlua::Variadic<String>| {
-            let mut out = String::new();
-            for seg in segments.iter() {
-                let seg = path_norm_seps(seg);
-                if seg.is_empty() {
-                    continue;
-                }
-                if out.is_empty() || path_is_absolute(&seg) {
-                    out = seg;
-                } else {
-                    while out.ends_with('/') {
-                        out.pop();
-                    }
-                    out.push('/');
-                    out.push_str(seg.trim_start_matches('/'));
-                }
-            }
-            Ok(out)
-        })?,
-    )?;
-
+/// The last-component verbs (`dirname`/`basename`/`ext`/`stem`) — all lexical, all sharing the
+/// normalize-then-split-at-the-last-separator shape.
+fn add_path_component_fns(lua: &Lua, path: &Table) -> mlua::Result<()> {
     // path.dirname(p) — everything before the last component; "." for a bare name, the root for a
     // first-level entry ("/a" → "/", "C:/a" → "C:/").
     path.set(
@@ -585,6 +560,39 @@ fn make_path(lua: &Lua) -> mlua::Result<Table> {
             })
         })?,
     )?;
+
+    Ok(())
+}
+
+fn make_path(lua: &Lua) -> mlua::Result<Table> {
+    let path = lua.create_table()?;
+
+    // path.join(a, b, …) — segments joined with `/`; empty segments contribute nothing, and an
+    // absolute later segment resets the join (the std::path law: predictable, not surprising).
+    path.set(
+        "join",
+        lua.create_function(|_, segments: mlua::Variadic<String>| {
+            let mut out = String::new();
+            for seg in segments.iter() {
+                let seg = path_norm_seps(seg);
+                if seg.is_empty() {
+                    continue;
+                }
+                if out.is_empty() || path_is_absolute(&seg) {
+                    out = seg;
+                } else {
+                    while out.ends_with('/') {
+                        out.pop();
+                    }
+                    out.push('/');
+                    out.push_str(seg.trim_start_matches('/'));
+                }
+            }
+            Ok(out)
+        })?,
+    )?;
+
+    add_path_component_fns(lua, &path)?;
 
     // path.normalize(p) — collapse `.`/`..`/duplicate separators, strip trailing slash, emit `/`.
     // Purely lexical (no filesystem): leading `..` in a relative path survives; `..` cannot climb

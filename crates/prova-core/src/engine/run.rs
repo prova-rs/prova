@@ -117,6 +117,26 @@ fn invert_for_falsify(
     }
 }
 
+/// The falsification pass: break the system FIRST, then run the body against the wreckage. A
+/// falsifier that itself raises is a failure of the mutation, not of the proof, and says so —
+/// otherwise a broken falsifier would masquerade as a body that correctly went red.
+async fn run_falsifier(
+    item: &PlanItem,
+    state: &Rc<RunState>,
+    ctx_ud: &mlua::AnyUserData,
+) -> Option<String> {
+    if !state.falsify {
+        return None;
+    }
+    match &item.falsifier {
+        Some(f) => match f.call_async::<()>(ctx_ud.clone()).await {
+            Ok(()) => None,
+            Err(e) => Some(format!("falsifier raised before the body ran: {e}")),
+        },
+        None => None,
+    }
+}
+
 /// Returns the test's own node, plus a `⟶ teardown` node per teardown failure (usually none).
 pub(super) async fn run_one(
     lua: &Lua,
@@ -162,20 +182,7 @@ pub(super) async fn run_one(
     let file = state.file_path_str(item.file);
     let start = Instant::now();
 
-    // The falsification pass: break the system FIRST, then run the body against the wreckage. A
-    // falsifier that itself raises is a failure of the mutation, not of the proof, and says so —
-    // otherwise a broken falsifier would masquerade as a body that correctly went red.
-    let falsifier_error = if state.falsify {
-        match &item.falsifier {
-            Some(f) => match f.call_async::<()>(ctx_ud.clone()).await {
-                Ok(()) => None,
-                Err(e) => Some(format!("falsifier raised before the body ran: {e}")),
-            },
-            None => None,
-        }
-    } else {
-        None
-    };
+    let falsifier_error = run_falsifier(item, state, &ctx_ud).await;
 
     let call = item.body.call_async::<()>((ctx_ud, case_arg));
 

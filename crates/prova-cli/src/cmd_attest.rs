@@ -586,6 +586,72 @@ pub(crate) fn evidence_account(
 ///
 /// A report, never a gate — exit 0 belongs to the query family's contract, and the gate is
 /// `prova attest`. Executes no proof body, like every query verb.
+/// The console rendering of the account: the four-state header, the deputed and attention
+/// sections (each absent entirely when nothing was adopted or declared, so a package that opted
+/// into neither pays no output), and the owed tally.
+fn print_evidence_console(home: &home::Home, account: prova_core::ledger::Account) {
+    println!("prova: evidence for {}", home.dir.display());
+    println!();
+    println!("  CLAIMED   {:>4}   anchored claims in the declared docs", account.claimed);
+    println!("  BOUND     {:>4}   covered by at least one proof", account.bound);
+    println!("  PROMISED  {:>4}   proofs authored ahead of implementation", account.promised);
+    match account.attested {
+        Some(n) => println!(
+            "  ATTESTED  {:>4}   covering proof executed and passed in the recorded run",
+            n
+        ),
+        None => println!("  ATTESTED     —   no run recorded — run the suite first (`prova`)"),
+    }
+
+    // The deputed account (docs/design/verifiers.md): verdicts other verifiers produced,
+    // conducted and adopted this run — counts only; `prova attest junit:<suite>#<name>` asks
+    // about one. Absent entirely when nothing was ingested.
+    let deputed = record::load(home).map(|r| r.deputed).unwrap_or_default();
+    if !deputed.is_empty() {
+        let red = deputed
+            .iter()
+            .filter(|d| d.outcome == "failed" || d.outcome == "error")
+            .count();
+        println!();
+        println!(
+            "  DEPUTED   {:>4}   cases adopted from other verifiers ({} red)",
+            deputed.len(),
+            red
+        );
+    }
+
+    // The attention account rides along (docs/design/reminders.md): all three states, from the
+    // record — `evidence` is a query verb and evaluates nothing. Absent entirely when the package
+    // declares no reminders, so a package that adopted nothing pays no output for it.
+    let reminders = record::load(home).map(|r| r.reminders).unwrap_or_default();
+    if !reminders.is_empty() {
+        let count = |s: &str| reminders.iter().filter(|e| e.state == s).count();
+        println!();
+        println!("  DUE       {:>4}   reminders owed attention (`prova reminders`)", count("due"));
+        println!("  WATCHING  {:>4}   reminders armed — checked, the world holds still", count("watching"));
+        let unevaluated = count("unevaluated");
+        if unevaluated > 0 {
+            println!("  UNEVAL    {:>4}   reminder conditions that could not run", unevaluated);
+        }
+    }
+
+    let owed = account.owed;
+    if owed.is_empty() {
+        println!("\n  nothing owed");
+    } else {
+        use std::collections::BTreeMap;
+        let mut by_status: BTreeMap<&'static str, usize> = BTreeMap::new();
+        for o in &owed {
+            *by_status.entry(o.status.tag()).or_default() += 1;
+        }
+        println!("\nowed:");
+        for (tag, count) in by_status {
+            println!("  {tag:<9} {count:>4}");
+        }
+        println!("  (`prova owed` lists each one; `prova attest` gates on the account)");
+    }
+}
+
 pub(crate) fn evidence_subcommand(args: Vec<String>) -> ExitCode {
     let mut force_json = false;
 
@@ -645,66 +711,7 @@ pub(crate) fn evidence_subcommand(args: Vec<String>) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    println!("prova: evidence for {}", home.dir.display());
-    println!();
-    println!("  CLAIMED   {:>4}   anchored claims in the declared docs", account.claimed);
-    println!("  BOUND     {:>4}   covered by at least one proof", account.bound);
-    println!("  PROMISED  {:>4}   proofs authored ahead of implementation", account.promised);
-    match account.attested {
-        Some(n) => println!(
-            "  ATTESTED  {:>4}   covering proof executed and passed in the recorded run",
-            n
-        ),
-        None => println!("  ATTESTED     —   no run recorded — run the suite first (`prova`)"),
-    }
-
-    // The deputed account (docs/design/verifiers.md): verdicts other verifiers produced,
-    // conducted and adopted this run — counts only; `prova attest junit:<suite>#<name>` asks
-    // about one. Absent entirely when nothing was ingested.
-    let deputed = record::load(&home).map(|r| r.deputed).unwrap_or_default();
-    if !deputed.is_empty() {
-        let red = deputed
-            .iter()
-            .filter(|d| d.outcome == "failed" || d.outcome == "error")
-            .count();
-        println!();
-        println!(
-            "  DEPUTED   {:>4}   cases adopted from other verifiers ({} red)",
-            deputed.len(),
-            red
-        );
-    }
-
-    // The attention account rides along (docs/design/reminders.md): all three states, from the
-    // record — `evidence` is a query verb and evaluates nothing. Absent entirely when the package
-    // declares no reminders, so a package that adopted nothing pays no output for it.
-    let reminders = record::load(&home).map(|r| r.reminders).unwrap_or_default();
-    if !reminders.is_empty() {
-        let count = |s: &str| reminders.iter().filter(|e| e.state == s).count();
-        println!();
-        println!("  DUE       {:>4}   reminders owed attention (`prova reminders`)", count("due"));
-        println!("  WATCHING  {:>4}   reminders armed — checked, the world holds still", count("watching"));
-        let unevaluated = count("unevaluated");
-        if unevaluated > 0 {
-            println!("  UNEVAL    {:>4}   reminder conditions that could not run", unevaluated);
-        }
-    }
-
-    let owed = account.owed;
-    if owed.is_empty() {
-        println!("\n  nothing owed");
-    } else {
-        use std::collections::BTreeMap;
-        let mut by_status: BTreeMap<&'static str, usize> = BTreeMap::new();
-        for o in &owed {
-            *by_status.entry(o.status.tag()).or_default() += 1;
-        }
-        println!("\nowed:");
-        for (tag, count) in by_status {
-            println!("  {tag:<9} {count:>4}");
-        }
-        println!("  (`prova owed` lists each one; `prova attest` gates on the account)");
-    }
+    print_evidence_console(&home, account);
     ExitCode::SUCCESS
 }
 

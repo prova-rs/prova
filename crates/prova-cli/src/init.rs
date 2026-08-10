@@ -208,68 +208,46 @@ fn merged_inputs(
     (merged, switches)
 }
 
-pub fn run(args: Vec<String>) -> ExitCode {
-    let cli = match parse_args(args) {
-        Ok(cli) => cli,
-        Err(code) => return code,
-    };
-    let InitCli { luals, list, headless, defaults, offline, key, .. } = &cli;
-    let (luals, list, headless, defaults, offline) = (*luals, *list, *headless, *defaults, *offline);
-    let key = key.clone();
-
-    // Resolve the catalog and target entry before any filesystem work — a bad key or a malformed
-    // config.toml fails before a half-scaffolded package can exist.
-    let sys_layout = match prova_core::XdgSystemLayout::new() {
-        Ok(l) => l,
-        Err(err) => {
-            eprintln!("prova init: cannot locate config directory: {err}");
-            return ExitCode::from(2);
-        }
-    };
-    let catalog = match crate::catalog::Catalog::load(&sys_layout) {
+/// Resolve the render target before any filesystem work — a bad key or a malformed config.toml
+/// fails before a half-scaffolded package can exist. No key means "choose interactively": prova
+/// always presents the catalog (which always contains at least `default`) rather than silently
+/// picking. Registry tolerance messages print rather than sink a render the remaining registries
+/// can serve. `Err(ExitCode::SUCCESS)` is the `--list` early exit.
+fn resolve_entry(
+    cli: &InitCli,
+    sys_layout: &prova_core::XdgSystemLayout,
+) -> Result<(String, crate::catalog::Resolved), ExitCode> {
+    let catalog = match crate::catalog::Catalog::load(sys_layout) {
         Ok(c) => c,
         Err(err) => {
             eprintln!("prova init: {err}");
-            return ExitCode::from(2);
+            return Err(ExitCode::from(2));
         }
     };
-    if list {
+    if cli.list {
         catalog.print_list();
-        return ExitCode::SUCCESS;
+        return Err(ExitCode::SUCCESS);
     }
-
-    // No key means "choose interactively" — prova always presents the catalog (which always contains
-    // at least `default`), rather than silently picking for you. Without a terminal to prompt on,
-    // that's an error, not a hang.
-    let key = match key {
+    let key = match cli.key.clone() {
         Some(k) => k,
-        None => match select_key(&catalog) {
-            Ok(k) => k,
-            Err(code) => return code,
-        },
+        None => select_key(&catalog)?,
     };
-    // Resolve the key to a renderable source: a declared `source`, a registry lookup for a key that
-    // declares none, a built-in, or a bare registry name (see the catalog module's ladder). Registry
-    // tolerance messages are printed rather than fatal — an unreachable registry must not sink a
-    // render the remaining ones can serve.
     let mut warnings = Vec::new();
-    let entry = match crate::catalog::resolve(&catalog, &key, &sys_layout, &mut warnings) {
+    let entry = match crate::catalog::resolve(&catalog, &key, sys_layout, &mut warnings) {
         Ok(e) => e,
         Err(err) => {
             for w in &warnings {
                 eprintln!("prova init: {w}");
             }
             eprintln!("prova init: {err}");
-            return ExitCode::from(2);
+            return Err(ExitCode::from(2));
         }
     };
     for w in &warnings {
         eprintln!("prova init: {w}");
     }
-
     // Refuse to clobber — unless the entry declares it AUGMENTS an initialized package
     // (`in_package = "allow"`), in which case the archetype decides what to write.
-    let root = Path::new(".");
     if entry.in_package == crate::catalog::InPackage::Deny {
         for existing in [
             "prova.toml",
@@ -277,12 +255,35 @@ pub fn run(args: Vec<String>) -> ExitCode {
             "prova/prova.toml",
             ".prova/prova.toml",
         ] {
-            if root.join(existing).is_file() {
+            if Path::new(".").join(existing).is_file() {
                 eprintln!("prova init: already initialized ({existing} exists)");
-                return ExitCode::from(2);
+                return Err(ExitCode::from(2));
             }
         }
     }
+    Ok((key, entry))
+}
+
+pub fn run(args: Vec<String>) -> ExitCode {
+    let cli = match parse_args(args) {
+        Ok(cli) => cli,
+        Err(code) => return code,
+    };
+    let InitCli { luals, headless, defaults, offline, .. } = &cli;
+    let (luals, headless, defaults, offline) = (*luals, *headless, *defaults, *offline);
+
+    let sys_layout = match prova_core::XdgSystemLayout::new() {
+        Ok(l) => l,
+        Err(err) => {
+            eprintln!("prova init: cannot locate config directory: {err}");
+            return ExitCode::from(2);
+        }
+    };
+    let (key, entry) = match resolve_entry(&cli, &sys_layout) {
+        Ok(resolved) => resolved,
+        Err(code) => return code,
+    };
+    let root = Path::new(".");
 
     // Defaults: either the entry opts in or `--defaults` is passed.
     let state = package_state();

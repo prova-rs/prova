@@ -81,6 +81,51 @@ pub(crate) fn package_subcommand(args: Vec<String>) -> ExitCode {
 /// never a gate; the gate is `must_run` at run time. Always-available facts are not checks:
 /// compiled-in batteries appear only when a slim build lacks one, and unprobed assumptions
 /// (network/internet) are not reported at all.
+/// The package context, when a manifest is in reach: profiles' must_run, topology requires, and
+/// the companion's registered capabilities as `(expr, where it is referenced)` rows. Parsed raw —
+/// never resolve_from_manifest, whose must_run gate would FAIL on exactly the unmet guarantee
+/// this report exists to show. Loading the companion replaces `caps` so a registered name probes
+/// with the project's own predicate.
+fn package_capability_refs(caps: &mut prova_core::Capabilities) -> Vec<(String, String)> {
+    let mut package: Vec<(String, String)> = Vec::new();
+    let Some(home) = home::find(std::path::Path::new(".")).ok().flatten() else {
+        return package;
+    };
+    let Ok(text) = std::fs::read_to_string(&home.manifest) else {
+        return package;
+    };
+    let Ok(m) = Manifest::parse(&text) else {
+        return package;
+    };
+    for cap in &m.run.must_run {
+        package.push((cap.clone(), "must_run: [run]".to_string()));
+    }
+    for (name, profile) in &m.profiles {
+        for cap in &profile.must_run {
+            package.push((cap.clone(), format!("must_run: profile `{name}`")));
+        }
+    }
+    for (name, topo) in &m.topologies {
+        for cap in &topo.requires {
+            package.push((cap.clone(), format!("topology `{name}`")));
+        }
+    }
+    let companion_rel = m.run.config.clone().unwrap_or_else(|| "prova.lua".to_string());
+    let companion = home.dir.join(&companion_rel);
+    if companion.is_file() {
+        if let Ok(loaded) = prova_core::load_project_config(
+            &companion,
+            &engine_config(1, &packages::ResolvedPackages::default(), Some(&home), prova_core::progress::null()),
+        ) {
+            for name in loaded.registered_names() {
+                package.push((name.clone(), "registered in the companion".to_string()));
+            }
+            *caps = loaded;
+        }
+    }
+    package
+}
+
 pub(crate) fn capabilities_subcommand(args: Vec<String>) -> ExitCode {
     if args.iter().any(|a| a == "-h" || a == "--help") {
         println!(
@@ -102,45 +147,7 @@ pub(crate) fn capabilities_subcommand(args: Vec<String>) -> ExitCode {
     // batteries only when a slim build actually lacks one.
     let mut caps = prova_core::Capabilities::default();
 
-    // The package context, when a manifest is in reach: profiles' must_run, topology requires,
-    // and the companion's registered capabilities. Parsed raw — never resolve_from_manifest,
-    // whose must_run gate would FAIL on exactly the unmet guarantee this report exists to show.
-    let mut package: Vec<(String, String)> = Vec::new(); // (expr, where it is referenced)
-    let home = home::find(std::path::Path::new(".")).ok().flatten();
-    if let Some(home) = &home {
-        if let Ok(text) = std::fs::read_to_string(&home.manifest) {
-            if let Ok(m) = Manifest::parse(&text) {
-                for cap in &m.run.must_run {
-                    package.push((cap.clone(), "must_run: [run]".to_string()));
-                }
-                for (name, profile) in &m.profiles {
-                    for cap in &profile.must_run {
-                        package.push((cap.clone(), format!("must_run: profile `{name}`")));
-                    }
-                }
-                for (name, topo) in &m.topologies {
-                    for cap in &topo.requires {
-                        package.push((cap.clone(), format!("topology `{name}`")));
-                    }
-                }
-                // The companion's `runtime.capability` registrations, loaded so a registered
-                // name probes with the project's own predicate.
-                let companion_rel = m.run.config.clone().unwrap_or_else(|| "prova.lua".to_string());
-                let companion = home.dir.join(&companion_rel);
-                if companion.is_file() {
-                    if let Ok(loaded) = prova_core::load_project_config(
-                        &companion,
-                        &engine_config(1, &packages::ResolvedPackages::default(), Some(home), prova_core::progress::null()),
-                    ) {
-                        for name in loaded.registered_names() {
-                            package.push((name.clone(), "registered in the companion".to_string()));
-                        }
-                        caps = loaded;
-                    }
-                }
-            }
-        }
-    }
+    let package = package_capability_refs(&mut caps);
 
     // Host probes that genuinely vary by machine or environment. `network`/`internet` are
     // deliberately absent: prova assumes them today (no probe), and an always-MET row is noise.

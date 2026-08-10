@@ -149,6 +149,56 @@ pub(crate) fn newer_than(root: &std::path::Path, stamped: std::time::SystemTime)
     }
 }
 
+/// Run the `[runner]` build when the sources say it is owed. `sources` is the speed opt-in:
+/// when the manifest names the build's input roots and nothing under them (nor the manifest
+/// itself) is newer than the last successful provision, the multi-second no-op build is skipped —
+/// freshness still holds, because any edit under a declared root re-arms the build. Undeclared
+/// sources always build. `Some(code)` is a provisioning failure to exit with.
+fn provision_runner(home: &Home, runner: &crate::manifest::RunnerSection) -> Option<ExitCode> {
+    let build = runner.build.as_deref()?;
+    let stamp = home.dir.join("target").join(".prova-runner-stamp");
+    let fresh = !runner.sources.is_empty()
+        && std::fs::metadata(&stamp)
+            .and_then(|m| m.modified())
+            .map(|stamped| {
+                let mut roots: Vec<std::path::PathBuf> =
+                    runner.sources.iter().map(|s| home.dir.join(s)).collect();
+                roots.push(home.manifest.clone());
+                !roots.iter().any(|r| newer_than(r, stamped))
+            })
+            .unwrap_or(false);
+    if fresh {
+        return None;
+    }
+    let status = if cfg!(windows) {
+        std::process::Command::new("cmd").args(["/C", build]).current_dir(&home.dir).status()
+    } else {
+        std::process::Command::new("sh").args(["-c", build]).current_dir(&home.dir).status()
+    };
+    match status {
+        Ok(s) if s.success() => {
+            if !runner.sources.is_empty() {
+                if let Some(dir) = stamp.parent() {
+                    let _ = std::fs::create_dir_all(dir);
+                }
+                let _ = std::fs::write(&stamp, b"");
+            }
+            None
+        }
+        Ok(s) => {
+            eprintln!(
+                "prova: [runner] build failed ({s}) — the declared runner could not be \
+                 provisioned; fix the build, or invoke a prova without this manifest"
+            );
+            Some(ExitCode::from(2))
+        }
+        Err(e) => {
+            eprintln!("prova: [runner] build could not start: {e}");
+            Some(ExitCode::from(2))
+        }
+    }
+}
+
 pub(crate) fn runner_trampoline() -> Option<ExitCode> {
     let non_empty = |k: &str| std::env::var(k).map(|v| !v.is_empty()).unwrap_or(false);
     if non_empty("PROVA_TRAMPOLINED") || non_empty("PROVA_RUN_DEPTH") {
@@ -192,48 +242,8 @@ pub(crate) fn runner_trampoline() -> Option<ExitCode> {
             return None;
         }
     }
-    if let Some(build) = runner.build.as_deref() {
-        // `sources` is the speed opt-in: when the manifest names the build's input roots and
-        // nothing under them (nor the manifest itself) is newer than the last successful
-        // provision, the multi-second no-op build is skipped — freshness still holds, because any
-        // edit under a declared root re-arms the build. Undeclared sources always build.
-        let stamp = home.dir.join("target").join(".prova-runner-stamp");
-        let fresh = !runner.sources.is_empty()
-            && std::fs::metadata(&stamp)
-                .and_then(|m| m.modified())
-                .map(|stamped| {
-                    let mut roots: Vec<std::path::PathBuf> =
-                        runner.sources.iter().map(|s| home.dir.join(s)).collect();
-                    roots.push(home.manifest.clone());
-                    !roots.iter().any(|r| newer_than(r, stamped))
-                })
-                .unwrap_or(false);
-        if !fresh {
-            let status = if cfg!(windows) {
-                std::process::Command::new("cmd").args(["/C", build]).current_dir(&home.dir).status()
-            } else {
-                std::process::Command::new("sh").args(["-c", build]).current_dir(&home.dir).status()
-            };
-            match status {
-                Ok(s) if s.success() => {
-                    if !runner.sources.is_empty() {
-                        let _ = std::fs::create_dir_all(stamp.parent().expect("stamp has a parent"));
-                        let _ = std::fs::write(&stamp, b"");
-                    }
-                }
-                Ok(s) => {
-                    eprintln!(
-                        "prova: [runner] build failed ({s}) — the declared runner could not be \
-                         provisioned; fix the build, or invoke a prova without this manifest"
-                    );
-                    return Some(ExitCode::from(2));
-                }
-                Err(e) => {
-                    eprintln!("prova: [runner] build could not start: {e}");
-                    return Some(ExitCode::from(2));
-                }
-            }
-        }
+    if let Some(code) = provision_runner(&home, &runner) {
+        return Some(code);
     }
     if !bin.is_file() {
         eprintln!(

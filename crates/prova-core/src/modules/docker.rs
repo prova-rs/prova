@@ -646,13 +646,10 @@ struct Spec {
 }
 
 impl Spec {
-    fn from_table(opts: &Table) -> mlua::Result<Spec> {
-        let image = opts.get::<Option<String>>("image")?.ok_or_else(|| {
-            mlua::Error::RuntimeError("docker.run requires an `image`".into())
-        })?;
-        // `ports` entries are either an integer container port (→ random host port) or a table
-        // `{ container = N, host = M }` (→ fixed host port M, needed by e.g. Kafka's advertised
-        // listener). A bare `{ N, M }` array works too.
+    /// `ports` entries are either an integer container port (→ random host port) or a table
+    /// `{ container = N, host = M }` (→ fixed host port M, needed by e.g. Kafka's advertised
+    /// listener). A bare `{ N, M }` array works too.
+    fn parse_ports(opts: &Table) -> mlua::Result<Vec<(u16, Option<u16>)>> {
         let mut ports: Vec<(u16, Option<u16>)> = Vec::new();
         if let Some(list) = opts.get::<Option<Vec<mlua::Value>>>("ports")? {
             for entry in list {
@@ -678,6 +675,53 @@ impl Spec {
                 }
             }
         }
+        Ok(ports)
+    }
+
+    /// The readiness contract. The three signals are honest about *different* observables (a
+    /// listening port, a log line, a command's verdict), so combining them would be ambiguous
+    /// about what "ready" even means. Exactly one — or none (return-when-started).
+    fn parse_wait(opts: &Table) -> mlua::Result<Option<Wait>> {
+        let Some(w) = opts.get::<Option<Table>>("wait")? else {
+            return Ok(None);
+        };
+        let port = w.get::<Option<u16>>("port")?;
+        let log = w.get::<Option<String>>("log")?;
+        // `cmd` is a command vector (argv), run directly in the container with no shell —
+        // same convention as `container:run`'s table form.
+        let cmd = w.get::<Option<Vec<String>>>("cmd")?;
+        if [port.is_some(), log.is_some(), cmd.is_some()]
+            .iter()
+            .filter(|set| **set)
+            .count()
+            > 1
+        {
+            return Err(mlua::Error::RuntimeError(
+                "docker.run `wait` takes exactly one of `port`, `log`, or `cmd` — they \
+                 are different readiness signals and cannot be combined"
+                    .into(),
+            ));
+        }
+        Ok(Some(Wait {
+            port,
+            log,
+            cmd,
+            timeout: w
+                .get::<Option<String>>("timeout")?
+                .and_then(|s| parse_duration(&s))
+                .unwrap_or(Duration::from_secs(30)),
+            every: w
+                .get::<Option<String>>("every")?
+                .and_then(|s| parse_duration(&s))
+                .unwrap_or(Duration::from_millis(250)),
+        }))
+    }
+
+    fn from_table(opts: &Table) -> mlua::Result<Spec> {
+        let image = opts.get::<Option<String>>("image")?.ok_or_else(|| {
+            mlua::Error::RuntimeError("docker.run requires an `image`".into())
+        })?;
+        let ports = Self::parse_ports(opts)?;
         // `command` overrides the image's default CMD. Accept a string (whitespace-split) or a
         // list of args — e.g. "bin/pulsar standalone" or { "bin/pulsar", "standalone" }.
         let command = match opts.get::<mlua::Value>("command")? {
@@ -698,44 +742,7 @@ impl Spec {
                 env.push((k, v));
             }
         }
-        let wait = match opts.get::<Option<Table>>("wait")? {
-            None => None,
-            Some(w) => {
-                let port = w.get::<Option<u16>>("port")?;
-                let log = w.get::<Option<String>>("log")?;
-                // `cmd` is a command vector (argv), run directly in the container with no shell —
-                // same convention as `container:run`'s table form.
-                let cmd = w.get::<Option<Vec<String>>>("cmd")?;
-                // The three signals are honest about *different* observables (a listening port, a
-                // log line, a command's verdict), so combining them would be ambiguous about what
-                // "ready" even means. Exactly one — or none (return-when-started).
-                if [port.is_some(), log.is_some(), cmd.is_some()]
-                    .iter()
-                    .filter(|set| **set)
-                    .count()
-                    > 1
-                {
-                    return Err(mlua::Error::RuntimeError(
-                        "docker.run `wait` takes exactly one of `port`, `log`, or `cmd` — they \
-                         are different readiness signals and cannot be combined"
-                            .into(),
-                    ));
-                }
-                Some(Wait {
-                    port,
-                    log,
-                    cmd,
-                    timeout: w
-                        .get::<Option<String>>("timeout")?
-                        .and_then(|s| parse_duration(&s))
-                        .unwrap_or(Duration::from_secs(30)),
-                    every: w
-                        .get::<Option<String>>("every")?
-                        .and_then(|s| parse_duration(&s))
-                        .unwrap_or(Duration::from_millis(250)),
-                })
-            }
-        };
+        let wait = Self::parse_wait(opts)?;
         // `network` accepts a `docker.network` handle (read its `.name`) or a raw name string.
         const NETWORK_EXPECT: &str =
             "docker.run `network` must be a docker.network handle or a name string";
