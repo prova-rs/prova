@@ -46,6 +46,11 @@ impl PlanUnit {
     }
 }
 
+// The expect is the design: register_test constructs every Test/Step node WITH a body, so a
+// bodyless one here is a collector bug — and panicking on it beats the alternative, because
+// silently dropping the node would run the suite minus one proof and report green (the vacuous
+// pass this whole system exists to prevent).
+#[allow(clippy::expect_used)]
 pub(super) fn plan_item(node: &Node, ancestors: &[String]) -> PlanItem {
     let mut path = ancestors.to_vec();
     path.push(format!("{}{}", node.name, node.params.suffix()));

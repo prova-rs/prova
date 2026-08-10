@@ -730,10 +730,11 @@ fn warn_deprecated_spellings(text: &str) {
         use std::collections::BTreeSet;
         use std::sync::{Mutex, OnceLock};
         static WARNED: OnceLock<Mutex<BTreeSet<&'static str>>> = OnceLock::new();
+        // Recover a poisoned lock: the set is plain data, and a lost dedup only repeats a warning.
         let mut set = WARNED
             .get_or_init(|| Mutex::new(BTreeSet::new()))
             .lock()
-            .expect("deprecation-warning set");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if set.insert(key) {
             eprintln!("prova: {msg}");
         }
@@ -797,8 +798,11 @@ fn warn_deprecated_spellings(text: &str) {
 
 /// The version this binary reports, for the `[requires] prova` gate.
 fn running_version() -> semver::Version {
+    // The build stamps a valid semver; if that invariant ever breaks, 0.0.0 makes every
+    // `[requires] prova` gate refuse LOUDLY (naming the absurd version) instead of panicking
+    // before the gate can even speak.
     semver::Version::parse(prova_core::VERSION)
-        .expect("PROVA_VERSION is always valid semver")
+        .unwrap_or_else(|_| semver::Version::new(0, 0, 0))
 }
 
 /// Does the running prova satisfy a `requires.prova` range?

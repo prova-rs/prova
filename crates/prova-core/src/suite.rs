@@ -320,7 +320,12 @@ fn run_pooled(suites: &[Suite], reporter: &mut dyn Reporter, config: &RunConfig)
         handles.push(std::thread::spawn(move || {
             let mut sink = ChannelReporter { tx };
             loop {
-                let next = queue.lock().expect("queue mutex").pop_front();
+                // Recover a poisoned lock: the queue is a plain VecDeque, and a panicked worker
+                // already failed its own suite — the others should still drain the queue.
+                let next = queue
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .pop_front();
                 let Some(suite) = next else { break };
                 match suite.run(&mut sink, &config) {
                     Ok(s) => {

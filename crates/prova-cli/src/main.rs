@@ -344,10 +344,10 @@ fn main() -> ExitCode {
         }
         if let Some((old, new)) = DEPRECATED_VERBS.iter().find(|(old, _)| old == first) {
             eprintln!("prova: `prova {old}` is deprecated — use `prova {new}` (retires at 1.0)");
-            let verb = VERBS
-                .iter()
-                .find(|v| v.name == *new)
-                .expect("every deprecated verb maps to a live one");
+            let Some(verb) = VERBS.iter().find(|v| v.name == *new) else {
+                eprintln!("prova: internal: deprecated verb `{old}` maps to unknown `{new}`");
+                return ExitCode::from(2);
+            };
             raw.next();
             return (verb.run)(raw.collect());
         }

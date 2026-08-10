@@ -737,10 +737,11 @@ fn respond(
     builder
         .body(Full::new(Bytes::from(spec.body)))
         .unwrap_or_else(|e| {
-            Response::builder()
-                .status(500)
-                .body(Full::new(Bytes::from(format!("mock: bad response: {e}"))))
-                .expect("500 with a plain body is always constructible")
+            // Response::new is infallible by construction — no builder, no second error path.
+            let mut resp =
+                Response::new(Full::new(Bytes::from(format!("mock: bad response: {e}"))));
+            *resp.status_mut() = hyper::StatusCode::INTERNAL_SERVER_ERROR;
+            resp
         })
 }
 

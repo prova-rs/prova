@@ -224,8 +224,13 @@ pub fn run(args: Vec<String>) -> ExitCode {
 
     // Clean shutdown = clean teardown: hang up each remaining holder's command channel (its loop
     // exits and runs the held scope's teardowns on its own thread) and wait for it to finish.
-    let leftovers: Vec<(String, WarmHandle)> =
-        warm.lock().expect("warm registry").drain().collect();
+    // Recover a poisoned registry: teardown must still run — a holder that panicked is exactly
+    // when its held topology most needs reaping.
+    let leftovers: Vec<(String, WarmHandle)> = warm
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .drain()
+        .collect();
     for (name, handle) in leftovers {
         eprintln!("prova mcp: tearing down held topology {name:?} on shutdown");
         drop(handle.tx);
@@ -1025,7 +1030,11 @@ impl ProvaMcpServer {
     async fn status(&self) -> CallToolResult {
         let _serialized = self.run_lock.lock().await;
         let held: Vec<serde_json::Value> = {
-            let registry = self.warm.lock().expect("warm registry");
+            // Recover a poisoned registry: status is a read, and the names are plain data.
+            let registry = self
+                .warm
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let mut names: Vec<&String> = registry.keys().collect();
             names.sort();
             names

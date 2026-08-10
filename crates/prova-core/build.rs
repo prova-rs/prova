@@ -16,6 +16,9 @@
 
 use std::process::Command;
 
+// A build-script panic IS a build failure — exactly the right outcome for a missing
+// cargo-provided variable, so the expect below is the design rather than a latent runtime panic.
+#[allow(clippy::expect_used)]
 fn main() {
     // HEAD moves on checkout/commit; re-stamp when it does.
     println!("cargo:rerun-if-changed=../../.git/HEAD");

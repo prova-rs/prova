@@ -43,7 +43,8 @@ pub(crate) fn run_subcommand(args: Vec<String>) -> ExitCode {
         // A leading non-flag argument is the lane. A path here is a common slip with a specific
         // fix, so it gets its own message instead of "no such profile".
         Some(first) if !first.starts_with('-') => {
-            let lane = args.next().expect("peeked");
+            let lane = first.to_string();
+            args.next();
             if lane.contains('/') || Path::new(&lane).exists() {
                 eprintln!(
                     "prova: `run` takes a lane (a [profiles.<name>] from prova.toml), not a \

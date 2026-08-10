@@ -181,7 +181,7 @@ impl Broker {
     fn reap(&self) {
         let now = now_ms();
         let dead: Vec<String> = {
-            let leases = self.leases.lock().expect("leases lock");
+            let leases = lock(&self.leases);
             leases
                 .iter()
                 .filter(|(_, l)| l.expires_at_ms <= now)
@@ -195,9 +195,9 @@ impl Broker {
 
     /// Remove one lease and clean up everything whose lifetime it bounded.
     fn drop_lease(&self, id: &str) {
-        self.leases.lock().expect("leases lock").remove(id);
+        lock(&self.leases).remove(id);
         let orphaned: Vec<(String, Workspace)> = {
-            let mut ws = self.workspaces.lock().expect("workspaces lock");
+            let mut ws = lock(&self.workspaces);
             let keys: Vec<String> = ws
                 .iter()
                 .filter(|(_, w)| w.creator_lease == id)
@@ -217,6 +217,13 @@ impl Broker {
             let _ = std::fs::remove_dir_all(&w.path);
         }
     }
+}
+
+/// Take a broker lock, recovering from poisoning: every guarded value is a plain map (leases,
+/// workspaces, probed versions), valid at every step — a panicked handler already reported its
+/// own failure, and the broker must keep serving the pool.
+fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn now_ms() -> u64 {
@@ -414,7 +421,7 @@ fn which(name: &str) -> Option<PathBuf> {
 /// "Cannot confirm" refusing everything would make every constrained capability unsatisfiable on
 /// nodes whose `sh` is dash, which the conformance suite correctly refuses to credit.
 fn probed_version(broker: &Broker, name: &str) -> semver::Version {
-    if let Some(v) = broker.versions.lock().expect("versions lock").get(name) {
+    if let Some(v) = lock(&broker.versions).get(name) {
         return v.clone();
     }
     let output = std::process::Command::new(name)
@@ -429,10 +436,7 @@ fn probed_version(broker: &Broker, name: &str) -> semver::Version {
         })
         .unwrap_or_default();
     let version = first_version_token(&text).unwrap_or_else(|| semver::Version::new(0, 0, 0));
-    broker
-        .versions
-        .lock()
-        .expect("versions lock")
+    lock(&broker.versions)
         .insert(name.to_string(), version.clone());
     version
 }
@@ -492,7 +496,7 @@ fn claim(broker: &Broker, id: &Value, frame: &Value) -> Value {
                        "reason": format!("no node offers slot kind {kind:?}") });
     }
 
-    let mut leases = broker.leases.lock().expect("leases lock");
+    let mut leases = lock(&broker.leases);
     let contended = leases.values().any(|l| {
         l.kind == kind && (l.exclusive || exclusive) // writer blocks all; anyone blocks a writer
     });
@@ -517,7 +521,7 @@ fn renew(broker: &Broker, id: &Value, frame: &Value) -> Value {
     let Some(lease_id) = frame.get("lease").and_then(Value::as_str) else {
         return error(id, "renew needs a lease".into());
     };
-    let mut leases = broker.leases.lock().expect("leases lock");
+    let mut leases = lock(&broker.leases);
     match leases.get_mut(lease_id) {
         Some(lease) => {
             // Extend by the lease's own TTL: the holder asked for this cadence at claim time.
@@ -548,7 +552,7 @@ fn live_lease(broker: &Broker, frame: &Value) -> Result<String, String> {
         .get("lease")
         .and_then(Value::as_str)
         .ok_or_else(|| "this op needs a lease".to_string())?;
-    let leases = broker.leases.lock().expect("leases lock");
+    let leases = lock(&broker.leases);
     if leases.contains_key(lease_id) {
         Ok(lease_id.to_string())
     } else {
@@ -666,7 +670,7 @@ fn materialize(broker: &Broker, id: &Value, frame: &Value) -> Value {
 
     // Idempotent per change: asking twice must not rebuild the world — that is what makes a retry
     // cheap, and what the warmth report is built on.
-    if let Some(ws) = broker.workspaces.lock().expect("workspaces lock").get(change) {
+    if let Some(ws) = lock(&broker.workspaces).get(change) {
         return json!({ "id": id, "ok": true, "path": ws.path,
                        "warmth": { "shared_ancestor": change } });
     }
@@ -707,7 +711,7 @@ fn materialize(broker: &Broker, id: &Value, frame: &Value) -> Value {
         Err(e) => return error(id, format!("cannot run jj: {e}")),
     }
 
-    broker.workspaces.lock().expect("workspaces lock").insert(
+    lock(&broker.workspaces).insert(
         change.to_string(),
         Workspace {
             path: path.clone(),

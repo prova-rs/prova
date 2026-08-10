@@ -223,7 +223,11 @@ pub(crate) fn make(lua: &Lua, deputed: Option<DeputedRegistry>) -> mlua::Result<
                 });
             }
             let n = rows.len();
-            registry.lock().expect("deputed registry").extend(rows);
+            // Recover a poisoned lock: the account is a plain Vec, valid at every step.
+            registry
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend(rows);
             Ok(n)
         })?,
     )?;

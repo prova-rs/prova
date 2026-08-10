@@ -116,9 +116,10 @@ pub(crate) fn make(lua: &Lua, measurements: Option<MeasurementRegistry>) -> mlua
                     None => (Direction::LowerIsBetter, "default".to_string()),
                 };
                 if let Some(registry) = measurements.as_ref() {
+                    // Recover a poisoned lock: the account is a plain Vec, valid at every step.
                     registry
                         .lock()
-                        .expect("measurement registry")
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .push(Measurement {
                             name,
                             value,
