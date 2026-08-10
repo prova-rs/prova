@@ -122,7 +122,18 @@ small for a profile, and ad-hoc iteration on one heavy test; if those never mate
 dishonesty the reminders lane just killed); fuzzy `-k`/`--tags` must not (a grazing keyword must
 never conduct a workspace compile by accident). Recorded 2026-08-09.
 
-<!-- backlog: spec-sources-are-queryable -->
+<!-- claim: switches-are-discoverable -->
+**A switched class can never become a hidden test population.** Three sightlines, one per way of
+looking: every bare run's tally carries the switched-off line (the classes are SEEN on the
+default CI leg, every time); the tests lane lists switched tests as declared members (a run holds
+them back, the medium still owns them); and `prova switches` answers the ledger question the
+other two cannot — every declared class, how many leaves it gates, and **who throws it** —
+`[run]`, the profiles that list it, or nobody, in which case the row says ad-hoc only (`-s`).
+Orphanhood is surfaced, never forbidden: an ad-hoc-only class is a legitimate posture (`soak`),
+but it must be a visible fact an agent and a reviewer can read, not an accident discovered when
+someone finally asks why a gate never ran.
+
+<!-- claim: spec-sources-are-queryable -->
 **A package's spec sources must be answerable to whoever has to write one, and say which are
 writable.** `[[specs.source]]` decides where prose obligations live, and `scan_roots()` is read all
 over the CLI and MCP — but nothing *reports* it: `prova learn project` tells an agent where a new

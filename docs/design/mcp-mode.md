@@ -124,6 +124,19 @@ Structure (universal-first, transport notes last — avoiding duplicated skills)
   `--last-failed` until green; hold a topology when iterating against live infra.
 - **Driving Prova (the only transport-specific section):** the parity table above, ~15 lines.
 
+<!-- claim: project-card-self-teaching -->
+**`prova learn project` is the project card: an agent must be able to "just know" how THIS
+package runs, with no CLAUDE.md prose to maintain.** The card names, computed at call time: where
+prova's own artifacts live (the manifest variant, the `config` companion, the `.prova/var/` state
+dir); where specs are stored and where a new one should be written (the `[[specs.source]]` roots,
+each marked writable); where proofs go (the `[run] proofs` patterns); the declared capability
+surface and how to check the host (`prova capabilities`); every profile with its description,
+selection, thrown switches, and guarantees — so "which profile, when?" is answered by the tool;
+and the declared switches with who throws them (`prova switches` for the live inventory). This is
+the adoption thesis: a novice with an agent loads prova and gets spec-driven engineering as a
+matter of course, because the binary teaches its own practice — prose files drift, computed cards
+cannot.
+
 <!-- backlog: backlog-capture-is-a-taught-procedure -->
 **"Add a backlog item" must be a taught procedure, not a syntax an agent reassembles.** The skill
 and `prova learn backlog` teach the anchor's *shape* — the keyword, promotion, the draw-down date —
