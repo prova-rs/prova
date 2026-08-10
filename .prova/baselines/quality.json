@@ -11,15 +11,18 @@
     },
     "rust.coverage.unit": {
       "value": 60.21798365122616,
-      "direction": "higher_is_better"
+      "direction": "higher_is_better",
+      "goal": 70.0
     },
     "rust.duplication.clones": {
       "value": 19.0,
-      "direction": "lower_is_better"
+      "direction": "lower_is_better",
+      "goal": 8.0
     },
     "rust.expect.production": {
       "value": 25.0,
-      "direction": "lower_is_better"
+      "direction": "lower_is_better",
+      "goal": 0.0
     },
     "rust.files.oversized": {
       "value": 0.0,
@@ -27,7 +30,8 @@
     },
     "rust.functions.too_long": {
       "value": 16.0,
-      "direction": "lower_is_better"
+      "direction": "lower_is_better",
+      "goal": 0.0
     },
     "rust.unwrap.production": {
       "value": 0.0,
