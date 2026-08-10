@@ -1,4 +1,14 @@
 # prova's own test suite (proof-driven development of prova, by prova).
+
+# The self-hosting trampoline (docs/design/manifest.md#manifest-declared-runner): ANY prova
+# invoked in this repo — installed, stale, someone else's build — provisions this tree's binary
+# and re-execs through it. Freshness and identity are mechanism now; the old "never prove through
+# an installed prova" prose is retired. Invoking target/debug/prova directly skips the hop (you
+# named the artifact; you meant it).
+[runner]
+build = "cargo build -q -p prova-cli"
+bin   = "target/debug/prova"
+
 [run]
 proofs       = ["proofs"]            # dir-name pattern: every `proofs/` below the root (the default)
 config       = ".prova/config.lua"    # the runtime companion, tucked into the .prova/ nook
@@ -35,6 +45,17 @@ description = "the workspace's unit tests, conducted once via cargo nextest and 
 proofs      = ["ut"]
 switches    = ["ut"]
 must_run    = ["cargo-nextest"]
+
+# Code coverage, ratcheted: conducts `cargo llvm-cov nextest` (an instrumented rebuild + run of
+# the workspace's unit tests) and holds the line-coverage total to the committed baseline in
+# .prova/baselines/quality.json — regressions are red, and a new floor is raised deliberately via
+# `prova run coverage --update-baseline`. Not part of `all`: the instrumented rebuild roughly
+# doubles the sweep; CI gives coverage its own leg.
+[profiles.coverage]
+description = "workspace line coverage via cargo llvm-cov, ratcheted against the committed baseline"
+proofs      = ["coverage"]
+switches    = ["coverage"]
+must_run    = ["cargo-llvm-cov", "cargo-nextest"]
 
 # Everything short of the soaks, one command: the whole black-box suite PLUS the switched heavy
 # legs — unit tests deputed via nextest, the cargo quality gates. The pre-push answer to "did I

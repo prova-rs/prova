@@ -1,6 +1,6 @@
 -- Quality gate: clippy is clean at -D warnings across the whole workspace. This is prova holding
 -- its own Rust to the same bar it will hold others' code to — findings as a red condition, one
--- runner, one wall. It shells the exact flags `cargo xtask clippy` uses (minus the artifact sweep),
+-- runner, one wall. It shells the canonical clippy flags (-D warnings, all targets/features),
 -- so the proof and the xtask stay in lockstep.
 --
 -- HEAVY: clippy recompiles the workspace (~20s), so this must never fire because a person typed

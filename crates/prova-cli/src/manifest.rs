@@ -106,12 +106,32 @@ pub struct Manifest {
     /// prose that holds claims AND backlog items, so it was under-named.)
     #[serde(default)]
     pub specs: Option<SpecsSection>,
+    /// `[runner]` — the self-hosting trampoline: which prova runs this package
+    /// (docs/design/manifest.md#manifest-declared-runner). A property of the package.
+    #[serde(default)]
+    pub runner: Option<RunnerSection>,
     /// `[placement]` — the broker prova dials at run start (docs/design/placement.md §Transport).
     /// A property of the package, not a profile: where capability and contention questions are
     /// answered does not vary by run profile. `PROVA_PLACEMENT_BROKER` overrides it per
     /// invocation, and configured-but-unreachable is a loud error, never a silent local fallback.
     #[serde(default)]
     pub placement: Option<PlacementSection>,
+}
+
+/// `[runner]` — which prova runs this package (docs/design/manifest.md#manifest-declared-runner).
+/// The self-hosting trampoline: any prova invoked at this home provisions the declared runner and
+/// re-execs through it, so freshness and identity are mechanism, not prose. A property of the
+/// package, never a profile — which binary judges the suite cannot vary by lane.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct RunnerSection {
+    /// Provision the runner before re-exec (e.g. `"cargo build -p prova-cli"`). Runs at the home,
+    /// stdio inherited — a failed build is a loud failed provision (exit 2), never a verdict.
+    /// Optional: omit when `bin` is prebuilt by something else.
+    pub build: Option<String>,
+    /// The runner binary, home-relative. The trampoline execs it with the original argv;
+    /// `PROVA_TRAMPOLINED` marks the hop so the child proceeds normally.
+    pub bin: String,
 }
 
 /// `[placement]` — where capability and contention questions are answered (docs/design/placement.md).

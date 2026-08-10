@@ -315,6 +315,13 @@ fn main() -> ExitCode {
     }
     var::announce();
 
+    // The self-hosting trampoline (docs/design/manifest.md#manifest-declared-runner): when the
+    // package declares `[runner]`, provision it and re-exec through it BEFORE any dispatch, so
+    // whichever prova was invoked, the one that judges is the one the manifest names.
+    if let Some(code) = runner_trampoline() {
+        return code;
+    }
+
     // Subcommands dispatch through the verb table; everything else is the run path.
     let mut raw = std::env::args().skip(1).peekable();
     if let Some(first) = raw.peek() {
@@ -991,6 +998,100 @@ fn lane_line(p: &crate::manifest::Profile) -> String {
 /// docs/design/reminders.md). Reports every reminder with its recorded state, DUE first, and exits
 /// non-zero when any is due — the `attest` pattern, so "is anything owed attention?" is one exit
 /// code for a pipeline.
+/// The self-hosting trampoline (docs/design/manifest.md#manifest-declared-runner). When the
+/// nearest manifest declares `[runner]`, provision it (`build`, loud on failure) and re-exec the
+/// declared `bin` with the original argv — so any prova invoked at this home judges through the
+/// binary the manifest names, and freshness/identity are mechanism rather than prose.
+///
+/// `Some(code)` means the invocation was handled here (a completed re-exec on Windows, or a
+/// failed provision); `None` means proceed as the runner. Guards, in order:
+///   - `PROVA_TRAMPOLINED` non-empty: we ARE the hop's child (the flag rides the exec env and
+///     inherits to every descendant, so nested work never re-provisions).
+///   - `PROVA_RUN_DEPTH` non-empty: a `prova.bin` sub-run inside a proof — already the right
+///     binary by injection; rebuilding underneath a live suite would thrash it.
+///   - current exe IS the declared bin: invoking the artifact directly means that artifact;
+///     re-execing it into itself buys nothing (and on Windows the build could not replace a
+///     running exe anyway).
+///
+/// Empty-string guards count as unset, so a proof can re-arm the trampoline in a sandbox.
+fn runner_trampoline() -> Option<ExitCode> {
+    let non_empty = |k: &str| std::env::var(k).map(|v| !v.is_empty()).unwrap_or(false);
+    if non_empty("PROVA_TRAMPOLINED") || non_empty("PROVA_RUN_DEPTH") {
+        return None;
+    }
+    let home = home::find(std::path::Path::new(".")).ok()??;
+    // A manifest this build cannot parse is not the trampoline's problem — the normal path owns
+    // that diagnostic (and a NEWER manifest field is exactly why the hop might be needed; parse
+    // leniently enough to read `[runner]` alone would be ideal, but serde's deny_unknown_fields
+    // lives on inner tables, so the top-level parse tolerates unknown keys already).
+    let text = std::fs::read_to_string(&home.manifest).ok()?;
+    let runner = Manifest::parse(&text).ok()?.runner?;
+    let bin = home.dir.join(&runner.bin);
+    if let Ok(me) = std::env::current_exe() {
+        let same = match (me.canonicalize(), bin.canonicalize()) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        };
+        if same {
+            return None;
+        }
+    }
+    if let Some(build) = runner.build.as_deref() {
+        let status = if cfg!(windows) {
+            std::process::Command::new("cmd").args(["/C", build]).current_dir(&home.dir).status()
+        } else {
+            std::process::Command::new("sh").args(["-c", build]).current_dir(&home.dir).status()
+        };
+        match status {
+            Ok(s) if s.success() => {}
+            Ok(s) => {
+                eprintln!(
+                    "prova: [runner] build failed ({s}) — the declared runner could not be \
+                     provisioned; fix the build, or invoke a prova without this manifest"
+                );
+                return Some(ExitCode::from(2));
+            }
+            Err(e) => {
+                eprintln!("prova: [runner] build could not start: {e}");
+                return Some(ExitCode::from(2));
+            }
+        }
+    }
+    if !bin.is_file() {
+        eprintln!(
+            "prova: [runner] bin {} does not exist after the build — the manifest names a \
+             runner the provision step never produced",
+            bin.display()
+        );
+        return Some(ExitCode::from(2));
+    }
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let err = std::process::Command::new(&bin)
+            .args(&args)
+            .env("PROVA_TRAMPOLINED", "1")
+            .exec();
+        eprintln!("prova: [runner] exec {} failed: {err}", bin.display());
+        Some(ExitCode::from(2))
+    }
+    #[cfg(not(unix))]
+    {
+        match std::process::Command::new(&bin)
+            .args(&args)
+            .env("PROVA_TRAMPOLINED", "1")
+            .status()
+        {
+            Ok(s) => Some(ExitCode::from(s.code().unwrap_or(1) as u8)),
+            Err(e) => {
+                eprintln!("prova: [runner] exec {} failed: {e}", bin.display());
+                Some(ExitCode::from(2))
+            }
+        }
+    }
+}
+
 /// `prova switches` — the opt-in classes, listed: every declared `switch = "<class>"` with how
 /// many leaves it gates and WHO throws it ([run], the profiles that list it, or nobody — ad-hoc
 /// only). The ledger view that keeps a switched class from becoming a hidden test population

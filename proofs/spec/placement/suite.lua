@@ -9,5 +9,5 @@
 --
 -- Hermetic by default: with no address named, each test spawns the reference broker through
 -- prova.bin. Point the SAME suite at any other implementation to conformance-test it:
---   PROVA_PLACEMENT_BROKER=unix:///tmp/broker.sock cargo xtask proofs -- -k placement
+--   PROVA_PLACEMENT_BROKER=unix:///tmp/broker.sock prova -k placement
 suite.config{ name = "spec-placement" }

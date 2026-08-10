@@ -16,7 +16,7 @@ fn mock_network_vantage_wiring() {
     // vantage), which fires the macOS Application Firewall's "accept incoming connections?" prompt
     // on every rebuild, since each build re-hashes the test binary's path. CI sets
     // PROVA_TEST_NETWORK_VANTAGE on every leg (.github/workflows/build.yml), so coverage is
-    // unchanged there; a local `cargo test` / `cargo xtask test` skips and stays quiet. This gates
+    // unchanged there; a local `cargo test` / `prova run ut` skips and stays quiet. This gates
     // only the test harness — a prova *user* meets this prompt solely when a proof explicitly asks
     // for an off-box `network` mock, which is exactly when being network-reachable is intended.
     if std::env::var_os("PROVA_TEST_NETWORK_VANTAGE").is_none() {

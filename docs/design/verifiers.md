@@ -113,16 +113,19 @@ Cheap deputies do not need the split — pytest with `--junitxml` conducts fine 
 fixture; Python and .NET conduct directly. Choosing the shape is part of instrumenting a project,
 and the manifest profile that runs the gate names the choice.
 
-<!-- backlog: exclusive-quality-interface -->
-**Prova should be this repo's exclusive quality interface; build tooling keeps only artifacts.**
-Today the quality surface is split: `cargo xtask test`/`test-crate` wrap cargo directly, CI runs
-separate legs, and only the lint gates flow through `prova run quality`. Converge: `prova run ut`
-(nextest deputed via the conduct-once pattern), `prova run quality`, `prova run smoke` — every
-verdict-producing invocation a profile, every verdict in the account, so burndown/backfill/owed
-see the whole bar. xtask keeps `build`/`install`/`sweep` (artifacts, per the two-provenances
-boundary: "if it doesn't produce a verdict, it isn't prova's job" — and the converse). The `ut`
-profile is the first leg (landing with this claim); `it`, CI-leg consolidation, and retiring the
-xtask test wrappers follow. Recorded 2026-08-09.
+<!-- claim: exclusive-quality-interface -->
+**Prova is this repo's exclusive quality interface; build tooling keeps only artifacts.** Every
+verdict-producing invocation is a profile — `prova run ut` (nextest deputed via the conduct-once
+pattern), `prova run quality` (clippy, the unwrap/expect ratchet, file sizes), `prova run
+coverage` (line coverage ratcheted against the committed baseline), `prova run all` (the pre-push
+sweep: black-box plus the switched heavy legs) — each carrying a description, so `prova run
+--list` and the project card answer "which leg, when". Every verdict lands in the account, so
+burndown/backfill/owed see the whole bar. CI's legs are these same profiles, and xtask keeps only
+`install`/`build`/`check`/`sweep` plus the `proofs` bootstrap (artifacts, per the two-provenances
+boundary: "if it doesn't produce a verdict, it isn't prova's job" — and the converse; the
+bootstrap itself retires when #manifest-declared-runner lands). No `it` profile here and rightly
+so: cargo's integration-test targets ride the ut conduct, and the black-box suite IS the
+system-level integration bar — the split is per-project vocabulary, not doctrine.
 
 ## The facet convention (for the verifiers that follow)
 

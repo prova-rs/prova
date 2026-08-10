@@ -39,24 +39,33 @@ jobs:
       - name: Build
         run: cargo build
 
-      - name: Test
-        # --no-fail-fast: one run reports EVERY failing binary. Windows suites were being
-        # discovered one 9-minute cycle at a time as each fail-fast stop unmasked the next.
-        run: cargo test --no-fail-fast
+      # The ut leg's deputy. `prova run ut` conducts `cargo nextest` once and adopts every case
+      # into the account — the profile must_run's this tool, so a runner without it FAILS loudly
+      # rather than skipping the leg (docs/design/manifest.md#switches-not-env-capabilities).
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      # The unit-test leg, through prova: `prova run ut` conducts nextest once (fail-fast off in
+      # .config/nextest.toml, so one conduct reports EVERY failing binary — the same property the
+      # old `--no-fail-fast` bought), adopts all cases into the account as deputed rows, and the
+      # claim-bound readers hold the alignment invariants. The Build step produced the binary;
+      # the manifest's [runner] guarantees identity either way.
+      #
+      # The old PROVA_GHA=off workaround is gone by construction: the outer process IS prova (one
+      # top-level run, one job-summary table), and PROVA_RUN_DEPTH propagates through the deputy's
+      # environment to the prova binaries the unit tests spawn, so the ~24 fixture children no
+      # longer masquerade as top-level runs.
+      - name: Unit tests (prova run ut)
+        shell: bash
+        run: ./target/debug/prova run ut
         env:
           # Opt-in for the suites that bind 0.0.0.0 to prove the cross-substrate mock vantage
-          # (mock_network_vantage, c2_e2e). Off by default so a local `cargo test` never trips the
+          # (mock_network_vantage, c2_e2e). Off by default so a local run never trips the
           # macOS Application Firewall's "accept incoming connections?" prompt; CI runs them on
           # every leg. GitHub runners have the firewall disabled, so no prompt blocks the run.
           PROVA_TEST_NETWORK_VANTAGE: "1"
-          # The prova runs under `cargo test` are FIXTURES, not this job's report. ~24 integration
-          # tests spawn the binary through std::process::Command against a throwaway home, dozens of
-          # times, and several are red on purpose. Each such child is a top-level prova as far as it
-          # can tell — the Rust harness is not prova, so nothing marks it as nested the way
-          # PROVA_RUN_DEPTH marks a prova spawned by prova — so under Actions every one of them
-          # appended its own table to the job summary. This step reports through cargo's output;
-          # the job summary belongs to the Proofs step below, which is a single top-level run.
-          PROVA_GHA: "off"
 
       # Prova, proven by prova. This is a BLACK-BOX pass over the binary just built, so it covers
       # ground `cargo test` structurally cannot: manifest parsing, discovery, capability gating,
@@ -73,18 +82,14 @@ jobs:
       # Open specs report as the `spec` outcome and keep this green by design — that is the point
       # of the flag. A spec whose body starts passing fails here, demanding graduation.
       #
-      # `cargo xtask proofs` builds prova-cli and runs the suite through `target/debug/prova`, so the
-      # binary under proof is the one this commit produces — no install, and no dependence on the
-      # Test step above having happened to leave a binary behind. It is the same command developers
-      # run, so this gate cannot drift from the local loop.
-      #
-      # It replaced an `export PATH="$PWD/target/debug"` prelude. Nested runs now resolve through
-      # `prova.bin` — the runtime hands each run its own executable — so the inner prova is the outer
-      # one by construction rather than by arranging the environment correctly.
+      # The Build step produced target/debug/prova; invoking it directly is the manifest's own
+      # `[runner]` bin, so the trampoline's equality guard passes straight through — the binary
+      # under proof is the one this commit built, by mechanism. Nested runs resolve through
+      # `prova.bin`, so the inner prova is the outer one by construction.
       - name: Proofs (prova, proven by prova)
         if: runner.os == 'Linux' || runner.os == 'macOS' || runner.os == 'Windows'
         shell: bash
-        run: cargo xtask proofs
+        run: ./target/debug/prova
 
       # Code-quality gates: clippy (-D warnings), file-size, and the production unwrap/expect census
       # under proofs/quality/, run through the `quality` profile that enables the heavy cargo-based
@@ -95,4 +100,18 @@ jobs:
       - name: Quality gates
         if: runner.os == 'Linux'
         shell: bash
-        run: cargo xtask proofs -- --profile quality
+        run: ./target/debug/prova run quality
+
+      # Coverage, ratcheted: `prova run coverage` conducts cargo llvm-cov nextest (an instrumented
+      # rebuild + run) and holds the workspace line-coverage total to the committed baseline in
+      # .prova/baselines/quality.json. Linux only, like the other source-based metrics — one leg
+      # is enough, and the instrumented rebuild is the most expensive conduct in the suite.
+      - name: Install cargo-llvm-cov
+        if: runner.os == 'Linux'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - name: Coverage (ratcheted)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: ./target/debug/prova run coverage

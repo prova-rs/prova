@@ -301,7 +301,7 @@ exactly the "batteries-included, no capability ceilings" pitch. Implemented in `
 ## Resume checklist
 
 1. Read auto-memory `prova-test-framework`; skim this file + `architecture.md` "Current status".
-2. `cd /Users/jimmie/personal/prova-rs/prova-agents && cargo xtask test && cargo xtask clippy` — green baseline.
+2. `cd /Users/jimmie/personal/prova-rs/prova-agents && prova run ut && prova run quality` — green baseline.
 3. Confirm Docker: `docker info`. If up, the `docker`/postgres-package tests run for real.
 4. Pick the next increment (Phase 1 → `grpc`). Make the invocation-strategy decision, build, verify,
    commit with the established message style, update memory + `architecture.md`.

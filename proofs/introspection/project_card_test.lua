@@ -61,3 +61,20 @@ prova.test("the card names the spec sources, and says they are writable", {
   local none = shell.run(prova.bin .. " learn project", { cwd = plain, merge_stderr = true })
   t:expect(none.stdout):contains("[[specs.source]]")
 end)
+
+prova.test("the quality interface is profiles, each named and described — the exemplar's own bar", {
+  covers = "docs/design/verifiers.md#exclusive-quality-interface",
+  proves = "the CLAUDE.md prose this replaced could drift from what CI runs; `prova run --list` is computed from the same manifest CI's legs select, so it cannot",
+}, function(t)
+  -- Self-referential on purpose: the claim is about THIS repo. prova.root is the repo root, and
+  -- the manifest under test is the one CI's legs run through.
+  local r = shell.run(prova.bin .. " run --list", { cwd = prova.root, merge_stderr = true })
+  t:expect(r.code, r.stdout):equals(0)
+  for _, leg in ipairs({ "ut", "quality", "coverage", "all" }) do
+    t:expect(r.stdout, "the `" .. leg .. "` leg exists"):contains(leg)
+  end
+  -- Descriptions ride the listing — "ut" alone does not convey "these are the unit tests".
+  t:expect(r.stdout):contains("unit tests")
+  t:expect(r.stdout):contains("ratcheted against the committed baseline")
+  t:expect(r.stdout):contains("pre-push sweep")
+end)

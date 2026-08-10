@@ -316,7 +316,7 @@ stays attested on any unix machine with no setup. Point the same suite at any ot
 implementation to conformance-test it:
 
 ```bash
-PROVA_PLACEMENT_BROKER=unix:///tmp/broker.sock cargo xtask proofs -- -k placement
+PROVA_PLACEMENT_BROKER=unix:///tmp/broker.sock prova -k placement
 ```
 
 The suite began as open promises and graduated with the reference broker in one proof-carrying

@@ -26,40 +26,30 @@ proofs/                 # prova's own black-box proofs — prova, proven by prov
 docs/design/            # durable design docs        docs/plans/  # in-flight plans
 ```
 
-## Build & Development Commands
+## Build & Quality
 
-Prova uses the same `cargo xtask` automation as archetect. Prefer it over raw cargo.
+**Prova is this repo's quality interface, and any `prova` is the right one to type.** The
+manifest's `[runner]` trampolines every invocation through this tree's freshly-built binary
+(docs/design/manifest.md#manifest-declared-runner), so freshness and identity are mechanism —
+the old "never prove through an installed prova" rule is retired. Ask the tool, not this file:
+`prova learn project` (the card), `prova run --list` (the profiles), `prova switches` (the
+opt-in classes).
 
 ```bash
-# Install the `prova` binary to ~/.cargo/bin (this is the canonical install path).
-# Also how you refresh the user-scoped prova MCP build — restart Claude Code afterward to load it.
-cargo xtask install                 # add --static-openssl=false to skip static OpenSSL
+prova                    # the black-box suite        prova --last-failed   # the inner loop
+prova run ut             # unit tests, deputed via nextest into the account
+prova run quality        # clippy -D warnings, unwrap/expect ratchet, file sizes
+prova run coverage       # line coverage, ratcheted against the committed baseline
+prova run all            # the pre-push sweep: proofs + ut + quality
 
-# Run prova without installing
-cargo xtask run -- init --list      # == cargo run -p prova-cli -- init --list
+# Cold start (no prova installed yet) — cargo is the artifact tool, once:
+cargo run -p prova-cli --           # then `cargo xtask install` puts prova on PATH
 
-# Tests
-cargo xtask test                    # whole workspace (some integration tests need a Docker daemon)
-cargo xtask test-crate prova-core   # a single crate
-
-# Proofs — prova, proven by prova. Builds prova-cli, then runs the suite through
-# target/debug/prova, so the binary under proof is THIS tree's. Same command CI runs.
-cargo xtask proofs                  # the whole suite
-cargo xtask proofs -- --last-failed # the inner loop
-cargo xtask proofs --release        # prove the release profile
-
-# Check / lint / build / GC
-cargo xtask check                   # cargo check --workspace --all-targets
-cargo xtask clippy                  # clippy with -D warnings
-cargo xtask build                   # release build
-cargo xtask sweep                   # drop stale target/ artifacts (auto-installs cargo-sweep)
+# Artifacts (xtask's whole job)
+cargo xtask install                 # install to ~/.cargo/bin; refreshes the user-scoped prova MCP
+                                    # build — restart Claude Code afterward to load it
+cargo xtask check / build / sweep   # cargo check · release build · drop stale target/ artifacts
 ```
-
-**Never prove through an installed `prova`.** `~/.cargo/bin/prova` is one file shared by every
-workspace on the machine, so a bare `prova` proves whatever was installed last — possibly another
-agent's build, with no sign in the output. Use `cargo xtask proofs`, which rebuilds and runs
-`target/debug/prova`. `cargo xtask install` is for putting prova on your PATH for interactive use,
-not a step in the test loop.
 
 Inside a proof, drive prova recursively through `prova.bin` (the runtime injects its own executable),
 never a bare `prova`. `proofs/hermeticity/binary_identity_test.lua` fails the suite if one reappears.
