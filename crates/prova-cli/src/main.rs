@@ -281,6 +281,7 @@ options:
 /// The running prova version, checked against each plugin's `requires.prova` compatibility range.
 const PROVA_VERSION: &str = prova_core::VERSION;
 
+#[derive(Clone, Copy)]
 enum Format {
     Console,
     Json,

@@ -7,28 +7,25 @@ use super::*;
 // Setup
 // ---------------------------------------------------------------------------------------------
 
-pub(super) fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, SharedCollector)> {
-    let col: SharedCollector = Rc::new(RefCell::new(Collector::new(root_name)));
-    let lua = Lua::new();
-
-    // Route `os.getenv` through Rust's view of the environment.
-    //
-    // Lua's own `os.getenv` reads the C runtime's copy of the environment. On Windows that copy is
-    // a snapshot taken at startup, and `std::env::set_var` (SetEnvironmentVariableW) does not
-    // update it — so a manifest's `[run.env]`, which we inject with set_var, reached spawned child
-    // processes but was invisible to the tests themselves. On Unix the two views are the same table,
-    // which is why only Windows saw it. Reading through Rust makes `os.getenv` agree everywhere, and
-    // agree with what `shell.run` children inherit.
-    {
+/// Route `os.getenv` through Rust's view of the environment.
+///
+/// Lua's own `os.getenv` reads the C runtime's copy of the environment. On Windows that copy is
+/// a snapshot taken at startup, and `std::env::set_var` (SetEnvironmentVariableW) does not
+/// update it — so a manifest's `[run.env]`, which we inject with set_var, reached spawned child
+/// processes but was invisible to the tests themselves. On Unix the two views are the same table,
+/// which is why only Windows saw it. Reading through Rust makes `os.getenv` agree everywhere, and
+/// agree with what `shell.run` children inherit.
+fn install_os_env(lua: &Lua) -> mlua::Result<()> {
         let os: mlua::Table = lua.globals().get("os")?;
         os.set(
             "getenv",
             lua.create_function(|_, name: String| Ok(std::env::var(name).ok()))?,
         )?;
-    }
+    Ok(())
+}
 
-    let prova = lua.create_table()?;
-
+/// The registration surface: `prova.test` / `test_each` / `group` / `flow` / `describe`.
+fn install_registration(lua: &Lua, prova: &Table, col: &SharedCollector) -> mlua::Result<()> {
     {
         let col = col.clone();
         prova.set(
@@ -89,6 +86,11 @@ pub(super) fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(
             })?,
         )?;
     }
+    Ok(())
+}
+
+/// `prova.fixture` and `prova.topology` — typed handles into the collector's fixture registry.
+fn install_fixtures(lua: &Lua, prova: &Table, col: &SharedCollector) -> mlua::Result<()> {
     {
         let col = col.clone();
         prova.set(
@@ -158,7 +160,11 @@ pub(super) fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(
             })?,
         )?;
     }
+    Ok(())
+}
 
+/// `prova.remind` — the attention account's declaration form.
+fn install_remind(lua: &Lua, prova: &Table, col: &SharedCollector) -> mlua::Result<()> {
     {
         // prova.remind(name, { when = fn, requires? }, message) — an obligation the WORLD creates:
         // the attention account, not the evidence account (docs/design/reminders.md). Declared
@@ -216,7 +222,11 @@ pub(super) fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(
             )?,
         )?;
     }
+    Ok(())
+}
 
+/// The async utilities: `prova.sleep` and `prova.retry`.
+fn install_utilities(lua: &Lua, prova: &Table) -> mlua::Result<()> {
     prova.set(
         "sleep",
         lua.create_async_function(|_, millis: u64| async move {
@@ -285,11 +295,14 @@ pub(super) fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(
             }
         })?,
     )?;
+    Ok(())
+}
 
-    // Typed resource constructors, named by the ACCESS MODE they take on a token: `writes` is an
-    // exclusive (writer) hold, `reads` a concurrent (reader) one. Both accept a bare token *or* an
-    // existing ref, so either can re-mode what the other made (`prova.reads(prova.port(5432))`).
-    // `port` is exclusive — a listener is a writer of its port — and `reads` can widen it.
+/// Typed resource constructors, named by the ACCESS MODE they take on a token: `writes` is an
+/// exclusive (writer) hold, `reads` a concurrent (reader) one. Both accept a bare token *or* an
+/// existing ref, so either can re-mode what the other made (`prova.reads(prova.port(5432))`).
+/// `port` is exclusive — a listener is a writer of its port — and `reads` can widen it.
+fn install_resources(lua: &Lua, prova: &Table) -> mlua::Result<()> {
     prova.set(
         "port",
         lua.create_function(|lua, number: u64| {
@@ -319,7 +332,12 @@ pub(super) fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(
         "shared",
         lua.create_function(|lua, v: Value| resource_ref(lua, v, true))?,
     )?;
+    Ok(())
+}
 
+/// The run's own facts, published for proofs to read: `prova.ports`, `prova.root`/`home`,
+/// `prova.bin`, `prova.version`, and the `prova.help` surface.
+fn install_run_facts(lua: &Lua, prova: &Table, config: &RunConfig) -> mlua::Result<()> {
     // The host port mode, readable by topology/plugin authors as `prova.ports` (`"auto"` | `"fixed"`).
     // `prova.containerized` consults it to upgrade random ports to fixed bindings under `--fixed`; a
     // recipe with an advertised listener (Kafka) reads it to emit the right listener address.
@@ -389,16 +407,16 @@ pub(super) fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(
             Ok(out)
         })?,
     )?;
+    Ok(())
+}
 
-    lua.globals().set("prova", prova)?;
-
-    // `runtime.*` — the companion's config DSL — is NOT available in a test/eval/topology state.
-    // Accessing ANY member here raises a clear error instead of a baffling nil, because `runtime`
-    // configures the environment tests run *in*, and only `prova.lua` loads early enough (with the
-    // manifest, before any test) to do that. `load_project_config` overwrites this stub with the
-    // working table when it loads the companion. Keeping it off `prova` — the authoring surface — is
-    // what makes the boundary self-evident.
-    {
+/// `runtime.*` — the companion's config DSL — is NOT available in a test/eval/topology state.
+/// Accessing ANY member here raises a clear error instead of a baffling nil, because `runtime`
+/// configures the environment tests run *in*, and only `prova.lua` loads early enough (with the
+/// manifest, before any test) to do that. `load_project_config` overwrites this stub with the
+/// working table when it loads the companion. Keeping it off `prova` — the authoring surface — is
+/// what makes the boundary self-evident.
+fn install_runtime_stub(lua: &Lua) -> mlua::Result<()> {
         let stub = lua.create_table()?;
         let mt = lua.create_table()?;
         mt.set(
@@ -412,17 +430,15 @@ pub(super) fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(
         )?;
         stub.set_metatable(Some(mt))?;
         lua.globals().set("runtime", stub)?;
-    }
+    Ok(())
+}
 
-    // The typed fixture-scope constants: `Scope.Test` / `Scope.Flow` / `Scope.File` / `Scope.Suite`.
-    lua.globals().set("Scope", make_scope_global(&lua)?)?;
-
-    // `suite.config{ name?, requires? }` — configure the current suite (used in a `suite.lua`
-    // setup file). `requires` gates the whole suite: it folds into the root node so every test
-    // inherits it, and an unmet capability skips all the suite's files cleanly (skip, not fail).
-    // `spec` is deliberately NOT accepted here: spec flags are test-level only — a suite-wide
-    // flag recreates the graduation ceremony the revised design removed (api-freeze §5).
-    {
+/// `suite.config{ name?, requires? }` — configure the current suite (used in a `suite.lua`
+/// setup file). `requires` gates the whole suite: it folds into the root node so every test
+/// inherits it, and an unmet capability skips all the suite's files cleanly (skip, not fail).
+/// `spec` is deliberately NOT accepted here: spec flags are test-level only — a suite-wide
+/// flag recreates the graduation ceremony the revised design removed (api-freeze §5).
+fn install_suite_config(lua: &Lua, col: &SharedCollector) -> mlua::Result<()> {
         let col = col.clone();
         let suite = lua.create_table()?;
         suite.set(
@@ -460,45 +476,18 @@ pub(super) fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(
             })?,
         )?;
         lua.globals().set("suite", suite)?;
-    }
+    Ok(())
+}
 
-    // First-party capability modules (`shell`, `fs`) as their own injected globals.
-    crate::modules::install(
-        &lua,
-        config.progress(),
-        config.deputed_registry.clone(),
-        config.measurement_registry.clone(),
-    )?;
-
-    // Host-provided plugin modules (e.g. `archetect`), installed into every Lua state.
-    for install in &config.modules {
-        install(&lua)?;
-    }
-
-    // Wire `require` to resolve Lua plugins (bundled + manifest + disk). Installed last so a plugin
-    // loaded via `require` sees every primitive global it composes.
-    //
-    // Search roots are exactly what the embedder declared (`with_package_root`) — the engine adds
-    // none of its own. It used to join `<project_root>/.prova/plugins` here, which meant the answer
-    // to "where do plugins come from?" was split between this file and the manifest. The CLI now
-    // passes the manifest's `[run] package_root` (already absolutised against the project root), so
-    // the manifest is the single, readable source of truth and the engine has no layout opinion.
-    crate::packages::install(
-        &lua,
-        &config.package_roots,
-        &config.named_packages,
-        &config.package_namespaces,
-    )?;
-
-    // The injection contract, installed LAST so none of prova's own setup writes pass through the
-    // gate. The bundled modules are moved out of raw `_G` into (a) the canonical first-party surface
-    // `prova.*` and (b) the `prova.namespaces` registry that `require` resolves. Ambient globals are
-    // then whatever `[globals] inject` names — the core authoring globals `prova`/`Scope` always, other
-    // modules only when injected, plus any injected PLUGINS (loaded eagerly, bound as bare globals,
-    // NOT joined to `prova.*`). Moving names out of raw `_G` is what makes `__newindex` fire on
-    // assignment at all; `__index` serves only the injected set, so a non-injected name reads as `nil`
-    // (yet stays reachable as `prova.<name>` / `require("<name>")`) and is free for the user to assign.
-    {
+/// The injection contract, installed LAST so none of prova's own setup writes pass through the
+/// gate. The bundled modules are moved out of raw `_G` into (a) the canonical first-party surface
+/// `prova.*` and (b) the `prova.namespaces` registry that `require` resolves. Ambient globals are
+/// then whatever `[globals] inject` names — the core authoring globals `prova`/`Scope` always, other
+/// modules only when injected, plus any injected PLUGINS (loaded eagerly, bound as bare globals,
+/// NOT joined to `prova.*`). Moving names out of raw `_G` is what makes `__newindex` fire on
+/// assignment at all; `__index` serves only the injected set, so a non-injected name reads as `nil`
+/// (yet stays reachable as `prova.<name>` / `require("<name>")`) and is free for the user to assign.
+fn install_injection(lua: &Lua, config: &RunConfig) -> mlua::Result<()> {
         let prova_tbl: Table = lua.globals().raw_get("prova")?;
         let all = lua.create_table()?; // name -> module, for require (bundled)
         let injected = lua.create_table()?; // name -> module, what ambient reads see
@@ -563,7 +552,56 @@ pub(super) fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(
             })?,
         )?;
         lua.globals().set_metatable(Some(mt))?;
+    Ok(())
+}
+
+pub(super) fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, SharedCollector)> {
+    let col: SharedCollector = Rc::new(RefCell::new(Collector::new(root_name)));
+    let lua = Lua::new();
+    install_os_env(&lua)?;
+
+    let prova = lua.create_table()?;
+    install_registration(&lua, &prova, &col)?;
+    install_fixtures(&lua, &prova, &col)?;
+    install_remind(&lua, &prova, &col)?;
+    install_utilities(&lua, &prova)?;
+    install_resources(&lua, &prova)?;
+    install_run_facts(&lua, &prova, config)?;
+    lua.globals().set("prova", prova)?;
+
+    install_runtime_stub(&lua)?;
+    // The typed fixture-scope constants: `Scope.Test` / `Scope.Flow` / `Scope.File` / `Scope.Suite`.
+    lua.globals().set("Scope", make_scope_global(&lua)?)?;
+    install_suite_config(&lua, &col)?;
+
+    // First-party capability modules (`shell`, `fs`) as their own injected globals.
+    crate::modules::install(
+        &lua,
+        config.progress(),
+        config.deputed_registry.clone(),
+        config.measurement_registry.clone(),
+    )?;
+
+    // Host-provided plugin modules (e.g. `archetect`), installed into every Lua state.
+    for install in &config.modules {
+        install(&lua)?;
     }
+
+    // Wire `require` to resolve Lua plugins (bundled + manifest + disk). Installed last so a plugin
+    // loaded via `require` sees every primitive global it composes.
+    //
+    // Search roots are exactly what the embedder declared (`with_package_root`) — the engine adds
+    // none of its own. It used to join `<project_root>/.prova/plugins` here, which meant the answer
+    // to "where do plugins come from?" was split between this file and the manifest. The CLI now
+    // passes the manifest's `[run] package_root` (already absolutised against the project root), so
+    // the manifest is the single, readable source of truth and the engine has no layout opinion.
+    crate::packages::install(
+        &lua,
+        &config.package_roots,
+        &config.named_packages,
+        &config.package_namespaces,
+    )?;
+    install_injection(&lua, config)?;
 
     Ok((lua, col))
 }

@@ -347,429 +347,464 @@ pub(super) fn line_diff(expected: &str, actual: &str) -> String {
     out.trim_end().to_string()
 }
 
-impl UserData for Matcher {
-    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("never", |lua, this, ()| {
-            lua.create_userdata(Matcher {
-                subject: this.subject.clone(),
-                label: this.label.clone(),
-                negated: !this.negated,
-                run: this.run.clone(),
-                probe: this.probe.clone(),
-            })
-        });
+/// Chain modes: `:never()` (negation) and `:eventually{...}` (the poll matcher).
+fn add_mode_methods<M: UserDataMethods<Matcher>>(methods: &mut M) {
+    methods.add_method("never", |lua, this, ()| {
+        lua.create_userdata(Matcher {
+            subject: this.subject.clone(),
+            label: this.label.clone(),
+            negated: !this.negated,
+            run: this.run.clone(),
+            probe: this.probe.clone(),
+        })
+    });
 
-        // `:eventually(opts?)` — poll-until-matches (docs/plans/api-freeze.md §4). Legal only on
-        // a FUNCTION subject: the returned handle re-evaluates it (and the terminal matcher that
-        // follows) until pass or timeout. `opts = { timeout, every }`, defaults matching
-        // `prova.retry` — which remains the public primitive this sugars over.
-        methods.add_method("eventually", |lua, this, opts: Option<Table>| {
-            let Value::Function(func) = &this.subject else {
-                return Err(mlua::Error::RuntimeError(
-                    "eventually requires a function subject — wrap the probe: t:expect(function() return ... end):eventually():matches{...}"
-                        .into(),
-                ));
-            };
-            let get = |key: &str, default: Duration| -> mlua::Result<Duration> {
-                match &opts {
-                    Some(t) => match t.get::<Option<String>>(key)? {
-                        Some(s) => parse_duration(&s).ok_or_else(|| {
-                            mlua::Error::RuntimeError(format!(
-                                "eventually: cannot parse {key} {s:?} (try \"30s\", \"500ms\")"
-                            ))
-                        }),
-                        None => Ok(default),
-                    },
+    // `:eventually(opts?)` — poll-until-matches (docs/plans/api-freeze.md §4). Legal only on
+    // a FUNCTION subject: the returned handle re-evaluates it (and the terminal matcher that
+    // follows) until pass or timeout. `opts = { timeout, every }`, defaults matching
+    // `prova.retry` — which remains the public primitive this sugars over.
+    methods.add_method("eventually", |lua, this, opts: Option<Table>| {
+        let Value::Function(func) = &this.subject else {
+            return Err(mlua::Error::RuntimeError(
+                "eventually requires a function subject — wrap the probe: t:expect(function() return ... end):eventually():matches{...}"
+                    .into(),
+            ));
+        };
+        let get = |key: &str, default: Duration| -> mlua::Result<Duration> {
+            match &opts {
+                Some(t) => match t.get::<Option<String>>(key)? {
+                    Some(s) => parse_duration(&s).ok_or_else(|| {
+                        mlua::Error::RuntimeError(format!(
+                            "eventually: cannot parse {key} {s:?} (try \"30s\", \"500ms\")"
+                        ))
+                    }),
                     None => Ok(default),
+                },
+                None => Ok(default),
+            }
+        };
+        let timeout = get("timeout", Duration::from_secs(30))?;
+        let every = get("every", Duration::from_millis(500))?;
+        lua.create_userdata(Eventually {
+            func: func.clone(),
+            label: this.label.clone(),
+            negated: this.negated,
+            run: this.run.clone(),
+            timeout,
+            every,
+        })
+    });
+
+}
+
+/// Structural equality: `:equals` and its alias `:eq`.
+fn add_equality_methods<M: UserDataMethods<Matcher>>(methods: &mut M) {
+    methods.add_method("equals", |_, this, other: Value| {
+        let pass = values_equal(&this.subject, &other);
+        this.record(pass, || {
+            format!(
+                "expected {}, got {}",
+                display(&other),
+                display(&this.subject)
+            )
+        })
+    });
+    methods.add_method("eq", |_, this, other: Value| {
+        let pass = values_equal(&this.subject, &other);
+        this.record(pass, || {
+            format!(
+                "expected {}, got {}",
+                display(&other),
+                display(&this.subject)
+            )
+        })
+    });
+
+    // Compare the subject against a stored `.snap` file colocated with the test
+    // (`<dir>/snapshots/<file-stem>__<key>.snap`). `--update-snapshots` (re)writes it and passes;
+    // otherwise a mismatch fails with a line diff and a missing snapshot fails after writing a
+    // reviewable `.snap.new`. `arg` is nil, a name string, or an options table `{ name, level }`
+    // (Phase A takes only a string subject + name; `level`/tree subjects come with the tree phase).
+}
+
+/// `:matches_snapshot` — golden-file comparison with `--update-snapshots` banking.
+fn add_snapshot_method<M: UserDataMethods<Matcher>>(methods: &mut M) {
+    methods.add_method("matches_snapshot", |_, this, arg: Value| {
+        if this.negated {
+            return Err(mlua::Error::RuntimeError(
+                "matches_snapshot cannot be negated".into(),
+            ));
+        }
+        // `arg` is nil | a name string | an options table `{ name?, level? }`.
+        let (name, level): (Option<String>, Option<String>) = match arg {
+            Value::Nil => (None, None),
+            Value::String(s) => (Some(s.to_string_lossy().to_string()), None),
+            Value::Table(t) => (t.get::<Option<String>>("name")?, t.get::<Option<String>>("level")?),
+            other => {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "matches_snapshot(name?) expects a string name or an options table, got {}",
+                    other.type_name()
+                )))
+            }
+        };
+        let actual = serialize_snapshot_subject(&this.subject, level.as_deref())
+            .map_err(mlua::Error::RuntimeError)?;
+
+        // Resolve the `.snap`/`.snap.new` paths + update flag + a header source label from the
+        // per-test snapshot context (advancing the auto-name counter for an unnamed snapshot).
+        let (snap, snap_new, update, source, registry) = {
+            let mut r = this.run.borrow_mut();
+            let ctx = r.snapshot.as_mut().ok_or_else(|| {
+                mlua::Error::RuntimeError(
+                    "matches_snapshot needs a test-file context (no source path recorded for this run)"
+                        .into(),
+                )
+            })?;
+            let key = match &name {
+                Some(n) => slugify(n),
+                None => {
+                    ctx.counter += 1;
+                    format!("{}-{}", ctx.key_base, ctx.counter)
                 }
             };
-            let timeout = get("timeout", Duration::from_secs(30))?;
-            let every = get("every", Duration::from_millis(500))?;
-            lua.create_userdata(Eventually {
-                func: func.clone(),
-                label: this.label.clone(),
-                negated: this.negated,
-                run: this.run.clone(),
-                timeout,
-                every,
-            })
-        });
+            let base = format!("{}__{}", ctx.stem, key);
+            (
+                ctx.dir.join(format!("{base}.snap")),
+                ctx.dir.join(format!("{base}.snap.new")),
+                ctx.update,
+                format!("{} / {}", ctx.key_base, key),
+                ctx.registry.clone(),
+            )
+        };
 
-        methods.add_method("equals", |_, this, other: Value| {
-            let pass = values_equal(&this.subject, &other);
-            this.record(pass, || {
-                format!(
-                    "expected {}, got {}",
-                    display(&other),
-                    display(&this.subject)
-                )
-            })
-        });
-        methods.add_method("eq", |_, this, other: Value| {
-            let pass = values_equal(&this.subject, &other);
-            this.record(pass, || {
-                format!(
-                    "expected {}, got {}",
-                    display(&other),
-                    display(&this.subject)
-                )
-            })
-        });
-
-        // Compare the subject against a stored `.snap` file colocated with the test
-        // (`<dir>/snapshots/<file-stem>__<key>.snap`). `--update-snapshots` (re)writes it and passes;
-        // otherwise a mismatch fails with a line diff and a missing snapshot fails after writing a
-        // reviewable `.snap.new`. `arg` is nil, a name string, or an options table `{ name, level }`
-        // (Phase A takes only a string subject + name; `level`/tree subjects come with the tree phase).
-        methods.add_method("matches_snapshot", |_, this, arg: Value| {
-            if this.negated {
-                return Err(mlua::Error::RuntimeError(
-                    "matches_snapshot cannot be negated".into(),
-                ));
+        // Record this `.snap` as referenced (whatever the outcome), so an unreferenced-snapshot
+        // reconcile can tell orphaned files from ones a test still points at.
+        if let Some(reg) = &registry {
+            if let Ok(mut set) = reg.lock() {
+                set.insert(snap.clone());
             }
-            // `arg` is nil | a name string | an options table `{ name?, level? }`.
-            let (name, level): (Option<String>, Option<String>) = match arg {
-                Value::Nil => (None, None),
-                Value::String(s) => (Some(s.to_string_lossy().to_string()), None),
-                Value::Table(t) => (t.get::<Option<String>>("name")?, t.get::<Option<String>>("level")?),
-                other => {
-                    return Err(mlua::Error::RuntimeError(format!(
-                        "matches_snapshot(name?) expects a string name or an options table, got {}",
-                        other.type_name()
-                    )))
-                }
-            };
-            let actual = serialize_snapshot_subject(&this.subject, level.as_deref())
-                .map_err(mlua::Error::RuntimeError)?;
+        }
 
-            // Resolve the `.snap`/`.snap.new` paths + update flag + a header source label from the
-            // per-test snapshot context (advancing the auto-name counter for an unnamed snapshot).
-            let (snap, snap_new, update, source, registry) = {
-                let mut r = this.run.borrow_mut();
-                let ctx = r.snapshot.as_mut().ok_or_else(|| {
-                    mlua::Error::RuntimeError(
-                        "matches_snapshot needs a test-file context (no source path recorded for this run)"
-                            .into(),
-                    )
-                })?;
-                let key = match &name {
-                    Some(n) => slugify(n),
-                    None => {
-                        ctx.counter += 1;
-                        format!("{}-{}", ctx.key_base, ctx.counter)
-                    }
-                };
-                let base = format!("{}__{}", ctx.stem, key);
-                (
-                    ctx.dir.join(format!("{base}.snap")),
-                    ctx.dir.join(format!("{base}.snap.new")),
-                    ctx.update,
-                    format!("{} / {}", ctx.key_base, key),
-                    ctx.registry.clone(),
-                )
-            };
+        let stored_doc = format_snapshot(&source, &actual);
 
-            // Record this `.snap` as referenced (whatever the outcome), so an unreferenced-snapshot
-            // reconcile can tell orphaned files from ones a test still points at.
-            if let Some(reg) = &registry {
-                if let Ok(mut set) = reg.lock() {
-                    set.insert(snap.clone());
-                }
+        if update {
+            if let Err(e) = write_snapshot(&snap, &stored_doc) {
+                return Err(mlua::Error::RuntimeError(e));
             }
+            let _ = std::fs::remove_file(&snap_new); // accepted → drop any pending .new
+            return this.record(true, String::new);
+        }
 
-            let stored_doc = format_snapshot(&source, &actual);
-
-            if update {
-                if let Err(e) = write_snapshot(&snap, &stored_doc) {
-                    return Err(mlua::Error::RuntimeError(e));
-                }
-                let _ = std::fs::remove_file(&snap_new); // accepted → drop any pending .new
-                return this.record(true, String::new);
-            }
-
-            match std::fs::read_to_string(&snap) {
-                Ok(doc) => {
-                    let expected = snapshot_body(&doc);
-                    if expected == actual {
-                        let _ = std::fs::remove_file(&snap_new);
-                        this.record(true, String::new)
-                    } else {
-                        let _ = write_snapshot(&snap_new, &stored_doc);
-                        let diff = line_diff(expected, &actual);
-                        let path = snap.display().to_string();
-                        this.record(false, move || {
-                            format!(
-                                "snapshot mismatch ({path})\n{diff}\n  \
-                                 run `prova --update-snapshots` to accept, or see the .snap.new"
-                            )
-                        })
-                    }
-                }
-                Err(_) => {
+        match std::fs::read_to_string(&snap) {
+            Ok(doc) => {
+                let expected = snapshot_body(&doc);
+                if expected == actual {
+                    let _ = std::fs::remove_file(&snap_new);
+                    this.record(true, String::new)
+                } else {
                     let _ = write_snapshot(&snap_new, &stored_doc);
+                    let diff = line_diff(expected, &actual);
                     let path = snap.display().to_string();
                     this.record(false, move || {
                         format!(
-                            "no snapshot at {path} — wrote {path}.new; \
-                             run `prova --update-snapshots` to accept it"
+                            "snapshot mismatch ({path})\n{diff}\n  \
+                             run `prova --update-snapshots` to accept, or see the .snap.new"
                         )
                     })
                 }
             }
-        });
-        // Identity, not structure: the *same* table/function/userdata (reference), or an equal
-        // primitive (`rawequal` semantics). Complements the **deep** `equals` — use `is` to assert
-        // "this is that same object", including tables that hold function fields `equals` can't compare.
-        methods.add_method("is", |_, this, other: Value| {
-            let pass = this.subject == other;
-            this.record(pass, || {
-                format!(
-                    "expected {} to be (identity) {}",
-                    display(&this.subject),
-                    display(&other)
-                )
-            })
-        });
-        methods.add_method("is_true", |_, this, ()| {
-            let pass = matches!(this.subject, Value::Boolean(true));
-            this.record(pass, || {
-                format!("expected true, got {}", display(&this.subject))
-            })
-        });
-        methods.add_method("is_false", |_, this, ()| {
-            let pass = matches!(this.subject, Value::Boolean(false));
-            this.record(pass, || {
-                format!("expected false, got {}", display(&this.subject))
-            })
-        });
-        methods.add_method("is_nil", |_, this, ()| {
-            let pass = matches!(this.subject, Value::Nil);
-            this.record(pass, || {
-                format!("expected nil, got {}", display(&this.subject))
-            })
-        });
-        methods.add_method("is_truthy", |_, this, ()| {
-            let pass = truthy(&this.subject);
-            this.record(pass, || {
-                format!("expected a truthy value, got {}", display(&this.subject))
-            })
-        });
-        methods.add_method("contains", |_, this, needle: Value| {
-            let pass = contains(&this.subject, &needle);
-            this.record(pass, || {
-                let shown = match (&this.subject, &needle) {
-                    (Value::String(s), Value::String(n)) => display_windowed(
-                        &s.to_string_lossy(),
-                        &n.to_string_lossy(),
-                    ),
-                    _ => display(&this.subject),
-                };
-                format!("expected {} to contain {}", shown, display(&needle))
-            })
-        });
-
-        // Filesystem matchers: the subject is a path string (e.g. `t:expect(dir.."/Cargo.toml")`).
-        //
-        // `exists` means exists for whatever the subject IS — the same resolution `is_empty` below
-        // already makes, and for the same reason. Sitting next to `is_nil` in every matcher listing,
-        // `exists` reads as its opposite, so `expect(some_table):exists()` is the natural way to
-        // write a presence check. It used to FAIL, reporting `expected path <table> to exist` about
-        // a value that was never a path — a message no one can act on. The inconsistency was the
-        // bug, not the expectation.
-        //
-        // Strings stay filesystem-checked: asserting a file is there is this matcher's load-bearing
-        // use, and `expect(dir.."/f"):exists()` must keep failing when the file is missing. For a
-        // string's presence, `never():is_nil()` is the matcher.
-        methods.add_method("exists", |_, this, ()| {
-            match subject_path(&this.subject) {
-                Some(p) => {
-                    let pass = p.exists();
-                    let subject = display(&this.subject);
-                    // A separator-less string that is not on disk is far more likely a value someone
-                    // meant to null-check than a path they expected to find, so name the other
-                    // matcher rather than leaving them to guess.
-                    let looks_like_a_value = matches!(&this.subject, Value::String(_))
-                        && !subject.contains(std::path::MAIN_SEPARATOR)
-                        && !subject.contains('/');
-                    this.record(pass, move || {
-                        if looks_like_a_value {
-                            format!(
-                                "expected path {subject} to exist — `exists` is a filesystem \
-                                 matcher; for a presence check use `never():is_nil()`"
-                            )
-                        } else {
-                            format!("expected path {subject} to exist")
-                        }
-                    })
-                }
-                // Not path-shaped at all (a table without `path`, a number, a boolean): the only
-                // coherent reading is "this value is present".
-                None => {
-                    let pass = !matches!(this.subject, Value::Nil);
-                    this.record(pass, || "expected a value to be present, got nil".to_string())
-                }
-            }
-        });
-        methods.add_method("is_file", |_, this, ()| {
-            let pass = subject_path(&this.subject).is_some_and(|p| p.is_file());
-            this.record(pass, || {
-                format!("expected {} to be a file", display(&this.subject))
-            })
-        });
-        methods.add_method("is_dir", |_, this, ()| {
-            let pass = subject_path(&this.subject).is_some_and(|p| p.is_dir());
-            this.record(pass, || {
-                format!("expected {} to be a directory", display(&this.subject))
-            })
-        });
-        // Empty means empty for whatever the subject IS: a string with no bytes, a table with no
-        // entries, or a path with no children. It read as filesystem-only, so `expect(""):is_empty()`
-        // and `expect({}):is_empty()` both FAILED — reporting `expected "" to be empty` about an
-        // empty string, which no one can act on. `has_length(0)` already worked on both, so the
-        // inconsistency was the bug, not the expectation.
-        methods.add_method("is_empty", |_, this, ()| {
-            // A string is ambiguous — it may be a path OR a literal. Resolve it by what is on
-            // disk: an existing path is a filesystem check (the long-standing behaviour), anything
-            // else is its byte length. So `expect(dir):is_empty()` still asks the filesystem, and
-            // `expect(""):is_empty()` finally answers about the string.
-            let pass = match &this.subject {
-                Value::Table(t) => t.clone().pairs::<Value, Value>().next().is_none(),
-                Value::String(s) if subject_path(&this.subject).is_none_or(|p| !p.exists()) => {
-                    s.as_bytes().is_empty()
-                }
-                other => path_is_empty(other),
-            };
-            this.record(pass, || {
-                format!("expected {} to be empty", display(&this.subject))
-            })
-        });
-
-        // The signature archetype check: every file under a rendered tree (a path string, or a
-        // tree/dir handle with a `path`) must be free of leftover template markers — no `{{`, `{%`,
-        // or `{#` in file *contents* or *path segments*. GitHub Actions `${{ … }}` expressions are
-        // legitimately present in rendered workflows, so they are excluded. Tedious to hand-roll
-        // (glob every file, read, scan); one call here.
-        methods.add_method("is_fully_rendered", |_, this, ()| {
-            let offenders = match subject_path(&this.subject) {
-                Some(p) => unrendered_markers(&p),
-                None => vec!["subject is not a path or tree handle".to_string()],
-            };
-            let pass = offenders.is_empty();
-            this.record(pass, || {
-                let shown = offenders
-                    .iter()
-                    .take(10)
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join("\n    ");
-                let more = if offenders.len() > 10 {
-                    format!("\n    … and {} more", offenders.len() - 10)
-                } else {
-                    String::new()
-                };
-                format!(
-                    "expected {} to be fully rendered, but found unrendered template markers:\n    {shown}{more}",
-                    display(&this.subject)
-                )
-            })
-        });
-
-        methods.add_method("is_falsy", |_, this, ()| {
-            let pass = !truthy(&this.subject);
-            this.record(pass, || {
-                format!("expected a falsy value, got {}", display(&this.subject))
-            })
-        });
-
-        // Polymorphic on the argument (the `contains` precedent — docs/plans/api-freeze.md §3):
-        // a STRING is a Lua pattern match on a string subject (delegates to `string.find`); a
-        // TABLE is a recursive structural SUBSET — every key in the shape must exist in the
-        // subject and recursively match, extra subject keys ignored, arrays same-index. One
-        // semantics for every surface that matches shapes; spec: proofs/spec/matching/.
-        methods.add_method("matches", |lua, this, arg: Value| match arg {
-            Value::String(pattern) => {
-                let pattern = pattern.to_str()?.to_string();
-                let (pass, subject) = match &this.subject {
-                    Value::String(s) => {
-                        let subject = s.to_str()?.to_string();
-                        let find: mlua::Function =
-                            lua.globals().get::<Table>("string")?.get("find")?;
-                        let found: Value = find.call((subject.clone(), pattern.clone()))?;
-                        (!matches!(found, Value::Nil), subject)
-                    }
-                    other => (false, display(other)),
-                };
-                this.record(pass, || {
-                    format!("expected {subject:?} to match pattern {pattern:?}")
+            Err(_) => {
+                let _ = write_snapshot(&snap_new, &stored_doc);
+                let path = snap.display().to_string();
+                this.record(false, move || {
+                    format!(
+                        "no snapshot at {path} — wrote {path}.new; \
+                         run `prova --update-snapshots` to accept it"
+                    )
                 })
             }
-            Value::Table(shape) => {
-                let mismatch = match &this.subject {
-                    Value::Table(subject) => subset_mismatch(&shape, subject, &mut Vec::new()),
-                    other => Some(format!("expected a table, got {}", display(other))),
-                };
-                let pass = mismatch.is_none();
-                this.record(pass, || match mismatch {
-                    Some(detail) => format!("does not match shape — {detail}"),
-                    None => "matches the shape".to_string(),
-                })
-            }
-            _ => Err(mlua::Error::RuntimeError(
-                "matches takes a Lua pattern (string) or a shape (table)".into(),
-            )),
-        });
+        }
+    });
+    // Identity, not structure: the *same* table/function/userdata (reference), or an equal
+    // primitive (`rawequal` semantics). Complements the **deep** `equals` — use `is` to assert
+    // "this is that same object", including tables that hold function fields `equals` can't compare.
+}
 
-        methods.add_method("has_length", |_, this, n: i64| {
-            let len = value_length(&this.subject);
-            this.record(len == Some(n), || match len {
-                Some(l) => format!("expected length {n}, got {l}"),
-                None => format!(
-                    "expected a string/table of length {n}, got {}",
-                    display(&this.subject)
+/// Identity and truthiness: `:is`, `:is_true` / `:is_false` / `:is_nil` / `:is_truthy`.
+fn add_identity_methods<M: UserDataMethods<Matcher>>(methods: &mut M) {
+    methods.add_method("is", |_, this, other: Value| {
+        let pass = this.subject == other;
+        this.record(pass, || {
+            format!(
+                "expected {} to be (identity) {}",
+                display(&this.subject),
+                display(&other)
+            )
+        })
+    });
+    methods.add_method("is_true", |_, this, ()| {
+        let pass = matches!(this.subject, Value::Boolean(true));
+        this.record(pass, || {
+            format!("expected true, got {}", display(&this.subject))
+        })
+    });
+    methods.add_method("is_false", |_, this, ()| {
+        let pass = matches!(this.subject, Value::Boolean(false));
+        this.record(pass, || {
+            format!("expected false, got {}", display(&this.subject))
+        })
+    });
+    methods.add_method("is_nil", |_, this, ()| {
+        let pass = matches!(this.subject, Value::Nil);
+        this.record(pass, || {
+            format!("expected nil, got {}", display(&this.subject))
+        })
+    });
+    methods.add_method("is_truthy", |_, this, ()| {
+        let pass = truthy(&this.subject);
+        this.record(pass, || {
+            format!("expected a truthy value, got {}", display(&this.subject))
+        })
+    });
+}
+
+/// Containment and filesystem probes: `:contains`, `:exists`, `:is_file` / `:is_dir`.
+fn add_content_methods<M: UserDataMethods<Matcher>>(methods: &mut M) {
+    methods.add_method("contains", |_, this, needle: Value| {
+        let pass = contains(&this.subject, &needle);
+        this.record(pass, || {
+            let shown = match (&this.subject, &needle) {
+                (Value::String(s), Value::String(n)) => display_windowed(
+                    &s.to_string_lossy(),
+                    &n.to_string_lossy(),
                 ),
-            })
-        });
+                _ => display(&this.subject),
+            };
+            format!("expected {} to contain {}", shown, display(&needle))
+        })
+    });
 
-        methods.add_method("is_one_of", |_, this, options: Table| {
-            let mut pass = false;
-            for item in options.sequence_values::<Value>() {
-                if values_equal(&this.subject, &item?) {
-                    pass = true;
-                    break;
-                }
+    // Filesystem matchers: the subject is a path string (e.g. `t:expect(dir.."/Cargo.toml")`).
+    //
+    // `exists` means exists for whatever the subject IS — the same resolution `is_empty` below
+    // already makes, and for the same reason. Sitting next to `is_nil` in every matcher listing,
+    // `exists` reads as its opposite, so `expect(some_table):exists()` is the natural way to
+    // write a presence check. It used to FAIL, reporting `expected path <table> to exist` about
+    // a value that was never a path — a message no one can act on. The inconsistency was the
+    // bug, not the expectation.
+    //
+    // Strings stay filesystem-checked: asserting a file is there is this matcher's load-bearing
+    // use, and `expect(dir.."/f"):exists()` must keep failing when the file is missing. For a
+    // string's presence, `never():is_nil()` is the matcher.
+    methods.add_method("exists", |_, this, ()| {
+        match subject_path(&this.subject) {
+            Some(p) => {
+                let pass = p.exists();
+                let subject = display(&this.subject);
+                // A separator-less string that is not on disk is far more likely a value someone
+                // meant to null-check than a path they expected to find, so name the other
+                // matcher rather than leaving them to guess.
+                let looks_like_a_value = matches!(&this.subject, Value::String(_))
+                    && !subject.contains(std::path::MAIN_SEPARATOR)
+                    && !subject.contains('/');
+                this.record(pass, move || {
+                    if looks_like_a_value {
+                        format!(
+                            "expected path {subject} to exist — `exists` is a filesystem \
+                             matcher; for a presence check use `never():is_nil()`"
+                        )
+                    } else {
+                        format!("expected path {subject} to exist")
+                    }
+                })
             }
-            this.record(pass, || {
-                format!(
-                    "expected {} to be one of the given options",
-                    display(&this.subject)
-                )
-            })
-        });
+            // Not path-shaped at all (a table without `path`, a number, a boolean): the only
+            // coherent reading is "this value is present".
+            None => {
+                let pass = !matches!(this.subject, Value::Nil);
+                this.record(pass, || "expected a value to be present, got nil".to_string())
+            }
+        }
+    });
+    methods.add_method("is_file", |_, this, ()| {
+        let pass = subject_path(&this.subject).is_some_and(|p| p.is_file());
+        this.record(pass, || {
+            format!("expected {} to be a file", display(&this.subject))
+        })
+    });
+    methods.add_method("is_dir", |_, this, ()| {
+        let pass = subject_path(&this.subject).is_some_and(|p| p.is_dir());
+        this.record(pass, || {
+            format!("expected {} to be a directory", display(&this.subject))
+        })
+    });
+    // Empty means empty for whatever the subject IS: a string with no bytes, a table with no
+    // entries, or a path with no children. It read as filesystem-only, so `expect(""):is_empty()`
+    // and `expect({}):is_empty()` both FAILED — reporting `expected "" to be empty` about an
+    // empty string, which no one can act on. `has_length(0)` already worked on both, so the
+    // inconsistency was the bug, not the expectation.
+}
 
-        methods.add_method("gt", |_, this, n: f64| {
-            let pass = as_number(&this.subject).is_some_and(|x| x > n);
+/// Emptiness and render checks: `:is_empty`, `:is_fully_rendered`, `:is_falsy`.
+fn add_emptiness_methods<M: UserDataMethods<Matcher>>(methods: &mut M) {
+    methods.add_method("is_empty", |_, this, ()| {
+        // A string is ambiguous — it may be a path OR a literal. Resolve it by what is on
+        // disk: an existing path is a filesystem check (the long-standing behaviour), anything
+        // else is its byte length. So `expect(dir):is_empty()` still asks the filesystem, and
+        // `expect(""):is_empty()` finally answers about the string.
+        let pass = match &this.subject {
+            Value::Table(t) => t.clone().pairs::<Value, Value>().next().is_none(),
+            Value::String(s) if subject_path(&this.subject).is_none_or(|p| !p.exists()) => {
+                s.as_bytes().is_empty()
+            }
+            other => path_is_empty(other),
+        };
+        this.record(pass, || {
+            format!("expected {} to be empty", display(&this.subject))
+        })
+    });
+
+    // The signature archetype check: every file under a rendered tree (a path string, or a
+    // tree/dir handle with a `path`) must be free of leftover template markers — no `{{`, `{%`,
+    // or `{#` in file *contents* or *path segments*. GitHub Actions `${{ … }}` expressions are
+    // legitimately present in rendered workflows, so they are excluded. Tedious to hand-roll
+    // (glob every file, read, scan); one call here.
+    methods.add_method("is_fully_rendered", |_, this, ()| {
+        let offenders = match subject_path(&this.subject) {
+            Some(p) => unrendered_markers(&p),
+            None => vec!["subject is not a path or tree handle".to_string()],
+        };
+        let pass = offenders.is_empty();
+        this.record(pass, || {
+            let shown = offenders
+                .iter()
+                .take(10)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n    ");
+            let more = if offenders.len() > 10 {
+                format!("\n    … and {} more", offenders.len() - 10)
+            } else {
+                String::new()
+            };
+            format!(
+                "expected {} to be fully rendered, but found unrendered template markers:\n    {shown}{more}",
+                display(&this.subject)
+            )
+        })
+    });
+
+    methods.add_method("is_falsy", |_, this, ()| {
+        let pass = !truthy(&this.subject);
+        this.record(pass, || {
+            format!("expected a falsy value, got {}", display(&this.subject))
+        })
+    });
+
+    // Polymorphic on the argument (the `contains` precedent — docs/plans/api-freeze.md §3):
+    // a STRING is a Lua pattern match on a string subject (delegates to `string.find`); a
+    // TABLE is a recursive structural SUBSET — every key in the shape must exist in the
+    // subject and recursively match, extra subject keys ignored, arrays same-index. One
+    // semantics for every surface that matches shapes; spec: proofs/spec/matching/.
+}
+
+/// Shape and ordering: `:matches`, `:has_length`, `:is_one_of`, `:gt` / `:gte` / `:lt` / `:lte`.
+fn add_shape_methods<M: UserDataMethods<Matcher>>(methods: &mut M) {
+    methods.add_method("matches", |lua, this, arg: Value| match arg {
+        Value::String(pattern) => {
+            let pattern = pattern.to_str()?.to_string();
+            let (pass, subject) = match &this.subject {
+                Value::String(s) => {
+                    let subject = s.to_str()?.to_string();
+                    let find: mlua::Function =
+                        lua.globals().get::<Table>("string")?.get("find")?;
+                    let found: Value = find.call((subject.clone(), pattern.clone()))?;
+                    (!matches!(found, Value::Nil), subject)
+                }
+                other => (false, display(other)),
+            };
             this.record(pass, || {
-                format!("expected {} > {n}", display(&this.subject))
+                format!("expected {subject:?} to match pattern {pattern:?}")
             })
-        });
-        methods.add_method("gte", |_, this, n: f64| {
-            let pass = as_number(&this.subject).is_some_and(|x| x >= n);
-            this.record(pass, || {
-                format!("expected {} >= {n}", display(&this.subject))
+        }
+        Value::Table(shape) => {
+            let mismatch = match &this.subject {
+                Value::Table(subject) => subset_mismatch(&shape, subject, &mut Vec::new()),
+                other => Some(format!("expected a table, got {}", display(other))),
+            };
+            let pass = mismatch.is_none();
+            this.record(pass, || match mismatch {
+                Some(detail) => format!("does not match shape — {detail}"),
+                None => "matches the shape".to_string(),
             })
-        });
-        methods.add_method("lt", |_, this, n: f64| {
-            let pass = as_number(&this.subject).is_some_and(|x| x < n);
-            this.record(pass, || {
-                format!("expected {} < {n}", display(&this.subject))
-            })
-        });
-        methods.add_method("lte", |_, this, n: f64| {
-            let pass = as_number(&this.subject).is_some_and(|x| x <= n);
-            this.record(pass, || {
-                format!("expected {} <= {n}", display(&this.subject))
-            })
-        });
+        }
+        _ => Err(mlua::Error::RuntimeError(
+            "matches takes a Lua pattern (string) or a shape (table)".into(),
+        )),
+    });
+
+    methods.add_method("has_length", |_, this, n: i64| {
+        let len = value_length(&this.subject);
+        this.record(len == Some(n), || match len {
+            Some(l) => format!("expected length {n}, got {l}"),
+            None => format!(
+                "expected a string/table of length {n}, got {}",
+                display(&this.subject)
+            ),
+        })
+    });
+
+    methods.add_method("is_one_of", |_, this, options: Table| {
+        let mut pass = false;
+        for item in options.sequence_values::<Value>() {
+            if values_equal(&this.subject, &item?) {
+                pass = true;
+                break;
+            }
+        }
+        this.record(pass, || {
+            format!(
+                "expected {} to be one of the given options",
+                display(&this.subject)
+            )
+        })
+    });
+
+    methods.add_method("gt", |_, this, n: f64| {
+        let pass = as_number(&this.subject).is_some_and(|x| x > n);
+        this.record(pass, || {
+            format!("expected {} > {n}", display(&this.subject))
+        })
+    });
+    methods.add_method("gte", |_, this, n: f64| {
+        let pass = as_number(&this.subject).is_some_and(|x| x >= n);
+        this.record(pass, || {
+            format!("expected {} >= {n}", display(&this.subject))
+        })
+    });
+    methods.add_method("lt", |_, this, n: f64| {
+        let pass = as_number(&this.subject).is_some_and(|x| x < n);
+        this.record(pass, || {
+            format!("expected {} < {n}", display(&this.subject))
+        })
+    });
+    methods.add_method("lte", |_, this, n: f64| {
+        let pass = as_number(&this.subject).is_some_and(|x| x <= n);
+        this.record(pass, || {
+            format!("expected {} <= {n}", display(&this.subject))
+        })
+    });
+}
+
+impl UserData for Matcher {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        add_mode_methods(methods);
+        add_equality_methods(methods);
+        add_snapshot_method(methods);
+        add_identity_methods(methods);
+        add_content_methods(methods);
+        add_emptiness_methods(methods);
+        add_shape_methods(methods);
     }
 }
 
