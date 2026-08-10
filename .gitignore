@@ -2,6 +2,12 @@
 **/*.rs.bk
 .DS_Store
 *.snap.new
+# LLVM coverage droppings: an instrumented binary whose environment lost LLVM_PROFILE_FILE
+# (a scrubbed-env child, or a hand-run of target/llvm-cov-target/debug/prova) writes
+# `default_<sig>_0_<pid>.profraw` into its OWN cwd — LLVM's default, not a prova choice. The
+# coverage conduct sweeps root strays into its scan root so their data still counts; this rule
+# keeps any survivor out of every snapshot.
+*.profraw
 # `.prova/` is SOURCE, not build output: it holds this project's manifest, its runtime companion,
 # and its local plugins. Only genuinely generated artifacts are ignored — and prova's own generated
 # state needs no entry here at all: it lives in `.prova/var/`, which carries its own `.gitignore`

@@ -75,6 +75,7 @@ local conduct = prova.fixture("layered-coverage", Scope.File, function()
   purge(COV_DIR, "*.profraw")
   purge(COV_DIR, "*.profdata")
   purge(prova.root .. "/target", "*.profraw") -- strays from the misdirected show-env path
+  purge(prova.root, "default_*.profraw") -- pre-run root strays (see the sweep below) are stale
   fs.remove_all(UNIT_STAGE)
 
   local build = shell.run({ "cargo", "build", "-p", "prova-cli" },
@@ -101,6 +102,14 @@ local conduct = prova.fixture("layered-coverage", Scope.File, function()
   if suite.code ~= 0 then
     return { error = "the black-box suite is red under instrumentation — fix the bar before measuring it:\n"
       .. (suite.stdout or ""):sub(-2000) }
+  end
+  -- Sweep root strays INTO the scan root before reporting. An instrumented child whose
+  -- environment lost LLVM_PROFILE_FILE falls back to `default_<sig>_0_<pid>.profraw` in its
+  -- own cwd — LLVM's default, not a path prova controls. Same binary, same signature, so the
+  -- data is mergeable: sweeping it in counts that coverage instead of littering the repo root
+  -- (36 of these were once snapshotted into history before this sweep existed).
+  for _, f in ipairs(fs.glob(prova.root, "default_*.profraw")) do
+    shell.run({ "mv", f, COV_DIR .. "/" }, { cwd = prova.root })
   end
   local blackbox = fresh_report()
 
