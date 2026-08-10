@@ -88,3 +88,33 @@ prova.test("--update-baseline establishes, tightens, and refuses to loosen", fun
   t:expect(r3.stdout):contains("REFUSED")
   t:expect(value()):equals(80)
 end)
+
+-- The tolerance contract, authored ahead of implementation (spec-first). Found live: the layered
+-- coverage conduct banks each layer at its best-ever, but the BLACK-BOX layer wobbles ~0.3% per
+-- run (timing-dependent paths, retry arms taken or not), so a peak-banked hard floor flakes on
+-- honest runs. A noisy metric needs to DECLARE its noise: `tolerance` in the committed baseline,
+-- with the gate holding `floor - tolerance` while banking still records the best-seen value.
+prova.test("a baseline `tolerance` absorbs declared noise without loosening the banked floor", {
+  promises = "north-star arc: the blackbox coverage ratchet flaked on run-to-run noise (2026-08-10)",
+}, function(t)
+  local dir = t:tempdir()
+  fs.mkdir(dir .. "/proofs")
+  fs.write(dir .. "/prova.toml", "[run]\nproofs = [\"proofs\"]\n")
+  local baseline_dir = dir .. "/.prova/baselines"
+  fs.mkdir(baseline_dir)
+  -- A committed floor of 80 with a declared noise band of 2.
+  fs.write(baseline_dir .. "/default.json", json.encode({
+    schema = 1,
+    metrics = { ["demo.coverage"] = { value = 80, direction = "higher_is_better", tolerance = 2 } },
+  }))
+  local function gate(v)
+    fs.write(dir .. "/proofs/gate_test.lua",
+      'prova.test("gate", function(t) measure.ratchet(t, "demo.coverage", ' .. v ..
+      ', { direction = "higher_is_better" }) end)\n')
+    return shell.run({ prova.bin }, { cwd = dir, merge_stderr = true })
+  end
+  -- Within the declared band: green, and the floor is NOT rewritten.
+  t:expect(gate(78.5).code, "78.5 is inside floor-2"):equals(0)
+  -- Past the band: the ratchet is as hard as ever.
+  t:expect(gate(77.5).code, "77.5 is a real regression"):never():equals(0)
+end)

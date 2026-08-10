@@ -228,3 +228,60 @@ where
     fields.add_field_method_get("env", |lua, this| lua.registry_value::<Table>(this.env_key()));
     fields.add_field_method_get("path", |_, this| Ok(this.shim_path()));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entries(lua: &Lua) -> Vec<Table> {
+        [(1, "alpha", true, "stub"), (2, "beta", false, "unmatched"), (3, "gamma", true, "stub")]
+            .iter()
+            .map(|(seq, data, matched, source)| {
+                let t = lua.create_table().unwrap();
+                t.set("seq", *seq).unwrap();
+                t.set("data", *data).unwrap();
+                t.set("matched", *matched).unwrap();
+                t.set("source", *source).unwrap();
+                t
+            })
+            .collect()
+    }
+
+    /// The §6 filter contract over the shared tail: nil keeps everything; a table is the same
+    /// structural-subset match as `:matches` (so `{ matched = false }` answers the misses); a
+    /// function is an arbitrary predicate. The output re-indexes 1..n while each entry keeps its
+    /// original `seq` — position in the answer never lies about position in the journal.
+    #[test]
+    fn filtered_journal_speaks_the_filter_contract() {
+        let lua = Lua::new();
+
+        let all = filtered_journal(&lua, entries(&lua), &None).unwrap();
+        assert_eq!(all.raw_len(), 3);
+
+        let shape = lua.create_table().unwrap();
+        shape.set("matched", false).unwrap();
+        let misses = filtered_journal(&lua, entries(&lua), &Some(Value::Table(shape))).unwrap();
+        assert_eq!(misses.raw_len(), 1);
+        let only: Table = misses.get(1).unwrap();
+        assert_eq!(only.get::<String>("data").unwrap(), "beta");
+        assert_eq!(only.get::<i64>("seq").unwrap(), 2, "the journal seq survives re-indexing");
+
+        let pred = lua
+            .load(r#"function(e) return e.data == "gamma" end"#)
+            .eval::<mlua::Function>()
+            .unwrap();
+        let picked = filtered_journal(&lua, entries(&lua), &Some(Value::Function(pred))).unwrap();
+        assert_eq!(picked.raw_len(), 1);
+        let only: Table = picked.get(1).unwrap();
+        assert_eq!(only.get::<i64>("seq").unwrap(), 3);
+    }
+
+    /// A filter of the wrong type is a taught error, not a silent keep-nothing.
+    #[test]
+    fn filtered_journal_refuses_a_scalar_filter() {
+        let lua = Lua::new();
+        let err = filtered_journal(&lua, entries(&lua), &Some(Value::Integer(7)));
+        let msg = err.unwrap_err().to_string();
+        assert!(msg.contains("table") && msg.contains("function"), "teaches the contract: {msg}");
+    }
+}

@@ -1110,3 +1110,87 @@ pub(super) fn display(v: &Value) -> String {
         other => format!("<{}>", other.type_name()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lua_table(lua: &Lua, pairs: &[(&str, Value)]) -> Table {
+        let t = lua.create_table().unwrap();
+        for (k, v) in pairs {
+            t.set(*k, v.clone()).unwrap();
+        }
+        t
+    }
+
+    /// The equality every matcher leaf stands on: int↔float coercion holds (a Lua `1` and a
+    /// JSON-decoded `1.0` are the same fact), strings compare by content, and cross-type never
+    /// silently coerces.
+    #[test]
+    fn values_equal_coerces_numbers_and_nothing_else() {
+        let lua = Lua::new();
+        assert!(values_equal(&Value::Integer(1), &Value::Number(1.0)));
+        assert!(!values_equal(&Value::Integer(1), &Value::Number(1.5)));
+        let a = lua.create_string("x").unwrap();
+        let b = lua.create_string("x").unwrap();
+        assert!(values_equal(&Value::String(a), &Value::String(b)));
+        assert!(!values_equal(&Value::Integer(1), &Value::Boolean(true)));
+        assert!(!values_equal(&Value::Nil, &Value::Boolean(false)));
+    }
+
+    /// The structural-subset walk behind `:matches` and the §6 journal filter: shape keys must
+    /// match, extra subject keys are unconstrained, and the FIRST mismatch names its dotted path
+    /// — the diff a failing assertion prints.
+    #[test]
+    fn subset_mismatch_ignores_extras_and_names_the_path() {
+        let lua = Lua::new();
+        let inner_shape = lua_table(&lua, &[("status", Value::Integer(200))]);
+        let shape = lua_table(&lua, &[("reply", Value::Table(inner_shape))]);
+
+        let inner_ok = lua_table(&lua, &[("status", Value::Integer(200)), ("extra", Value::Boolean(true))]);
+        let subject = lua_table(&lua, &[("reply", Value::Table(inner_ok)), ("noise", Value::Integer(9))]);
+        assert_eq!(subset_mismatch(&shape, &subject, &mut Vec::new()), None);
+
+        let inner_bad = lua_table(&lua, &[("status", Value::Integer(500))]);
+        let subject = lua_table(&lua, &[("reply", Value::Table(inner_bad))]);
+        let msg = subset_mismatch(&shape, &subject, &mut Vec::new()).unwrap();
+        assert!(msg.contains("reply.status"), "names the dotted path: {msg}");
+        assert!(msg.contains("200") && msg.contains("500"), "shows both sides: {msg}");
+
+        let subject = lua_table(&lua, &[]);
+        let msg = subset_mismatch(&shape, &subject, &mut Vec::new()).unwrap();
+        assert!(msg.contains("got nothing"), "absence reads as absence: {msg}");
+    }
+
+    /// `contains` is content for strings, membership for tables — and membership uses the same
+    /// coercing equality as everything else.
+    #[test]
+    fn contains_is_substring_or_membership() {
+        let lua = Lua::new();
+        let s = Value::String(lua.create_string("hello world").unwrap());
+        let needle = Value::String(lua.create_string("lo wo").unwrap());
+        assert!(contains(&s, &needle));
+
+        let arr = lua.create_table().unwrap();
+        arr.push(1).unwrap();
+        arr.push(2.0).unwrap();
+        assert!(contains(&Value::Table(arr.clone()), &Value::Number(2.0)));
+        assert!(contains(&Value::Table(arr.clone()), &Value::Integer(2)), "membership coerces int↔float");
+        assert!(!contains(&Value::Table(arr), &Value::Integer(3)));
+        assert!(!contains(&Value::Integer(5), &Value::Integer(5)), "a scalar contains nothing");
+    }
+
+    /// `has_length`'s substrate: strings measure in BYTES (what wire assertions need), tables by
+    /// raw sequence length, and unmeasurable values answer None rather than 0.
+    #[test]
+    fn value_length_measures_bytes_and_rows() {
+        let lua = Lua::new();
+        let s = Value::String(lua.create_string("héllo").unwrap());
+        assert_eq!(value_length(&s), Some(6), "é is two bytes — bytes, not chars");
+        let arr = lua.create_table().unwrap();
+        arr.push("a").unwrap();
+        arr.push("b").unwrap();
+        assert_eq!(value_length(&Value::Table(arr)), Some(2));
+        assert_eq!(value_length(&Value::Integer(7)), None);
+    }
+}
