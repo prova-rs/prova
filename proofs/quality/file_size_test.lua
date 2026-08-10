@@ -19,10 +19,9 @@ local SRC_ROOTS = {
 }
 
 -- Known giants, repo-relative. Grandfathered, not excused: still red-in-waiting via the graduation
--- check below. Splitting any of these is the first paydown target.
-local GRANDFATHERED = {
-  ["crates/prova-cli/src/main.rs"] = true,
-}
+-- check below. Splitting any of these is the first paydown target. Empty as of 2026-08:
+-- modules.rs, engine.rs and main.rs all paid down — grandfather sparingly, with a paydown note.
+local GRANDFATHERED = {}
 
 -- wc -l semantics: count newlines, so the numbers match a plain `wc -l` and each other.
 local function line_count(path)

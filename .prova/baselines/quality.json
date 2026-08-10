@@ -14,17 +14,13 @@
       "direction": "higher_is_better"
     },
     "rust.duplication.clones": {
-      "value": 31.0,
+      "value": 29.0,
       "direction": "lower_is_better"
     },
     "rust.expect.production": {
       "value": 34.0,
       "direction": "lower_is_better",
       "goal": 30.0
-    },
-    "rust.file_lines.main": {
-      "value": 5203.0,
-      "direction": "lower_is_better"
     },
     "rust.functions.too_long": {
       "value": 27.0,
