@@ -21,7 +21,6 @@ local SRC_ROOTS = {
 -- Known giants, repo-relative. Grandfathered, not excused: still red-in-waiting via the graduation
 -- check below. Splitting any of these is the first paydown target.
 local GRANDFATHERED = {
-  ["crates/prova-core/src/modules.rs"] = true,
   ["crates/prova-core/src/engine.rs"] = true,
   ["crates/prova-cli/src/main.rs"] = true,
 }
