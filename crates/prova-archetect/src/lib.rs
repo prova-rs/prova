@@ -283,7 +283,7 @@ pub fn render_headless(
 
     let writes = Arc::try_unwrap(writes)
         .map(|m| m.into_inner().unwrap_or_default())
-        .unwrap_or_else(|arc| arc.lock().unwrap().clone());
+        .unwrap_or_else(|arc| lock(&arc).clone());
     Ok(writes)
 }
 
@@ -366,7 +366,7 @@ pub fn render_interactive(
         fold_diag(archetype.render(ctx), &diag)?;
         let writes = Arc::try_unwrap(writes)
             .map(|m| m.into_inner().unwrap_or_default())
-            .unwrap_or_else(|arc| arc.lock().unwrap().clone());
+            .unwrap_or_else(|arc| lock(&arc).clone());
         Ok(writes)
     } else {
         let archetect = Archetect::builder()
@@ -385,6 +385,13 @@ pub fn render_interactive(
         archetype.render(ctx)?;
         Ok(Vec::new())
     }
+}
+
+/// Take a driver lock, recovering from poisoning: every guarded value here is plain data (a
+/// pending reply, the write log, the last diagnostic), valid at every step — and the handles are
+/// single-threaded lockstep besides, so a poisoned lock is a panic already reported elsewhere.
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// A headless client handle: writes files/dirs to disk, records file paths, Acks each write, and
@@ -428,7 +435,7 @@ impl ScriptIoHandle for CapturingIoHandle {
         match message {
             ScriptMessage::WriteDirectory(info) => {
                 let _ = std::fs::create_dir_all(&info.path);
-                *self.pending.lock().unwrap() = Some(ClientMessage::Ack);
+                *lock(&self.pending) = Some(ClientMessage::Ack);
             }
             ScriptMessage::WriteFile(info) => {
                 let path = PathBuf::from(&info.destination);
@@ -441,7 +448,7 @@ impl ScriptIoHandle for CapturingIoHandle {
                     match info.existing_file_policy {
                         ExistingFilePolicy::Overwrite => {}
                         ExistingFilePolicy::Preserve => {
-                            *self.pending.lock().unwrap() = Some(ClientMessage::Ack);
+                            *lock(&self.pending) = Some(ClientMessage::Ack);
                             return Ok(());
                         }
                         // Headless never prompts, and the terminal driver treats a skipped
@@ -451,11 +458,11 @@ impl ScriptIoHandle for CapturingIoHandle {
                                 "archetect: preserved existing {} (if_exists = Prompt; headless renders never prompt)",
                                 info.destination
                             );
-                            *self.pending.lock().unwrap() = Some(ClientMessage::Ack);
+                            *lock(&self.pending) = Some(ClientMessage::Ack);
                             return Ok(());
                         }
                         ExistingFilePolicy::Error => {
-                            *self.pending.lock().unwrap() = Some(ClientMessage::Error(format!(
+                            *lock(&self.pending) = Some(ClientMessage::Error(format!(
                                 "file already exists: {} (if_exists = Existing.Error)",
                                 info.destination
                             )));
@@ -468,12 +475,12 @@ impl ScriptIoHandle for CapturingIoHandle {
                 }
                 let reply = match std::fs::write(&path, &info.contents) {
                     Ok(()) => {
-                        self.writes.lock().unwrap().push(info.destination);
+                        lock(&self.writes).push(info.destination);
                         ClientMessage::Ack
                     }
                     Err(e) => ClientMessage::Error(e.to_string()),
                 };
-                *self.pending.lock().unwrap() = Some(reply);
+                *lock(&self.pending) = Some(reply);
             }
             // The archetype's user-facing output (`output.print`) — stdout, when forwarding is on.
             ScriptMessage::Print(m) => {
@@ -486,7 +493,7 @@ impl ScriptIoHandle for CapturingIoHandle {
             | ScriptMessage::LogError(m)
             | ScriptMessage::CompleteError(m)
             | ScriptMessage::Display(m) => {
-                let mut last = self.last_diag.lock().unwrap();
+                let mut last = lock(&self.last_diag);
                 if last.as_deref() != Some(m.as_str()) {
                     eprintln!("{m}");
                     *last = Some(m);
@@ -498,11 +505,7 @@ impl ScriptIoHandle for CapturingIoHandle {
     }
 
     fn receive(&self) -> Result<ClientMessage, IoError> {
-        self.pending
-            .lock()
-            .unwrap()
-            .take()
-            .ok_or(IoError::ClientDisconnected)
+        lock(&self.pending).take().ok_or(IoError::ClientDisconnected)
     }
 }
 

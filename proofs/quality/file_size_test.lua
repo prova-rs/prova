@@ -1,27 +1,19 @@
 -- Quality gate: no Rust source file grows without bound. A big file is where bugs hide and where
 -- an agent loses the thread, so oversized files are a red condition that forces a refactor.
 --
--- Posture (Mix): a HARD limit for new files; the current giants are GRANDFATHERED — recorded here
--- as known debt so CI stays green today, but each one carries a graduation check (drops to <=
--- LIMIT -> FAILS demanding delisting) AND a per-file line-count ratchet: growth past the committed
--- baseline is red, every shrink is banked by --update-baseline, and a `goal` in the baseline file
--- schedules the paydown. A god file taxes users and agents alike — the ratchet is the pressure,
--- modularization sessions are the payments.
+-- Posture: the COUNT of files past the limit is ratcheted, and the count is ZERO — the giants
+-- this gate once grandfathered (modules.rs 7,443 · engine.rs 6,654 · main.rs 5,203) were all
+-- paid down in 2026-08, so at zero the ratchet IS the hard limit: any new giant is a 0 → 1
+-- regression, red immediately, and every offender is named in the output. (The grandfather-list
+-- machinery this replaces earned its keep while the giants existed; an empty list was just
+-- ceremony around the same enforcement.)
+--
+-- Layout-agnostic: the roots scanned come from `cargo metadata` (workspace.src_roots), never a
+-- hardcoded list — a hardcoded list goes silently stale the day a crate is added.
+
+local workspace = require("workspace")
 
 local LIMIT = 1500
-
--- Source trees prova gates on its own code (the four crate/tool src roots; never target/ or tests).
-local SRC_ROOTS = {
-  "crates/prova-core/src",
-  "crates/prova-cli/src",
-  "crates/prova-archetect/src",
-  "xtask/src",
-}
-
--- Known giants, repo-relative. Grandfathered, not excused: still red-in-waiting via the graduation
--- check below. Splitting any of these is the first paydown target. Empty as of 2026-08:
--- modules.rs, engine.rs and main.rs all paid down — grandfather sparingly, with a paydown note.
-local GRANDFATHERED = {}
 
 -- wc -l semantics: count newlines, so the numbers match a plain `wc -l` and each other.
 local function line_count(path)
@@ -31,16 +23,14 @@ end
 
 -- fs.glob's base is a concrete dir; "*.rs" catches files directly under it and "**/*.rs" the nested
 -- ones. Globbing both and de-duping is robust regardless of whether "**" also matches depth zero.
-local function source_files()
-  local prefix = prova.root .. "/"
+local function source_files(roots)
   local seen, out = {}, {}
-  for _, root in ipairs(SRC_ROOTS) do
+  for _, root in ipairs(roots) do
     for _, pat in ipairs({ "*.rs", "**/*.rs" }) do
-      for _, path in ipairs(fs.glob(prefix .. root, pat)) do
+      for _, path in ipairs(fs.glob(root, pat)) do
         if not seen[path] then
           seen[path] = true
-          local rel = path:sub(1, #prefix) == prefix and path:sub(#prefix + 1) or path
-          out[#out + 1] = { path = path, rel = rel }
+          out[#out + 1] = path
         end
       end
     end
@@ -48,28 +38,23 @@ local function source_files()
   return out
 end
 
-prova.test("no source file exceeds " .. LIMIT .. " lines (giants grandfathered, tracked for paydown)", function(t)
-  local files = source_files()
-  -- Vacuity guard: a broken glob/root would make every assertion below trivially pass.
-  t:expect(#files, "no source files scanned — SRC_ROOTS or glob is wrong"):gt(20)
+prova.test("oversized source files (> " .. LIMIT .. " lines) do not multiply past the baseline", {
+  switch = "quality",
+  requires = { "cargo" },
+}, function(t)
+  local files = source_files(workspace.src_roots(t:use(workspace.metadata)))
+  -- Vacuity guard: a broken metadata/glob answer would make the count below trivially zero.
+  t:expect(#files, "suspiciously few source files scanned — src-root discovery is wrong"):gt(20)
 
-  for _, f in ipairs(files) do
-    local n = line_count(f.path)
-    if GRANDFATHERED[f.rel] then
-      -- Still legitimately a giant. When it finally drops to <= LIMIT this fails, demanding you
-      -- remove it from GRANDFATHERED — the graduation / paydown signal.
-      t:expect(n, f.rel .. " is now <= " .. LIMIT .. " lines — remove it from GRANDFATHERED (paid down!)"):gt(LIMIT)
-    else
-      t:expect(n, f.rel .. " is " .. n .. " lines (> " .. LIMIT .. ") — split it, or grandfather it with a paydown note"):never():gt(LIMIT)
+  local prefix = prova.root .. "/"
+  local over = 0
+  for _, path in ipairs(files) do
+    local n = line_count(path)
+    if n > LIMIT then
+      over = over + 1
+      local rel = path:sub(1, #prefix) == prefix and path:sub(#prefix + 1) or path
+      print(string.format("  oversized  %-60s %6d lines", rel, n))
     end
   end
-end)
-
-prova.test("the grandfathered giants do not grow — each file's line count is ratcheted", { switch = "quality" }, function(t)
-  -- The debt, numerically: growth past a giant's committed baseline is red; a shrink is banked
-  -- with --update-baseline; a `goal` in the baseline file schedules the modularization.
-  for rel in pairs(GRANDFATHERED) do
-    local metric = "rust.file_lines." .. rel:match("([^/]+)%.rs$")
-    measure.ratchet(t, metric, line_count(prova.root .. "/" .. rel), { set = "quality" })
-  end
+  measure.ratchet(t, "rust.files.oversized", over, { set = "quality" })
 end)
