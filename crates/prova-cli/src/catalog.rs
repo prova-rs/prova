@@ -480,8 +480,9 @@ mod tests {
         let mut warnings = Vec::new();
         let r = resolve(&c, "acme-api", &at, &mut warnings).expect("registry lookup");
 
-        // `latest` becomes the pin, so a bare key still renders something reproducible.
-        assert_eq!(r.source, "https://git.acme.internal/archetypes/api#v3");
+        // `latest` becomes the pin, so a bare key still renders something reproducible — and the
+        // browser-shaped registry repo gains the `.git` suffix archetect's source detection needs.
+        assert_eq!(r.source, "https://git.acme.internal/archetypes/api.git#v3");
         assert_eq!(r.origin, "registry prova-rs");
         assert_eq!(r.description, "An Acme API package");
         assert_eq!(r.in_package, InPackage::Deny);
@@ -505,7 +506,7 @@ mod tests {
         let mut warnings = Vec::new();
         let r = resolve(&c, "acme-api", &at, &mut warnings).expect("lookup with policy");
 
-        assert_eq!(r.source, "https://git.acme.internal/archetypes/api#v3");
+        assert_eq!(r.source, "https://git.acme.internal/archetypes/api.git#v3");
         assert_eq!(r.switches, vec!["ci".to_string()]);
         assert!(r.defaults);
         assert_eq!(r.answers.get("team").map(String::as_str), Some("platform"));
