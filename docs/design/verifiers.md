@@ -127,6 +127,17 @@ bootstrap itself retires when #manifest-declared-runner lands). No `it` profile 
 so: cargo's integration-test targets ride the ut conduct, and the black-box suite IS the
 system-level integration bar — the split is per-project vocabulary, not doctrine.
 
+<!-- backlog: coverage-of-the-whole-bar -->
+**The coverage gate measures the unit layer; the bar is bigger than that.** `prova run coverage`
+conducts `cargo llvm-cov nextest`, so its 60% is unit-test line coverage — and the per-file gaps
+it reports are misleading at the edges: `modules/socket.rs` reads 2% while owning a whole
+black-box proof directory, because proofs drive a separate uninstrumented binary. The next rung:
+instrument the proof run itself (build `target/debug/prova` with `-C instrument-coverage`, run
+the suite, merge profdata with the nextest set) so the ratcheted number is the WHOLE bar —
+observed and deputed evidence landing in one coverage account, the same two-provenances story
+the verdicts already tell. Until then, read the unit number as "covered by unit tests", never
+"covered". Recorded 2026-08-09.
+
 ## The facet convention (for the verifiers that follow)
 
 `junit` is first-party because parsing is native; verifier *packages* (TLA+/TLC over a pinned

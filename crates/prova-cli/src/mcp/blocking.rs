@@ -210,6 +210,20 @@ pub(super) fn owed_blocking(env: &McpEnv, req: OwedRequest) -> Result<(serde_jso
     Ok((json!({ "owed": owed_rows(&account.owed) }), false))
 }
 
+
+/// The warm registry's lock, as a tool-call error instead of a server abort: a poisoned mutex
+/// means a holder thread panicked, which is THAT call's failure to report — the server itself
+/// must keep answering (docs/design/mcp-mode.md: stdin EOF is the only clean shutdown).
+fn warm_lock(
+    warm: &WarmRegistry,
+) -> Result<std::sync::MutexGuard<'_, HashMap<String, super::WarmHandle>>, String> {
+    warm.lock().map_err(|_| {
+        "the warm-topology registry is poisoned (a holder thread panicked) — restart the MCP \
+         server; details on its stderr"
+            .to_string()
+    })
+}
+
 /// One JSON shape for a debt row, shared by `evidence` and `owed` so the two cannot drift.
 fn owed_rows(owed: &[crate::claims::Owed]) -> Vec<serde_json::Value> {
     owed.iter()
@@ -276,7 +290,7 @@ pub(super) fn up_blocking(
     req: UpRequest,
 ) -> Result<(serde_json::Value, bool), String> {
     let name = req.name;
-    if warm.lock().expect("warm registry").contains_key(&name) {
+    if warm_lock(warm)?.contains_key(&name) {
         return Err(format!(
             "topology {name:?} is already up — `down` it first (a held environment accumulates \
              state; down + up is the reset)"
@@ -352,7 +366,7 @@ pub(super) fn up_blocking(
     match ready_rx.recv() {
         Ok(Ok(endpoints)) => {
             let resources = endpoints_json(&endpoints);
-            warm.lock().expect("warm registry").insert(
+            warm_lock(warm)?.insert(
                 name.clone(),
                 WarmHandle {
                     endpoints,
@@ -377,9 +391,7 @@ pub(super) fn up_blocking(
 }
 
 pub(super) fn down_blocking(warm: &WarmRegistry, name: &str) -> Result<(serde_json::Value, bool), String> {
-    let handle = warm
-        .lock()
-        .expect("warm registry")
+    let handle = warm_lock(warm)?
         .remove(name)
         .ok_or_else(|| format!("topology {name:?} is not held (see `status`)"))?;
 
@@ -405,9 +417,7 @@ pub(super) fn warm_run_blocking(
     topology: &str,
     req: RunRequest,
 ) -> Result<(serde_json::Value, bool), String> {
-    let (tx, home) = warm
-        .lock()
-        .expect("warm registry")
+    let (tx, home) = warm_lock(warm)?
         .get(topology)
         .map(|h| (h.tx.clone(), h.home.clone()))
         .ok_or_else(|| not_held(topology))?;
@@ -486,9 +496,7 @@ pub(super) fn warm_eval_blocking(
     if code.trim().is_empty() {
         return Err("eval: the snippet is empty".into());
     }
-    let tx = warm
-        .lock()
-        .expect("warm registry")
+    let tx = warm_lock(warm)?
         .get(topology)
         .map(|h| h.tx.clone())
         .ok_or_else(|| not_held(topology))?;

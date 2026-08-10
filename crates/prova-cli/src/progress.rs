@@ -172,7 +172,11 @@ impl Progress for StderrProgress {
         let Some(id) = Self::find(&mut live, kind, subject) else {
             return;
         };
-        let entry = live.get_mut(&id).expect("just found");
+        // `find` just returned the id, but progress is best-effort display: an entry that
+        // somehow is not there is a no-op line, never a panic in the middle of someone's run.
+        let Some(entry) = live.get_mut(&id) else {
+            return;
+        };
         entry.detail = Some(detail.to_string());
         if !entry.announced && entry.started.elapsed() >= THRESHOLD {
             announce(entry);
@@ -186,7 +190,9 @@ impl Progress for StderrProgress {
         let Some(id) = Self::find(&mut live, kind, subject) else {
             return;
         };
-        let entry = live.remove(&id).expect("just found");
+        let Some(entry) = live.remove(&id) else {
+            return;
+        };
 
         // The gate. A fast activity leaves no trace at all — not even a completion line, because a
         // completion with no start reads as a non-sequitur.
