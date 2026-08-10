@@ -157,12 +157,18 @@ impl UserData for ShimStub {
     }
 }
 
+impl super::wiretap::ShimHandle for ShimUd {
+    fn env_key(&self) -> &mlua::RegistryKey {
+        &self.env
+    }
+    fn shim_path(&self) -> String {
+        self.state.borrow().shim.to_string_lossy().to_string()
+    }
+}
+
 impl UserData for ShimUd {
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
-        fields.add_field_method_get("env", |lua, this| lua.registry_value::<Table>(&this.env));
-        fields.add_field_method_get("path", |_, this| {
-            Ok(this.state.borrow().shim.to_string_lossy().to_string())
-        });
+        super::wiretap::add_shim_fields(fields);
     }
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("on", |lua, this, spec: Table| {

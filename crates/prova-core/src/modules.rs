@@ -60,6 +60,7 @@ mod shellproxy;
 mod socket;
 mod terminal;
 mod websocket;
+mod wiretap;
 
 /// What `client_opts` yields: the URL, the header pairs, and the optional timeout.
 #[cfg(any(feature = "http", feature = "graphql"))]

@@ -126,16 +126,10 @@ fn connect_fn(lua: &Lua) -> mlua::Result<Function> {
 
 // ── the mock: terminate (and push — full duplex) ───────────────────────────────────────────────
 
-struct WsRecorded {
-    data: Vec<u8>,
-    matched: bool,
-    source: &'static str,
-}
-
 #[derive(Default)]
 struct MockState {
     stubs: Vec<(Vec<u8>, Option<Vec<u8>>)>,
-    journal: Vec<WsRecorded>,
+    journal: Vec<super::wiretap::JournalRow>,
     on_connect: Option<Function>,
 }
 
@@ -205,47 +199,13 @@ impl UserData for MockUd {
             Ok(())
         });
 
-        methods.add_method("received", |lua, this, filter: Option<Value>| {
-            let entries: Vec<Table> = {
-                let s = this.state.borrow();
-                s.journal
-                    .iter()
-                    .enumerate()
-                    .map(|(i, r)| {
-                        let t = lua.create_table()?;
-                        t.set("seq", i + 1)?;
-                        t.set("data", lua.create_string(&r.data)?)?;
-                        t.set("matched", r.matched)?;
-                        t.set("source", r.source)?;
-                        Ok(t)
-                    })
-                    .collect::<mlua::Result<_>>()?
-            };
-            let out = lua.create_table()?;
-            let mut n = 0;
-            for entry in entries {
-                if super::journal_keep(lua, &filter, &entry)? {
-                    n += 1;
-                    out.set(n, entry)?;
-                }
-            }
-            Ok(out)
-        });
-
-        methods.add_method("stop", |_, this, ()| {
-            if let Some(tx) = this.shutdown.borrow_mut().take() {
-                let _ = tx.send(());
-            }
-            Ok(())
-        });
-        methods.add_method("close", |_, this, ()| {
-            if let Some(tx) = this.shutdown.borrow_mut().take() {
-                let _ = tx.send(());
-            }
-            Ok(())
-        });
+        super::wiretap::add_received_method(methods);
+        super::wiretap::add_shutdown_methods(methods);
     }
 }
+
+super::wiretap::impl_journal!(MockUd);
+super::wiretap::impl_shutdown!(MockUd);
 
 fn mock_fn(lua: &Lua) -> mlua::Result<Function> {
     lua.create_function(|lua, (ctx, _opts): (Value, Option<Table>)| {
@@ -262,74 +222,66 @@ fn mock_fn(lua: &Lua) -> mlua::Result<Function> {
             .map_err(|e| err(format!("websocket.mock: from_std: {e}")))?;
 
         let state: Rc<RefCell<MockState>> = Rc::default();
-        let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
 
         let accept_state = state.clone();
-        tokio::task::spawn_local(async move {
-            loop {
-                tokio::select! {
-                    _ = &mut rx => break,
-                    accepted = listener.accept() => {
-                        let Ok((stream, _peer)) = accepted else { break };
-                        let conn_state = accept_state.clone();
-                        tokio::task::spawn_local(async move {
-                            let Ok(ws) = tokio_tungstenite::accept_async(stream).await else {
-                                return;
-                            };
-                            let (sink, mut reader) = ws.split();
-                            let sink: SharedSink = Rc::new(RefCell::new(Some(sink)));
+        super::wiretap::spawn_accept_loop(listener, rx, move |stream| {
+            let conn_state = accept_state.clone();
+            tokio::task::spawn_local(async move {
+                let Ok(ws) = tokio_tungstenite::accept_async(stream).await else {
+                    return;
+                };
+                let (sink, mut reader) = ws.split();
+                let sink: SharedSink = Rc::new(RefCell::new(Some(sink)));
 
-                            // Full duplex: the on_connect script may push before any request.
-                            let hook = conn_state.borrow().on_connect.clone();
-                            if let Some(f) = hook {
-                                let conn = ServerConnUd { sink: sink.clone() };
-                                // An async Lua hook: `conn:send` awaits, so call async.
-                                let _ = f.call_async::<()>(conn).await;
-                            }
+                // Full duplex: the on_connect script may push before any request.
+                let hook = conn_state.borrow().on_connect.clone();
+                if let Some(f) = hook {
+                    let conn = ServerConnUd { sink: sink.clone() };
+                    // An async Lua hook: `conn:send` awaits, so call async.
+                    let _ = f.call_async::<()>(conn).await;
+                }
 
-                            while let Some(Ok(m)) = reader.next().await {
-                                let Some(turn) = msg_bytes(&m) else {
-                                    if matches!(m, Message::Close(_)) {
-                                        break;
-                                    }
-                                    continue;
-                                };
-                                let reply = {
-                                    let mut s = conn_state.borrow_mut();
-                                    match s.stubs.iter().find(|(k, _)| *k == turn) {
-                                        Some((_, r)) => {
-                                            let r = r.clone();
-                                            s.journal.push(WsRecorded {
-                                                data: turn,
-                                                matched: true,
-                                                source: "stub",
-                                            });
-                                            r
-                                        }
-                                        None => {
-                                            s.journal.push(WsRecorded {
-                                                data: turn,
-                                                matched: false,
-                                                source: "unmatched",
-                                            });
-                                            None
-                                        }
-                                    }
-                                };
-                                if let Some(r) = reply {
-                                    let Some(mut sk) = sink.borrow_mut().take() else { break };
-                                    let text = String::from_utf8_lossy(&r).to_string();
-                                    let sent = sk.send(Message::Text(text)).await;
-                                    *sink.borrow_mut() = Some(sk);
-                                    if sent.is_err() {
-                                        break;
-                                    }
-                                }
+                while let Some(Ok(m)) = reader.next().await {
+                    let Some(turn) = msg_bytes(&m) else {
+                        if matches!(m, Message::Close(_)) {
+                            break;
+                        }
+                        continue;
+                    };
+                    let reply = {
+                        let mut s = conn_state.borrow_mut();
+                        match s.stubs.iter().find(|(k, _)| *k == turn) {
+                            Some((_, r)) => {
+                                let r = r.clone();
+                                s.journal.push(super::wiretap::JournalRow {
+                                    data: turn,
+                                    matched: true,
+                                    source: "stub",
+                                });
+                                r
                             }
-                        });
+                            None => {
+                                s.journal.push(super::wiretap::JournalRow {
+                                    data: turn,
+                                    matched: false,
+                                    source: "unmatched",
+                                });
+                                None
+                            }
+                        }
+                    };
+                    if let Some(r) = reply {
+                        let Some(mut sk) = sink.borrow_mut().take() else { break };
+                        let text = String::from_utf8_lossy(&r).to_string();
+                        let sent = sk.send(Message::Text(text)).await;
+                        *sink.borrow_mut() = Some(sk);
+                        if sent.is_err() {
+                            break;
+                        }
                     }
                 }
-            }
+            });
         });
 
         let ud = lua.create_userdata(MockUd {
@@ -344,14 +296,9 @@ fn mock_fn(lua: &Lua) -> mlua::Result<Function> {
 
 // ── the proxy: interpose (wiretap + faults) ────────────────────────────────────────────────────
 
-struct WsTurnRec {
-    dir: &'static str,
-    data: Vec<u8>,
-}
-
 #[derive(Default)]
 struct WsProxyState {
-    transcript: Vec<WsTurnRec>,
+    transcript: Vec<super::wiretap::TranscriptRow>,
     latency: Option<Duration>,
     dropped: bool,
 }
@@ -368,18 +315,7 @@ impl UserData for WsProxyUd {
         fields.add_field_method_get("endpoint", |_, this| Ok(this.url.clone()));
     }
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("transcript", |lua, this, ()| {
-            let out = lua.create_table()?;
-            let s = this.state.borrow();
-            for (i, rec) in s.transcript.iter().enumerate() {
-                let t = lua.create_table()?;
-                t.set("seq", i + 1)?;
-                t.set("dir", rec.dir)?;
-                t.set("data", lua.create_string(&rec.data)?)?;
-                out.set(i + 1, t)?;
-            }
-            Ok(out)
-        });
+        super::wiretap::add_transcript_method(methods);
         // The fault vocabulary rides the substrate — the ws proxy speaks the same verbs as socket.
         methods.add_method("latency", |_, this, d: String| {
             this.state.borrow_mut().latency =
@@ -390,20 +326,12 @@ impl UserData for WsProxyUd {
             this.state.borrow_mut().dropped = true;
             Ok(())
         });
-        methods.add_method("stop", |_, this, ()| {
-            if let Some(tx) = this.shutdown.borrow_mut().take() {
-                let _ = tx.send(());
-            }
-            Ok(())
-        });
-        methods.add_method("close", |_, this, ()| {
-            if let Some(tx) = this.shutdown.borrow_mut().take() {
-                let _ = tx.send(());
-            }
-            Ok(())
-        });
+        super::wiretap::add_shutdown_methods(methods);
     }
 }
+
+super::wiretap::impl_transcript!(WsProxyUd);
+super::wiretap::impl_shutdown!(WsProxyUd);
 
 /// One direction of an interposed ws connection: forward each message turn, recording it and
 /// applying the current faults (latency before delivery; drop severs).
@@ -434,7 +362,7 @@ async fn ws_pump(
         if let Some(l) = latency {
             tokio::time::sleep(l).await;
         }
-        state.borrow_mut().transcript.push(WsTurnRec {
+        state.borrow_mut().transcript.push(super::wiretap::TranscriptRow {
             dir,
             data: bytes.clone(),
         });
@@ -474,32 +402,23 @@ fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
             .map_err(|e| err(format!("websocket.proxy: from_std: {e}")))?;
 
         let state: Rc<RefCell<WsProxyState>> = Rc::default();
-        let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
         let accept_state = state.clone();
-
-        tokio::task::spawn_local(async move {
-            loop {
-                tokio::select! {
-                    _ = &mut rx => break,
-                    accepted = listener.accept() => {
-                        let Ok((stream, _peer)) = accepted else { break };
-                        let state = accept_state.clone();
-                        let upstream = upstream.clone();
-                        tokio::task::spawn_local(async move {
-                            let Ok(client) = tokio_tungstenite::accept_async(stream).await else { return };
-                            let Ok((up, _)) = tokio_tungstenite::connect_async(&upstream).await else { return };
-                            let (client_sink, client_stream) = client.split();
-                            let (up_sink, up_stream) = up.split();
-                            let client_sink: DynSink = Rc::new(RefCell::new(Some(Box::new(client_sink))));
-                            let up_sink: DynSink = Rc::new(RefCell::new(Some(Box::new(up_sink))));
-                            // up: client → upstream · down: upstream → client
-                            let a = ws_pump(client_stream, up_sink, "up", state.clone());
-                            let b = ws_pump(up_stream, client_sink, "down", state);
-                            tokio::join!(a, b);
-                        });
-                    }
-                }
-            }
+        super::wiretap::spawn_accept_loop(listener, rx, move |stream| {
+            let state = accept_state.clone();
+            let upstream = upstream.clone();
+            tokio::task::spawn_local(async move {
+                let Ok(client) = tokio_tungstenite::accept_async(stream).await else { return };
+                let Ok((up, _)) = tokio_tungstenite::connect_async(&upstream).await else { return };
+                let (client_sink, client_stream) = client.split();
+                let (up_sink, up_stream) = up.split();
+                let client_sink: DynSink = Rc::new(RefCell::new(Some(Box::new(client_sink))));
+                let up_sink: DynSink = Rc::new(RefCell::new(Some(Box::new(up_sink))));
+                // up: client → upstream · down: upstream → client
+                let a = ws_pump(client_stream, up_sink, "up", state.clone());
+                let b = ws_pump(up_stream, client_sink, "down", state);
+                tokio::join!(a, b);
+            });
         });
 
         let ud = lua.create_userdata(WsProxyUd {

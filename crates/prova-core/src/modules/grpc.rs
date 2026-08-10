@@ -442,7 +442,7 @@ async fn files_for_filename(
 // module paths; this macro generates the list/file-fetch pair for each so the orchestration above
 // stays version-agnostic.
 macro_rules! reflection_ops {
-    ($modpath:ident, $list_fn:ident, $files_fn:ident, $byname_fn:ident) => {
+    ($modpath:ident, $list_fn:ident, $files_fn:ident, $byname_fn:ident, $drain_fn:ident) => {
         async fn $list_fn(channel: &Channel) -> Result<Vec<String>, Status> {
             use tonic_reflection::pb::$modpath::{
                 server_reflection_client::ServerReflectionClient,
@@ -475,46 +475,29 @@ macro_rules! reflection_ops {
         }
 
         async fn $byname_fn(channel: &Channel, filename: &str) -> Result<Vec<Vec<u8>>, Status> {
-            use tonic_reflection::pb::$modpath::{
-                server_reflection_client::ServerReflectionClient,
-                server_reflection_request::MessageRequest,
-                server_reflection_response::MessageResponse, ServerReflectionRequest,
-            };
-            let mut client = ServerReflectionClient::new(channel.clone());
-            let req = ServerReflectionRequest {
-                host: String::new(),
-                message_request: Some(MessageRequest::FileByFilename(filename.to_string())),
-            };
-            let stream = futures::stream::iter(std::iter::once(req));
-            let mut inner = client.server_reflection_info(stream).await?.into_inner();
-            let mut out = Vec::new();
-            while let Some(resp) = inner.message().await? {
-                match resp.message_response {
-                    Some(MessageResponse::FileDescriptorResponse(fdr)) => {
-                        out.extend(fdr.file_descriptor_proto);
-                    }
-                    Some(MessageResponse::ErrorResponse(e)) => {
-                        return Err(Status::new(
-                            tonic::Code::from(e.error_code),
-                            e.error_message,
-                        ));
-                    }
-                    _ => {}
-                }
-            }
-            Ok(out)
+            use tonic_reflection::pb::$modpath::server_reflection_request::MessageRequest;
+            $drain_fn(channel, MessageRequest::FileByFilename(filename.to_string())).await
         }
 
         async fn $files_fn(channel: &Channel, symbol: &str) -> Result<Vec<Vec<u8>>, Status> {
+            use tonic_reflection::pb::$modpath::server_reflection_request::MessageRequest;
+            $drain_fn(channel, MessageRequest::FileContainingSymbol(symbol.to_string())).await
+        }
+
+        // The shared drain: one request in, every FileDescriptorResponse's protos out. The two
+        // file-fetch requests differ only in their MessageRequest variant.
+        async fn $drain_fn(
+            channel: &Channel,
+            message_request: tonic_reflection::pb::$modpath::server_reflection_request::MessageRequest,
+        ) -> Result<Vec<Vec<u8>>, Status> {
             use tonic_reflection::pb::$modpath::{
                 server_reflection_client::ServerReflectionClient,
-                server_reflection_request::MessageRequest,
                 server_reflection_response::MessageResponse, ServerReflectionRequest,
             };
             let mut client = ServerReflectionClient::new(channel.clone());
             let req = ServerReflectionRequest {
                 host: String::new(),
-                message_request: Some(MessageRequest::FileContainingSymbol(symbol.to_string())),
+                message_request: Some(message_request),
             };
             let stream = futures::stream::iter(std::iter::once(req));
             let mut inner = client.server_reflection_info(stream).await?.into_inner();
@@ -538,8 +521,8 @@ macro_rules! reflection_ops {
     };
 }
 
-reflection_ops!(v1, list_services_v1, files_for_symbol_v1, files_for_filename_v1);
-reflection_ops!(v1alpha, list_services_v1alpha, files_for_symbol_v1alpha, files_for_filename_v1alpha);
+reflection_ops!(v1, list_services_v1, files_for_symbol_v1, files_for_filename_v1, drain_fds_v1);
+reflection_ops!(v1alpha, list_services_v1alpha, files_for_symbol_v1alpha, files_for_filename_v1alpha, drain_fds_v1alpha);
 
 fn opt_duration(opts: &Option<Table>, key: &str) -> mlua::Result<Option<Duration>> {
     Ok(match opts {

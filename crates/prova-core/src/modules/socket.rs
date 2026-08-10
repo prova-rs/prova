@@ -497,16 +497,10 @@ fn listen_fn(lua: &Lua) -> mlua::Result<Function> {
 
 // ── the mock: terminate ────────────────────────────────────────────────────────────────────────
 
-struct MockRecorded {
-    data: Vec<u8>,
-    matched: bool,
-    source: &'static str,
-}
-
 #[derive(Default)]
 struct MockState {
     stubs: Vec<(Vec<u8>, Option<Vec<u8>>)>,
-    journal: Vec<MockRecorded>,
+    journal: Vec<super::wiretap::JournalRow>,
 }
 
 struct MockUd {
@@ -547,48 +541,13 @@ impl UserData for MockUd {
             })
         });
 
-        // The §6 journal: { seq, data, matched, source } filtered by the shared contract.
-        methods.add_method("received", |lua, this, filter: Option<Value>| {
-            let entries: Vec<Table> = {
-                let s = this.state.borrow();
-                s.journal
-                    .iter()
-                    .enumerate()
-                    .map(|(i, r)| {
-                        let t = lua.create_table()?;
-                        t.set("seq", i + 1)?;
-                        t.set("data", lua.create_string(&r.data)?)?;
-                        t.set("matched", r.matched)?;
-                        t.set("source", r.source)?;
-                        Ok(t)
-                    })
-                    .collect::<mlua::Result<_>>()?
-            };
-            let out = lua.create_table()?;
-            let mut n = 0;
-            for entry in entries {
-                if super::journal_keep(lua, &filter, &entry)? {
-                    n += 1;
-                    out.set(n, entry)?;
-                }
-            }
-            Ok(out)
-        });
-
-        methods.add_method("stop", |_, this, ()| {
-            if let Some(tx) = this.shutdown.borrow_mut().take() {
-                let _ = tx.send(());
-            }
-            Ok(())
-        });
-        methods.add_method("close", |_, this, ()| {
-            if let Some(tx) = this.shutdown.borrow_mut().take() {
-                let _ = tx.send(());
-            }
-            Ok(())
-        });
+        super::wiretap::add_received_method(methods);
+        super::wiretap::add_shutdown_methods(methods);
     }
 }
+
+super::wiretap::impl_journal!(MockUd);
+super::wiretap::impl_shutdown!(MockUd);
 
 fn mock_fn(lua: &Lua) -> mlua::Result<Function> {
     lua.create_function(|lua, (ctx, opts): (Value, Option<Table>)| {
@@ -627,7 +586,7 @@ fn mock_fn(lua: &Lua) -> mlua::Result<Function> {
                                     match s.stubs.iter().find(|(k, _)| *k == turn) {
                                         Some((_, r)) => {
                                             let r = r.clone();
-                                            s.journal.push(MockRecorded {
+                                            s.journal.push(super::wiretap::JournalRow {
                                                 data: turn,
                                                 matched: true,
                                                 source: "stub",
@@ -638,7 +597,7 @@ fn mock_fn(lua: &Lua) -> mlua::Result<Function> {
                                             // The §6 rule: an unmatched turn is journaled — it is
                                             // the most interesting thing a mock can record — and
                                             // the connection closes LOUD instead of guessing.
-                                            s.journal.push(MockRecorded {
+                                            s.journal.push(super::wiretap::JournalRow {
                                                 data: turn,
                                                 matched: false,
                                                 source: "unmatched",
@@ -680,14 +639,9 @@ struct Faults {
     throttle_bytes_per_sec: Option<f64>,
 }
 
-struct TurnRec {
-    dir: &'static str,
-    data: Vec<u8>,
-}
-
 #[derive(Default)]
 struct ProxyState {
-    transcript: Vec<TurnRec>,
+    transcript: Vec<super::wiretap::TranscriptRow>,
     faults: Faults,
     /// Set in record mode: each (request-turn → response-turn) pair is appended here and flushed
     /// to the cassette on close. Absent otherwise.
@@ -738,7 +692,7 @@ async fn turn_loop(
             Ok(Some(r)) => r,
             _ => break, // client EOF ends the conversation
         };
-        state.borrow_mut().transcript.push(TurnRec {
+        state.borrow_mut().transcript.push(super::wiretap::TranscriptRow {
             dir: "up",
             data: req.clone(),
         });
@@ -769,7 +723,7 @@ async fn turn_loop(
             None
         };
         let Some(resp) = resp else { break };
-        state.borrow_mut().transcript.push(TurnRec {
+        state.borrow_mut().transcript.push(super::wiretap::TranscriptRow {
             dir: "down",
             data: resp.clone(),
         });
@@ -907,7 +861,7 @@ async fn pump(
                 s.faults.throttle_bytes_per_sec,
             )
         };
-        state.borrow_mut().transcript.push(TurnRec {
+        state.borrow_mut().transcript.push(super::wiretap::TranscriptRow {
             dir,
             data: data.clone(),
         });
@@ -977,24 +931,15 @@ impl UserData for FuseUd {
     }
 }
 
+super::wiretap::impl_transcript!(ProxyUd);
+
 impl UserData for ProxyUd {
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
         fields.add_field_method_get("addr", |_, this| Ok(this.addr.clone()));
         fields.add_field_method_get("endpoint", |_, this| Ok(this.addr.clone()));
     }
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("transcript", |lua, this, ()| {
-            let out = lua.create_table()?;
-            let s = this.state.borrow();
-            for (i, rec) in s.transcript.iter().enumerate() {
-                let t = lua.create_table()?;
-                t.set("seq", i + 1)?;
-                t.set("dir", rec.dir)?;
-                t.set("data", lua.create_string(&rec.data)?)?;
-                out.set(i + 1, t)?;
-            }
-            Ok(out)
-        });
+        super::wiretap::add_transcript_method(methods);
 
         methods.add_method("latency", |_, this, d: String| {
             this.state.borrow_mut().faults.latency = Some(parse_duration(&d).ok_or_else(|| err(format!("bad duration {d:?}")))?);

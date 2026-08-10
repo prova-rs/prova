@@ -35,7 +35,18 @@ invalidated by the extraction that was always coming. So:
    proof), then the extracted spine, then the cmd_* helpers. Bank `coverage.unit` per milestone,
    re-aim the goal upward until the delta list is empty of >40-point gaps.
 
-## Phase 1 design: the shared transport spine
+## Phase 1 design: the shared transport spine — LANDED 2026-08-10, clones 31 → 0
+
+The census is ZERO and the `duplication.clones` goal is retired at its floor. The design below
+executed as written, with two implementation-level judgments: the endpoint seam's honest shared
+piece was the `.network` table (a function — `url`/`endpoint` semantics differ per transport, so
+a trait would have forced them), and the trait impls themselves are macro-stamped
+(`impl_journal!`/`impl_transcript!`/`impl_shutdown!`) because their bodies are identical for
+every `Rc<RefCell<State>>`-shaped transport. The grpc reflection drain folded into its existing
+`reflection_ops!` macro as a stamped `$drain_fn`. The durable home is `modules/wiretap.rs`'s own
+docs; this section stays only as the record of what shipped.
+
+### The original design (as reviewed and approved)
 
 Every cross-module clone pair is a copy of one of six seams. The extraction target for each is a
 small shared helper in `modules/` — trait-parameterized where a UserData registration is shared,

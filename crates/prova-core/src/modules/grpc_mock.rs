@@ -61,6 +61,7 @@ struct Stub {
     reply: Reply,
 }
 
+#[derive(Clone)]
 struct Recorded {
     method: String,
     request: serde_json::Value,
@@ -734,14 +735,7 @@ impl UserData for GrpcMock {
             Ok(format!("{}:{}", this.host, this.port))
         });
         fields.add_field_method_get("network", |lua, this| {
-            let Some(host) = &this.network_host else {
-                return Ok(Value::Nil);
-            };
-            let t = lua.create_table()?;
-            t.set("url", format!("http://{host}:{}", this.port))?;
-            t.set("host", host.clone())?;
-            t.set("port", this.port)?;
-            Ok(Value::Table(t))
+            super::wiretap::network_table(lua, &this.network_host, this.port)
         });
     }
 
@@ -765,23 +759,8 @@ impl UserData for GrpcMock {
 
         // The §6 filter contract, same as the http facet — see `journal_keep`.
         methods.add_method("received", |lua, this, filter: Option<Value>| {
-            let entries: Vec<Table> = {
-                let s = this.state.borrow();
-                s.journal
-                    .iter()
-                    .enumerate()
-                    .map(|(i, r)| recorded_to_lua(lua, r, i + 1))
-                    .collect::<mlua::Result<_>>()?
-            };
-            let out = lua.create_table()?;
-            let mut n = 0;
-            for entry in entries {
-                if super::journal_keep(lua, &filter, &entry)? {
-                    n += 1;
-                    out.set(n, entry)?;
-                }
-            }
-            Ok(out)
+            let rows = this.state.borrow().journal.clone();
+            super::wiretap::received_from(lua, rows, &filter, recorded_to_lua)
         });
 
         // Raises on a reply-handler error, exactly as the http facet does — see there for why

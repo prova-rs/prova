@@ -104,6 +104,7 @@ fn match_route(route: &[Seg], path: &str) -> Option<Vec<(String, String)>> {
 
 /// The request as both the handler and the journal see it — deliberately the *same shape*, so
 /// `req.path` in a handler and `m:received()[1].path` in an assertion are the same field.
+#[derive(Clone)]
 struct RequestData {
     method: String,
     path: String,
@@ -112,6 +113,7 @@ struct RequestData {
     body: Vec<u8>,
 }
 
+#[derive(Clone)]
 struct Recorded {
     req: RequestData,
     params: Vec<(String, String)>,
@@ -935,14 +937,7 @@ impl UserData for MockServer {
         // `network` was requested. Mirrors a container resource's `.network`, but the address is
         // the host gateway rather than a DNS alias, because a mock is a host process.
         fields.add_field_method_get("network", |lua, this| {
-            let Some(host) = &this.network_host else {
-                return Ok(Value::Nil);
-            };
-            let t = lua.create_table()?;
-            t.set("url", format!("http://{host}:{}", this.port))?;
-            t.set("host", host.clone())?;
-            t.set("port", this.port)?;
-            Ok(Value::Table(t))
+            super::wiretap::network_table(lua, &this.network_host, this.port)
         });
     }
 
@@ -978,23 +973,8 @@ impl UserData for MockServer {
         // match over the exposed entry, function = predicate. Entries are materialized before
         // filtering so a predicate that re-enters the mock can't hit a live borrow.
         methods.add_method("received", |lua, this, filter: Option<Value>| {
-            let entries: Vec<Table> = {
-                let s = this.state.borrow();
-                s.journal
-                    .iter()
-                    .enumerate()
-                    .map(|(i, r)| recorded_to_lua(lua, r, i + 1))
-                    .collect::<mlua::Result<_>>()?
-            };
-            let out = lua.create_table()?;
-            let mut n = 0;
-            for entry in entries {
-                if super::journal_keep(lua, &filter, &entry)? {
-                    n += 1;
-                    out.set(n, entry)?;
-                }
-            }
-            Ok(out)
+            let rows = this.state.borrow().journal.clone();
+            super::wiretap::received_from(lua, rows, &filter, recorded_to_lua)
         });
 
         // `stop` is what `ctx:manage` calls; idempotent, so an explicit stop plus scope teardown

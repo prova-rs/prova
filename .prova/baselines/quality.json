@@ -15,9 +15,8 @@
       "goal": 70.0
     },
     "rust.duplication.clones": {
-      "value": 8.0,
-      "direction": "lower_is_better",
-      "goal": 2.0
+      "value": 0.0,
+      "direction": "lower_is_better"
     },
     "rust.expect.production": {
       "value": 25.0,
