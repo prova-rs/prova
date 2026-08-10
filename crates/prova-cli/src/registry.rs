@@ -273,10 +273,25 @@ impl ArchetypeEntry {
     /// monorepo), and `path#ref` is not a path: archetect would look for a directory with `#ref` in its
     /// name and report it missing. A path has no ref semantics, so `latest` is dropped rather than
     /// concatenated — [`latest_ignored`] is how the caller learns it happened.
+    ///
+    /// An http(s) repo is normalized to carry the `.git` suffix archetect's source detection
+    /// requires: registries serve browser-shaped URLs (`https://host/org/repo` — that is what
+    /// registration derives from the repo's own identity), while archetect classifies an https URL
+    /// as a git source only when its path contains `.git`. Without the bridge, every
+    /// registry-resolved render failed with Source-not-found — found live the day the first
+    /// registry-only archetype (`rust-project`) shipped; the built-in catalog never hit it because
+    /// its pinned sources spell `.git` by hand.
     pub fn source(&self) -> String {
+        let repo = if (self.repo.starts_with("https://") || self.repo.starts_with("http://"))
+            && !self.repo.trim_end_matches('/').ends_with(".git")
+        {
+            format!("{}.git", self.repo.trim_end_matches('/'))
+        } else {
+            self.repo.clone()
+        };
         match &self.latest {
-            Some(r) if is_git_source(&self.repo) => format!("{}#{r}", self.repo),
-            _ => self.repo.clone(),
+            Some(r) if is_git_source(&self.repo) => format!("{repo}#{r}"),
+            _ => repo,
         }
     }
 
@@ -743,5 +758,62 @@ pub fn learn_lines(cli: bool) -> String {
             out.join("\n")
         }
         Err(e) => format!("Registries could not be read: {e}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ArchetypeEntry;
+
+    fn entry(repo: &str, latest: Option<&str>) -> ArchetypeEntry {
+        ArchetypeEntry {
+            registry: "test".into(),
+            name: "probe".into(),
+            repo: repo.into(),
+            description: String::new(),
+            latest: latest.map(String::from),
+            in_package: None,
+        }
+    }
+
+    // Archetect's https detection requires `.git` in the path; registries serve browser-shaped
+    // URLs. The composed render source must bridge, or every registry-resolved render fails with
+    // Source-not-found (as `rust-project` did, live, the day it registered).
+    #[test]
+    fn https_repo_gains_the_git_suffix_archetect_requires() {
+        assert_eq!(
+            entry("https://github.com/acme/acme-arch", Some("v1.0")).source(),
+            "https://github.com/acme/acme-arch.git#v1.0"
+        );
+        assert_eq!(
+            entry("https://github.com/acme/acme-arch", None).source(),
+            "https://github.com/acme/acme-arch.git"
+        );
+        // Already-suffixed (and trailing-slash) forms are left alone rather than double-suffixed.
+        assert_eq!(
+            entry("https://github.com/acme/acme-arch.git", Some("v2")).source(),
+            "https://github.com/acme/acme-arch.git#v2"
+        );
+        assert_eq!(
+            entry("https://github.com/acme/acme-arch/", None).source(),
+            "https://github.com/acme/acme-arch.git"
+        );
+    }
+
+    #[test]
+    fn local_paths_stay_verbatim_and_drop_the_pin() {
+        // A path has no ref semantics and no `.git` requirement — verbatim, pin dropped,
+        // `latest_ignored` is how the caller learns it happened.
+        let e = entry("/registry/acme-arch", Some("v7"));
+        assert_eq!(e.source(), "/registry/acme-arch");
+        assert!(e.latest_ignored());
+    }
+
+    #[test]
+    fn ssh_sources_are_not_rewritten() {
+        assert_eq!(
+            entry("git@github.com:acme/acme-arch.git", Some("v1")).source(),
+            "git@github.com:acme/acme-arch.git#v1"
+        );
     }
 }
