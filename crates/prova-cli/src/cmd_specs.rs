@@ -364,3 +364,30 @@ pub(crate) fn specs_subcommand(args: Vec<String>) -> ExitCode {
     }
     ExitCode::SUCCESS
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// The lane's filters: state selection is exclusive in BOTH orders, `--undated` composes,
+    /// and anything unexpected is a usage error.
+    #[test]
+    fn specs_filters_compose_and_exclude() {
+        assert_eq!(parse_specs_args(&args(&[])).unwrap(), (None, false));
+        assert_eq!(
+            parse_specs_args(&args(&["--claims", "--undated"])).unwrap(),
+            (Some(claims::Kind::Claim), true)
+        );
+        assert_eq!(
+            parse_specs_args(&args(&["--backlog"])).unwrap(),
+            (Some(claims::Kind::Backlog), false)
+        );
+        assert!(parse_specs_args(&args(&["--claims", "--backlog"])).is_err());
+        assert!(parse_specs_args(&args(&["--backlog", "--claims"])).is_err(), "exclusive both ways");
+        assert!(parse_specs_args(&args(&["stray"])).is_err());
+    }
+}

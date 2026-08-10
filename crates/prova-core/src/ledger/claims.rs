@@ -569,4 +569,61 @@ mod tests {
         assert!(is_malformed("<!-- backlog: id notadate -->"));
         assert!(is_malformed("<!-- backlog: id 2026-09-01 extra -->"));
     }
+
+    /// The digest normalizes whitespace before hashing: a reflowed paragraph is the SAME claim,
+    /// an edited one is not — the whole point of a pin.
+    #[test]
+    fn digest_normalizes_whitespace_only() {
+        let a = digest("the broker  never\n  preempts a lease");
+        assert_eq!(a, digest("the broker never preempts a lease"));
+        assert_ne!(a, digest("the broker never preempts a slot"));
+        assert_eq!(a.len(), 8, "short digest, stable width");
+    }
+
+    /// `path#id@digest` splits into address and pin; no `@` (or an empty pin) means unpinned —
+    /// bound, but not watching the text.
+    #[test]
+    fn split_pin_reads_the_optional_watch() {
+        assert_eq!(split_pin("docs/a.md#x@abcd1234"), ("docs/a.md#x", Some("abcd1234")));
+        assert_eq!(split_pin("docs/a.md#x"), ("docs/a.md#x", None));
+        assert_eq!(split_pin("docs/a.md#x@"), ("docs/a.md#x@", None));
+        assert_eq!(split_pin("PROJ-123"), ("PROJ-123", None), "a ticket address has no anchor");
+    }
+
+    /// End to end over a real doc tree: addresses are package-relative `path#id`, line numbers
+    /// are 1-based at the anchor, both states scan, bare ids resolve uniquely (and ambiguity
+    /// hands back candidates, never a coin flip), and a malformed anchor fails the SCAN loudly.
+    #[test]
+    fn scan_reads_a_doc_tree_and_bare_ids_resolve() {
+        let root = crate::engine::make_tempdir().unwrap();
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+        std::fs::write(
+            root.join("docs/design.md"),
+            "# Doc\n\n<!-- claim: never-preempt -->\nThe broker never preempts.\n\n<!-- backlog: flaky 2026-09-01 -->\nFlaky teardown.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("docs/other.md"),
+            "<!-- claim: flaky -->\nA different flaky.\n",
+        )
+        .unwrap();
+
+        let claims = scan(&root, &["docs".to_string()]).unwrap();
+        assert_eq!(claims.len(), 3);
+        let never = claims.iter().find(|c| c.address.ends_with("#never-preempt")).unwrap();
+        assert_eq!(never.kind, Kind::Claim);
+        assert_eq!(never.address, "docs/design.md#never-preempt");
+        assert_eq!(never.line, 3);
+        assert_eq!(never.digest.len(), 8);
+        let flaky_backlog = claims.iter().find(|c| c.kind == Kind::Backlog).unwrap();
+        assert_eq!(flaky_backlog.date.as_deref(), Some("2026-09-01"));
+
+        assert_eq!(matching_id(&claims, "never-preempt").len(), 1);
+        assert_eq!(matching_id(&claims, "flaky").len(), 2, "ambiguity hands back candidates");
+        assert_eq!(matching_id(&claims, "absent").len(), 0);
+        assert_eq!(backlog(&claims).len(), 1);
+
+        std::fs::write(root.join("docs/bad.md"), "<!-- claim: -->\n").unwrap();
+        assert!(scan(&root, &["docs".to_string()]).is_err(), "malformed anchors fail the scan");
+    }
 }

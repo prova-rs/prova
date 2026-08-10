@@ -784,3 +784,42 @@ pub(crate) fn parse_topology_args(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// The shared loop: flags land in their slots, positionals cap at the verb's budget, and
+    /// `--help`/unknown flags exit early (success and usage-error respectively — ExitCode carries
+    /// which; here we assert the parse never returns Ok for them).
+    #[test]
+    fn topology_flags_parses_and_caps() {
+        let (pos, profile, manifest, fixed) =
+            topology_flags("up", "usage", 2, args(&["alpha", "-p", "ci", "--fixed", "beta"]))
+                .unwrap();
+        assert_eq!(pos, vec!["alpha".to_string(), "beta".to_string()]);
+        assert_eq!(profile.as_deref(), Some("ci"));
+        assert_eq!(manifest, None);
+        assert!(fixed);
+
+        assert!(topology_flags("watch", "usage", 1, args(&["a", "b"])).is_err(), "over the cap");
+        assert!(topology_flags("up", "usage", 2, args(&["--bogus"])).is_err(), "unknown flag");
+        assert!(topology_flags("up", "usage", 2, args(&["--help"])).is_err(), "help exits early");
+    }
+
+    /// start/down's wrapper: exactly one name, required.
+    #[test]
+    fn parse_topology_args_requires_the_name() {
+        let (name, manifest, profile, fixed) =
+            parse_topology_args("start", args(&["kafka", "--manifest", "m.toml"])).unwrap();
+        assert_eq!(name, "kafka");
+        assert_eq!(manifest.as_deref(), Some("m.toml"));
+        assert_eq!(profile, None);
+        assert!(!fixed);
+        assert!(parse_topology_args("down", args(&[])).is_err(), "no name is a usage error");
+    }
+}

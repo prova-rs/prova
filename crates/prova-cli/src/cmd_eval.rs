@@ -210,3 +210,30 @@ pub(crate) fn broker_subcommand(args: Vec<String>) -> ExitCode {
         ExitCode::FAILURE
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// The snippet is the one positional; the knobs land in their slots; `--json` and
+    /// `--format json` are the same request; an empty or missing snippet is a usage error.
+    #[test]
+    fn eval_args_parse_the_snippet_and_knobs() {
+        let cli = parse_eval_args(args(&["return 1", "-p", "ci", "--json", "-P", "x=./pkg"])).unwrap();
+        assert_eq!(cli.code, "return 1");
+        assert_eq!(cli.profile.as_deref(), Some("ci"));
+        assert!(cli.force_json);
+        assert_eq!(cli.packages, vec!["x=./pkg".to_string()]);
+
+        let cli = parse_eval_args(args(&["--format", "json", "return 2"])).unwrap();
+        assert!(cli.force_json);
+        assert!(parse_eval_args(args(&["--format", "yaml", "x"])).is_err(), "unknown format");
+        assert!(parse_eval_args(args(&[])).is_err(), "no snippet");
+        assert!(parse_eval_args(args(&["  "])).is_err(), "empty snippet");
+        assert!(parse_eval_args(args(&["a", "b"])).is_err(), "one snippet only");
+    }
+}
