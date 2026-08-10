@@ -2,15 +2,22 @@
 
 use super::*;
 
-/// `prova up <topology>` — stand up a named topology (the same definition tests use) and hold it
-/// running until Ctrl-C, printing each resource's endpoint. Discovers the topology in the manifest's
-/// test files, resolves declared plugins, and hands off to the engine's held-execution mode.
-pub(crate) fn up_subcommand(args: Vec<String>) -> ExitCode {
+/// What `topology_flags` yields: the positionals, `--profile`, `--manifest`, and `--fixed`.
+type TopologyFlags = (Vec<String>, Option<String>, Option<String>, bool);
+
+/// The topology verbs' shared flag loop: `--profile`/`-p`, `--manifest`, `--fixed`, the verb's
+/// help text, and up to `max_positionals` bare arguments — each verb interprets its own.
+/// `Err(ExitCode::SUCCESS)` is the `--help` early exit.
+fn topology_flags(
+    verb: &str,
+    usage: &str,
+    max_positionals: usize,
+    args: Vec<String>,
+) -> Result<TopologyFlags, ExitCode> {
     let mut positionals: Vec<String> = Vec::new();
     let mut profile: Option<String> = None;
     let mut manifest_path: Option<String> = None;
     let mut fixed = false;
-
     let mut it = args.into_iter();
     while let Some(arg) = it.next() {
         if let Some(v) = value_flag(&arg, &mut it, &["--profile", "-p"]) {
@@ -22,39 +29,47 @@ pub(crate) fn up_subcommand(args: Vec<String>) -> ExitCode {
             continue;
         }
         match arg.as_str() {
-            "--fixed" => {
-                fixed = true;
-                continue;
-            }
+            "--fixed" => fixed = true,
             "-h" | "--help" => {
-                println!(
-                    "usage: prova up [<topology>] [<git-url>] [--fixed] [--profile NAME] [--manifest PATH]\n\
-                     \n\
-                     with no topology, list the topologies this package defines.\n\
-                     with one, stand it up (declared with prova.topology) and hold it running until\n\
-                     Ctrl-C, printing each resource's endpoint.\n\
-                     \n\
-                     with a git URL, act on a REMOTE repo that advertises topologies instead of the\n\
-                     local package: `prova up <url>` lists what it advertises; `prova up <topology>\n\
-                     <url>` stands that one up. The repo is fetched and pinned like a git plugin.\n\
-                     \n\
-                     --fixed  pin each resource to its canonical container port on the host (a\n\
-                     \x20        predictable, external-tool-friendly address) instead of a random one.\n\
-                     \x20        Only one fixed instance of a port can run at a time."
-                );
-                return ExitCode::SUCCESS;
+                println!("{usage}");
+                return Err(ExitCode::SUCCESS);
             }
             other if other.starts_with('-') => {
-                eprintln!("prova up: unknown flag {other}");
-                return ExitCode::from(2);
+                eprintln!("prova {verb}: unknown flag {other}");
+                return Err(ExitCode::from(2));
             }
-            other if positionals.len() < 2 => positionals.push(other.to_string()),
+            other if positionals.len() < max_positionals => positionals.push(other.to_string()),
             other => {
-                eprintln!("prova up: unexpected argument {other:?}");
-                return ExitCode::from(2);
+                eprintln!("prova {verb}: unexpected argument {other:?}");
+                return Err(ExitCode::from(2));
             }
         }
     }
+    Ok((positionals, profile, manifest_path, fixed))
+}
+
+/// `prova up <topology>` — stand up a named topology (the same definition tests use) and hold it
+/// running until Ctrl-C, printing each resource's endpoint. Discovers the topology in the manifest's
+/// test files, resolves declared plugins, and hands off to the engine's held-execution mode.
+pub(crate) fn up_subcommand(args: Vec<String>) -> ExitCode {
+    const USAGE: &str = "usage: prova up [<topology>] [<git-url>] [--fixed] [--profile NAME] [--manifest PATH]\n\
+        \n\
+        with no topology, list the topologies this package defines.\n\
+        with one, stand it up (declared with prova.topology) and hold it running until\n\
+        Ctrl-C, printing each resource's endpoint.\n\
+        \n\
+        with a git URL, act on a REMOTE repo that advertises topologies instead of the\n\
+        local package: `prova up <url>` lists what it advertises; `prova up <topology>\n\
+        <url>` stands that one up. The repo is fetched and pinned like a git plugin.\n\
+        \n\
+        --fixed  pin each resource to its canonical container port on the host (a\n\
+        \x20        predictable, external-tool-friendly address) instead of a random one.\n\
+        \x20        Only one fixed instance of a port can run at a time.";
+    let (positionals, profile, manifest_path, fixed) =
+        match topology_flags("up", USAGE, 2, args) {
+            Ok(parsed) => parsed,
+            Err(code) => return code,
+        };
 
     // Dispatch on the positionals. A git URL routes to the remote forms; otherwise it's a local name.
     //   prova up                    → list local topologies
@@ -463,52 +478,18 @@ pub(crate) fn check_topology_requires(prep: &TopologyRun, name: &str) -> Result<
 /// re-provision whenever its definition files change, holding until Ctrl-C. Attached-only (no detached
 /// supervisor); pair with `--fixed` for endpoints that stay put across re-applies.
 pub(crate) fn watch_subcommand(args: Vec<String>) -> ExitCode {
-    let mut name: Option<String> = None;
-    let mut profile: Option<String> = None;
-    let mut manifest_path: Option<String> = None;
-    let mut fixed = false;
-
-    let mut it = args.into_iter();
-    while let Some(arg) = it.next() {
-        if let Some(v) = value_flag(&arg, &mut it, &["--profile", "-p"]) {
-            profile = Some(v);
-            continue;
-        }
-        if let Some(v) = value_flag(&arg, &mut it, &["--manifest"]) {
-            manifest_path = Some(v);
-            continue;
-        }
-        match arg.as_str() {
-            "--fixed" => {
-                fixed = true;
-                continue;
-            }
-            "-h" | "--help" => {
-                println!(
-                    "usage: prova watch <topology> [--fixed] [--profile NAME] [--manifest PATH]\n\
-                     \n\
-                     stand up a topology and re-provision it whenever its definition files change,\n\
-                     holding until Ctrl-C. A live dev loop over the same definition your tests use.\n\
-                     \n\
-                     --fixed  keep endpoints on canonical ports so they stay stable across re-applies."
-                );
-                return ExitCode::SUCCESS;
-            }
-            other if other.starts_with('-') => {
-                eprintln!("prova watch: unknown flag {other}");
-                return ExitCode::from(2);
-            }
-            other if name.is_none() => name = Some(other.to_string()),
-            other => {
-                eprintln!(
-                    "prova watch: unexpected argument {other:?} (expected one topology name)"
-                );
-                return ExitCode::from(2);
-            }
-        }
-    }
-
-    let Some(name) = name else {
+    const USAGE: &str = "usage: prova watch <topology> [--fixed] [--profile NAME] [--manifest PATH]\n\
+        \n\
+        stand up a topology and re-provision it whenever its definition files change,\n\
+        holding until Ctrl-C. A live dev loop over the same definition your tests use.\n\
+        \n\
+        --fixed  keep endpoints on canonical ports so they stay stable across re-applies.";
+    let (mut positionals, profile, manifest_path, fixed) =
+        match topology_flags("watch", USAGE, 1, args) {
+            Ok(parsed) => parsed,
+            Err(code) => return code,
+        };
+    let Some(name) = positionals.pop() else {
         eprintln!("usage: prova watch <topology>");
         return ExitCode::from(2);
     };
@@ -791,45 +772,11 @@ pub(crate) fn parse_topology_args(
     verb: &str,
     args: Vec<String>,
 ) -> Result<(String, Option<String>, Option<String>, bool), ExitCode> {
-    let mut name: Option<String> = None;
-    let mut profile: Option<String> = None;
-    let mut manifest_path: Option<String> = None;
-    let mut fixed = false;
-    let mut it = args.into_iter();
-    while let Some(arg) = it.next() {
-        if let Some(v) = value_flag(&arg, &mut it, &["--profile", "-p"]) {
-            profile = Some(v);
-            continue;
-        }
-        if let Some(v) = value_flag(&arg, &mut it, &["--manifest"]) {
-            manifest_path = Some(v);
-            continue;
-        }
-        match arg.as_str() {
-            "--fixed" => {
-                fixed = true;
-                continue;
-            }
-            "-h" | "--help" => {
-                println!(
-                    "usage: prova {verb} <topology> [--fixed] [--profile NAME] [--manifest PATH]"
-                );
-                return Err(ExitCode::SUCCESS);
-            }
-            other if other.starts_with('-') => {
-                eprintln!("prova {verb}: unknown flag {other}");
-                return Err(ExitCode::from(2));
-            }
-            other if name.is_none() => name = Some(other.to_string()),
-            other => {
-                eprintln!(
-                    "prova {verb}: unexpected argument {other:?} (expected one topology name)"
-                );
-                return Err(ExitCode::from(2));
-            }
-        }
-    }
-    match name {
+    let usage =
+        format!("usage: prova {verb} <topology> [--fixed] [--profile NAME] [--manifest PATH]");
+    let (mut positionals, profile, manifest_path, fixed) =
+        topology_flags(verb, &usage, 1, args)?;
+    match positionals.pop() {
         Some(n) => Ok((n, manifest_path, profile, fixed)),
         None => {
             eprintln!("usage: prova {verb} <topology>");

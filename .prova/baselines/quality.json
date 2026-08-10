@@ -15,7 +15,7 @@
       "goal": 70.0
     },
     "rust.duplication.clones": {
-      "value": 16.0,
+      "value": 11.0,
       "direction": "lower_is_better",
       "goal": 8.0
     },
@@ -29,7 +29,7 @@
       "direction": "lower_is_better"
     },
     "rust.functions.too_long": {
-      "value": 16.0,
+      "value": 15.0,
       "direction": "lower_is_better",
       "goal": 0.0
     },

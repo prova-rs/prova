@@ -117,19 +117,7 @@ impl UserData for HttpClient {
 
 fn client_fn(lua: &Lua) -> mlua::Result<Function> {
     lua.create_function(|lua, opts: Table| {
-        let base_url = opts.get::<Option<String>>("base_url")?.ok_or_else(|| {
-            mlua::Error::RuntimeError("http.client requires a `base_url`".into())
-        })?;
-        let mut headers = Vec::new();
-        if let Some(hdrs) = opts.get::<Option<Table>>("headers")? {
-            for pair in hdrs.pairs::<String, String>() {
-                let (k, v) = pair?;
-                headers.push((k, v));
-            }
-        }
-        let timeout = opts
-            .get::<Option<String>>("timeout")?
-            .and_then(|s| parse_duration(&s));
+        let (base_url, headers, timeout) = super::client_opts(&opts, "http.client", "base_url")?;
         lua.create_userdata(HttpClient {
             base_url,
             headers,

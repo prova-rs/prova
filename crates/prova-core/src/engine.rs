@@ -732,6 +732,27 @@ fn load_member_files(lua: &Lua, col: &SharedCollector, files: &[PathBuf]) -> mlu
 /// The attention-account pass: evaluate every `prova.remind` condition, after the proofs have
 /// completed (docs/design/reminders.md).
 ///
+/// Load one suite the way `--list` does — setup first, then every member file; bodies never
+/// execute. The shared front half of every query verb that reads a collection without running it
+/// (`evaluate_reminders`, `collect_reminders`, `collect_switch_census`).
+fn load_suite_collection(
+    suite: &crate::suite::Suite,
+    config: &RunConfig,
+) -> mlua::Result<(Lua, SharedCollector)> {
+    if suite.setup.is_none() && suite.files.len() == 1 {
+        return read_and_collect(&suite.files[0], config);
+    }
+    let (lua, col) = build_lua(suite.name.clone(), config)?;
+    if let Some(setup) = suite.setup.as_deref() {
+        let code = std::fs::read_to_string(setup).map_err(|e| {
+            mlua::Error::RuntimeError(format!("cannot read {}: {e}", setup.display()))
+        })?;
+        lua.load(&code).set_name(file_chunk_name(setup)).exec()?;
+    }
+    load_member_files(&lua, &col, &suite.files)?;
+    Ok((lua, col))
+}
+
 /// Runs during the same invocation as the proofs — conditions evaluate in RUNS, and query verbs
 /// only ever read what this recorded — but in its own phase and its own per-suite Lua states,
 /// because reminder closures are `!Send` and the worker states that collected them are gone by the
@@ -748,21 +769,7 @@ pub fn evaluate_reminders(
 ) -> Vec<ReminderOutcome> {
     let mut out = Vec::new();
     for suite in suites {
-        let loaded = (|| -> mlua::Result<(Lua, SharedCollector)> {
-            if suite.setup.is_none() && suite.files.len() == 1 {
-                return read_and_collect(&suite.files[0], config);
-            }
-            let (lua, col) = build_lua(suite.name.clone(), config)?;
-            if let Some(setup) = suite.setup.as_deref() {
-                let code = std::fs::read_to_string(setup).map_err(|e| {
-                    mlua::Error::RuntimeError(format!("cannot read {}: {e}", setup.display()))
-                })?;
-                lua.load(&code).set_name(file_chunk_name(setup)).exec()?;
-            }
-            load_member_files(&lua, &col, &suite.files)?;
-            Ok((lua, col))
-        })();
-        let Ok((lua, col)) = loaded else { continue };
+        let Ok((lua, col)) = load_suite_collection(suite, config) else { continue };
         let (defs, file_paths) = {
             let mut c = col.borrow_mut();
             (std::mem::take(&mut c.reminders), c.file_paths.clone())
@@ -799,21 +806,7 @@ pub fn evaluate_reminders(
 pub fn collect_reminders(suites: &[crate::suite::Suite], config: &RunConfig) -> Vec<ReminderListing> {
     let mut out = Vec::new();
     for suite in suites {
-        let loaded = (|| -> mlua::Result<SharedCollector> {
-            if suite.setup.is_none() && suite.files.len() == 1 {
-                return read_and_collect(&suite.files[0], config).map(|(_, col)| col);
-            }
-            let (lua, col) = build_lua(suite.name.clone(), config)?;
-            if let Some(setup) = suite.setup.as_deref() {
-                let code = std::fs::read_to_string(setup).map_err(|e| {
-                    mlua::Error::RuntimeError(format!("cannot read {}: {e}", setup.display()))
-                })?;
-                lua.load(&code).set_name(file_chunk_name(setup)).exec()?;
-            }
-            load_member_files(&lua, &col, &suite.files)?;
-            Ok(col)
-        })();
-        let Ok(col) = loaded else { continue };
+        let Ok((_lua, col)) = load_suite_collection(suite, config) else { continue };
         let (defs, file_paths) = {
             let mut c = col.borrow_mut();
             (std::mem::take(&mut c.reminders), c.file_paths.clone())
@@ -858,21 +851,7 @@ pub fn collect_switch_census(
 ) -> std::collections::BTreeMap<String, usize> {
     let mut census = std::collections::BTreeMap::new();
     for suite in suites {
-        let loaded = (|| -> mlua::Result<SharedCollector> {
-            if suite.setup.is_none() && suite.files.len() == 1 {
-                return read_and_collect(&suite.files[0], config).map(|(_, col)| col);
-            }
-            let (lua, col) = build_lua(suite.name.clone(), config)?;
-            if let Some(setup) = suite.setup.as_deref() {
-                let code = std::fs::read_to_string(setup).map_err(|e| {
-                    mlua::Error::RuntimeError(format!("cannot read {}: {e}", setup.display()))
-                })?;
-                lua.load(&code).set_name(file_chunk_name(setup)).exec()?;
-            }
-            load_member_files(&lua, &col, &suite.files)?;
-            Ok(col)
-        })();
-        let Ok(col) = loaded else { continue };
+        let Ok((_lua, col)) = load_suite_collection(suite, config) else { continue };
         let col = col.borrow();
         let Ok(plan) = build_plan(&col, &config.capabilities) else {
             continue;

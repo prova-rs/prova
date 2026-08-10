@@ -61,6 +61,31 @@ mod socket;
 mod terminal;
 mod websocket;
 
+/// What `client_opts` yields: the URL, the header pairs, and the optional timeout.
+#[cfg(any(feature = "http", feature = "graphql"))]
+type ClientOpts = (String, Vec<(String, String)>, Option<std::time::Duration>);
+
+/// Parse the shared options every HTTP-flavored client constructor takes: the required URL
+/// (under the given key — `http.client` says `base_url`, `graphql.client` says `url`), optional
+/// `headers`, optional `timeout`. `who` names the verb in the teaching error.
+#[cfg(any(feature = "http", feature = "graphql"))]
+pub(super) fn client_opts(opts: &Table, who: &str, url_key: &str) -> mlua::Result<ClientOpts> {
+    let url = opts
+        .get::<Option<String>>(url_key)?
+        .ok_or_else(|| mlua::Error::RuntimeError(format!("{who} requires a `{url_key}`")))?;
+    let mut headers = Vec::new();
+    if let Some(hdrs) = opts.get::<Option<Table>>("headers")? {
+        for pair in hdrs.pairs::<String, String>() {
+            let (k, v) = pair?;
+            headers.push((k, v));
+        }
+    }
+    let timeout = opts
+        .get::<Option<String>>("timeout")?
+        .and_then(|s| crate::model::parse_duration(&s));
+    Ok((url, headers, timeout))
+}
+
 /// Tie a resource's life to the caller's scope via `ctx:manage`, exactly as containers do —
 /// reaped by the same LIFO machinery, in the same order, as every other resource — including
 /// under `prova up`, where the scope is held until a signal rather than ending with a test.

@@ -2,7 +2,6 @@ use std::time::Duration;
 
 use mlua::{Lua, LuaSerdeExt, Table, UserData, UserDataMethods, Value};
 
-use crate::model::parse_duration;
 
 fn err(msg: impl Into<String>) -> mlua::Error {
     mlua::Error::RuntimeError(msg.into())
@@ -161,19 +160,8 @@ pub(crate) fn make(lua: &Lua) -> mlua::Result<Table> {
     graphql.set(
         "client",
         lua.create_function(|lua, opts: Table| {
-            let url = opts
-                .get::<Option<String>>("url")?
-                .ok_or_else(|| err("graphql.client requires a `url`"))?;
-            let mut headers = Vec::new();
-            if let Some(hdrs) = opts.get::<Option<Table>>("headers")? {
-                for pair in hdrs.pairs::<String, String>() {
-                    let (k, v) = pair?;
-                    headers.push((k, v));
-                }
-            }
-            let timeout = opts
-                .get::<Option<String>>("timeout")?
-                .and_then(|s| parse_duration(&s));
+            let (url, headers, timeout) =
+                super::client_opts(&opts, "graphql.client", "url")?;
             lua.create_userdata(GraphqlClient {
                 url,
                 headers,
