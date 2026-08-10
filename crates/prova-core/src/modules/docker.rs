@@ -812,53 +812,58 @@ async fn connect() -> mlua::Result<Docker> {
     }
 }
 
-async fn start(
-    spec: Spec,
+/// Pull the image only if it isn't already local — `docker run`'s own rule. A locally-BUILT
+/// image (docker.build) exists in no registry, so an unconditional pull fails it with a
+/// misleading "pull access denied / repository does not exist"; and for a pulled image, a
+/// tag that's already present skips a pointless registry round-trip.
+async fn pull_if_absent(
+    client: &Docker,
+    image: &str,
     progress: &super::Arc<dyn super::Progress>,
-) -> mlua::Result<Container> {
-    let client = connect().await?;
-
-    // Pull the image only if it isn't already local — `docker run`'s own rule. A locally-BUILT
-    // image (docker.build) exists in no registry, so an unconditional pull fails it with a
-    // misleading "pull access denied / repository does not exist"; and for a pulled image, a
-    // tag that's already present skips a pointless registry round-trip.
-    if client.inspect_image(&spec.image).await.is_err() {
-        // The dominant cause of a run that looks hung: a cold pull is tens of MB over a registry
-        // and, until now, drained in total silence. bollard already hands us per-layer status —
-        // this reports it instead of discarding it (docs/plans/run-progress-feedback.md #1).
-        let activity = super::progress::start(progress, super::Kind::Pull, spec.image.clone());
-        let (from_image, tag) = split_image(&spec.image);
-        let mut pull = client.create_image(
-            Some(CreateImageOptions {
-                from_image,
-                tag,
-                ..Default::default()
-            }),
-            None,
-            None,
-        );
-        // Layer ids seen, so the completion note can say how big the pull actually was. Counting
-        // ids rather than stream items: bollard emits many messages per layer.
-        let mut layers: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        while let Some(item) = pull.next().await {
-            let info = item.map_err(derr)?;
-            if let Some(id) = info.id.as_deref() {
-                // Docker uses the image ref itself as the `id` on summary messages; only short
-                // hex layer ids are layers.
-                if id.len() <= 16 && !id.contains(':') && layers.insert(id.to_string()) {
-                    activity.update(&format!("{} layers", layers.len()));
-                }
+) -> mlua::Result<()> {
+    if client.inspect_image(image).await.is_ok() {
+        return Ok(());
+    }
+    // The dominant cause of a run that looks hung: a cold pull is tens of MB over a registry
+    // and, until now, drained in total silence. bollard already hands us per-layer status —
+    // this reports it instead of discarding it (docs/plans/run-progress-feedback.md #1).
+    let activity = super::progress::start(progress, super::Kind::Pull, image.to_string());
+    let (from_image, tag) = split_image(image);
+    let mut pull = client.create_image(
+        Some(CreateImageOptions {
+            from_image,
+            tag,
+            ..Default::default()
+        }),
+        None,
+        None,
+    );
+    // Layer ids seen, so the completion note can say how big the pull actually was. Counting
+    // ids rather than stream items: bollard emits many messages per layer.
+    let mut layers: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    while let Some(item) = pull.next().await {
+        let info = item.map_err(derr)?;
+        if let Some(id) = info.id.as_deref() {
+            // Docker uses the image ref itself as the `id` on summary messages; only short
+            // hex layer ids are layers.
+            if id.len() <= 16 && !id.contains(':') && layers.insert(id.to_string()) {
+                activity.update(&format!("{} layers", layers.len()));
             }
         }
-        if layers.is_empty() {
-            activity.done();
-        } else {
-            let n = layers.len();
-            activity.done_with(format!("{n} layer{}", if n == 1 { "" } else { "s" }));
-        }
     }
+    if layers.is_empty() {
+        activity.done();
+    } else {
+        let n = layers.len();
+        activity.done_with(format!("{n} layer{}", if n == 1 { "" } else { "s" }));
+    }
+    Ok(())
+}
 
-    // Publish each container port to a random host port (host_port "0").
+/// The bollard container config for a spec: each container port published to a random host port
+/// (host_port "0", or the fixed one the spec names), joined to a user-defined network at create
+/// time (so embedded DNS resolves the container by its alias from the first moment).
+fn container_config(spec: &Spec) -> Config<String> {
     let mut exposed: HashMap<String, HashMap<(), ()>> = HashMap::new();
     let mut bindings: HashMap<String, Option<Vec<PortBinding>>> = HashMap::new();
     for (container, host) in &spec.ports {
@@ -875,9 +880,6 @@ async fn start(
             }]),
         );
     }
-
-    // Join a user-defined network at create time (so embedded DNS resolves the container by its
-    // alias from the first moment) — independent of, and simultaneous with, host port publishing.
     let networking_config = spec.network.as_ref().map(|net_name| {
         let mut endpoint = EndpointSettings::default();
         if let Some(alias) = &spec.alias {
@@ -887,8 +889,7 @@ async fn start(
         endpoints_config.insert(net_name.clone(), endpoint);
         NetworkingConfig { endpoints_config }
     });
-
-    let config = Config {
+    Config {
         image: Some(spec.image.clone()),
         env: Some(spec.env.iter().map(|(k, v)| format!("{k}={v}")).collect()),
         cmd: (!spec.command.is_empty()).then(|| spec.command.clone()),
@@ -900,8 +901,16 @@ async fn start(
         }),
         networking_config,
         ..Default::default()
-    };
+    }
+}
 
+async fn start(
+    spec: Spec,
+    progress: &super::Arc<dyn super::Progress>,
+) -> mlua::Result<Container> {
+    let client = connect().await?;
+    pull_if_absent(&client, &spec.image, progress).await?;
+    let config = container_config(&spec);
     let requested: Vec<u16> = spec.ports.iter().map(|(p, _)| *p).collect();
 
     // Start, and recover from a runtime that exposes a port but binds nothing to it.

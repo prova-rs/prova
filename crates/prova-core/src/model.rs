@@ -570,6 +570,123 @@ fn xml_escape(s: &str) -> String {
     out
 }
 
+/// Seconds with millisecond precision, the JUnit `time` attribute format.
+fn junit_secs(d: Duration) -> String {
+    format!("{:.3}", d.as_secs_f64())
+}
+
+/// Emit one `<testcase>` element. A pass self-closes; every other outcome carries a child:
+/// failures a `<failure>`, skips and open promises a `<skipped>` whose message says why —
+/// dashboards show a promise as not-run-to-success without failing the build.
+fn write_junit_case<W: Write>(w: &mut W, c: &JUnitCase) {
+    let mut head = format!(
+        "    <testcase classname=\"{}\" name=\"{}\" time=\"{}\" assertions=\"{}\"",
+        xml_escape(&c.classname),
+        xml_escape(&c.name),
+        junit_secs(c.duration),
+        c.assertions
+    );
+    if let Some(file) = &c.file {
+        head.push_str(&format!(" file=\"{}\"", xml_escape(file)));
+    }
+    if let Some(line) = c.line {
+        head.push_str(&format!(" line=\"{line}\""));
+    }
+    match c.outcome {
+        Outcome::Passed => {
+            let _ = writeln!(w, "{head}/>");
+        }
+        Outcome::Skipped => {
+            let _ = writeln!(w, "{head}>");
+            match &c.message {
+                Some(m) => {
+                    let _ = writeln!(w, "      <skipped message=\"{}\"/>", xml_escape(m));
+                }
+                None => {
+                    let _ = writeln!(w, "      <skipped/>");
+                }
+            }
+            let _ = writeln!(w, "    </testcase>");
+        }
+        Outcome::Failed => {
+            let _ = writeln!(w, "{head}>");
+            let msg = c.message.as_deref().unwrap_or("assertion failed");
+            let _ = writeln!(
+                w,
+                "      <failure message=\"{}\">{}</failure>",
+                xml_escape(msg),
+                xml_escape(msg)
+            );
+            let _ = writeln!(w, "    </testcase>");
+        }
+        Outcome::Promised => {
+            let _ = writeln!(w, "{head}>");
+            let mut msg = String::from("open promise");
+            if let Some(r) = c.promise_reason.as_deref().filter(|r| !r.is_empty()) {
+                msg.push_str(&format!(": {r}"));
+            }
+            if let Some(m) = c.message.as_deref() {
+                msg.push_str(&format!(" — {m}"));
+            }
+            let _ = writeln!(w, "      <skipped message=\"{}\"/>", xml_escape(&msg));
+            let _ = writeln!(w, "    </testcase>");
+        }
+    }
+}
+
+impl<W: Write> JUnitReporter<W> {
+    /// Write the whole document at run end: the suite header (with the run metadata as
+    /// `<properties>`), every collected case, and the closing elements.
+    fn write_report(&mut self, summary: &Summary) {
+        let w = &mut self.writer;
+        let total = self.cases.len();
+        // `errors="0"` on both elements: prova reports every non-pass as a <failure> (no
+        // <error> distinction yet), but dashboards expect the attribute to exist.
+        let _ = writeln!(w, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
+        // Open specs count as skips at the JUnit level: not failures (CI green), but
+        // visibly not-run-to-success. Their `<skipped>` message carries the spec detail.
+        let skipped_attr = summary.skipped + summary.promised;
+        let _ = writeln!(
+            w,
+            "<testsuites tests=\"{}\" failures=\"{}\" errors=\"0\" skipped=\"{}\" time=\"{}\">",
+            total,
+            summary.failed,
+            skipped_attr,
+            junit_secs(summary.duration)
+        );
+        let timestamp = self
+            .started
+            .map(|t| format!(" timestamp=\"{}\"", humantime::format_rfc3339_seconds(t)))
+            .unwrap_or_default();
+        let _ = writeln!(
+            w,
+            "  <testsuite name=\"{}\" tests=\"{}\" failures=\"{}\" errors=\"0\" skipped=\"{}\" time=\"{}\"{timestamp}>",
+            xml_escape(&self.suite_name),
+            total,
+            summary.failed,
+            skipped_attr,
+            junit_secs(summary.duration)
+        );
+        if !self.properties.is_empty() {
+            let _ = writeln!(w, "    <properties>");
+            for (name, value) in &self.properties {
+                let _ = writeln!(
+                    w,
+                    "      <property name=\"{}\" value=\"{}\"/>",
+                    xml_escape(name),
+                    xml_escape(value)
+                );
+            }
+            let _ = writeln!(w, "    </properties>");
+        }
+        for c in &self.cases {
+            write_junit_case(w, c);
+        }
+        let _ = writeln!(w, "  </testsuite>");
+        let _ = writeln!(w, "</testsuites>");
+    }
+}
+
 impl<W: Write> Reporter for JUnitReporter<W> {
     fn event(&mut self, event: &Event) {
         match event {
@@ -600,113 +717,8 @@ impl<W: Write> Reporter for JUnitReporter<W> {
                 });
             }
             Event::RunFinished { summary } => {
-                let w = &mut self.writer;
-                let secs = |d: Duration| format!("{:.3}", d.as_secs_f64());
-                let total = self.cases.len();
-                // `errors="0"` on both elements: prova reports every non-pass as a <failure> (no
-                // <error> distinction yet), but dashboards expect the attribute to exist.
-                let _ = writeln!(w, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
-                // Open specs count as skips at the JUnit level: not failures (CI green), but
-                // visibly not-run-to-success. Their `<skipped>` message carries the spec detail.
-                let skipped_attr = summary.skipped + summary.promised;
-                let _ = writeln!(
-                    w,
-                    "<testsuites tests=\"{}\" failures=\"{}\" errors=\"0\" skipped=\"{}\" time=\"{}\">",
-                    total,
-                    summary.failed,
-                    skipped_attr,
-                    secs(summary.duration)
-                );
-                let timestamp = self
-                    .started
-                    .map(|t| format!(" timestamp=\"{}\"", humantime::format_rfc3339_seconds(t)))
-                    .unwrap_or_default();
-                let _ = writeln!(
-                    w,
-                    "  <testsuite name=\"{}\" tests=\"{}\" failures=\"{}\" errors=\"0\" skipped=\"{}\" time=\"{}\"{timestamp}>",
-                    xml_escape(&self.suite_name),
-                    total,
-                    summary.failed,
-                    skipped_attr,
-                    secs(summary.duration)
-                );
-                if !self.properties.is_empty() {
-                    let _ = writeln!(w, "    <properties>");
-                    for (name, value) in &self.properties {
-                        let _ = writeln!(
-                            w,
-                            "      <property name=\"{}\" value=\"{}\"/>",
-                            xml_escape(name),
-                            xml_escape(value)
-                        );
-                    }
-                    let _ = writeln!(w, "    </properties>");
-                }
-                for c in &self.cases {
-                    let mut head = format!(
-                        "    <testcase classname=\"{}\" name=\"{}\" time=\"{}\" assertions=\"{}\"",
-                        xml_escape(&c.classname),
-                        xml_escape(&c.name),
-                        secs(c.duration),
-                        c.assertions
-                    );
-                    if let Some(file) = &c.file {
-                        head.push_str(&format!(" file=\"{}\"", xml_escape(file)));
-                    }
-                    if let Some(line) = c.line {
-                        head.push_str(&format!(" line=\"{line}\""));
-                    }
-                    match c.outcome {
-                        Outcome::Passed => {
-                            let _ = writeln!(w, "{head}/>");
-                        }
-                        Outcome::Skipped => {
-                            let _ = writeln!(w, "{head}>");
-                            match &c.message {
-                                Some(m) => {
-                                    let _ = writeln!(
-                                        w,
-                                        "      <skipped message=\"{}\"/>",
-                                        xml_escape(m)
-                                    );
-                                }
-                                None => {
-                                    let _ = writeln!(w, "      <skipped/>");
-                                }
-                            }
-                            let _ = writeln!(w, "    </testcase>");
-                        }
-                        Outcome::Failed => {
-                            let _ = writeln!(w, "{head}>");
-                            let msg = c.message.as_deref().unwrap_or("assertion failed");
-                            let _ = writeln!(
-                                w,
-                                "      <failure message=\"{}\">{}</failure>",
-                                xml_escape(msg),
-                                xml_escape(msg)
-                            );
-                            let _ = writeln!(w, "    </testcase>");
-                        }
-                        Outcome::Promised => {
-                            // An open promise renders as a skip whose message names it — dashboards
-                            // show it as not-run-to-success without failing the build.
-                            let _ = writeln!(w, "{head}>");
-                            let mut msg = String::from("open promise");
-                            if let Some(r) = c.promise_reason.as_deref().filter(|r| !r.is_empty()) {
-                                msg.push_str(&format!(": {r}"));
-                            }
-                            if let Some(m) = c.message.as_deref() {
-                                msg.push_str(&format!(" — {m}"));
-                            }
-                            let _ =
-                                writeln!(w, "      <skipped message=\"{}\"/>", xml_escape(&msg));
-                            let _ = writeln!(w, "    </testcase>");
-                        }
-                    }
-                }
-                let _ = writeln!(w, "  </testsuite>");
-                let _ = writeln!(w, "</testsuites>");
-                let _ = w.flush();
+                self.write_report(summary);
+                let _ = self.writer.flush();
             }
             _ => {}
         }

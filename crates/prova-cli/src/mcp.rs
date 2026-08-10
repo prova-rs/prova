@@ -61,6 +61,81 @@ use blocking::{
     specs_blocking, up_blocking, warm_eval_blocking, warm_run_blocking,
 };
 
+/// Resolve the server's environment once at startup: filesystem layout, the prova home, the
+/// manifest's answers, and the `-P` package layer. Same home/manifest resolution as the run path.
+/// A missing manifest is fine at startup — `eval` still works with the built-ins; `run`/`list`
+/// report the absence per call.
+fn resolve_mcp_env(
+    profile: Option<String>,
+    manifest_path: Option<String>,
+    cli_packages: Vec<String>,
+) -> Result<Arc<McpEnv>, ExitCode> {
+    let layout = match XdgSystemLayout::new() {
+        Ok(layout) => layout,
+        Err(err) => {
+            eprintln!("prova: cannot determine home directories: {err}");
+            return Err(ExitCode::from(2));
+        }
+    };
+
+    let home: Option<Home> = if let Some(path) = &manifest_path {
+        Some(crate::home::from_manifest_path(Path::new(path)))
+    } else {
+        match crate::home::find(Path::new(".")) {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("prova: {e}");
+                return Err(ExitCode::from(2));
+            }
+        }
+    };
+
+    let (mut packages_resolved, sources, proofs, declared, jobs, capabilities, topologies, switches) =
+        match &home {
+            Some(home) => {
+                match crate::resolve_from_manifest(
+                    home, profile, None, None, None, &layout, false, false, true,
+                ) {
+                    Ok(r) => (
+                        r.dependencies,
+                        r.sources,
+                        r.proofs,
+                        r.suites,
+                        r.jobs,
+                        r.capabilities,
+                        r.topologies,
+                        r.switches,
+                    ),
+                    Err(code) => return Err(code),
+                }
+            }
+            None => (
+                packages::ResolvedPackages::default(),
+                BTreeMap::new(),
+                Vec::new(),
+                BTreeMap::new(),
+                1,
+                prova_core::Capabilities::default(),
+                BTreeMap::new(),
+                Vec::new(),
+            ),
+        };
+    crate::layer_cli_packages(&cli_packages, &layout, &sources, &mut packages_resolved)?;
+
+    Ok(Arc::new(McpEnv {
+        layout,
+        home,
+        cli_packages,
+        proofs,
+        declared,
+        jobs,
+        dependencies: packages_resolved,
+        capabilities,
+        topologies,
+        switches,
+    }))
+}
+
 /// `prova mcp [--profile NAME] [--manifest PATH] [-P name=source]` — resolve the environment once
 /// (same home/manifest/plugins resolution as the run path), then serve until the client hangs up.
 pub fn run(args: Vec<String>) -> ExitCode {
@@ -112,76 +187,10 @@ pub fn run(args: Vec<String>) -> ExitCode {
         }
     }
 
-    let layout = match XdgSystemLayout::new() {
-        Ok(layout) => layout,
-        Err(err) => {
-            eprintln!("prova: cannot determine home directories: {err}");
-            return ExitCode::from(2);
-        }
+    let env = match resolve_mcp_env(profile, manifest_path, cli_packages) {
+        Ok(env) => env,
+        Err(code) => return code,
     };
-
-    // Same home/manifest resolution as the run path. A missing manifest is fine at startup —
-    // `eval` still works with the built-ins; `run`/`list` report the absence per call.
-    let home: Option<Home> = if let Some(path) = &manifest_path {
-        Some(crate::home::from_manifest_path(Path::new(path)))
-    } else {
-        match crate::home::find(Path::new(".")) {
-            Ok(h) => h,
-            Err(e) => {
-                eprintln!("prova: {e}");
-                return ExitCode::from(2);
-            }
-        }
-    };
-
-    let (mut packages_resolved, sources, proofs, declared, jobs, capabilities, topologies, switches) =
-        match &home {
-            Some(home) => {
-                match crate::resolve_from_manifest(
-                    home, profile, None, None, None, &layout, false, false, true,
-                ) {
-                    Ok(r) => (
-                        r.dependencies,
-                        r.sources,
-                        r.proofs,
-                        r.suites,
-                        r.jobs,
-                        r.capabilities,
-                        r.topologies,
-                        r.switches,
-                    ),
-                    Err(code) => return code,
-                }
-            }
-            None => (
-                packages::ResolvedPackages::default(),
-                BTreeMap::new(),
-                Vec::new(),
-                BTreeMap::new(),
-                1,
-                prova_core::Capabilities::default(),
-                BTreeMap::new(),
-                Vec::new(),
-            ),
-        };
-    if let Err(code) =
-        crate::layer_cli_packages(&cli_packages, &layout, &sources, &mut packages_resolved)
-    {
-        return code;
-    }
-
-    let env = Arc::new(McpEnv {
-        layout,
-        home,
-        cli_packages,
-        proofs,
-        declared,
-        jobs,
-        dependencies: packages_resolved,
-        capabilities,
-        topologies,
-        switches,
-    });
 
     // A current-thread runtime, deliberately: warm tools are stateful (up → run → down), so tool
     // side-effects must apply in the order requests arrive on stdin. On one scheduler thread each

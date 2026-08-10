@@ -199,78 +199,12 @@ pub(crate) fn attest_subcommand(args: Vec<String>) -> ExitCode {
         return attest_all(&home, &manifest, &packages_resolved);
     };
 
-    // A deputed address (`junit:<suite>#<name>`) asks about a case another verifier produced
-    // (docs/design/verifiers.md): did it execute and pass in the recorded run? Answered from the
-    // record's deputed rows — same contract as every other address, red/skipped/absent attest
-    // nothing.
     if let Some(rest) = address.strip_prefix("junit:") {
-        let (suite, name) = match rest.split_once('#') {
-            Some(pair) => pair,
-            None => {
-                eprintln!("prova: a deputed address is junit:<suite>#<case>, got {address:?}");
-                return ExitCode::from(2);
-            }
-        };
-        let Some(recorded) = record::load(&home) else {
-            println!("prova: attest {address}");
-            println!("  ↳ no run has been recorded here — run the suite first (`prova`)");
-            return ExitCode::FAILURE;
-        };
-        println!("prova: attest {address}");
-        let row = recorded
-            .deputed
-            .iter()
-            .find(|d| d.verifier == "junit" && d.suite == suite && d.name == name);
-        return match row {
-            Some(d) if d.outcome == "passed" => {
-                println!("  ↳ attested — the deputed case ran and passed (from {})", d.file);
-                ExitCode::SUCCESS
-            }
-            Some(d) => {
-                match &d.message {
-                    Some(m) => println!("  ↳ NOT attested — the deputed case {}: {m}", d.outcome),
-                    None => println!("  ↳ NOT attested — the deputed case {}", d.outcome),
-                }
-                ExitCode::FAILURE
-            }
-            None => {
-                println!(
-                    "  ↳ NOT attested — no ingested case matches ({} deputed rows in the record)",
-                    recorded.deputed.len()
-                );
-                ExitCode::FAILURE
-            }
-        };
+        return attest_deputed(&home, &address, rest);
     }
-
-    // A bare id resolves when exactly one claim carries it. The full address stays canonical —
-    // an agent has it in its buffer — but ids are the memorable half, and a human should not
-    // have to copy/paste a path to ask about one claim. Zero matches falls through untouched:
-    // a ticket address (`covers = "PROJ-123"`) has no `#` and no anchor, and must keep working.
-    let address = if !address.contains('#') {
-        let docs = spec_scan_roots(&manifest);
-        let scanned = match claims::scan(&home.dir, &docs) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("prova: {e}");
-                return ExitCode::FAILURE;
-            }
-        };
-        let matches = claims::matching_id(&scanned, &address);
-        match matches.len() {
-            1 => matches[0].address.clone(),
-            0 => address,
-            n => {
-                println!("prova: attest {address}");
-                println!("  ambiguous — {n} claims match:");
-                for m in matches {
-                    println!("    {}", m.address);
-                }
-                return ExitCode::from(2);
-            }
-        }
-    } else {
-        address
+    let address = match resolve_claim_address(&home, &manifest, address) {
+        Ok(a) => a,
+        Err(code) => return code,
     };
 
     // No record at all is the absence of evidence, not the absence of a problem. Treating it as
@@ -328,6 +262,85 @@ pub(crate) fn attest_subcommand(args: Vec<String>) -> ExitCode {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
+    }
+}
+
+/// A deputed address (`junit:<suite>#<name>`) asks about a case another verifier produced
+/// (docs/design/verifiers.md): did it execute and pass in the recorded run? Answered from the
+/// record's deputed rows — same contract as every other address, red/skipped/absent attest
+/// nothing.
+fn attest_deputed(home: &home::Home, address: &str, rest: &str) -> ExitCode {
+    let (suite, name) = match rest.split_once('#') {
+        Some(pair) => pair,
+        None => {
+            eprintln!("prova: a deputed address is junit:<suite>#<case>, got {address:?}");
+            return ExitCode::from(2);
+        }
+    };
+    let Some(recorded) = record::load(home) else {
+        println!("prova: attest {address}");
+        println!("  ↳ no run has been recorded here — run the suite first (`prova`)");
+        return ExitCode::FAILURE;
+    };
+    println!("prova: attest {address}");
+    let row = recorded
+        .deputed
+        .iter()
+        .find(|d| d.verifier == "junit" && d.suite == suite && d.name == name);
+    match row {
+        Some(d) if d.outcome == "passed" => {
+            println!("  ↳ attested — the deputed case ran and passed (from {})", d.file);
+            ExitCode::SUCCESS
+        }
+        Some(d) => {
+            match &d.message {
+                Some(m) => println!("  ↳ NOT attested — the deputed case {}: {m}", d.outcome),
+                None => println!("  ↳ NOT attested — the deputed case {}", d.outcome),
+            }
+            ExitCode::FAILURE
+        }
+        None => {
+            println!(
+                "  ↳ NOT attested — no ingested case matches ({} deputed rows in the record)",
+                recorded.deputed.len()
+            );
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// A bare id resolves when exactly one claim carries it. The full address stays canonical —
+/// an agent has it in its buffer — but ids are the memorable half, and a human should not
+/// have to copy/paste a path to ask about one claim. Zero matches falls through untouched:
+/// a ticket address (`covers = "PROJ-123"`) has no `#` and no anchor, and must keep working.
+fn resolve_claim_address(
+    home: &home::Home,
+    manifest: &Manifest,
+    address: String,
+) -> Result<String, ExitCode> {
+    if address.contains('#') {
+        return Ok(address);
+    }
+    let docs = spec_scan_roots(manifest);
+    let scanned = match claims::scan(&home.dir, &docs) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("prova: {e}");
+            return Err(ExitCode::FAILURE);
+        }
+    };
+    let matches = claims::matching_id(&scanned, &address);
+    match matches.len() {
+        1 => Ok(matches[0].address.clone()),
+        0 => Ok(address),
+        n => {
+            println!("prova: attest {address}");
+            println!("  ambiguous — {n} claims match:");
+            for m in matches {
+                println!("    {}", m.address);
+            }
+            Err(ExitCode::from(2))
+        }
     }
 }
 

@@ -887,6 +887,96 @@ impl Manifest {
         Ok(manifest)
     }
 
+    /// The guarantee-flavored axes, merged per their own rules. Guarantees (`must_run`) are the
+    /// UNION of the baseline and the profile's — additive, never overriding, unlike
+    /// `proofs`/`jobs`/`format`: a profile promises more than the package, never less. Heeding is
+    /// a guarantee too — union/tighten, never override. A lane's tags are its selection, so they
+    /// OVERRIDE like `proofs` (a lane defines its set). Thrown switches are authorization, so they
+    /// UNION like the guarantees — a laxer context can never silently un-throw what the package
+    /// baseline threw (docs/design/manifest.md#switches-not-env-capabilities).
+    fn merged_guarantees(
+        base: &Profile,
+        overlay: Option<&Profile>,
+    ) -> (Vec<String>, Heed, Vec<String>, Vec<String>) {
+        let mut must_run = base.must_run.clone();
+        if let Some(p) = overlay {
+            for cap in &p.must_run {
+                if !must_run.contains(cap) {
+                    must_run.push(cap.clone());
+                }
+            }
+        }
+        let heed = base
+            .heed
+            .resolve()
+            .merge(overlay.map(|p| p.heed.resolve()).unwrap_or_default());
+        let lane_tags = match overlay {
+            Some(p) if !p.tags.is_empty() => p.tags.clone(),
+            _ => base.tags.clone(),
+        };
+        let mut switches = base.switches.clone();
+        if let Some(p) = overlay {
+            for s in &p.switches {
+                if !switches.contains(s) {
+                    switches.push(s.clone());
+                }
+            }
+        }
+        (must_run, heed, lane_tags, switches)
+    }
+
+    /// Package-wide `[dependencies]` are the base; the selected profile's
+    /// `[profiles.X.dependencies]` overlay it (profile wins on a name conflict), so a CI profile
+    /// can add capabilities without an out-of-band input and local `--profile ci` resolves
+    /// identically. The reserved-name registry (api-freeze §2) is checked on the MERGED set — a
+    /// dependency bearing a bundled namespace name is a validation error, never a silent shadow,
+    /// and a profile cannot smuggle one in either.
+    fn merged_dependencies(
+        &self,
+        overlay: Option<&Profile>,
+    ) -> Result<BTreeMap<String, PackageSource>, String> {
+        let mut dependencies = self.dependencies.clone();
+        if let Some(p) = overlay {
+            for (k, v) in &p.dependencies {
+                dependencies.insert(k.clone(), v.clone());
+            }
+        }
+        for name in dependencies.keys() {
+            if prova_core::RESERVED_NAMESPACES.contains(&name.as_str()) {
+                return Err(format!(
+                    "[dependencies] {name}: `{name}` is a reserved prova namespace — a package \
+                     cannot shadow a bundled global; pick another name"
+                ));
+            }
+        }
+        Ok(dependencies)
+    }
+
+    /// `[globals] inject` — the package-level list of unqualified ambient globals. Not
+    /// profile-overridable (the API surface a suite is written against does not vary by profile):
+    /// absent → the default set; present → authoritative, even `inject = []`. Each entry must be
+    /// an injectable bundled module or a declared dependency — anything else is a typo that would
+    /// silently inject nothing. Validated against the MERGED set so a profile dependency counts.
+    fn validated_globals_inject(
+        &self,
+        dependencies: &BTreeMap<String, PackageSource>,
+    ) -> Result<Vec<String>, String> {
+        let globals_inject = match &self.globals {
+            Some(g) => g.inject.clone(),
+            None => prova_core::default_inject(),
+        };
+        for name in &globals_inject {
+            if !prova_core::is_injectable_module(name) && !dependencies.contains_key(name) {
+                return Err(format!(
+                    "[globals] inject: `{name}` is neither a bundled module nor a declared package \
+                     (bundled modules are the reserved namespaces except `prova`/`Scope`; a package \
+                     must be declared in [dependencies])"
+                ));
+            }
+        }
+        Ok(globals_inject)
+    }
+
     /// Overlay a profile on the base `[run]` profile. `None` uses the base as-is; `Some(name)` takes
     /// each field from the profile when present, otherwise from the base. Env is base-then-profile
     /// (profile wins). Errors if the named profile does not exist.
@@ -952,81 +1042,9 @@ impl Manifest {
             }
         }
 
-        // Package-wide `[dependencies]` are the base; the selected profile's
-        // `[profiles.X.dependencies]` overlay it (profile wins on a name conflict), so a CI profile
-        // can add capabilities without an out-of-band input and local `--profile ci` resolves
-        // identically.
-        let mut dependencies = self.dependencies.clone();
-        if let Some(p) = overlay {
-            for (k, v) in &p.dependencies {
-                dependencies.insert(k.clone(), v.clone());
-            }
-        }
-
-        // Guarantees are the UNION of the baseline and the profile's — additive, never overriding,
-        // unlike `proofs`/`jobs`/`format`. A profile promises more than the package, never less.
-        let mut must_run = base.must_run.clone();
-        if let Some(p) = overlay {
-            for cap in &p.must_run {
-                if !must_run.contains(cap) {
-                    must_run.push(cap.clone());
-                }
-            }
-        }
-        // Heeding is a guarantee too — union/tighten, never override, so a profile can promise MORE
-        // attention (heed all, or add selectors) but never retract the package's promise of it.
-        let heed = base
-            .heed
-            .resolve()
-            .merge(overlay.map(|p| p.heed.resolve()).unwrap_or_default());
-        // A lane's tags are its selection, so they OVERRIDE like `proofs` (a lane defines its
-        // set), never union like the guarantees.
-        let lane_tags = match overlay {
-            Some(p) if !p.tags.is_empty() => p.tags.clone(),
-            _ => base.tags.clone(),
-        };
-        // Thrown switches are authorization, so they UNION like the guarantees — a laxer context
-        // can never silently un-throw what the package baseline threw
-        // (docs/design/manifest.md#switches-not-env-capabilities).
-        let mut switches = base.switches.clone();
-        if let Some(p) = overlay {
-            for s in &p.switches {
-                if !switches.contains(s) {
-                    switches.push(s.clone());
-                }
-            }
-        }
-
-        // The reserved-name registry (api-freeze §2): a dependency bearing a bundled namespace name
-        // is a validation error, never a silent shadow — in either direction, so the check runs on
-        // the MERGED set (a profile cannot smuggle one in either).
-        for name in dependencies.keys() {
-            if prova_core::RESERVED_NAMESPACES.contains(&name.as_str()) {
-                return Err(format!(
-                    "[dependencies] {name}: `{name}` is a reserved prova namespace — a package \
-                     cannot shadow a bundled global; pick another name"
-                ));
-            }
-        }
-
-        // `[globals] inject` — the package-level list of unqualified ambient globals. Not
-        // profile-overridable (the API surface a suite is written against does not vary by profile):
-        // absent → the default set; present → authoritative, even `inject = []`. Each entry must be
-        // an injectable bundled module or a declared dependency — anything else is a typo that would
-        // silently inject nothing. Validated against the MERGED set so a profile dependency counts.
-        let globals_inject = match &self.globals {
-            Some(g) => g.inject.clone(),
-            None => prova_core::default_inject(),
-        };
-        for name in &globals_inject {
-            if !prova_core::is_injectable_module(name) && !dependencies.contains_key(name) {
-                return Err(format!(
-                    "[globals] inject: `{name}` is neither a bundled module nor a declared package \
-                     (bundled modules are the reserved namespaces except `prova`/`Scope`; a package \
-                     must be declared in [dependencies])"
-                ));
-            }
-        }
+        let dependencies = self.merged_dependencies(overlay)?;
+        let (must_run, heed, lane_tags, switches) = Self::merged_guarantees(base, overlay);
+        let globals_inject = self.validated_globals_inject(&dependencies)?;
 
         Ok(Resolved {
             proofs,
