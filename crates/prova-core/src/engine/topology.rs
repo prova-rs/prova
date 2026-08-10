@@ -158,10 +158,9 @@ pub(super) fn exec_topology_registrations(lua: &Lua, config: &RunConfig) -> mlua
     Ok(())
 }
 
-/// Enumerate the topology names available — every `prova.topology(name, fn)` the `files` declare,
-/// plus every `[topologies]` registration — sorted. Only *registers* them (execs the files); it never
-/// invokes a factory, so it needs no docker. The discovery half of `up` (`prova up` with no name).
-pub fn list_topologies(files: &[PathBuf], config: &RunConfig) -> mlua::Result<Vec<String>> {
+/// Register everything the topology verbs address: exec the files (declarations only — no
+/// factory runs, so no docker) plus the manifest's `[topologies]` registrations.
+fn load_topology_state(files: &[PathBuf], config: &RunConfig) -> mlua::Result<(Lua, SharedCollector)> {
     let (lua, col) = build_lua("up".to_string(), config)?;
     for file in files {
         let code = std::fs::read_to_string(file).map_err(|e| {
@@ -170,6 +169,14 @@ pub fn list_topologies(files: &[PathBuf], config: &RunConfig) -> mlua::Result<Ve
         lua.load(&code).set_name(file_chunk_name(file)).exec()?;
     }
     exec_topology_registrations(&lua, config)?;
+    Ok((lua, col))
+}
+
+/// Enumerate the topology names available — every `prova.topology(name, fn)` the `files` declare,
+/// plus every `[topologies]` registration — sorted. Only *registers* them (execs the files); it never
+/// invokes a factory, so it needs no docker. The discovery half of `up` (`prova up` with no name).
+pub fn list_topologies(files: &[PathBuf], config: &RunConfig) -> mlua::Result<Vec<String>> {
+    let (_lua, col) = load_topology_state(files, config)?;
     let names: Vec<String> = col.borrow().topologies.keys().cloned().collect();
     Ok(names)
 }
@@ -179,14 +186,7 @@ pub(super) fn load_topology(
     name: &str,
     config: &RunConfig,
 ) -> mlua::Result<(Lua, SharedCollector, Rc<RunState>, usize)> {
-    let (lua, col) = build_lua("up".to_string(), config)?;
-    for file in files {
-        let code = std::fs::read_to_string(file).map_err(|e| {
-            mlua::Error::RuntimeError(format!("cannot read {}: {e}", file.display()))
-        })?;
-        lua.load(&code).set_name(file_chunk_name(file)).exec()?;
-    }
-    exec_topology_registrations(&lua, config)?;
+    let (lua, col) = load_topology_state(files, config)?;
 
     let id = {
         let c = col.borrow();

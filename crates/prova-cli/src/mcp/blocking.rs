@@ -181,13 +181,19 @@ pub(super) fn attest_blocking(env: &McpEnv, req: AttestRequest) -> Result<(serde
     Ok((body, !attested))
 }
 
-/// `evidence` — the whole account, through the same computation as the CLI verb.
-pub(super) fn evidence_blocking(env: &McpEnv, req: EvidenceRequest) -> Result<(serde_json::Value, bool), String> {
-    let call = env.resolve_call(None, req.package.as_deref())?;
+/// Resolve a call's package and compute its evidence account — the shared front half of the
+/// `evidence` and `owed` tools, through the same computation as the CLI verbs.
+fn account_blocking(env: &McpEnv, package: Option<&str>) -> Result<prova_core::ledger::Account, String> {
+    let call = env.resolve_call(None, package)?;
     let manifest = std::fs::read_to_string(&call.home.manifest)
         .map_err(|e| e.to_string())
         .and_then(|text| crate::manifest::Manifest::parse(&text))?;
-    let account = crate::evidence_account(&call.home, &manifest, &call.dependencies)?;
+    crate::evidence_account(&call.home, &manifest, &call.dependencies)
+}
+
+/// `evidence` — the whole account, through the same computation as the CLI verb.
+pub(super) fn evidence_blocking(env: &McpEnv, req: EvidenceRequest) -> Result<(serde_json::Value, bool), String> {
+    let account = account_blocking(env, req.package.as_deref())?;
     Ok((
         json!({
             "claimed": account.claimed,
@@ -202,11 +208,7 @@ pub(super) fn evidence_blocking(env: &McpEnv, req: EvidenceRequest) -> Result<(s
 
 /// `owed` — the debts alone, same reconciliation, worst-first.
 pub(super) fn owed_blocking(env: &McpEnv, req: OwedRequest) -> Result<(serde_json::Value, bool), String> {
-    let call = env.resolve_call(None, req.package.as_deref())?;
-    let manifest = std::fs::read_to_string(&call.home.manifest)
-        .map_err(|e| e.to_string())
-        .and_then(|text| crate::manifest::Manifest::parse(&text))?;
-    let account = crate::evidence_account(&call.home, &manifest, &call.dependencies)?;
+    let account = account_blocking(env, req.package.as_deref())?;
     Ok((json!({ "owed": owed_rows(&account.owed) }), false))
 }
 

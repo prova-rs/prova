@@ -742,14 +742,26 @@ fn load_suite_collection(
     if suite.setup.is_none() && suite.files.len() == 1 {
         return read_and_collect(&suite.files[0], config);
     }
-    let (lua, col) = build_lua(suite.name.clone(), config)?;
-    if let Some(setup) = suite.setup.as_deref() {
+    load_collection(&suite.name, suite.setup.as_deref(), &suite.files, config)
+}
+
+/// The parts-shaped core of `load_suite_collection`: a fresh state, the optional setup chunk,
+/// then every member file — bodies never execute. Discovery calls this directly where it has
+/// parts rather than a `Suite`.
+fn load_collection(
+    name: &str,
+    setup: Option<&Path>,
+    files: &[PathBuf],
+    config: &RunConfig,
+) -> mlua::Result<(Lua, SharedCollector)> {
+    let (lua, col) = build_lua(name.to_string(), config)?;
+    if let Some(setup) = setup {
         let code = std::fs::read_to_string(setup).map_err(|e| {
             mlua::Error::RuntimeError(format!("cannot read {}: {e}", setup.display()))
         })?;
         lua.load(&code).set_name(file_chunk_name(setup)).exec()?;
     }
-    load_member_files(&lua, &col, &suite.files)?;
+    load_member_files(&lua, &col, files)?;
     Ok((lua, col))
 }
 

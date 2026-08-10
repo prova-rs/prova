@@ -79,14 +79,7 @@ pub(crate) fn discover_suite_files(
     if setup.is_none() && files.len() == 1 {
         return list_path_nodes(&files[0], config);
     }
-    let (lua, col) = build_lua(name.to_string(), config)?;
-    if let Some(setup) = setup {
-        let code = std::fs::read_to_string(setup).map_err(|e| {
-            mlua::Error::RuntimeError(format!("cannot read {}: {e}", setup.display()))
-        })?;
-        lua.load(&code).set_name(file_chunk_name(setup)).exec()?;
-    }
-    load_member_files(&lua, &col, files)?;
+    let (_lua, col) = load_collection(name, setup, files, config)?;
     let col = col.borrow();
     list_plan(&col, config)
 }
@@ -109,14 +102,7 @@ pub fn obligations_for_suite(
     files: &[PathBuf],
     config: &RunConfig,
 ) -> mlua::Result<Vec<ProofObligation>> {
-    let (lua, col) = build_lua("obligations".to_string(), config)?;
-    if let Some(setup) = setup {
-        let code = std::fs::read_to_string(setup).map_err(|e| {
-            mlua::Error::RuntimeError(format!("cannot read {}: {e}", setup.display()))
-        })?;
-        lua.load(&code).set_name(file_chunk_name(setup)).exec()?;
-    }
-    load_member_files(&lua, &col, files)?;
+    let (_lua, col) = load_collection("obligations", setup, files, config)?;
     let col = col.borrow();
     let plan = build_plan(&col, &config.capabilities)?;
     Ok(plan
