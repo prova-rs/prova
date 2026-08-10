@@ -19,7 +19,7 @@ use std::rc::Rc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use mlua::{Function, Lua, ObjectLike, Table, UserData, UserDataFields, UserDataMethods, Value};
+use mlua::{Function, Lua, Table, UserData, UserDataFields, UserDataMethods, Value};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 
 use crate::model::parse_duration;
@@ -478,25 +478,6 @@ impl UserData for ListenerUd {
     }
 }
 
-/// Tie a resource's life to the caller's scope via `ctx:manage`, exactly as containers and
-/// `http.mock` do — reaped by the same LIFO machinery.
-fn manage(what: &str, ctx: &Value, ud: &mlua::AnyUserData) -> mlua::Result<()> {
-    match ctx {
-        Value::UserData(c) => {
-            let _: Value = c.call_method("manage", ud)?;
-            Ok(())
-        }
-        Value::Nil => Err(err(format!(
-            "{what}(ctx): pass the test or fixture context (`t` / `ctx`) so it is torn down with \
-             the scope"
-        ))),
-        other => Err(err(format!(
-            "{what}(ctx): expected the test or fixture context, got a {}",
-            other.type_name()
-        ))),
-    }
-}
-
 fn listen_fn(lua: &Lua) -> mlua::Result<Function> {
     lua.create_function(|lua, (ctx, opts): (Value, Table)| {
         let addr_s = opts
@@ -509,7 +490,7 @@ fn listen_fn(lua: &Lua) -> mlua::Result<Function> {
             acceptor: Rc::new(RefCell::new(Some(acceptor))),
             framing,
         })?;
-        manage("socket.listen", &ctx, &ud)?;
+        super::manage("socket.listen", &ctx, &ud)?;
         Ok(ud)
     })
 }
@@ -683,7 +664,7 @@ fn mock_fn(lua: &Lua) -> mlua::Result<Function> {
             state,
             shutdown: RefCell::new(Some(tx)),
         })?;
-        manage("socket.mock", &ctx, &ud)?;
+        super::manage("socket.mock", &ctx, &ud)?;
         Ok(ud)
     })
 }
@@ -1201,7 +1182,7 @@ fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
             dropped: drop_tx,
             shutdown: RefCell::new(Some(tx)),
         })?;
-        manage("socket.proxy", &ctx, &ud)?;
+        super::manage("socket.proxy", &ctx, &ud)?;
         Ok(ud)
     })
 }

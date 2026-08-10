@@ -10,7 +10,7 @@
 //! outcome, message, timing — and tolerates dialect drift (unknown elements and attributes are
 //! ignored, nested `<testsuite>` groups are walked).
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use mlua::{Lua, Table};
 use quick_xml::events::Event;
@@ -131,27 +131,6 @@ fn parse_document(xml: &str, file: &str, cases: &mut Vec<Case>) -> Result<(), St
     Ok(())
 }
 
-/// Expand `pattern` (a literal path or a glob, resolved against `cwd` when relative) to files.
-fn resolve_files(pattern: &str, cwd: Option<&str>) -> Result<Vec<PathBuf>, String> {
-    let full = match cwd {
-        Some(base) if !Path::new(pattern).is_absolute() => {
-            format!("{}/{}", base.trim_end_matches('/'), pattern)
-        }
-        _ => pattern.to_string(),
-    };
-    if !full.contains(['*', '?', '[']) {
-        let p = PathBuf::from(&full);
-        return Ok(if p.is_file() { vec![p] } else { Vec::new() });
-    }
-    let mut files: Vec<PathBuf> = glob::glob(&full)
-        .map_err(|e| format!("junit.load: bad glob {full:?}: {e}"))?
-        .filter_map(Result::ok)
-        .filter(|p| p.is_file())
-        .collect();
-    files.sort();
-    Ok(files)
-}
-
 /// Build the report table `junit.load` returns: counts, files (path + mtime), and cases.
 fn report_table(lua: &Lua, files: &[PathBuf], cases: &[Case]) -> mlua::Result<Table> {
     let report = lua.create_table()?;
@@ -162,20 +141,7 @@ fn report_table(lua: &Lua, files: &[PathBuf], cases: &[Case]) -> mlua::Result<Ta
     report.set("errors", count("error"))?;
     report.set("skipped", count("skipped"))?;
 
-    let files_t = lua.create_table()?;
-    for (i, f) in files.iter().enumerate() {
-        let row = lua.create_table()?;
-        row.set("path", f.to_string_lossy())?;
-        let mtime = std::fs::metadata(f)
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        row.set("mtime", mtime)?;
-        files_t.set(i + 1, row)?;
-    }
-    report.set("files", files_t)?;
+    report.set("files", super::ingest::files_table(lua, files)?)?;
 
     let cases_t = lua.create_table()?;
     for (i, c) in cases.iter().enumerate() {
@@ -247,7 +213,7 @@ pub(crate) fn make(lua: &Lua, deputed: Option<DeputedRegistry>) -> mlua::Result<
                 Some(o) => o.get("cwd")?,
                 None => None,
             };
-            let files = resolve_files(&pattern, cwd.as_deref())
+            let files = super::ingest::resolve_files(&pattern, cwd.as_deref(), "junit.load")
                 .map_err(mlua::Error::RuntimeError)?;
             let mut cases = Vec::new();
             for f in &files {

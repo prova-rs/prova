@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use mlua::{
-    Function, Lua, LuaSerdeExt, ObjectLike, Table, UserData, UserDataFields, UserDataMethods,
+    Function, Lua, LuaSerdeExt, Table, UserData, UserDataFields, UserDataMethods,
     Value,
 };
 use prost_reflect::{
@@ -176,21 +176,7 @@ pub(crate) fn mock_fn(lua: &Lua) -> mlua::Result<Function> {
         })?;
         let server = start(lua, &opts)?;
         let ud = lua.create_userdata(server)?;
-        match ctx {
-            Value::UserData(c) => {
-                let _: Value = c.call_method("manage", &ud)?;
-            }
-            Value::Nil => return Err(err(
-                "grpc.mock(ctx, opts): pass the test or fixture context (`t` / `ctx`) so the \
-                     server is torn down with the scope",
-            )),
-            other => {
-                return Err(err(format!(
-                    "grpc.mock(ctx, opts): expected the test or fixture context, got a {}",
-                    other.type_name()
-                )))
-            }
-        }
+        super::manage("grpc.mock", &ctx, &ud)?;
         Ok(ud)
     })
 }
@@ -1026,16 +1012,7 @@ pub(crate) fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
     lua.create_async_function(|lua, (ctx, opts): (Value, Table)| async move {
         let server = start_proxy(&lua, &opts).await?;
         let ud = lua.create_userdata(server)?;
-        match ctx {
-            Value::UserData(c) => {
-                let _: Value = c.call_method("manage", &ud)?;
-            }
-            _ => {
-                return Err(err(
-                    "grpc.proxy(ctx, opts): pass the test or fixture context (`t` / `ctx`)",
-                ))
-            }
-        }
+        super::manage("grpc.proxy", &ctx, &ud)?;
         Ok(ud)
     })
 }

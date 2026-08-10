@@ -19,7 +19,7 @@
 
 use std::path::Path;
 
-use mlua::{Lua, Table, Value};
+use mlua::{Lua, ObjectLike, Table, Value};
 
 use crate::progress::{self, Kind, Progress};
 use std::sync::Arc;
@@ -52,6 +52,7 @@ mod format_names {
 
 mod cassette;
 mod date;
+mod ingest;
 mod junit;
 mod measure;
 mod sarif;
@@ -59,6 +60,28 @@ mod shellproxy;
 mod socket;
 mod terminal;
 mod websocket;
+
+/// Tie a resource's life to the caller's scope via `ctx:manage`, exactly as containers do —
+/// reaped by the same LIFO machinery, in the same order, as every other resource — including
+/// under `prova up`, where the scope is held until a signal rather than ending with a test.
+/// Shared by every transport's mock/proxy constructor; `what` names the verb in the teaching
+/// error (`http.mock`, `socket.proxy`, ...).
+pub(super) fn manage(what: &str, ctx: &Value, ud: &mlua::AnyUserData) -> mlua::Result<()> {
+    match ctx {
+        Value::UserData(c) => {
+            let _: Value = c.call_method("manage", ud)?;
+            Ok(())
+        }
+        Value::Nil => Err(mlua::Error::RuntimeError(format!(
+            "{what}(ctx): pass the test or fixture context (`t` / `ctx`) so it is torn down with \
+             the scope"
+        ))),
+        other => Err(mlua::Error::RuntimeError(format!(
+            "{what}(ctx): expected the test or fixture context, got a {}",
+            other.type_name()
+        ))),
+    }
+}
 
 /// The §6 journal-filter contract, shared by every mock's `received(filter?)`: `nil` keeps
 /// everything, a **table** is the same structural-subset match as `:on`/`:matches` (fields the

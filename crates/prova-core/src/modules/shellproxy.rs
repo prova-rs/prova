@@ -17,7 +17,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use mlua::{Function, Lua, ObjectLike, Table, UserData, UserDataFields, UserDataMethods, Value};
+use mlua::{Function, Lua, Table, UserData, UserDataFields, UserDataMethods, Value};
 
 pub(crate) fn err(msg: impl Into<String>) -> mlua::Error {
     mlua::Error::RuntimeError(msg.into())
@@ -393,16 +393,7 @@ pub(crate) fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
             state,
             env: env_key,
         })?;
-        match ctx {
-            Value::UserData(c) => {
-                let _: Value = c.call_method("manage", &ud)?;
-            }
-            _ => {
-                return Err(err(
-                    "shell.proxy(ctx): pass the test or fixture context (`t` / `ctx`)",
-                ))
-            }
-        }
+        super::manage("shell.proxy", &ctx, &ud)?;
         Ok(ud)
     })
 }

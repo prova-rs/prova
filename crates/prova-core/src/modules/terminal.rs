@@ -24,7 +24,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use mlua::{Function, Lua, ObjectLike, Table, UserData, UserDataFields, UserDataMethods, Value};
+use mlua::{Function, Lua, Table, UserData, UserDataFields, UserDataMethods, Value};
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 
 use crate::model::parse_duration;
@@ -578,26 +578,9 @@ fn spawn_fn(lua: &Lua) -> mlua::Result<Function> {
             killer: RefCell::new(killer),
             pid,
         })?;
-        manage("terminal.spawn", &ctx, &ud)?;
+        super::manage("terminal.spawn", &ctx, &ud)?;
         Ok(ud)
     })
-}
-
-fn manage(what: &str, ctx: &Value, ud: &mlua::AnyUserData) -> mlua::Result<()> {
-    match ctx {
-        Value::UserData(c) => {
-            let _: Value = c.call_method("manage", ud)?;
-            Ok(())
-        }
-        Value::Nil => Err(err(format!(
-            "{what}(ctx): pass the test or fixture context (`t` / `ctx`) so it is torn down with \
-             the scope"
-        ))),
-        other => Err(err(format!(
-            "{what}(ctx): expected the test or fixture context, got a {}",
-            other.type_name()
-        ))),
-    }
 }
 
 // ── terminal.mock: the PATH-shadow responder ───────────────────────────────────────────────────
@@ -725,7 +708,7 @@ fn mock_fn(lua: &Lua) -> mlua::Result<Function> {
             state,
             env: env_key,
         })?;
-        manage("terminal.mock", &ctx, &ud)?;
+        super::manage("terminal.mock", &ctx, &ud)?;
         Ok(ud)
     })
 }
@@ -910,7 +893,7 @@ fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
             state: Rc::new(RefCell::new(state)),
             env: env_key,
         })?;
-        manage("terminal.proxy", &ctx, &ud)?;
+        super::manage("terminal.proxy", &ctx, &ud)?;
         Ok(ud)
     })
 }

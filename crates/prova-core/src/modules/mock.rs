@@ -9,7 +9,7 @@ use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper::{Request, Response};
 use mlua::{
-    Function, Lua, LuaSerdeExt, ObjectLike, Table, UserData, UserDataFields, UserDataMethods,
+    Function, Lua, LuaSerdeExt, Table, UserData, UserDataFields, UserDataMethods,
     Value,
 };
 
@@ -305,28 +305,7 @@ pub(crate) fn mock_fn(lua: &Lua) -> mlua::Result<Function> {
     lua.create_function(|lua, (ctx, opts): (Value, Option<Table>)| {
         let server = start(lua, opts.as_ref())?;
         let ud = lua.create_userdata(server)?;
-        // Tie the server's life to the caller's scope, exactly as a container's is. Going
-        // through `ctx:manage` rather than reimplementing teardown means a mock is reaped by
-        // the same LIFO machinery, in the same order, as every other resource — including under
-        // `prova up`, where the scope is held until a signal rather than ending with a test.
-        match ctx {
-            Value::UserData(c) => {
-                let _: Value = c.call_method("manage", &ud)?;
-            }
-            Value::Nil => {
-                return Err(mlua::Error::RuntimeError(
-                    "http.mock(ctx): pass the test or fixture context (`t` / `ctx`) so the \
-                     server is torn down with the scope"
-                        .into(),
-                ))
-            }
-            other => {
-                return Err(mlua::Error::RuntimeError(format!(
-                    "http.mock(ctx): expected the test or fixture context, got a {}",
-                    other.type_name()
-                )))
-            }
-        }
+        super::manage("http.mock", &ctx, &ud)?;
         Ok(ud)
     })
 }
@@ -1190,24 +1169,7 @@ pub(crate) fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
 
         let server = start(lua, Some(&translated))?;
         let ud = lua.create_userdata(server)?;
-        match ctx {
-            Value::UserData(c) => {
-                let _: Value = c.call_method("manage", &ud)?;
-            }
-            Value::Nil => {
-                return Err(mlua::Error::RuntimeError(
-                    "http.proxy(ctx): pass the test or fixture context (`t` / `ctx`) so the \
-                     proxy is torn down with the scope"
-                        .into(),
-                ))
-            }
-            other => {
-                return Err(mlua::Error::RuntimeError(format!(
-                    "http.proxy(ctx): expected the test or fixture context, got a {}",
-                    other.type_name()
-                )))
-            }
-        }
+        super::manage("http.proxy", &ctx, &ud)?;
         Ok(ud)
     })
 }

@@ -13,7 +13,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
-use mlua::{Function, Lua, ObjectLike, Table, UserData, UserDataFields, UserDataMethods, Value};
+use mlua::{Function, Lua, Table, UserData, UserDataFields, UserDataMethods, Value};
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::model::parse_duration;
@@ -337,16 +337,7 @@ fn mock_fn(lua: &Lua) -> mlua::Result<Function> {
             state,
             shutdown: RefCell::new(Some(tx)),
         })?;
-        match ctx {
-            Value::UserData(c) => {
-                let _: Value = c.call_method("manage", &ud)?;
-            }
-            _ => {
-                return Err(err(
-                    "websocket.mock(ctx): pass the test or fixture context (`t` / `ctx`)",
-                ))
-            }
-        }
+        super::manage("websocket.mock", &ctx, &ud)?;
         Ok(ud)
     })
 }
@@ -516,16 +507,7 @@ fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
             state,
             shutdown: RefCell::new(Some(tx)),
         })?;
-        match ctx {
-            Value::UserData(c) => {
-                let _: Value = c.call_method("manage", &ud)?;
-            }
-            _ => {
-                return Err(err(
-                    "websocket.proxy(ctx): pass the test or fixture context (`t` / `ctx`)",
-                ))
-            }
-        }
+        super::manage("websocket.proxy", &ctx, &ud)?;
         Ok(ud)
     })
 }
