@@ -36,6 +36,15 @@ proofs      = ["ut"]
 switches    = ["ut"]
 must_run    = ["cargo-nextest"]
 
+# Everything short of the soaks, one command: the whole black-box suite PLUS the switched heavy
+# legs — unit tests deputed via nextest, the cargo quality gates. The pre-push answer to "did I
+# break anything big?": slower than bare `prova`, far faster than waiting for CI, and one exit
+# code for all of it. Soaks stay ad-hoc (`-s soak`) — hours never ride a sweep.
+[profiles.all]
+description = "the pre-push sweep: every black-box proof plus the ut and quality legs (soaks stay out)"
+switches    = ["ut", "quality"]
+must_run    = ["cargo-nextest"]
+
 # Prova's own specs — the prose layer. The point of declaring this is not bookkeeping — it is that
 # prova must be the exemplar of a proven application, and a lifecycle nobody has run end-to-end on a
 # real project is a design rather than a practice. Claim and backlog anchors live in the design

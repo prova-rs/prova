@@ -122,6 +122,24 @@ small for a profile, and ad-hoc iteration on one heavy test; if those never mate
 dishonesty the reminders lane just killed); fuzzy `-k`/`--tags` must not (a grazing keyword must
 never conduct a workspace compile by accident). Recorded 2026-08-09.
 
+<!-- backlog: manifest-declared-runner -->
+**The manifest can say everything about a run except which prova runs it — the Gradle Wrapper
+gap.** `cargo xtask proofs` exists to do three jobs prova cannot state for itself: rebuild the
+runner from this tree (freshness), run the suite through that build (identity — the suite
+exercises the engine in-process AND probes `prova.bin` black-box, so both halves must be this
+commit's), and never prove through the machine-shared installed binary (the footgun that fired
+2026-08-09, when `~/.cargo/bin/prova` predated the `switches` manifest field and failed to parse
+this repo). Today those live in prose (CLAUDE.md's "never prove through an installed prova") and
+convention (`binary_identity_test` checks inner==outer, not outer==this-tree). The primitive: a
+`[run] runner` declaration — the self-hosting form `{ build = "cargo build -p prova-cli", bin =
+"target/debug/prova" }` provisions the runner and re-execs through it (depth-guarded, same argv;
+build failure is a loud failed provision, not a verdict), and the consumer form is a version gate
+(`runner = ">= 0.18"`). Provisioning the runner is fixture-work, not a quality gate, so the
+two-provenances boundary holds. Lands with: `cargo xtask proofs` retires to sugar, the CLAUDE.md
+warning paragraph is replaced by mechanism, and bare `prova` becomes the one command even in
+prova's own repo — the exemplar bar (#exclusive-quality-interface's endgame). Recorded
+2026-08-09.
+
 <!-- claim: switches-are-discoverable -->
 **A switched class can never become a hidden test population.** Three sightlines, one per way of
 looking: every bare run's tally carries the switched-off line (the classes are SEEN on the
