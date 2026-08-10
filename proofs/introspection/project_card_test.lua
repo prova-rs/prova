@@ -75,6 +75,6 @@ prova.test("the quality interface is profiles, each named and described — the 
   end
   -- Descriptions ride the listing — "ut" alone does not convey "these are the unit tests".
   t:expect(r.stdout):contains("unit tests")
-  t:expect(r.stdout):contains("ratcheted against the committed baseline")
+  t:expect(r.stdout):contains("whole-bar merge")
   t:expect(r.stdout):contains("pre-push sweep")
 end)

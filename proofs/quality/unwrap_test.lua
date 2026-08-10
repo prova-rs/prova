@@ -10,7 +10,8 @@
 local restrict = prova.fixture("clippy_restrict", Scope.File, function()
   local r = shell.run(
     { "cargo", "clippy", "--workspace", "--lib", "--bins", "--all-features", "--",
-      "-W", "clippy::unwrap_used", "-W", "clippy::expect_used" },
+      "-W", "clippy::unwrap_used", "-W", "clippy::expect_used",
+      "-W", "clippy::too_many_lines" },
     { cwd = prova.root, merge_stderr = true }
   )
   return r.stdout or ""
@@ -29,4 +30,10 @@ end)
 
 prova.test("production .expect() count does not regress past the baseline", { switch = "quality" }, function(t)
   measure.ratchet(t, "rust.expect.production", count(t:use(restrict), "used `expect%(%)`"), { set = "quality" })
+end)
+
+prova.test("oversized functions (clippy::too_many_lines) do not multiply past the baseline", { switch = "quality" }, function(t)
+  -- The file-size gate's sibling at function granularity (threshold in clippy.toml): the count
+  -- of functions past the line limit is standing debt — grandfathered, ratcheted, paid down.
+  measure.ratchet(t, "rust.functions.too_long", count(t:use(restrict), "this function has too many lines"), { set = "quality" })
 end)

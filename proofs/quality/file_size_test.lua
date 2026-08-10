@@ -2,10 +2,11 @@
 -- an agent loses the thread, so oversized files are a red condition that forces a refactor.
 --
 -- Posture (Mix): a HARD limit for new files; the current giants are GRANDFATHERED — recorded here
--- as known debt so CI stays green today, but each one carries a graduation check: the moment it
--- drops to <= LIMIT this proof FAILS, telling you to remove it from the list (the paydown win).
--- Numeric no-growth ratcheting (with an intentional --update-baseline bump) arrives with the
--- measurements/baseline core; this coarse gate is the promise-grade stand-in until then.
+-- as known debt so CI stays green today, but each one carries a graduation check (drops to <=
+-- LIMIT -> FAILS demanding delisting) AND a per-file line-count ratchet: growth past the committed
+-- baseline is red, every shrink is banked by --update-baseline, and a `goal` in the baseline file
+-- schedules the paydown. A god file taxes users and agents alike — the ratchet is the pressure,
+-- modularization sessions are the payments.
 
 local LIMIT = 1500
 
@@ -64,5 +65,14 @@ prova.test("no source file exceeds " .. LIMIT .. " lines (giants grandfathered, 
     else
       t:expect(n, f.rel .. " is " .. n .. " lines (> " .. LIMIT .. ") — split it, or grandfather it with a paydown note"):never():gt(LIMIT)
     end
+  end
+end)
+
+prova.test("the grandfathered giants do not grow — each file's line count is ratcheted", { switch = "quality" }, function(t)
+  -- The debt, numerically: growth past a giant's committed baseline is red; a shrink is banked
+  -- with --update-baseline; a `goal` in the baseline file schedules the modularization.
+  for rel in pairs(GRANDFATHERED) do
+    local metric = "rust.file_lines." .. rel:match("([^/]+)%.rs$")
+    measure.ratchet(t, metric, line_count(prova.root .. "/" .. rel), { set = "quality" })
   end
 end)

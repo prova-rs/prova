@@ -127,16 +127,38 @@ bootstrap itself retires when #manifest-declared-runner lands). No `it` profile 
 so: cargo's integration-test targets ride the ut conduct, and the black-box suite IS the
 system-level integration bar — the split is per-project vocabulary, not doctrine.
 
-<!-- backlog: coverage-of-the-whole-bar -->
-**The coverage gate measures the unit layer; the bar is bigger than that.** `prova run coverage`
-conducts `cargo llvm-cov nextest`, so its 60% is unit-test line coverage — and the per-file gaps
-it reports are misleading at the edges: `modules/socket.rs` reads 2% while owning a whole
-black-box proof directory, because proofs drive a separate uninstrumented binary. The next rung:
-instrument the proof run itself (build `target/debug/prova` with `-C instrument-coverage`, run
-the suite, merge profdata with the nextest set) so the ratcheted number is the WHOLE bar —
-observed and deputed evidence landing in one coverage account, the same two-provenances story
-the verdicts already tell. Until then, read the unit number as "covered by unit tests", never
-"covered". Recorded 2026-08-09.
+<!-- claim: coverage-of-the-whole-bar -->
+**Coverage measures the whole bar, layered: one conduct, three ratcheted numbers.** `prova run
+coverage` conducts the unit layer (`cargo llvm-cov nextest`) and the black-box layer (the proof
+suite through an instrumented prova, every `prova.bin` child writing its own profraw), reporting
+each alone AND merged: `rust.coverage.unit`, `rust.coverage.blackbox`, `rust.coverage.lines`.
+The layers earn their separation — on landing day they overlapped barely two-thirds (unit 60.2%,
+black-box 61.4%, merged 81.2%), and the DELTA is the signal: the conduct prints the unit-owed
+worklist (files rich in black-box coverage but naked at the unit layer — proven behavior with no
+fast local feedback), which converted a misleading "socket.rs: 2%" panic row into an informed
+"black-box 82%, unit 2%" choice. Distinctness is guarded, not assumed: identical layer totals
+fail the gate outright, because three conducts read unit == blackbox == merged to fourteen
+digits — cached profdata, then a mis-nested target dir, then profraws written where `report`
+never looks — before the guard existed. Expense is managed by construction: builds isolate into
+llvm-cov's own target dir and only measurement DATA is cleaned between conducts (builds stay
+incremental), the class is switch-gated out of every sweep, and CI gives it a nightly leg rather
+than a per-push one.
+
+<!-- backlog: baseline-update-policy -->
+**Baselines need a steady-state mode: hold by default, ratchet by declaration.** Today
+`--update-baseline` tightens every improved in-scope metric — over-ratcheting: a lucky run's
+incidental unwrap improvement becomes a floor nobody chose, and a noisy metric (coverage %) gets
+a floor riding its jitter ceiling into flaky reds. The policy, using fields the baseline file
+already carries: **`goal` is the intent marker** — bare `--update-baseline` establishes
+first-sights and tightens ONLY goal-carrying metrics (active debt); goal-less metrics are
+protections whose committed floor never moves without a hand (improvements stay green and
+unbanked — steady-state slack is a feature). **Named banking** (`--update-baseline=<name,…>`,
+the `--heed=SEL` spelling family) moves exactly the metrics asked for. **`tolerance`** per
+metric absorbs measurement noise: red only when worse than floor − tolerance, a reviewed number
+in the committed file, never a loosened floor. The refuse-to-loosen guard stays absolute on the
+flag path; deliberate loosening remains a hand edit reviewed in the PR diff (and the ratchet
+failure message must say so — today it points at `--update-baseline`, which would refuse).
+Recorded 2026-08-09.
 
 ## The facet convention (for the verifiers that follow)
 

@@ -1,0 +1,34 @@
+name: Coverage
+
+# The judicious cadence (docs/design/verifiers.md#coverage-of-the-whole-bar): the instrumented
+# conduct is the suite's most expensive leg, and the ratchet floor does not need per-commit
+# sampling — one nightly conduct holds it, and a red morning bisects one day's commits. Manual
+# dispatch covers "I want the number now".
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  coverage:
+    name: Whole-bar coverage (ratcheted)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enable Rust Dependency Caching
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-nextest and cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest,cargo-llvm-cov
+
+      - name: Build
+        run: cargo build
+
+      # Three ratchets, one conduct: unit, black-box, and the whole-bar merge — plus the
+      # unit-owed delta worklist in the log.
+      - name: Coverage (prova run coverage)
+        run: ./target/debug/prova run coverage

@@ -102,16 +102,3 @@ jobs:
         shell: bash
         run: ./target/debug/prova run quality
 
-      # Coverage, ratcheted: `prova run coverage` conducts cargo llvm-cov nextest (an instrumented
-      # rebuild + run) and holds the workspace line-coverage total to the committed baseline in
-      # .prova/baselines/quality.json. Linux only, like the other source-based metrics — one leg
-      # is enough, and the instrumented rebuild is the most expensive conduct in the suite.
-      - name: Install cargo-llvm-cov
-        if: runner.os == 'Linux'
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-llvm-cov
-      - name: Coverage (ratcheted)
-        if: runner.os == 'Linux'
-        shell: bash
-        run: ./target/debug/prova run coverage

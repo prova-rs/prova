@@ -55,7 +55,7 @@ must_run    = ["cargo-nextest"]
 # `prova run coverage --update-baseline`. Not part of `all`: the instrumented rebuild roughly
 # doubles the sweep; CI gives coverage its own leg.
 [profiles.coverage]
-description = "workspace line coverage via cargo llvm-cov, ratcheted against the committed baseline"
+description = "layered coverage, ratcheted: unit (nextest) + black-box (the instrumented suite) + the whole-bar merge, with the unit-owed delta worklist"
 proofs      = ["coverage"]
 switches    = ["coverage"]
 must_run    = ["cargo-llvm-cov", "cargo-nextest"]

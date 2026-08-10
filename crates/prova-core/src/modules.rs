@@ -1009,8 +1009,13 @@ fn make_shell(lua: &Lua, progress: &Arc<dyn Progress>) -> mlua::Result<Table> {
             // `echo` stays silent, a two-minute `cargo build` does not.
             let activity = progress::start(&progress, Kind::Command, cmd.display_name());
             let start = Instant::now();
-            // With `stdin`, pipe the input in and reap via wait_with_output; otherwise `output()` as
-            // before (which pipes stdout/stderr and gives the child no stdin).
+            // With `stdin`, pipe the input in and reap via wait_with_output; otherwise `output()`
+            // with stdin EXPLICITLY nulled. tokio's `output()` — unlike std's — only forces
+            // stdout/stderr and lets stdin INHERIT, so a child that reads stdin (a journaling
+            // shim's `cat`, an interactive prompt) blocks forever whenever the harness's own
+            // stdin is a non-closing pipe. That was a live 40-minute suite hang under the
+            // coverage conduct. Hermetic default: a test's child sees EOF, never the harness's
+            // stdin; a proof that means to feed input says `stdin = ...`.
             let run = async {
                 if let Some(input) = &stdin {
                     use tokio::io::AsyncWriteExt;
@@ -1025,6 +1030,7 @@ fn make_shell(lua: &Lua, progress: &Arc<dyn Progress>) -> mlua::Result<Table> {
                     }
                     child.wait_with_output().await
                 } else {
+                    command.stdin(std::process::Stdio::null());
                     command.output().await
                 }
             };
@@ -1091,6 +1097,9 @@ fn make_shell(lua: &Lua, progress: &Arc<dyn Progress>) -> mlua::Result<Table> {
                 command.env(k, v);
             }
             command
+                // stdin nulled for the same hermeticity as shell.run: a spawned server must
+                // never sit on the HARNESS's stdin (tokio inherits it by default).
+                .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .kill_on_drop(true);
@@ -3844,6 +3853,7 @@ pub(crate) mod docker {
         }
         cmd.arg(&spec.context);
 
+        cmd.stdin(std::process::Stdio::null()); // tokio output() inherits stdin; see shell.run
         let output = cmd.output().await.map_err(derr)?;
         if !output.status.success() {
             // Carry the builder's own log. BuildKit writes progress and errors to stderr, but a

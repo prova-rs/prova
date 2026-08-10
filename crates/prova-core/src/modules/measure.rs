@@ -57,11 +57,11 @@ function measure.ratchet(t, name, value, opts)
   -- 1) The ceiling: never regress past the committed baseline (the preventive ratchet).
   if dir == "higher_is_better" then
     t:expect(value, name .. " regressed to " .. value .. " (baseline floor " .. floor ..
-      ", higher is better) — recover it, or lower the baseline via --update-baseline if intended")
+      ", higher is better) — recover it, or hand-edit the committed baseline if the regression is intended (--update-baseline refuses to loosen)")
       :gte(floor)
   else
     t:expect(value, name .. " regressed to " .. value .. " (baseline ceiling " .. floor ..
-      ", lower is better) — bring it back down, or raise the baseline via --update-baseline if intended")
+      ", lower is better) — bring it back down, or hand-edit the committed baseline if the regression is intended (--update-baseline refuses to loosen)")
       :never():gt(floor)
   end
 

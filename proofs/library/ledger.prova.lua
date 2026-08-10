@@ -82,7 +82,10 @@ local consumer = prova.fixture("ledger-consumer", Scope.File, function(ctx)
 	-- the compiler's own words are the proof's failure message.
 	-- NOT `--quiet`: the compiler's diagnostics ARE this proof's failure message, and suppressing
 	-- progress output suppresses them too.
-	local build = shell.run("cargo build", { cwd = dir, timeout = "900s", merge_stderr = true })
+	-- CARGO_TARGET_DIR pinned to the sandbox: an ambient override (a coverage conduct sets one)
+	-- must never redirect this consumer's binary out of the target/debug the proof runs.
+	local build = shell.run("cargo build", { cwd = dir, timeout = "900s", merge_stderr = true,
+		env = { CARGO_TARGET_DIR = dir .. "/target", RUSTC_WRAPPER = "" } })
 	return { dir = dir, build = build }
 end)
 
@@ -188,7 +191,10 @@ local claim_consumer = prova.fixture("claim-ledger-consumer", Scope.File, functi
 			"}",
 		}, "\n") .. "\n"
 	)
-	local build = shell.run("cargo build", { cwd = dir, timeout = "900s", merge_stderr = true })
+	-- CARGO_TARGET_DIR pinned to the sandbox: an ambient override (a coverage conduct sets one)
+	-- must never redirect this consumer's binary out of the target/debug the proof runs.
+	local build = shell.run("cargo build", { cwd = dir, timeout = "900s", merge_stderr = true,
+		env = { CARGO_TARGET_DIR = dir .. "/target", RUSTC_WRAPPER = "" } })
 	return { dir = dir, build = build }
 end)
 
@@ -293,7 +299,10 @@ local account_consumer = prova.fixture("account-consumer", Scope.File, function(
 		}, "\n") .. "\n"
 	)
 
-	local build = shell.run("cargo build", { cwd = dir, timeout = "900s", merge_stderr = true })
+	-- CARGO_TARGET_DIR pinned to the sandbox: an ambient override (a coverage conduct sets one)
+	-- must never redirect this consumer's binary out of the target/debug the proof runs.
+	local build = shell.run("cargo build", { cwd = dir, timeout = "900s", merge_stderr = true,
+		env = { CARGO_TARGET_DIR = dir .. "/target", RUSTC_WRAPPER = "" } })
 	return { dir = dir, build = build }
 end)
 

@@ -1,31 +1,167 @@
---- Code coverage as a ratcheted quality gate (the endgame leg of
---- docs/design/verifiers.md#exclusive-quality-interface): conduct `cargo llvm-cov nextest` once —
---- an instrumented build + run of the whole workspace's unit tests — read the line-coverage
---- total, and hold it to the committed baseline. Lower-than-baseline is red; a genuine new floor
---- is raised deliberately via `prova run coverage --update-baseline`, never by drift.
+--- Coverage, layered (docs/design/verifiers.md#coverage-of-the-whole-bar): ONE conduct, three
+--- numbers. The unit layer (`cargo llvm-cov nextest`) and the black-box layer (the proof suite
+--- through an instrumented prova, every `prova.bin` child writing its own profraw) are staged,
+--- so each layer reports alone AND merged — the DELTA is the signal: a file rich in black-box
+--- coverage but naked at the unit layer is proven behavior with no fast local feedback, the
+--- exact place granular unit tests still earn their keep.
 ---
---- `cargo-llvm-cov` is a world fact (`requires`/`must_run`); asking for coverage is intent (the
---- `coverage` switch, suite.lua) — two facts, two remedies, as everywhere.
+--- Layout is cargo-llvm-cov's OWN (no CARGO_TARGET_DIR override): builds isolate into
+--- target/llvm-cov-target (never thrashing target/debug), profraws land at the MAIN target root
+--- (show-env's LLVM_PROFILE_FILE), the cached profdata lives at target/llvm-cov-target/*.profdata.
+--- Hand-rolling an extra isolation dir double-nested that layout and pointed the suite's
+--- profraws where `report` never looks — three conducts read unit == blackbox == merged to
+--- fourteen digits before this comment existed.
 
--- Conduct once: the JSON summary rides stdout; the tests run instrumented underneath. The
--- deputy's exit code is not asserted — a failing unit test is the ut leg's report; this gate
--- answers only for coverage (and a died-before-emitting deputy fails the parse loudly below).
-local conduct = prova.fixture("llvm-cov-summary", Scope.File, function()
+-- Where `report` actually reads profraws: the llvm-cov target dir's ROOT (nextest writes there).
+-- show-env's LLVM_PROFILE_FILE points at the MAIN target root, which report never reads — a
+-- census after a "identical three ways" conduct found 768 visible nextest profraws nested and
+-- 444 invisible suite profraws at the main root. The suite's profile path is therefore pinned
+-- into the scan root, and the unit stage lives OUTSIDE it so staged files are truly unseen.
+local COV_DIR = prova.root .. "/target/llvm-cov-target"
+local UNIT_STAGE = prova.root .. "/target/unit-profraws"
+
+--- `cargo llvm-cov show-env` as a table (values are single-quoted).
+local function cov_env()
+  local r = shell.run({ "cargo", "llvm-cov", "show-env" }, { cwd = prova.root })
+  local env = {}
+  for line in (r.stdout or ""):gmatch("[^\n]+") do
+    local k, v = line:match("^([%w_]+)='?([^']*)'?$")
+    if k then env[k] = v end
+  end
+  return env
+end
+
+local function purge(dir, pat)
+  for _, f in ipairs(fs.glob(dir, pat)) do
+    fs.remove_all(f)
+  end
+end
+
+--- Report over the profraws currently at the scan root. The cached profdata is purged first:
+--- `report` reuses it and would silently ignore every profraw written since the last merge.
+local function fresh_report()
+  purge(COV_DIR, "*.profdata")
   local r = shell.run(
-    { "cargo", "llvm-cov", "nextest", "--workspace", "--json", "--summary-only" },
-    { cwd = prova.root, timeout = "1800s" }
+    { "cargo", "llvm-cov", "report", "--json" },
+    { cwd = prova.root, timeout = "600s" }
   )
-  return r.stdout or ""
+  return json.decode(r.stdout or "{}")
+end
+
+local function pct(rep)
+  return rep.data[1].totals.lines.percent
+end
+
+--- Move every profraw at the scan root into the stage (or back out of it). Loud when a stage
+--- that must move files moves none — a silent no-op staging is how three identical "layers"
+--- passed for a merge, live.
+local function stage(back)
+  fs.mkdir(UNIT_STAGE)
+  local from = back and UNIT_STAGE or COV_DIR
+  local to = back and COV_DIR or UNIT_STAGE
+  local moved = 0
+  for _, f in ipairs(fs.glob(from, "*.profraw")) do
+    shell.run({ "mv", f, to .. "/" }, { cwd = prova.root })
+    moved = moved + 1
+  end
+  return moved
+end
+
+-- Conduct once: data-clean, instrumented build, the unit layer (reported alone), the black-box
+-- layer (reported alone), the merge. DATA-only clean — the instrumented build artifacts are the
+-- expensive stage and stay for incremental conducts. The suite must be green to be measured.
+local conduct = prova.fixture("layered-coverage", Scope.File, function()
+  local env = cov_env()
+  purge(COV_DIR, "*.profraw")
+  purge(COV_DIR, "*.profdata")
+  purge(prova.root .. "/target", "*.profraw") -- strays from the misdirected show-env path
+  fs.remove_all(UNIT_STAGE)
+
+  local build = shell.run({ "cargo", "build", "-p", "prova-cli" },
+    { cwd = prova.root, env = env, timeout = "1800s", merge_stderr = true })
+  if build.code ~= 0 then
+    return { error = "instrumented build failed:\n" .. (build.stdout or "") }
+  end
+
+  -- Layer 1, deputed: unit tests. Report alone, then stage its profraws aside.
+  shell.run({ "cargo", "llvm-cov", "nextest", "--workspace", "--no-report" },
+    { cwd = prova.root, timeout = "1800s" })
+  local unit = fresh_report()
+  if stage(false) == 0 then
+    return { error = "staging moved no unit profraws — the scan-root assumption broke again" }
+  end
+
+  -- Layer 2, observed: the black-box suite through the instrumented binary. ONLY what
+  -- instrumentation needs crosses in: LLVM_PROFILE_FILE (the %p pattern rides into every
+  -- prova.bin child — the recursion is what gets measured) and PROVA_TRAMPOLINED (this IS this
+  -- tree's build — skip the hop). Ambient cargo vars redirected sandbox proofs' builds, live.
+  local suite = shell.run({ COV_DIR .. "/debug/prova" },
+    { cwd = prova.root, timeout = "1200s", merge_stderr = true,
+      env = { LLVM_PROFILE_FILE = COV_DIR .. "/suite-%p-%m.profraw", PROVA_TRAMPOLINED = "1" } })
+  if suite.code ~= 0 then
+    return { error = "the black-box suite is red under instrumentation — fix the bar before measuring it:\n"
+      .. (suite.stdout or ""):sub(-2000) }
+  end
+  local blackbox = fresh_report()
+
+  -- The merge: unit profraws rejoin, one whole-bar total.
+  stage(true)
+  local merged = fresh_report()
+  return { unit = unit, blackbox = blackbox, merged = merged }
 end)
 
-prova.test("workspace line coverage does not regress past the baseline", {
+--- Per-file percent map from a full report.
+local function by_file(rep)
+  local out = {}
+  for _, f in ipairs(rep.data[1].files or {}) do
+    out[f.filename] = f.summary.lines.percent
+  end
+  return out
+end
+
+prova.test("whole-bar line coverage — unit AND black-box merged — does not regress past the baseline", {
   requires = { "cargo-llvm-cov", "cargo-nextest" },
+  covers = "docs/design/verifiers.md#coverage-of-the-whole-bar",
+  proves = "unit-only coverage read modules/socket.rs at 2% while it owned a whole proof directory — a number that misleads at the edges is worse than none; the merged total is the bar prova actually holds",
 }, function(t)
-  local report = json.decode(t:use(conduct))
-  local percent = report.data[1].totals.lines.percent
-  t:expect(percent, "the summary carries a line-coverage total"):gte(0)
-  measure.ratchet(t, "rust.coverage.lines", percent, {
-    set = "quality",
-    direction = "higher_is_better",
+  local produced = t:use(conduct)
+  t:expect(produced.error, produced.error or "conduct produced reports"):is_nil()
+  -- The merge is real or the gate is lying: identical-to-the-decimal layer totals mean a report
+  -- read cached or half-invisible data (it happened three ways before this assert existed).
+  t:expect(pct(produced.merged) == pct(produced.unit) and pct(produced.unit) == pct(produced.blackbox),
+    "unit, blackbox, and merged are identical — the reports are not seeing distinct profraw sets"
+  ):is_false()
+  measure.ratchet(t, "rust.coverage.lines", pct(produced.merged), {
+    set = "quality", direction = "higher_is_better",
   })
+end)
+
+prova.test("each layer's coverage holds on its own — and the delta names where unit tests are owed", {
+  requires = { "cargo-llvm-cov", "cargo-nextest" },
+  covers = "docs/design/verifiers.md#coverage-of-the-whole-bar",
+  proves = "the delta is the signal: proven-black-box but unit-naked files are behavior with no fast local feedback — the granular-unit-test worklist, computed rather than guessed",
+}, function(t)
+  local produced = t:use(conduct)
+  t:expect(produced.error, produced.error or "conduct produced reports"):is_nil()
+  measure.ratchet(t, "rust.coverage.unit", pct(produced.unit), {
+    set = "quality", direction = "higher_is_better",
+  })
+  measure.ratchet(t, "rust.coverage.blackbox", pct(produced.blackbox), {
+    set = "quality", direction = "higher_is_better",
+  })
+  -- The worklist: files the proofs exercise heavily that unit tests barely touch.
+  local unit_files = by_file(produced.unit)
+  local rows = {}
+  for file, bb in pairs(by_file(produced.blackbox)) do
+    local u = unit_files[file] or 0
+    if bb - u >= 40 then
+      rows[#rows + 1] = { file = file, delta = bb - u, bb = bb, u = u }
+    end
+  end
+  table.sort(rows, function(a, b) return a.delta > b.delta end)
+  for i = 1, math.min(#rows, 10) do
+    local r = rows[i]
+    print(string.format("  unit-owed  %-60s black-box %5.1f%% · unit %5.1f%%",
+      r.file:gsub(prova.root .. "/", ""), r.bb, r.u))
+  end
 end)
