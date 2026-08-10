@@ -79,49 +79,63 @@ fn package_state() -> Option<PackageState> {
     })
 }
 
-pub fn run(args: Vec<String>) -> ExitCode {
-    let mut luals = true;
-    let mut list = false;
-    let mut headless = false;
-    let mut defaults = false;
+/// Everything `prova init`'s flag loop can set.
+struct InitCli {
+    luals: bool,
+    list: bool,
+    headless: bool,
+    defaults: bool,
     // Freshness knob, matching `prova` (run) and `archetect`.
     //
     // `-U`/`--update` is deliberately NOT here yet. It needs `Configuration::with_force_update`,
     // which archetect only grows in the release after the pinned v3.4.1 — shipping the flag now
     // would make it a silent no-op, which is worse than its absence for a knob whose whole job is
     // "I do not trust the cache".
-    let mut offline = false;
-    let mut key: Option<String> = None;
-    let mut cli_answers: Vec<(String, String)> = Vec::new();
-    let mut cli_switches: Vec<String> = Vec::new();
+    offline: bool,
+    key: Option<String>,
+    answers: Vec<(String, String)>,
+    switches: Vec<String>,
+}
 
+/// Parse `prova init`'s arguments; `--help` prints usage and exits successfully.
+fn parse_args(args: Vec<String>) -> Result<InitCli, ExitCode> {
+    let mut cli = InitCli {
+        luals: true,
+        list: false,
+        headless: false,
+        defaults: false,
+        offline: false,
+        key: None,
+        answers: Vec::new(),
+        switches: Vec::new(),
+    };
     let mut it = args.into_iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
-            "--no-luals" | "--no-ide" => luals = false,
-            "--list" => list = true,
-            "--headless" => headless = true,
-            "--defaults" => defaults = true,
-            "--offline" => offline = true,
+            "--no-luals" | "--no-ide" => cli.luals = false,
+            "--list" => cli.list = true,
+            "--headless" => cli.headless = true,
+            "--defaults" => cli.defaults = true,
+            "--offline" => cli.offline = true,
             "--answer" | "-a" => {
                 let Some(pair) = it.next() else {
                     eprintln!("prova init: --answer expects key=value");
-                    return ExitCode::from(2);
+                    return Err(ExitCode::from(2));
                 };
                 match pair.split_once('=') {
-                    Some((k, v)) => cli_answers.push((k.to_string(), v.to_string())),
+                    Some((k, v)) => cli.answers.push((k.to_string(), v.to_string())),
                     None => {
                         eprintln!("prova init: --answer expects key=value, got {pair:?}");
-                        return ExitCode::from(2);
+                        return Err(ExitCode::from(2));
                     }
                 }
             }
             "--switch" | "-s" => {
                 let Some(name) = it.next() else {
                     eprintln!("prova init: --switch expects a name");
-                    return ExitCode::from(2);
+                    return Err(ExitCode::from(2));
                 };
-                cli_switches.push(name);
+                cli.switches.push(name);
             }
             "-h" | "--help" => {
                 println!(
@@ -141,21 +155,67 @@ pub fn run(args: Vec<String>) -> ExitCode {
                      published archetype can render stale. Until `prova init -U` lands, lower\n\
                      `updates.interval` in archetect's config, or run `archetect -U` once."
                 );
-                return ExitCode::SUCCESS;
+                return Err(ExitCode::SUCCESS);
             }
             other if other.starts_with('-') => {
                 eprintln!("prova init: unknown option {other:?}");
-                return ExitCode::from(2);
+                return Err(ExitCode::from(2));
             }
             other => {
-                if let Some(prior) = &key {
+                if let Some(prior) = &cli.key {
                     eprintln!("prova init: expected one catalog key, got {prior:?} and {other:?}");
-                    return ExitCode::from(2);
+                    return Err(ExitCode::from(2));
                 }
-                key = Some(other.to_string());
+                cli.key = Some(other.to_string());
             }
         }
     }
+    Ok(cli)
+}
+
+/// Answers: baked entry answers over the injected package state, CLI `--answer` over both.
+/// Switches: state ∪ entry ∪ CLI.
+fn merged_inputs(
+    state: &Option<PackageState>,
+    entry: &crate::catalog::Resolved,
+    cli: &InitCli,
+) -> (BTreeMap<String, String>, Vec<String>) {
+    // Package-state injection: tell the archetype where it is running. Lowest precedence — the
+    // entry's baked answers/switches and the CLI both win, so an entry can override the facts.
+    let mut merged: BTreeMap<String, String> = BTreeMap::new();
+    if let Some(state) = state {
+        merged.insert("prova_package_root".to_string(), state.package_root.clone());
+        if let Some(dir) = &state.packages_dir {
+            merged.insert("prova_packages_dir".to_string(), dir.clone());
+            // The deprecated answer name — archetype pins from before the package vocabulary
+            // still read it; both are served until it retires at 1.0.
+            merged.insert("prova_plugin_root".to_string(), dir.clone());
+        }
+    }
+    merged.extend(entry.answers.clone());
+    for (k, v) in &cli.answers {
+        merged.insert(k.clone(), v.clone());
+    }
+    let mut switches = Vec::new();
+    if state.is_some() {
+        switches.push("prova:in-package".to_string());
+    }
+    for s in entry.switches.iter().chain(cli.switches.iter()) {
+        if !switches.contains(s) {
+            switches.push(s.clone());
+        }
+    }
+    (merged, switches)
+}
+
+pub fn run(args: Vec<String>) -> ExitCode {
+    let cli = match parse_args(args) {
+        Ok(cli) => cli,
+        Err(code) => return code,
+    };
+    let InitCli { luals, list, headless, defaults, offline, key, .. } = &cli;
+    let (luals, list, headless, defaults, offline) = (*luals, *list, *headless, *defaults, *offline);
+    let key = key.clone();
 
     // Resolve the catalog and target entry before any filesystem work — a bad key or a malformed
     // config.toml fails before a half-scaffolded package can exist.
@@ -224,35 +284,9 @@ pub fn run(args: Vec<String>) -> ExitCode {
         }
     }
 
-    // Package-state injection: tell the archetype where it is running. Lowest precedence — the
-    // entry's baked answers/switches and the CLI both win, so an entry can override the facts.
+    // Defaults: either the entry opts in or `--defaults` is passed.
     let state = package_state();
-    let mut merged: BTreeMap<String, String> = BTreeMap::new();
-    if let Some(state) = &state {
-        merged.insert("prova_package_root".to_string(), state.package_root.clone());
-        if let Some(dir) = &state.packages_dir {
-            merged.insert("prova_packages_dir".to_string(), dir.clone());
-            // The deprecated answer name — archetype pins from before the package vocabulary
-            // still read it; both are served until it retires at 1.0.
-            merged.insert("prova_plugin_root".to_string(), dir.clone());
-        }
-    }
-
-    // Answers: baked entry answers over the injected state, CLI `--answer` over both. Switches:
-    // state ∪ entry ∪ CLI. Defaults: either the entry opts in or `--defaults` is passed.
-    merged.extend(entry.answers.clone());
-    for (k, v) in cli_answers {
-        merged.insert(k, v);
-    }
-    let mut switches = Vec::new();
-    if state.is_some() {
-        switches.push("prova:in-package".to_string());
-    }
-    for s in entry.switches.iter().cloned().chain(cli_switches) {
-        if !switches.contains(&s) {
-            switches.push(s);
-        }
-    }
+    let (merged, switches) = merged_inputs(&state, &entry, &cli);
     let use_defaults = entry.defaults || defaults;
 
     let destination = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));

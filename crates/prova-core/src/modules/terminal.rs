@@ -238,235 +238,250 @@ impl UserData for ScreenUd {
     }
 }
 
-impl UserData for TermUd {
-    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("send", |_, this, data: mlua::String| {
-            let mut w = this.writer.borrow_mut();
-            let Some(w) = w.as_mut() else {
-                return Err(err("send: session is closed"));
-            };
-            w.write_all(&data.as_bytes())
-                .and_then(|_| w.flush())
-                .map_err(|e| err(format!("send: {e}")))
-        });
+/// Driving the session: `:send` raw bytes, `:expect` (observe-until-match with a timeout).
+fn add_drive_methods<M: UserDataMethods<TermUd>>(methods: &mut M) {
+    methods.add_method("send", |_, this, data: mlua::String| {
+        let mut w = this.writer.borrow_mut();
+        let Some(w) = w.as_mut() else {
+            return Err(err("send: session is closed"));
+        };
+        w.write_all(&data.as_bytes())
+            .and_then(|_| w.flush())
+            .map_err(|e| err(format!("send: {e}")))
+    });
 
-        // Observe-until-match with a timeout — never a sleep. Scans the raw transcript, so a
-        // string that scrolled off the screen still counts as observed.
-        methods.add_async_method(
-            "expect",
-            |_, this, (pattern, opts): (mlua::String, Option<Table>)| async move {
-                let needle = pattern.as_bytes().to_vec();
-                let dur = opt_timeout(&opts, DEFAULT_WAIT)?;
-                let deadline = tokio::time::Instant::now() + dur;
-                loop {
-                    {
-                        let b = lock_buf(&this.buf);
-                        if b.raw.windows(needle.len()).any(|w| w == &needle[..]) {
-                            return Ok(());
-                        }
-                        if b.ended() {
-                            let tail = String::from_utf8_lossy(&b.raw)
-                                .chars()
-                                .rev()
-                                .take(200)
-                                .collect::<String>()
-                                .chars()
-                                .rev()
-                                .collect::<String>();
-                            let why = b.end.clone().unwrap_or_default();
-                            let bytes = b.raw.len();
-                            return Err(err(format!(
-                                "expect {:?}: the stream ended without producing it \
-                                 [{bytes} bytes read, {why}] (transcript tail: {tail:?})",
-                                String::from_utf8_lossy(&needle)
-                            )));
-                        }
+    // Observe-until-match with a timeout — never a sleep. Scans the raw transcript, so a
+    // string that scrolled off the screen still counts as observed.
+    methods.add_async_method(
+        "expect",
+        |_, this, (pattern, opts): (mlua::String, Option<Table>)| async move {
+            let needle = pattern.as_bytes().to_vec();
+            let dur = opt_timeout(&opts, DEFAULT_WAIT)?;
+            let deadline = tokio::time::Instant::now() + dur;
+            loop {
+                {
+                    let b = lock_buf(&this.buf);
+                    if b.raw.windows(needle.len()).any(|w| w == &needle[..]) {
+                        return Ok(());
                     }
-                    if tokio::time::Instant::now() >= deadline {
-                        // An empty screen is the least informative thing a pty failure can show,
-                        // and on its own it cannot distinguish "the program never ran" from "it ran
-                        // and said nothing" from "it spoke and we lost it". Report the three facts
-                        // that separate those, so the first recurrence explains itself instead of
-                        // needing a bisect.
-                        let (screen, bytes, reader) = {
-                            let b = lock_buf(&this.buf);
-                            (
-                                b.parser.screen().contents(),
-                                b.raw.len(),
-                                b.end.clone().unwrap_or_else(|| "still streaming".to_string()),
-                            )
-                        };
-                        let child = match this.child.borrow_mut().try_wait() {
-                            Ok(Some(status)) => format!("exited ({status:?})"),
-                            // Alive but silent is the case worth naming precisely: it means the pty
-                            // slave is still held, so output was never produced rather than lost.
-                            // Which link of the chain is holding it is the actual question.
-                            Ok(None) => match this.pid {
-                                Some(p) => format!("still running (pid {p})"),
-                                None => "still running".to_string(),
-                            },
-                            Err(e) => format!("status unknown ({e})"),
-                        };
-                        let tree = if child.starts_with("still running") {
-                            process_tree(this.pid)
-                        } else {
-                            String::new()
-                        };
+                    if b.ended() {
+                        let tail = String::from_utf8_lossy(&b.raw)
+                            .chars()
+                            .rev()
+                            .take(200)
+                            .collect::<String>()
+                            .chars()
+                            .rev()
+                            .collect::<String>();
+                        let why = b.end.clone().unwrap_or_default();
+                        let bytes = b.raw.len();
                         return Err(err(format!(
-                            "expect {:?}: not observed within {dur:?}\n\
-                             -- pty: {bytes} bytes read, reader {reader}, child {child} --{tree}\n\
-                             -- screen --\n{screen}",
+                            "expect {:?}: the stream ended without producing it \
+                             [{bytes} bytes read, {why}] (transcript tail: {tail:?})",
                             String::from_utf8_lossy(&needle)
                         )));
                     }
-                    tokio::time::sleep(POLL).await;
-                }
-            },
-        );
-
-        // Settle the frame: done when no new output for a quiet window. The anti-sleep.
-        methods.add_async_method("wait_stable", |_, this, opts: Option<Table>| async move {
-            let dur = opt_timeout(&opts, DEFAULT_WAIT)?;
-            let deadline = tokio::time::Instant::now() + dur;
-            let mut last_len = lock_buf(&this.buf).raw.len();
-            let mut quiet_since = tokio::time::Instant::now();
-            loop {
-                tokio::time::sleep(POLL).await;
-                let (len, ended) = {
-                    let b = lock_buf(&this.buf);
-                    (b.raw.len(), b.ended())
-                };
-                if len != last_len {
-                    last_len = len;
-                    quiet_since = tokio::time::Instant::now();
-                } else if ended || quiet_since.elapsed() >= QUIET {
-                    return Ok(());
                 }
                 if tokio::time::Instant::now() >= deadline {
-                    return Err(err(format!("wait_stable: output never settled within {dur:?}")));
-                }
-            }
-        });
-
-        methods.add_method("screen", |lua, this, ()| {
-            let b = lock_buf(&this.buf);
-            let screen = b.parser.screen();
-            let (rows, cols) = screen.size();
-            let mut cells = Vec::with_capacity(rows as usize);
-            for r in 0..rows {
-                let mut row = Vec::with_capacity(cols as usize);
-                for c in 0..cols {
-                    let cell = screen.cell(r, c);
-                    row.push(match cell {
-                        Some(cl) => CellData {
-                            ch: cl.contents(),
-                            fg: color_name(cl.fgcolor()),
-                            bg: color_name(cl.bgcolor()),
-                            bold: cl.bold(),
+                    // An empty screen is the least informative thing a pty failure can show,
+                    // and on its own it cannot distinguish "the program never ran" from "it ran
+                    // and said nothing" from "it spoke and we lost it". Report the three facts
+                    // that separate those, so the first recurrence explains itself instead of
+                    // needing a bisect.
+                    let (screen, bytes, reader) = {
+                        let b = lock_buf(&this.buf);
+                        (
+                            b.parser.screen().contents(),
+                            b.raw.len(),
+                            b.end.clone().unwrap_or_else(|| "still streaming".to_string()),
+                        )
+                    };
+                    let child = match this.child.borrow_mut().try_wait() {
+                        Ok(Some(status)) => format!("exited ({status:?})"),
+                        // Alive but silent is the case worth naming precisely: it means the pty
+                        // slave is still held, so output was never produced rather than lost.
+                        // Which link of the chain is holding it is the actual question.
+                        Ok(None) => match this.pid {
+                            Some(p) => format!("still running (pid {p})"),
+                            None => "still running".to_string(),
                         },
-                        None => CellData {
-                            ch: String::new(),
-                            fg: "default".into(),
-                            bg: "default".into(),
-                            bold: false,
-                        },
-                    });
-                }
-                cells.push(row);
-            }
-            lua.create_userdata(ScreenUd {
-                contents: screen.contents(),
-                rows,
-                cols,
-                cells,
-            })
-        });
-
-        // A real SIGWINCH: the pty is resized, the child is signaled, and the parser's geometry
-        // follows — `stty size` inside the session reports the new numbers.
-        methods.add_method("resize", |_, this, (cols, rows): (u16, u16)| {
-            let m = this.master.borrow();
-            let Some(m) = m.as_ref() else {
-                return Err(err("resize: session is closed"));
-            };
-            m.resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|e| err(format!("resize: {e}")))?;
-            lock_buf(&this.buf).parser.set_size(rows, cols);
-            Ok(())
-        });
-
-        methods.add_method("signal", |_, this, name: String| {
-            #[cfg(unix)]
-            {
-                let sig = match name.trim_start_matches("SIG").to_ascii_uppercase().as_str() {
-                    "INT" => libc::SIGINT,
-                    "TERM" => libc::SIGTERM,
-                    "KILL" => libc::SIGKILL,
-                    "HUP" => libc::SIGHUP,
-                    "QUIT" => libc::SIGQUIT,
-                    "USR1" => libc::SIGUSR1,
-                    "USR2" => libc::SIGUSR2,
-                    "WINCH" => libc::SIGWINCH,
-                    other => return Err(err(format!("signal: unknown signal {other:?}"))),
-                };
-                let Some(pid) = this.pid else {
-                    return Err(err("signal: child pid unknown"));
-                };
-                let r = unsafe { libc::kill(pid as libc::pid_t, sig) };
-                if r != 0 {
+                        Err(e) => format!("status unknown ({e})"),
+                    };
+                    let tree = if child.starts_with("still running") {
+                        process_tree(this.pid)
+                    } else {
+                        String::new()
+                    };
                     return Err(err(format!(
-                        "signal {name}: kill({pid}) failed: {}",
-                        std::io::Error::last_os_error()
+                        "expect {:?}: not observed within {dur:?}\n\
+                         -- pty: {bytes} bytes read, reader {reader}, child {child} --{tree}\n\
+                         -- screen --\n{screen}",
+                        String::from_utf8_lossy(&needle)
                     )));
                 }
-                Ok(())
-            }
-            #[cfg(not(unix))]
-            {
-                let _ = name;
-                // Annotate the Ok type: this branch has no `Ok(())` to pin it, so `Err(..)` alone
-                // leaves the success type ambiguous (E0283) — only surfaces on non-unix builds.
-                Err::<(), _>(err(
-                    "signal: POSIX signals need a unix platform (ConPTY has no signal channel)",
-                ))
-            }
-        });
-
-        // Reap the child and report its exit code. Polling try_wait keeps everything on the
-        // single-threaded runtime — no blocking wait, no Send bound on the child handle.
-        methods.add_async_method("wait", |lua, this, opts: Option<Table>| async move {
-            let dur = opt_timeout(&opts, Duration::from_secs(30))?;
-            let deadline = tokio::time::Instant::now() + dur;
-            loop {
-                let status = this
-                    .child
-                    .borrow_mut()
-                    .try_wait()
-                    .map_err(|e| err(format!("wait: {e}")))?;
-                if let Some(s) = status {
-                    let t = lua.create_table()?;
-                    t.set("code", s.exit_code())?;
-                    return Ok(t);
-                }
-                if tokio::time::Instant::now() >= deadline {
-                    return Err(err(format!("wait: child still running after {dur:?}")));
-                }
                 tokio::time::sleep(POLL).await;
             }
-        });
+        },
+    );
 
-        // `ctx:manage` teardown: kill the child, close the pty. Idempotent, LIFO, for free.
-        methods.add_method("stop", |_, this, ()| {
-            let _ = this.killer.borrow_mut().kill();
-            this.writer.borrow_mut().take();
-            this.master.borrow_mut().take();
+    // Settle the frame: done when no new output for a quiet window. The anti-sleep.
+}
+
+/// Observing the frame: `:wait_stable`, `:screen()` snapshots, `:resize` (a real SIGWINCH).
+fn add_observe_methods<M: UserDataMethods<TermUd>>(methods: &mut M) {
+    methods.add_async_method("wait_stable", |_, this, opts: Option<Table>| async move {
+        let dur = opt_timeout(&opts, DEFAULT_WAIT)?;
+        let deadline = tokio::time::Instant::now() + dur;
+        let mut last_len = lock_buf(&this.buf).raw.len();
+        let mut quiet_since = tokio::time::Instant::now();
+        loop {
+            tokio::time::sleep(POLL).await;
+            let (len, ended) = {
+                let b = lock_buf(&this.buf);
+                (b.raw.len(), b.ended())
+            };
+            if len != last_len {
+                last_len = len;
+                quiet_since = tokio::time::Instant::now();
+            } else if ended || quiet_since.elapsed() >= QUIET {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(err(format!("wait_stable: output never settled within {dur:?}")));
+            }
+        }
+    });
+
+    methods.add_method("screen", |lua, this, ()| {
+        let b = lock_buf(&this.buf);
+        let screen = b.parser.screen();
+        let (rows, cols) = screen.size();
+        let mut cells = Vec::with_capacity(rows as usize);
+        for r in 0..rows {
+            let mut row = Vec::with_capacity(cols as usize);
+            for c in 0..cols {
+                let cell = screen.cell(r, c);
+                row.push(match cell {
+                    Some(cl) => CellData {
+                        ch: cl.contents(),
+                        fg: color_name(cl.fgcolor()),
+                        bg: color_name(cl.bgcolor()),
+                        bold: cl.bold(),
+                    },
+                    None => CellData {
+                        ch: String::new(),
+                        fg: "default".into(),
+                        bg: "default".into(),
+                        bold: false,
+                    },
+                });
+            }
+            cells.push(row);
+        }
+        lua.create_userdata(ScreenUd {
+            contents: screen.contents(),
+            rows,
+            cols,
+            cells,
+        })
+    });
+
+    // A real SIGWINCH: the pty is resized, the child is signaled, and the parser's geometry
+    // follows — `stty size` inside the session reports the new numbers.
+    methods.add_method("resize", |_, this, (cols, rows): (u16, u16)| {
+        let m = this.master.borrow();
+        let Some(m) = m.as_ref() else {
+            return Err(err("resize: session is closed"));
+        };
+        m.resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|e| err(format!("resize: {e}")))?;
+        lock_buf(&this.buf).parser.set_size(rows, cols);
+        Ok(())
+    });
+
+}
+
+/// Session lifecycle: `:signal`, `:wait` (exit status + teardown backstop).
+fn add_lifecycle_methods<M: UserDataMethods<TermUd>>(methods: &mut M) {
+    methods.add_method("signal", |_, this, name: String| {
+        #[cfg(unix)]
+        {
+            let sig = match name.trim_start_matches("SIG").to_ascii_uppercase().as_str() {
+                "INT" => libc::SIGINT,
+                "TERM" => libc::SIGTERM,
+                "KILL" => libc::SIGKILL,
+                "HUP" => libc::SIGHUP,
+                "QUIT" => libc::SIGQUIT,
+                "USR1" => libc::SIGUSR1,
+                "USR2" => libc::SIGUSR2,
+                "WINCH" => libc::SIGWINCH,
+                other => return Err(err(format!("signal: unknown signal {other:?}"))),
+            };
+            let Some(pid) = this.pid else {
+                return Err(err("signal: child pid unknown"));
+            };
+            let r = unsafe { libc::kill(pid as libc::pid_t, sig) };
+            if r != 0 {
+                return Err(err(format!(
+                    "signal {name}: kill({pid}) failed: {}",
+                    std::io::Error::last_os_error()
+                )));
+            }
             Ok(())
-        });
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = name;
+            // Annotate the Ok type: this branch has no `Ok(())` to pin it, so `Err(..)` alone
+            // leaves the success type ambiguous (E0283) — only surfaces on non-unix builds.
+            Err::<(), _>(err(
+                "signal: POSIX signals need a unix platform (ConPTY has no signal channel)",
+            ))
+        }
+    });
+
+    // Reap the child and report its exit code. Polling try_wait keeps everything on the
+    // single-threaded runtime — no blocking wait, no Send bound on the child handle.
+    methods.add_async_method("wait", |lua, this, opts: Option<Table>| async move {
+        let dur = opt_timeout(&opts, Duration::from_secs(30))?;
+        let deadline = tokio::time::Instant::now() + dur;
+        loop {
+            let status = this
+                .child
+                .borrow_mut()
+                .try_wait()
+                .map_err(|e| err(format!("wait: {e}")))?;
+            if let Some(s) = status {
+                let t = lua.create_table()?;
+                t.set("code", s.exit_code())?;
+                return Ok(t);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(err(format!("wait: child still running after {dur:?}")));
+            }
+            tokio::time::sleep(POLL).await;
+        }
+    });
+
+    // `ctx:manage` teardown: kill the child, close the pty. Idempotent, LIFO, for free.
+    methods.add_method("stop", |_, this, ()| {
+        let _ = this.killer.borrow_mut().kill();
+        this.writer.borrow_mut().take();
+        this.master.borrow_mut().take();
+        Ok(())
+    });
+}
+
+impl UserData for TermUd {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        add_drive_methods(methods);
+        add_observe_methods(methods);
+        add_lifecycle_methods(methods);
     }
 }
 

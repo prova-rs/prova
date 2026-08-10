@@ -484,36 +484,253 @@ fn describe_source(source: &PackageSource) -> String {
     }
 }
 
-fn render_slot(slot: Slot, env: &RenderEnv, transport: Transport) -> String {
-    match slot {
-        Slot::InitCatalog => {
-            let layout = prova_core::XdgSystemLayout::new()
-                .map_err(|e| e.to_string())
-                .and_then(|l| Catalog::load(&l));
-            match layout {
-                Ok(catalog) => {
-                    let width = catalog.entries.keys().map(String::len).max().unwrap_or(0);
-                    let mut out: Vec<String> = catalog
-                        .entries
+/// The `prova init` catalog listing, with the transport-appropriate render hint.
+fn render_init_catalog(transport: Transport) -> String {
+    {
+        let layout = prova_core::XdgSystemLayout::new()
+            .map_err(|e| e.to_string())
+            .and_then(|l| Catalog::load(&l));
+        match layout {
+            Ok(catalog) => {
+                let width = catalog.entries.keys().map(String::len).max().unwrap_or(0);
+                let mut out: Vec<String> = catalog
+                    .entries
+                    .iter()
+                    .map(|(key, entry)| format!("  {key:<width$}  {}", entry.description))
+                    .collect();
+                out.push(String::new());
+                out.push(match transport {
+                    Transport::Cli => {
+                        "Render one: `prova init <key>` (`--headless` in automation).".into()
+                    }
+                    Transport::Mcp => {
+                        "Render one by shelling out: `prova init <key> --headless` — no MCP \
+                         tool scaffolds a package."
+                            .into()
+                    }
+                });
+                out.join("\n")
+            }
+            Err(e) => format!("The init catalog could not be loaded: {e}"),
+        }
+    }
+}
+
+/// The package vocabulary: local packages and `[dependencies]`, as one `require` list.
+fn render_packages(env: &RenderEnv) -> String {
+    match &env.package {
+        Some(p)
+            if !p.resolved.dependencies.is_empty() || !local_packages(p).is_empty() =>
+        {
+            // BOTH kinds, because `require("<name>")` does not distinguish them. Listing only
+            // the `[plugins]` table told a package with three working local plugins that it had
+            // "none" — a true statement about one manifest key, and a false answer to the
+            // question actually being asked ("what vocabulary do I have here?").
+            let local = local_packages(p);
+            let width = p
+                .resolved
+                .dependencies
+                .keys()
+                .chain(local.iter())
+                .map(String::len)
+                .max()
+                .unwrap_or(0);
+            let root = p.resolved.packages_dir.as_deref().unwrap_or("");
+            let rows: Vec<String> = local
+                .iter()
+                .map(|name| format!("  {name:<width$}  local ({root}/{name})"))
+                .chain(
+                    p.resolved
+                        .dependencies
                         .iter()
-                        .map(|(key, entry)| format!("  {key:<width$}  {}", entry.description))
-                        .collect();
-                    out.push(String::new());
-                    out.push(match transport {
-                        Transport::Cli => {
-                            "Render one: `prova init <key>` (`--headless` in automation).".into()
-                        }
-                        Transport::Mcp => {
-                            "Render one by shelling out: `prova init <key> --headless` — no MCP \
-                             tool scaffolds a package."
-                                .into()
-                        }
-                    });
-                    out.join("\n")
+                        .map(|(name, src)| format!("  {name:<width$}  {}", describe_source(src))),
+                )
+                .collect();
+            format!(
+                "**Packages** (`require(\"<name>\")` in any proof):\n{}",
+                rows.join("\n")
+            )
+        }
+        Some(_) => "**Packages**: none — declare external ones under `[dependencies]` in the \
+                    manifest, or author local ones under `[run] packages`."
+            .into(),
+        // The long no-package guidance renders once, on the ProofPaths slot; here one short
+        // line keeps a doctrine topic readable outside a package.
+        None => "(no package in reach — declared dependencies unknown)".into(),
+    }
+}
+
+/// The declared `[topologies]`, with the transport-appropriate verb to hold one.
+fn render_topologies(env: &RenderEnv, transport: Transport) -> String {
+    match &env.package {
+        Some(p) if !p.resolved.topologies.is_empty() => {
+            let rows: Vec<String> = p
+                .resolved
+                .topologies
+                .iter()
+                .map(|(name, t)| {
+                    let what = t
+                        .topology
+                        .as_ref()
+                        .map(|s| format!("topology `{s}`"))
+                        .or_else(|| t.factory.as_ref().map(|s| format!("factory `{s}`")))
+                        .unwrap_or_default();
+                    let requires = if t.requires.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  (requires {})", t.requires.join(", "))
+                    };
+                    format!("  {name}  → package `{}` {what}{requires}", t.package)
+                })
+                .collect();
+            let verb = match transport {
+                Transport::Cli => "`prova up <name>` holds one live; proofs `t:use` the same definition",
+                Transport::Mcp => "`up { name }` holds one warm in the server; `run`/`eval` with `topology` then hit it",
+            };
+            format!("**Topologies**:\n{}\n  {verb}.", rows.join("\n"))
+        }
+        Some(_) => "**Topologies**: none declared (`[topologies]` names a plugin's factory so \
+                    `up` and proofs share one environment)."
+            .into(),
+        // Same one-liner as the Plugins slot: this slot sits under an "## In this package"
+        // heading in topologies.md, and a heading over nothing reads as a rendering bug.
+        None => "(no package in reach — declared topologies unknown)".into(),
+    }
+}
+
+/// Project context: an inlined `CONTEXT.md` and the declared `context = [...]` docs.
+fn render_context_files(env: &RenderEnv) -> String {
+    match &env.package {
+        Some(p) => {
+            let mut out = String::new();
+            // `<nook>/CONTEXT.md` — a zero-config project brief, inlined verbatim. Drop the file
+            // and it rides `prova learn project`; no manifest entry needed. This is the project's
+            // own words to an agent orienting here (team conventions, gotchas, where to start).
+            if let Ok(md) = std::fs::read_to_string(p.nook_dir.join("CONTEXT.md")) {
+                let md = md.trim_end();
+                if !md.is_empty() {
+                    out.push_str("## Project context (`CONTEXT.md`)\n\n");
+                    out.push_str(md);
+                    out.push_str("\n\n");
                 }
-                Err(e) => format!("The init catalog could not be loaded: {e}"),
+            }
+            // The declared `context = [...]` docs, as `ctx:<stem>` pointers (read on demand).
+            let docs = env.context_docs();
+            if docs.is_empty() {
+                if out.is_empty() {
+                    out.push_str(
+                        "**Project context**: none — drop a `.prova/CONTEXT.md` (inlined here), \
+                         or declare `context = [\"docs/agent.md\"]` for `ctx:<stem>` topics.",
+                    );
+                }
+            } else {
+                let rows: Vec<String> =
+                    docs.iter().map(|d| format!("  {}  {}", d.key, d.hook())).collect();
+                out.push_str(&format!(
+                    "**Project context** (read with `prova learn ctx:<stem>`):\n{}",
+                    rows.join("\n")
+                ));
+            }
+            out.trim_end().to_string()
+        }
+        None => String::new(),
+    }
+}
+
+/// The `[profiles.*]` lanes: description first, then the facts an agent keys on.
+fn render_profiles(env: &RenderEnv, transport: Transport) -> String {
+    match &env.package {
+        Some(p) if !p.profiles.is_empty() => {
+            // Rich rows, so "which profile, when?" is answered here: the author's description
+            // first, then the facts an agent keys on — what it selects, which switches it
+            // throws, what it guarantees.
+            let rows: Vec<String> = p
+                .profiles
+                .iter()
+                .map(|(name, profile)| {
+                    let mut chips: Vec<String> = Vec::new();
+                    if !profile.proofs.is_empty() {
+                        chips.push(format!("selects: {}", profile.proofs.join(", ")));
+                    }
+                    if !profile.tags.is_empty() {
+                        chips.push(format!("tags: {}", profile.tags.join(", ")));
+                    }
+                    if !profile.switches.is_empty() {
+                        chips.push(format!("throws: {}", profile.switches.join(", ")));
+                    }
+                    if !profile.must_run.is_empty() {
+                        chips.push(format!("guarantees: {}", profile.must_run.join(", ")));
+                    }
+                    if !profile.env.is_empty() {
+                        chips.push("env".to_string());
+                    }
+                    if !profile.dependencies.is_empty() {
+                        chips.push("dependencies".to_string());
+                    }
+                    let what = if chips.is_empty() {
+                        "(no overrides)".to_string()
+                    } else {
+                        chips.join(" · ")
+                    };
+                    match &profile.description {
+                        Some(d) => format!("  {name}  — {d}\n           {what}"),
+                        None => format!("  {name}  — {what}"),
+                    }
+                })
+                .collect();
+            let select = match transport {
+                Transport::Cli => "`prova run <name>`",
+                Transport::Mcp => "`run { profile = \"<name>\" }`",
+            };
+            format!("**Profiles** (run with {select}):\n{}", rows.join("\n"))
+        }
+        Some(_) => "**Profiles**: none — `[profiles.<name>]` overlays `[run]` (CI is the \
+                    usual first one)."
+            .into(),
+        None => String::new(),
+    }
+}
+
+/// The opt-in classes config throws; the live inventory is `prova switches`' job.
+fn render_switches(env: &RenderEnv) -> String {
+    match &env.package {
+        Some(p) => {
+            // The classes CONFIG throws (statically knowable); the live class inventory needs
+            // collection, which is `prova switches`' job — the card points, never loads.
+            let mut thrown: Vec<String> = Vec::new();
+            if !p.run_switches.is_empty() {
+                thrown.push(format!("{} ([run] — every run)", p.run_switches.join(", ")));
+            }
+            for (name, profile) in &p.profiles {
+                if !profile.switches.is_empty() {
+                    thrown.push(format!(
+                        "{} (profile `{name}`)",
+                        profile.switches.join(", ")
+                    ));
+                }
+            }
+            let lead = "**Switches** (opt-in classes: `switch = \"<class>\"` is off unless \
+                        thrown with `-s <class>` or a profile)";
+            if thrown.is_empty() {
+                format!(
+                    "{lead}: none thrown by config — `prova switches` lists every declared \
+                     class and who throws it."
+                )
+            } else {
+                format!(
+                    "{lead}: thrown by config: {} — `prova switches` lists every declared \
+                     class and who throws it.",
+                    thrown.join("; ")
+                )
             }
         }
+        None => String::new(),
+    }
+}
+
+fn render_slot(slot: Slot, env: &RenderEnv, transport: Transport) -> String {
+    match slot {
+        Slot::InitCatalog => render_init_catalog(transport),
         Slot::ProofPaths => match &env.package {
             Some(p) => format!(
                 "**Proofs** ({}): `proofs = [{}]` — directory-NAME patterns; every matching \
@@ -544,115 +761,9 @@ fn render_slot(slot: Slot, env: &RenderEnv, transport: Transport) -> String {
         // No package needed and no fetch performed: registries come from user config alone, so
         // this renders (and stays truthful) offline and pre-init.
         Slot::Registries => crate::registry::learn_lines(transport == Transport::Cli),
-        Slot::Packages => match &env.package {
-            Some(p)
-                if !p.resolved.dependencies.is_empty() || !local_packages(p).is_empty() =>
-            {
-                // BOTH kinds, because `require("<name>")` does not distinguish them. Listing only
-                // the `[plugins]` table told a package with three working local plugins that it had
-                // "none" — a true statement about one manifest key, and a false answer to the
-                // question actually being asked ("what vocabulary do I have here?").
-                let local = local_packages(p);
-                let width = p
-                    .resolved
-                    .dependencies
-                    .keys()
-                    .chain(local.iter())
-                    .map(String::len)
-                    .max()
-                    .unwrap_or(0);
-                let root = p.resolved.packages_dir.as_deref().unwrap_or("");
-                let rows: Vec<String> = local
-                    .iter()
-                    .map(|name| format!("  {name:<width$}  local ({root}/{name})"))
-                    .chain(
-                        p.resolved
-                            .dependencies
-                            .iter()
-                            .map(|(name, src)| format!("  {name:<width$}  {}", describe_source(src))),
-                    )
-                    .collect();
-                format!(
-                    "**Packages** (`require(\"<name>\")` in any proof):\n{}",
-                    rows.join("\n")
-                )
-            }
-            Some(_) => "**Packages**: none — declare external ones under `[dependencies]` in the \
-                        manifest, or author local ones under `[run] packages`."
-                .into(),
-            // The long no-package guidance renders once, on the ProofPaths slot; here one short
-            // line keeps a doctrine topic readable outside a package.
-            None => "(no package in reach — declared dependencies unknown)".into(),
-        },
-        Slot::Topologies => match &env.package {
-            Some(p) if !p.resolved.topologies.is_empty() => {
-                let rows: Vec<String> = p
-                    .resolved
-                    .topologies
-                    .iter()
-                    .map(|(name, t)| {
-                        let what = t
-                            .topology
-                            .as_ref()
-                            .map(|s| format!("topology `{s}`"))
-                            .or_else(|| t.factory.as_ref().map(|s| format!("factory `{s}`")))
-                            .unwrap_or_default();
-                        let requires = if t.requires.is_empty() {
-                            String::new()
-                        } else {
-                            format!("  (requires {})", t.requires.join(", "))
-                        };
-                        format!("  {name}  → package `{}` {what}{requires}", t.package)
-                    })
-                    .collect();
-                let verb = match transport {
-                    Transport::Cli => "`prova up <name>` holds one live; proofs `t:use` the same definition",
-                    Transport::Mcp => "`up { name }` holds one warm in the server; `run`/`eval` with `topology` then hit it",
-                };
-                format!("**Topologies**:\n{}\n  {verb}.", rows.join("\n"))
-            }
-            Some(_) => "**Topologies**: none declared (`[topologies]` names a plugin's factory so \
-                        `up` and proofs share one environment)."
-                .into(),
-            // Same one-liner as the Plugins slot: this slot sits under an "## In this package"
-            // heading in topologies.md, and a heading over nothing reads as a rendering bug.
-            None => "(no package in reach — declared topologies unknown)".into(),
-        },
-        Slot::ContextFiles => match &env.package {
-            Some(p) => {
-                let mut out = String::new();
-                // `<nook>/CONTEXT.md` — a zero-config project brief, inlined verbatim. Drop the file
-                // and it rides `prova learn project`; no manifest entry needed. This is the project's
-                // own words to an agent orienting here (team conventions, gotchas, where to start).
-                if let Ok(md) = std::fs::read_to_string(p.nook_dir.join("CONTEXT.md")) {
-                    let md = md.trim_end();
-                    if !md.is_empty() {
-                        out.push_str("## Project context (`CONTEXT.md`)\n\n");
-                        out.push_str(md);
-                        out.push_str("\n\n");
-                    }
-                }
-                // The declared `context = [...]` docs, as `ctx:<stem>` pointers (read on demand).
-                let docs = env.context_docs();
-                if docs.is_empty() {
-                    if out.is_empty() {
-                        out.push_str(
-                            "**Project context**: none — drop a `.prova/CONTEXT.md` (inlined here), \
-                             or declare `context = [\"docs/agent.md\"]` for `ctx:<stem>` topics.",
-                        );
-                    }
-                } else {
-                    let rows: Vec<String> =
-                        docs.iter().map(|d| format!("  {}  {}", d.key, d.hook())).collect();
-                    out.push_str(&format!(
-                        "**Project context** (read with `prova learn ctx:<stem>`):\n{}",
-                        rows.join("\n")
-                    ));
-                }
-                out.trim_end().to_string()
-            }
-            None => String::new(),
-        },
+        Slot::Packages => render_packages(env),
+        Slot::Topologies => render_topologies(env, transport),
+        Slot::ContextFiles => render_context_files(env),
         Slot::Agent => match &env.package {
             // The spec-first nudge — on by default (`[agent] spec_first = false` silences it). Kept to
             // an inclination, not a rule: prefer authoring behaviour as `spec`-flagged proofs over a
@@ -664,56 +775,7 @@ fn render_slot(slot: Slot, env: &RenderEnv, transport: Transport) -> String {
                 .into(),
             _ => String::new(),
         },
-        Slot::Profiles => match &env.package {
-            Some(p) if !p.profiles.is_empty() => {
-                // Rich rows, so "which profile, when?" is answered here: the author's description
-                // first, then the facts an agent keys on — what it selects, which switches it
-                // throws, what it guarantees.
-                let rows: Vec<String> = p
-                    .profiles
-                    .iter()
-                    .map(|(name, profile)| {
-                        let mut chips: Vec<String> = Vec::new();
-                        if !profile.proofs.is_empty() {
-                            chips.push(format!("selects: {}", profile.proofs.join(", ")));
-                        }
-                        if !profile.tags.is_empty() {
-                            chips.push(format!("tags: {}", profile.tags.join(", ")));
-                        }
-                        if !profile.switches.is_empty() {
-                            chips.push(format!("throws: {}", profile.switches.join(", ")));
-                        }
-                        if !profile.must_run.is_empty() {
-                            chips.push(format!("guarantees: {}", profile.must_run.join(", ")));
-                        }
-                        if !profile.env.is_empty() {
-                            chips.push("env".to_string());
-                        }
-                        if !profile.dependencies.is_empty() {
-                            chips.push("dependencies".to_string());
-                        }
-                        let what = if chips.is_empty() {
-                            "(no overrides)".to_string()
-                        } else {
-                            chips.join(" · ")
-                        };
-                        match &profile.description {
-                            Some(d) => format!("  {name}  — {d}\n           {what}"),
-                            None => format!("  {name}  — {what}"),
-                        }
-                    })
-                    .collect();
-                let select = match transport {
-                    Transport::Cli => "`prova run <name>`",
-                    Transport::Mcp => "`run { profile = \"<name>\" }`",
-                };
-                format!("**Profiles** (run with {select}):\n{}", rows.join("\n"))
-            }
-            Some(_) => "**Profiles**: none — `[profiles.<name>]` overlays `[run]` (CI is the \
-                        usual first one)."
-                .into(),
-            None => String::new(),
-        },
+        Slot::Profiles => render_profiles(env, transport),
         Slot::Specs => match &env.package {
             Some(p) if !p.specs.is_empty() => {
                 let roots: Vec<String> = p
@@ -738,39 +800,7 @@ fn render_slot(slot: Slot, env: &RenderEnv, transport: Transport) -> String {
                 .into(),
             None => String::new(),
         },
-        Slot::Switches => match &env.package {
-            Some(p) => {
-                // The classes CONFIG throws (statically knowable); the live class inventory needs
-                // collection, which is `prova switches`' job — the card points, never loads.
-                let mut thrown: Vec<String> = Vec::new();
-                if !p.run_switches.is_empty() {
-                    thrown.push(format!("{} ([run] — every run)", p.run_switches.join(", ")));
-                }
-                for (name, profile) in &p.profiles {
-                    if !profile.switches.is_empty() {
-                        thrown.push(format!(
-                            "{} (profile `{name}`)",
-                            profile.switches.join(", ")
-                        ));
-                    }
-                }
-                let lead = "**Switches** (opt-in classes: `switch = \"<class>\"` is off unless \
-                            thrown with `-s <class>` or a profile)";
-                if thrown.is_empty() {
-                    format!(
-                        "{lead}: none thrown by config — `prova switches` lists every declared \
-                         class and who throws it."
-                    )
-                } else {
-                    format!(
-                        "{lead}: thrown by config: {} — `prova switches` lists every declared \
-                         class and who throws it.",
-                        thrown.join("; ")
-                    )
-                }
-            }
-            None => String::new(),
-        },
+        Slot::Switches => render_switches(env),
         Slot::Artifacts => match &env.package {
             Some(p) => {
                 let config = p

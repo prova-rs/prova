@@ -480,59 +480,16 @@ pub(crate) fn layer_cli_packages(
     Ok(())
 }
 
-/// Read the home's `prova.toml`, overlay `--profile`, apply env, merge CLI overrides, and resolve
-/// declared plugins (fetching git sources into the cache). All paths remain manifest-relative (the
-/// caller joins them to the home dir). Returns the resolved run or an exit code on error.
-#[allow(clippy::too_many_arguments)] // the run's independent axes; a params struct would just rename them
-pub(crate) fn resolve_from_manifest(
+/// Resolve declared plugins (git sources fetched into cache) under the effective freshness
+/// policy, prune the stale cache, absolutise the local packages dir, and refuse a plugin-root
+/// entry that shadows a reserved namespace.
+fn resolve_manifest_packages(
+    resolved: &manifest::Resolved,
     home: &Home,
-    profile: Option<String>,
-    cli_jobs: Option<usize>,
-    cli_format: Option<Format>,
-    config_override: Option<String>,
     layout: &dyn SystemLayout,
-    // Run-scoped git-source overrides: `-U`/`--update` forces updates, `--offline` forbids network.
-    // Combined here with the manifest's `[updates]` (interval + force) into the effective policy.
     force_update: bool,
     offline: bool,
-    // Whether the caller consumes `r.proofs` as its selection. A manifest run needs the key (an
-    // empty selection is a config error); explicit-path runs and `eval` bring their own selection
-    // and only borrow the package environment, so a plugins-only manifest is fine for them.
-    require_proofs: bool,
-) -> Result<ManifestRun, ExitCode> {
-    let path = &home.manifest;
-
-    let text = std::fs::read_to_string(path).map_err(|_| {
-        eprintln!("prova: cannot read manifest {}", path.display());
-        ExitCode::from(2)
-    })?;
-
-    let manifest = Manifest::parse(&text).map_err(|e| {
-        eprintln!("prova: {e}");
-        ExitCode::from(2)
-    })?;
-    let resolved = manifest.resolve(profile.as_deref()).map_err(|e| {
-        eprintln!("prova: {e}");
-        ExitCode::from(2)
-    })?;
-    if require_proofs && resolved.proofs.is_empty() && resolved.suites.is_empty() {
-        eprintln!(
-            "prova: manifest {} defines no proofs or suites to run",
-            path.display()
-        );
-        return Err(ExitCode::from(2));
-    }
-
-    let manage = resolved.luals.manage().map_err(|e| {
-        eprintln!("prova: {e}");
-        ExitCode::from(2)
-    })?;
-
-    // Apply the run environment before tests execute.
-    for (key, value) in &resolved.env {
-        std::env::set_var(key, value);
-    }
-
+) -> Result<packages::ResolvedPackages, ExitCode> {
     // Effective git-source freshness policy: the manifest's `[updates]` interval, and `force` from
     // either the manifest or the CLI `-U`; `--offline` from the CLI.
     let git_opts = packages::GitFetchOptions {
@@ -600,6 +557,16 @@ pub(crate) fn resolve_from_manifest(
         }
     }
 
+    Ok(packages_resolved)
+}
+
+/// Load the optional `prova.lua` companion and return the capabilities it registered.
+fn load_companion(
+    config_override: Option<String>,
+    resolved: &manifest::Resolved,
+    home: &Home,
+    packages_resolved: &packages::ResolvedPackages,
+) -> Result<prova_core::Capabilities, ExitCode> {
     // The optional `prova.lua` companion — loaded with the manifest, and BEFORE the `must_run`
     // precondition below. That order is the whole reason this is a package-level companion rather
     // than something in `suite.lua`: a capability registered at suite-load time would not exist yet
@@ -614,7 +581,7 @@ pub(crate) fn resolve_from_manifest(
     let capabilities = if companion.is_file() {
         match prova_core::load_project_config(
             &companion,
-            &engine_config(1, &packages_resolved, Some(home), prova_core::progress::null()),
+            &engine_config(1, packages_resolved, Some(home), prova_core::progress::null()),
         ) {
             Ok(caps) => caps,
             // An error, never a warning: a companion that failed to load would leave every
@@ -629,6 +596,15 @@ pub(crate) fn resolve_from_manifest(
         prova_core::Capabilities::default()
     };
 
+    Ok(capabilities)
+}
+
+/// Check the profile's `must_run` guarantees against the registered + built-in capabilities.
+fn check_must_run(
+    profile: Option<&str>,
+    resolved: &manifest::Resolved,
+    capabilities: &prova_core::Capabilities,
+) -> Result<(), ExitCode> {
     // `must_run` — the guarantees this context makes, checked BEFORE anything runs.
     //
     // A precondition rather than a post-hoc audit of which skips were forgivable: you learn at
@@ -640,7 +616,7 @@ pub(crate) fn resolve_from_manifest(
     // by the ENGINE's parser — the same one `requires` uses. One vocabulary, two directions: a test
     // states a need, a context states a guarantee, and they must never disagree about what a string
     // means.
-    let where_ = profile.as_deref().unwrap_or("run");
+    let where_ = profile.unwrap_or("run");
     let mut unmet: Vec<String> = Vec::new();
     for cap in &resolved.must_run {
         match capabilities.expr_status(cap) {
@@ -666,7 +642,16 @@ pub(crate) fn resolve_from_manifest(
         return Err(ExitCode::from(2));
     }
 
-    let jobs = cli_jobs.or(resolved.jobs).unwrap_or(1);
+    Ok(())
+}
+
+/// Parse the manifest's output-mode strings (format / color / progress / github), with the CLI's
+/// `--format` taking precedence.
+type OutputModes = (Format, Option<report::ColorMode>, Option<progress::Mode>, Option<report::GhaMode>);
+fn parse_output_modes(
+    cli_format: Option<Format>,
+    resolved: &manifest::Resolved,
+) -> Result<OutputModes, ExitCode> {
     let format = match cli_format {
         Some(f) => f,
         None => match resolved.format.as_deref() {
@@ -711,6 +696,69 @@ pub(crate) fn resolve_from_manifest(
             }
         },
     };
+    Ok((format, color, progress, github))
+}
+
+/// Read the home's `prova.toml`, overlay `--profile`, apply env, merge CLI overrides, and resolve
+/// declared plugins (fetching git sources into the cache). All paths remain manifest-relative (the
+/// caller joins them to the home dir). Returns the resolved run or an exit code on error.
+#[allow(clippy::too_many_arguments)] // the run's independent axes; a params struct would just rename them
+pub(crate) fn resolve_from_manifest(
+    home: &Home,
+    profile: Option<String>,
+    cli_jobs: Option<usize>,
+    cli_format: Option<Format>,
+    config_override: Option<String>,
+    layout: &dyn SystemLayout,
+    // Run-scoped git-source overrides: `-U`/`--update` forces updates, `--offline` forbids network.
+    // Combined here with the manifest's `[updates]` (interval + force) into the effective policy.
+    force_update: bool,
+    offline: bool,
+    // Whether the caller consumes `r.proofs` as its selection. A manifest run needs the key (an
+    // empty selection is a config error); explicit-path runs and `eval` bring their own selection
+    // and only borrow the package environment, so a plugins-only manifest is fine for them.
+    require_proofs: bool,
+) -> Result<ManifestRun, ExitCode> {
+    let path = &home.manifest;
+
+    let text = std::fs::read_to_string(path).map_err(|_| {
+        eprintln!("prova: cannot read manifest {}", path.display());
+        ExitCode::from(2)
+    })?;
+
+    let manifest = Manifest::parse(&text).map_err(|e| {
+        eprintln!("prova: {e}");
+        ExitCode::from(2)
+    })?;
+    let resolved = manifest.resolve(profile.as_deref()).map_err(|e| {
+        eprintln!("prova: {e}");
+        ExitCode::from(2)
+    })?;
+    if require_proofs && resolved.proofs.is_empty() && resolved.suites.is_empty() {
+        eprintln!(
+            "prova: manifest {} defines no proofs or suites to run",
+            path.display()
+        );
+        return Err(ExitCode::from(2));
+    }
+
+    let manage = resolved.luals.manage().map_err(|e| {
+        eprintln!("prova: {e}");
+        ExitCode::from(2)
+    })?;
+
+    // Apply the run environment before tests execute.
+    for (key, value) in &resolved.env {
+        std::env::set_var(key, value);
+    }
+
+    let packages_resolved =
+        resolve_manifest_packages(&resolved, home, layout, force_update, offline)?;
+    let capabilities = load_companion(config_override, &resolved, home, &packages_resolved)?;
+    check_must_run(profile.as_deref(), &resolved, &capabilities)?;
+    let jobs = cli_jobs.or(resolved.jobs).unwrap_or(1);
+    let (format, color, progress, github) = parse_output_modes(cli_format, &resolved)?;
+
     Ok(ManifestRun {
         proofs: resolved.proofs,
         jobs,
