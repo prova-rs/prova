@@ -381,7 +381,7 @@ pub(crate) fn make_hash(lua: &Lua) -> mlua::Result<Table> {
         "hmac_sha256",
         lua.create_function(|_, (key, msg): (mlua::String, mlua::String)| {
             let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(&key.as_bytes())
-                .expect("HMAC accepts any key length");
+                .map_err(|e| mlua::Error::RuntimeError(format!("hash.hmac_sha256: {e}")))?;
             mac.update(&msg.as_bytes());
             Ok(hex_string(&mac.finalize().into_bytes()))
         })?,

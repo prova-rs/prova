@@ -360,7 +360,10 @@ pub(crate) fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
 
         // Replay mode: load the cassette into `case` arms now; the shim consults no upstream.
         let replay = if mode == "replay" {
-            let player = super::cassette::Player::load(cassette.as_ref().unwrap())
+            let path = cassette
+                .as_ref()
+                .ok_or_else(|| err("shell.proxy: mode \"replay\" needs a `cassette`"))?;
+            let player = super::cassette::Player::load(path)
                 .map_err(|e| err(format!("shell.proxy: {e}")))?;
             player_turns(player)
         } else {

@@ -1128,7 +1128,10 @@ fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
 
         let mut init = ProxyState::default();
         let player = if mode == Mode::Replay {
-            let p = super::cassette::Player::load(cassette.as_ref().unwrap())
+            let path = cassette
+                .as_ref()
+                .ok_or_else(|| err("socket.proxy: replay needs a `cassette`"))?;
+            let p = super::cassette::Player::load(path)
                 .map_err(|e| err(format!("socket.proxy: {e}")))?;
             Some(Rc::new(RefCell::new(p)))
         } else {
@@ -1138,9 +1141,11 @@ fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
             let redact = opts
                 .get::<Option<Vec<String>>>("redact")?
                 .unwrap_or_default();
+            let path = cassette
+                .clone()
+                .ok_or_else(|| err("socket.proxy: recording needs a `cassette`"))?;
             init.recorder = Some(Rc::new(
-                super::cassette::Recorder::new(cassette.clone().unwrap(), "socket")
-                    .with_redactions(redact),
+                super::cassette::Recorder::new(path, "socket").with_redactions(redact),
             ));
         }
         let state: Rc<RefCell<ProxyState>> = Rc::new(RefCell::new(init));

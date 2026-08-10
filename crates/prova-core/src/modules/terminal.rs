@@ -142,6 +142,13 @@ impl TermBuf {
     }
 }
 
+/// Take the terminal buffer lock, recovering from poisoning: the buffer is a raw transcript plus
+/// a vt parser that tolerates torn writes, so a panicked holder leaves nothing worse than a
+/// truncated escape sequence — recovering beats poisoning every later read.
+fn lock_buf(m: &Mutex<TermBuf>) -> std::sync::MutexGuard<'_, TermBuf> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 struct TermUd {
     buf: Arc<Mutex<TermBuf>>,
     writer: RefCell<Option<Box<dyn Write + Send>>>,
@@ -253,7 +260,7 @@ impl UserData for TermUd {
                 let deadline = tokio::time::Instant::now() + dur;
                 loop {
                     {
-                        let b = this.buf.lock().unwrap();
+                        let b = lock_buf(&this.buf);
                         if b.raw.windows(needle.len()).any(|w| w == &needle[..]) {
                             return Ok(());
                         }
@@ -282,7 +289,7 @@ impl UserData for TermUd {
                         // that separate those, so the first recurrence explains itself instead of
                         // needing a bisect.
                         let (screen, bytes, reader) = {
-                            let b = this.buf.lock().unwrap();
+                            let b = lock_buf(&this.buf);
                             (
                                 b.parser.screen().contents(),
                                 b.raw.len(),
@@ -321,12 +328,12 @@ impl UserData for TermUd {
         methods.add_async_method("wait_stable", |_, this, opts: Option<Table>| async move {
             let dur = opt_timeout(&opts, DEFAULT_WAIT)?;
             let deadline = tokio::time::Instant::now() + dur;
-            let mut last_len = this.buf.lock().unwrap().raw.len();
+            let mut last_len = lock_buf(&this.buf).raw.len();
             let mut quiet_since = tokio::time::Instant::now();
             loop {
                 tokio::time::sleep(POLL).await;
                 let (len, ended) = {
-                    let b = this.buf.lock().unwrap();
+                    let b = lock_buf(&this.buf);
                     (b.raw.len(), b.ended())
                 };
                 if len != last_len {
@@ -342,7 +349,7 @@ impl UserData for TermUd {
         });
 
         methods.add_method("screen", |lua, this, ()| {
-            let b = this.buf.lock().unwrap();
+            let b = lock_buf(&this.buf);
             let screen = b.parser.screen();
             let (rows, cols) = screen.size();
             let mut cells = Vec::with_capacity(rows as usize);
@@ -389,7 +396,7 @@ impl UserData for TermUd {
                 pixel_height: 0,
             })
             .map_err(|e| err(format!("resize: {e}")))?;
-            this.buf.lock().unwrap().parser.set_size(rows, cols);
+            lock_buf(&this.buf).parser.set_size(rows, cols);
             Ok(())
         });
 
@@ -527,7 +534,7 @@ fn spawn_fn(lua: &Lua) -> mlua::Result<Function> {
             loop {
                 match reader.read(&mut chunk) {
                     Ok(0) => {
-                        thread_buf.lock().unwrap().end = Some("clean EOF".to_string());
+                        lock_buf(&thread_buf).end = Some("clean EOF".to_string());
                         break;
                     }
                     // Not silently equivalent to EOF. A pty master can fail the read once the last
@@ -535,12 +542,12 @@ fn spawn_fn(lua: &Lua) -> mlua::Result<Function> {
                     // — so this branch is exactly the case where the screen can come up empty
                     // through no fault of the program under test. Record what happened.
                     Err(e) => {
-                        thread_buf.lock().unwrap().end =
+                        lock_buf(&thread_buf).end =
                             Some(format!("read failed: {e} ({:?})", e.kind()));
                         break;
                     }
                     Ok(n) => {
-                        let mut b = thread_buf.lock().unwrap();
+                        let mut b = lock_buf(&thread_buf);
                         b.raw.extend_from_slice(&chunk[..n]);
                         b.parser.process(&chunk[..n]);
                     }
@@ -864,7 +871,10 @@ fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
 
         // Replay: decode the cassette's frames to a file the shim `cat`s; no upstream consulted.
         if mode == "replay" {
-            let text = std::fs::read_to_string(cassette.as_ref().unwrap())
+            let path = cassette
+                .as_ref()
+                .ok_or_else(|| err("terminal.proxy: mode \"replay\" needs a `cassette`"))?;
+            let text = std::fs::read_to_string(path)
                 .map_err(|e| err(format!("terminal.proxy: reading cassette: {e}")))?;
             let cas: TermCassette = serde_json::from_str(&text)
                 .map_err(|e| err(format!("terminal.proxy: parsing cassette: {e}")))?;

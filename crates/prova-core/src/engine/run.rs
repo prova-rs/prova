@@ -472,7 +472,9 @@ pub(super) async fn run_plan(
             break; // nothing running and nothing became ready — all leaves resolved
         }
 
-        let (i, mut results) = in_flight.next().await.expect("in_flight is non-empty");
+        let Some((i, mut results)) = in_flight.next().await else {
+            break; // checked non-empty above; an exhausted stream means all leaves resolved
+        };
         resources.release(&leaves[i].reqs);
         // A promises-flagged leaf's results are inverted BEFORE gating and reporting: red → open promise
         // (or a real failure under --due), green → "graduate it". Gating sees the

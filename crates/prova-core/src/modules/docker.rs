@@ -452,8 +452,11 @@ async fn build(spec: BuildSpec) -> mlua::Result<String> {
                 cmd.arg("--secret").arg(format!("id={id},src={path}"));
             }
             BuildSecret::Value(value) => {
-                // Unwrap is sound: the guard is created above iff a Value secret exists.
-                let dir = &secret_dir.as_ref().expect("secret dir").0;
+                // The guard is created above iff a Value secret exists.
+                let dir = &secret_dir
+                    .as_ref()
+                    .ok_or_else(|| derr("docker.build: secret staging dir was not created"))?
+                    .0;
                 let path = dir.join(id);
                 write_private(&path, value)
                     .map_err(|e| derr(format!("docker.build: secret `{id}`: {e}")))?;
@@ -803,9 +806,10 @@ pub(crate) static PORT_BIND_FAILURES: AtomicU64 = AtomicU64::new(0);
 /// default client rather than turning a working daemon into a hard error.
 async fn connect() -> mlua::Result<Docker> {
     let client = Docker::connect_with_local_defaults().map_err(derr)?;
-    Ok(client.negotiate_version().await.unwrap_or_else(|_| {
-        Docker::connect_with_local_defaults().expect("reconnect after failed negotiation")
-    }))
+    match client.negotiate_version().await {
+        Ok(negotiated) => Ok(negotiated),
+        Err(_) => Docker::connect_with_local_defaults().map_err(derr),
+    }
 }
 
 async fn start(
