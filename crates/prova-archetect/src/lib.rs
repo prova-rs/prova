@@ -16,7 +16,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use archetect_api::{ClientMessage, ContextValue, IoError, ScriptIoHandle, ScriptMessage};
+use archetect_api::{
+    ClientMessage, ContextValue, ExistingFilePolicy, IoError, ScriptIoHandle, ScriptMessage,
+};
 
 /// Re-exported so callers of [`render_headless`] can build answer maps without a direct
 /// archetect-api dependency.
@@ -430,6 +432,37 @@ impl ScriptIoHandle for CapturingIoHandle {
             }
             ScriptMessage::WriteFile(info) => {
                 let path = PathBuf::from(&info.destination);
+                // Honor the write's existing-file policy — the engine attaches one to every
+                // WriteFile and trusts the driver to enforce it. `Preserve` (archetect's default)
+                // is what makes rendering into a live project safe: the project's own files win.
+                // The terminal driver already enforces this; dropping it here made headless
+                // renders (in-proof `archetect.render`, `prova init`) silently clobber.
+                if path.exists() {
+                    match info.existing_file_policy {
+                        ExistingFilePolicy::Overwrite => {}
+                        ExistingFilePolicy::Preserve => {
+                            *self.pending.lock().unwrap() = Some(ClientMessage::Ack);
+                            return Ok(());
+                        }
+                        // Headless never prompts, and the terminal driver treats a skipped
+                        // overwrite prompt as a decline — preserve, with the decision visible.
+                        ExistingFilePolicy::Prompt => {
+                            eprintln!(
+                                "archetect: preserved existing {} (if_exists = Prompt; headless renders never prompt)",
+                                info.destination
+                            );
+                            *self.pending.lock().unwrap() = Some(ClientMessage::Ack);
+                            return Ok(());
+                        }
+                        ExistingFilePolicy::Error => {
+                            *self.pending.lock().unwrap() = Some(ClientMessage::Error(format!(
+                                "file already exists: {} (if_exists = Existing.Error)",
+                                info.destination
+                            )));
+                            return Ok(());
+                        }
+                    }
+                }
                 if let Some(parent) = path.parent() {
                     let _ = std::fs::create_dir_all(parent);
                 }
