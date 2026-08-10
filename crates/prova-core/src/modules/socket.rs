@@ -994,58 +994,65 @@ fn flush_recorder(state: &Rc<RefCell<ProxyState>>) -> mlua::Result<()> {
     Ok(())
 }
 
+/// Resolve `socket.proxy`'s posture from its options: the mode (with `auto` collapsed to
+/// record/replay by the cassette's presence, exactly as http.proxy does, so downstream sees only
+/// the three real behaviors), the framing/cassette/upstream preconditions enforced at the call
+/// site rather than on first connect.
+fn proxy_config(opts: &Table) -> mlua::Result<(Option<String>, Framing, Mode, Option<String>)> {
+    let upstream = opts.get::<Option<String>>("upstream")?;
+    let framing = Framing::parse(opts.get::<Option<Value>>("framing")?)?;
+    let cassette = opts.get::<Option<String>>("cassette")?;
+    let mode_str = opts
+        .get::<Option<String>>("mode")?
+        .unwrap_or_else(|| "passthrough".to_string());
+
+    let mode = match mode_str.as_str() {
+        "passthrough" => Mode::Passthrough,
+        "record" => Mode::Record,
+        "replay" => Mode::Replay,
+        "auto" => {
+            let cas = cassette.as_ref().ok_or_else(|| {
+                err("socket.proxy: mode \"auto\" needs a `cassette` — nothing to key on")
+            })?;
+            if std::path::Path::new(cas).exists() {
+                Mode::Replay
+            } else {
+                Mode::Record
+            }
+        }
+        other => {
+            return Err(err(format!(
+                "socket.proxy: mode must be passthrough|record|replay|auto, got {other:?}"
+            )))
+        }
+    };
+
+    // Cassettes require framing (matching needs turns) and a cassette path; replay needs no
+    // upstream, every other mode does.
+    if mode != Mode::Passthrough && framing.is_raw() {
+        return Err(err(
+            "socket.proxy: a cassette needs framing — a raw byte stream has no turn to key on",
+        ));
+    }
+    let cassette = if mode == Mode::Passthrough {
+        None
+    } else {
+        Some(cassette.ok_or_else(|| {
+            err(format!("socket.proxy: mode {mode_str:?} needs a `cassette`"))
+        })?)
+    };
+    if mode != Mode::Replay {
+        let up = upstream
+            .as_ref()
+            .ok_or_else(|| err(format!("socket.proxy: mode {mode_str:?} needs `upstream`")))?;
+        parse_addr(up)?; // fail at the call site, not on first connect
+    }
+    Ok((upstream, framing, mode, cassette))
+}
+
 fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
     lua.create_function(|lua, (ctx, opts): (Value, Table)| {
-        let upstream = opts.get::<Option<String>>("upstream")?;
-        let framing = Framing::parse(opts.get::<Option<Value>>("framing")?)?;
-        let cassette = opts.get::<Option<String>>("cassette")?;
-        let mode_str = opts
-            .get::<Option<String>>("mode")?
-            .unwrap_or_else(|| "passthrough".to_string());
-
-        // Resolve the mode. `auto` collapses to record/replay by the cassette's presence, exactly
-        // as http.proxy does, so downstream sees only the three real behaviors.
-        let mode = match mode_str.as_str() {
-            "passthrough" => Mode::Passthrough,
-            "record" => Mode::Record,
-            "replay" => Mode::Replay,
-            "auto" => {
-                let cas = cassette.as_ref().ok_or_else(|| {
-                    err("socket.proxy: mode \"auto\" needs a `cassette` — nothing to key on")
-                })?;
-                if std::path::Path::new(cas).exists() {
-                    Mode::Replay
-                } else {
-                    Mode::Record
-                }
-            }
-            other => {
-                return Err(err(format!(
-                    "socket.proxy: mode must be passthrough|record|replay|auto, got {other:?}"
-                )))
-            }
-        };
-
-        // Cassettes require framing (matching needs turns) and a cassette path; replay needs no
-        // upstream, every other mode does.
-        if mode != Mode::Passthrough && framing.is_raw() {
-            return Err(err(
-                "socket.proxy: a cassette needs framing — a raw byte stream has no turn to key on",
-            ));
-        }
-        let cassette = if mode == Mode::Passthrough {
-            None
-        } else {
-            Some(cassette.ok_or_else(|| {
-                err(format!("socket.proxy: mode {mode_str:?} needs a `cassette`"))
-            })?)
-        };
-        if mode != Mode::Replay {
-            let up = upstream
-                .as_ref()
-                .ok_or_else(|| err(format!("socket.proxy: mode {mode_str:?} needs `upstream`")))?;
-            parse_addr(up)?; // fail at the call site, not on first connect
-        }
+        let (upstream, framing, mode, cassette) = proxy_config(&opts)?;
 
         let addr_s = opts
             .get::<Option<String>>("addr")?

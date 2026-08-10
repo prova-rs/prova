@@ -67,6 +67,56 @@ pub(super) fn apply_spec_inversion(results: &mut [NodeResult], reason: &str, str
     }
 }
 
+/// Snapshot context for one test: where its `.snap` files live and how they're keyed. `None`
+/// when the source file has no recorded path (e.g. a topology run), which makes
+/// `matches_snapshot` error rather than guess.
+fn snapshot_ctx_for(state: &RunState, item: &PlanItem) -> Option<SnapshotCtx> {
+    let dir = state.snapshot_dir(item.file)?;
+    let stem = state
+        .file_paths
+        .get(item.file)
+        .and_then(|p| p.file_stem())
+        .and_then(|s| s.to_str())
+        .unwrap_or("tests")
+        .to_string();
+    Some(SnapshotCtx {
+        dir,
+        stem,
+        key_base: slugify(&item.path),
+        update: state.update_snapshots,
+        counter: 0,
+        registry: state.snapshot_registry.clone(),
+    })
+}
+
+/// Invert an outcome under falsification: going red is the proof succeeding. A body that
+/// survives its own mutation asserts nothing about the system — it is vacuous, and reporting it
+/// green would let it keep counting as evidence forever. A falsifier that itself raised is a
+/// failure of the mutation, not of the proof, and says so.
+fn invert_for_falsify(
+    outcome: Outcome,
+    message: Option<String>,
+    falsifier_error: Option<String>,
+) -> (Outcome, Option<String>) {
+    match falsifier_error {
+        Some(err) => (Outcome::Failed, Some(err)),
+        None => match outcome {
+            Outcome::Failed => (Outcome::Passed, None),
+            Outcome::Passed => (
+                Outcome::Failed,
+                Some(
+                    "vacuous — the body still passed with its falsifier applied, so it is not \
+                     asserting what the mutation breaks. Sharpen the assertion, or fix the \
+                     falsifier to break what the proof actually checks."
+                        .to_string(),
+                ),
+            ),
+            // A skip observed nothing, so there is nothing to invert.
+            other => (other, message),
+        },
+    }
+}
+
 /// Returns the test's own node, plus a `⟶ teardown` node per teardown failure (usually none).
 pub(super) async fn run_one(
     lua: &Lua,
@@ -75,25 +125,7 @@ pub(super) async fn run_one(
     flow_scope: Option<Rc<RefCell<ScopeState>>>,
 ) -> Vec<NodeResult> {
     let run = Rc::new(RefCell::new(TestRun::default()));
-    // Snapshot context: where this test's `.snap` files live and how they're keyed. Absent when the
-    // source file has no recorded path (e.g. a topology run), which makes `matches_snapshot` error.
-    if let Some(dir) = state.snapshot_dir(item.file) {
-        let stem = state
-            .file_paths
-            .get(item.file)
-            .and_then(|p| p.file_stem())
-            .and_then(|s| s.to_str())
-            .unwrap_or("tests")
-            .to_string();
-        run.borrow_mut().snapshot = Some(SnapshotCtx {
-            dir,
-            stem,
-            key_base: slugify(&item.path),
-            update: state.update_snapshots,
-            counter: 0,
-            registry: state.snapshot_registry.clone(),
-        });
-    }
+    run.borrow_mut().snapshot = snapshot_ctx_for(state, item);
     let test_scope = Rc::new(RefCell::new(ScopeState::default()));
     // The case is delivered both as `t.case` and as the body's second argument, so `fn(t, case)`
     // and `fn(t)` (ignoring the trailing nil) both work.
@@ -108,7 +140,24 @@ pub(super) async fn run_one(
         case: item.case.clone(),
         topology: false,
     };
-    let ctx_ud = lua.create_userdata(ctx).expect("create context");
+    let ctx_ud = match lua.create_userdata(ctx) {
+        Ok(ud) => ud,
+        // No context, no test: report the failure as this node's result instead of panicking
+        // the whole worker — the one honest outcome a broken allocation has.
+        Err(e) => {
+            return vec![NodeResult {
+                path: item.path.clone(),
+                outcome: Outcome::Failed,
+                duration: std::time::Duration::ZERO,
+                assertions: 0,
+                message: Some(format!("cannot create the test context: {e}")),
+                file: state.file_path_str(item.file),
+                line: item.line,
+                teardown: false,
+                promises: None,
+            }];
+        }
+    };
 
     let file = state.file_path_str(item.file);
     let start = Instant::now();
@@ -172,27 +221,8 @@ pub(super) async fn run_one(
         (outcome, message, r.assertions)
     };
 
-    // Invert: under falsification, going red is the proof succeeding. A body that survives its own
-    // mutation asserts nothing about the system — it is vacuous, and reporting it green would let
-    // it keep counting as evidence forever.
     let (outcome, message) = if state.falsify && item.falsifier.is_some() {
-        match falsifier_error {
-            Some(err) => (Outcome::Failed, Some(err)),
-            None => match outcome {
-                Outcome::Failed => (Outcome::Passed, None),
-                Outcome::Passed => (
-                    Outcome::Failed,
-                    Some(
-                        "vacuous — the body still passed with its falsifier applied, so it is not \
-                         asserting what the mutation breaks. Sharpen the assertion, or fix the \
-                         falsifier to break what the proof actually checks."
-                            .to_string(),
-                    ),
-                ),
-                // A skip observed nothing, so there is nothing to invert.
-                other => (other, message),
-            },
-        }
+        invert_for_falsify(outcome, message, falsifier_error)
     } else {
         (outcome, message)
     };

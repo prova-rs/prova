@@ -318,6 +318,116 @@ impl UserData for Process {
     }
 }
 
+/// The options `shell.run` takes, extracted up front (owned) so nothing borrows Lua across the
+/// await in the conduct.
+struct RunOpts {
+    cwd: Option<String>,
+    env: Vec<(String, String)>,
+    timeout: Option<std::time::Duration>,
+    check: bool,
+    merge_stderr: bool,
+    stdin: Option<String>,
+}
+
+fn parse_run_opts(opts: &Option<Table>) -> mlua::Result<RunOpts> {
+    Ok(RunOpts {
+        cwd: opt_string(opts, "cwd")?,
+        env: opt_env(opts)?,
+        timeout: opt_string(opts, "timeout")?.and_then(|s| parse_duration(&s)),
+        check: opts
+            .as_ref()
+            .map(|o| o.get::<Option<bool>>("check"))
+            .transpose()?
+            .flatten()
+            .unwrap_or(false),
+        // Fold stderr into stdout in the result — the portable replacement for `2>&1`.
+        merge_stderr: opts
+            .as_ref()
+            .map(|o| o.get::<Option<bool>>("merge_stderr"))
+            .transpose()?
+            .flatten()
+            .unwrap_or(false),
+        // Feed the program's stdin — the portable replacement for a `printf x | cmd` pipe.
+        stdin: opt_string(opts, "stdin")?,
+    })
+}
+
+/// One `shell.run` conduct: build the command, bracket the blocking region with progress, drive
+/// it under the stdin/timeout policy, and fold the streams per `merge_stderr`.
+async fn run_command(
+    cmd: &CommandSpec,
+    o: &RunOpts,
+    progress: &Arc<dyn Progress>,
+) -> mlua::Result<ShellResult> {
+    let mut command = cmd.build();
+    if let Some(dir) = &o.cwd {
+        command.current_dir(dir);
+    }
+    for (k, v) in &o.env {
+        command.env(k, v);
+    }
+
+    // Bracket the blocking region: a captured build says nothing until it exits, which is
+    // pause #2 in the inventory. The renderer decides whether this is worth a line — a 30ms
+    // `echo` stays silent, a two-minute `cargo build` does not.
+    let activity = progress::start(progress, Kind::Command, cmd.display_name());
+    let start = Instant::now();
+    // With `stdin`, pipe the input in and reap via wait_with_output; otherwise `output()`
+    // with stdin EXPLICITLY nulled. tokio's `output()` — unlike std's — only forces
+    // stdout/stderr and lets stdin INHERIT, so a child that reads stdin (a journaling
+    // shim's `cat`, an interactive prompt) blocks forever whenever the harness's own
+    // stdin is a non-closing pipe. That was a live 40-minute suite hang under the
+    // coverage conduct. Hermetic default: a test's child sees EOF, never the harness's
+    // stdin; a proof that means to feed input says `stdin = ...`.
+    let run = async {
+        if let Some(input) = &o.stdin {
+            use tokio::io::AsyncWriteExt;
+            command
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            let mut child = command.spawn()?;
+            if let Some(mut si) = child.stdin.take() {
+                si.write_all(input.as_bytes()).await?;
+                si.shutdown().await?; // close so the child sees EOF
+            }
+            child.wait_with_output().await
+        } else {
+            command.stdin(std::process::Stdio::null());
+            command.output().await
+        }
+    };
+    let output = match o.timeout {
+        Some(budget) => tokio::time::timeout(budget, run).await.map_err(|_| {
+            mlua::Error::RuntimeError(format!("shell.run timed out after {budget:?}: {cmd}"))
+        })?,
+        None => run.await,
+    }
+    .map_err(|e| mlua::Error::RuntimeError(format!("shell.run failed to spawn: {e}")))?;
+
+    let mut stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let mut stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    if o.merge_stderr {
+        // Post-hoc concatenation: the streams were captured on separate pipes, so exact
+        // interleaving is approximate, but all output is present in `stdout` and `stderr` is
+        // emptied — the `2>&1` intent (everything on one stream) without a shell.
+        stdout.push_str(&stderr);
+        stderr.clear();
+    }
+    let result = ShellResult {
+        code: output.status.code().unwrap_or(-1),
+        stdout,
+        stderr,
+        duration: start.elapsed().as_secs_f64(),
+    };
+    if result.code == 0 {
+        activity.done();
+    } else {
+        activity.done_with(format!("exit {}", result.code));
+    }
+    Ok(result)
+}
+
 pub(crate) fn make_shell(lua: &Lua, progress: &Arc<dyn Progress>) -> mlua::Result<Table> {
     let shell = lua.create_table()?;
     // The process transport's interpose posture: the journaling PATH shim (proofs/spec/process).
@@ -329,108 +439,22 @@ pub(crate) fn make_shell(lua: &Lua, progress: &Arc<dyn Progress>) -> mlua::Resul
             lua.create_async_function(move |lua, (cmd, opts): (mlua::Value, Option<Table>)| {
                 let progress = Arc::clone(&progress);
                 async move {
-            // Extract options up front (owned) so nothing borrows Lua across the await.
-            let cmd = CommandSpec::parse(cmd)?;
-            let cwd = opt_string(&opts, "cwd")?;
-            let env = opt_env(&opts)?;
-            let timeout = opt_string(&opts, "timeout")?.and_then(|s| parse_duration(&s));
-            let check = opts
-                .as_ref()
-                .map(|o| o.get::<Option<bool>>("check"))
-                .transpose()?
-                .flatten()
-                .unwrap_or(false);
-            // Fold stderr into stdout in the result — the portable replacement for the `2>&1` redirect.
-            let merge_stderr = opts
-                .as_ref()
-                .map(|o| o.get::<Option<bool>>("merge_stderr"))
-                .transpose()?
-                .flatten()
-                .unwrap_or(false);
-            // Feed the program's stdin — the portable replacement for a `printf x | cmd` pipe.
-            let stdin = opt_string(&opts, "stdin")?;
-
-            // A string runs through a shell (`"cargo build --release"` verbatim); an argv table runs
-            // the program directly — no shell, no quoting.
-            let mut command = cmd.build();
-            if let Some(dir) = &cwd {
-                command.current_dir(dir);
-            }
-            for (k, v) in &env {
-                command.env(k, v);
-            }
-
-            // Bracket the blocking region: a captured build says nothing until it exits, which is
-            // pause #2 in the inventory. The renderer decides whether this is worth a line — a 30ms
-            // `echo` stays silent, a two-minute `cargo build` does not.
-            let activity = progress::start(&progress, Kind::Command, cmd.display_name());
-            let start = Instant::now();
-            // With `stdin`, pipe the input in and reap via wait_with_output; otherwise `output()`
-            // with stdin EXPLICITLY nulled. tokio's `output()` — unlike std's — only forces
-            // stdout/stderr and lets stdin INHERIT, so a child that reads stdin (a journaling
-            // shim's `cat`, an interactive prompt) blocks forever whenever the harness's own
-            // stdin is a non-closing pipe. That was a live 40-minute suite hang under the
-            // coverage conduct. Hermetic default: a test's child sees EOF, never the harness's
-            // stdin; a proof that means to feed input says `stdin = ...`.
-            let run = async {
-                if let Some(input) = &stdin {
-                    use tokio::io::AsyncWriteExt;
-                    command
-                        .stdin(std::process::Stdio::piped())
-                        .stdout(std::process::Stdio::piped())
-                        .stderr(std::process::Stdio::piped());
-                    let mut child = command.spawn()?;
-                    if let Some(mut si) = child.stdin.take() {
-                        si.write_all(input.as_bytes()).await?;
-                        si.shutdown().await?; // close so the child sees EOF
+                    // A string runs through a shell (`"cargo build --release"` verbatim); an argv
+                    // table runs the program directly — no shell, no quoting.
+                    let cmd = CommandSpec::parse(cmd)?;
+                    let o = parse_run_opts(&opts)?;
+                    let result = run_command(&cmd, &o, &progress).await?;
+                    if o.check && result.code != 0 {
+                        // Builds put failure detail on either stream (msbuild/pnpm favor stdout),
+                        // so the error carries the tail of both — better than a hand-rolled assert.
+                        return Err(mlua::Error::RuntimeError(format!(
+                            "shell.run: command exited {} (check=true): {cmd}\n--- stderr ---\n{}\n--- stdout ---\n{}",
+                            result.code,
+                            tail(&result.stderr, 4096),
+                            tail(&result.stdout, 4096)
+                        )));
                     }
-                    child.wait_with_output().await
-                } else {
-                    command.stdin(std::process::Stdio::null());
-                    command.output().await
-                }
-            };
-            let output = match timeout {
-                Some(budget) => tokio::time::timeout(budget, run).await.map_err(|_| {
-                    mlua::Error::RuntimeError(format!(
-                        "shell.run timed out after {budget:?}: {cmd}"
-                    ))
-                })?,
-                None => run.await,
-            }
-            .map_err(|e| mlua::Error::RuntimeError(format!("shell.run failed to spawn: {e}")))?;
-
-            let mut stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-            let mut stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-            if merge_stderr {
-                // Post-hoc concatenation: the streams were captured on separate pipes, so exact
-                // interleaving is approximate, but all output is present in `stdout` and `stderr` is
-                // emptied — the `2>&1` intent (everything on one stream) without a shell.
-                stdout.push_str(&stderr);
-                stderr.clear();
-            }
-            let result = ShellResult {
-                code: output.status.code().unwrap_or(-1),
-                stdout,
-                stderr,
-                duration: start.elapsed().as_secs_f64(),
-            };
-            if result.code == 0 {
-                activity.done();
-            } else {
-                activity.done_with(format!("exit {}", result.code));
-            }
-            if check && result.code != 0 {
-                // Builds put failure detail on either stream (msbuild/pnpm favor stdout), so the
-                // error carries the tail of both — better than any hand-rolled assert.
-                return Err(mlua::Error::RuntimeError(format!(
-                    "shell.run: command exited {} (check=true): {cmd}\n--- stderr ---\n{}\n--- stdout ---\n{}",
-                    result.code,
-                    tail(&result.stderr, 4096),
-                    tail(&result.stdout, 4096)
-                )));
-            }
-            lua.create_userdata(result)
+                    lua.create_userdata(result)
                 }
             })?
         },

@@ -20,11 +20,22 @@ pub(crate) fn falsify_subcommand(args: Vec<String>) -> ExitCode {
 /// value. Goes through the same manifest/home/plugins resolution as the run path, so
 /// `require("postgres")` works from a package directory; without a manifest it still runs with the
 /// built-ins. Exit 0 on success, 1 if the snippet raises, 2 on usage errors.
-pub(crate) fn eval_subcommand(args: Vec<String>) -> ExitCode {
+/// What `prova eval`'s flag loop yields: the snippet plus the environment knobs.
+struct EvalCli {
+    code: String,
+    profile: Option<String>,
+    manifest_path: Option<String>,
+    packages: Vec<String>,
+    force_json: bool,
+}
+
+/// Parse `prova eval`'s arguments; `--help` prints usage and exits successfully, and `-` reads
+/// the snippet from stdin.
+fn parse_eval_args(args: Vec<String>) -> Result<EvalCli, ExitCode> {
     let mut code: Option<String> = None;
     let mut profile: Option<String> = None;
     let mut manifest_path: Option<String> = None;
-    let mut cli_packages: Vec<String> = Vec::new();
+    let mut packages: Vec<String> = Vec::new();
     let mut force_json = false;
 
     let mut it = args.into_iter();
@@ -39,7 +50,7 @@ pub(crate) fn eval_subcommand(args: Vec<String>) -> ExitCode {
         }
         if let Some(v) = value_flag(&arg, &mut it, &["--package", "-P", "--plugin"]) {
             if arg.starts_with("--plugin") { eprintln!("prova: `--plugin` is deprecated — use `--package` (retires at 1.0)"); }
-            cli_packages.push(v);
+            packages.push(v);
             continue;
         }
         if let Some(v) = value_flag(&arg, &mut it, &["--format"]) {
@@ -48,7 +59,7 @@ pub(crate) fn eval_subcommand(args: Vec<String>) -> ExitCode {
                 "console" => {}
                 other => {
                     eprintln!("prova eval: unknown format {other:?} (expected console|json)");
-                    return ExitCode::from(2);
+                    return Err(ExitCode::from(2));
                 }
             }
             continue;
@@ -72,25 +83,25 @@ pub(crate) fn eval_subcommand(args: Vec<String>) -> ExitCode {
                      \x20 prova eval 'return fs.exists(\"Cargo.toml\")'\n\
                      \x20 prova eval 'local db = require(\"postgres\").container(ctx); return db.url'"
                 );
-                return ExitCode::SUCCESS;
+                return Err(ExitCode::SUCCESS);
             }
             "-" if code.is_none() => {
                 use std::io::Read;
                 let mut buf = String::new();
                 if let Err(e) = std::io::stdin().read_to_string(&mut buf) {
                     eprintln!("prova eval: cannot read snippet from stdin: {e}");
-                    return ExitCode::from(2);
+                    return Err(ExitCode::from(2));
                 }
                 code = Some(buf);
             }
             other if other.starts_with('-') && other.len() > 1 => {
                 eprintln!("prova eval: unknown flag {other}");
-                return ExitCode::from(2);
+                return Err(ExitCode::from(2));
             }
             other if code.is_none() => code = Some(other.to_string()),
             other => {
                 eprintln!("prova eval: unexpected argument {other:?} (expected one snippet)");
-                return ExitCode::from(2);
+                return Err(ExitCode::from(2));
             }
         }
     }
@@ -99,12 +110,21 @@ pub(crate) fn eval_subcommand(args: Vec<String>) -> ExitCode {
         eprintln!(
             "usage: prova eval '<lua code>'   (or `prova eval -` to read the snippet from stdin)"
         );
-        return ExitCode::from(2);
+        return Err(ExitCode::from(2));
     };
     if code.trim().is_empty() {
         eprintln!("prova eval: the snippet is empty");
-        return ExitCode::from(2);
+        return Err(ExitCode::from(2));
     }
+    Ok(EvalCli { code, profile, manifest_path, packages, force_json })
+}
+
+pub(crate) fn eval_subcommand(args: Vec<String>) -> ExitCode {
+    let EvalCli { code, profile, manifest_path, packages: cli_packages, force_json } =
+        match parse_eval_args(args) {
+            Ok(cli) => cli,
+            Err(code) => return code,
+        };
 
     let layout = match XdgSystemLayout::new() {
         Ok(layout) => layout,

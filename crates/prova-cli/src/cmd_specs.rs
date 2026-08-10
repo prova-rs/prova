@@ -210,6 +210,52 @@ pub(crate) fn tests_subcommand(args: Vec<String>) -> ExitCode {
 /// verb: it reads anchors and reports, gating nothing. `--claims` / `--backlog` narrow to one
 /// state (docs/plans/query-consolidation.md). Selectors (`-k`/`--tags`) arrive with the shared
 /// query engine in a later increment.
+/// Parse the specs lane's filters: the state (`--claims` xor `--backlog`) and `--undated` —
+/// only items carrying no `YYYY-MM-DD` draw-down date (a date is what lets a reminder draw an
+/// item down); it composes with the state filter. `Err(ExitCode::SUCCESS)` is `--help`.
+fn parse_specs_args(args: &[String]) -> Result<(Option<claims::Kind>, bool), ExitCode> {
+    let mut want: Option<claims::Kind> = None;
+    let mut undated_only = false;
+    for arg in args {
+        match arg.as_str() {
+            "-h" | "--help" => {
+                println!(
+                    "usage: prova specs                 list the specs lane: every claim and backlog item\n\
+                     \x20      prova specs --claims        only the claims (owed obligations)\n\
+                     \x20      prova specs --backlog       only the backlog (captured, not yet owed)\n\
+                     \x20      prova specs --undated       only items with no draw-down date (composes)\n\
+                     \x20      prova specs promote <id>    thaw a backlog item into a claim, in place\n\
+                     \x20      prova specs backfill        proofs no claim backs — the reverse of `owed`\n\n\
+                     Claims and backlog are the two states of one prose obligation, sharing the\n\
+                     `[specs]` sources. Promotion is a keyword flip: the id and prose stay put.\n\
+                     Backfill gates (exit non-zero) while any proof is unbacked — a worklist to drive down."
+                );
+                return Err(ExitCode::SUCCESS);
+            }
+            "--claims" | "--claim" => {
+                if want == Some(claims::Kind::Backlog) {
+                    eprintln!("prova: specs: --claims and --backlog are mutually exclusive");
+                    return Err(ExitCode::from(2));
+                }
+                want = Some(claims::Kind::Claim);
+            }
+            "--backlog" => {
+                if want == Some(claims::Kind::Claim) {
+                    eprintln!("prova: specs: --claims and --backlog are mutually exclusive");
+                    return Err(ExitCode::from(2));
+                }
+                want = Some(claims::Kind::Backlog);
+            }
+            "--undated" => undated_only = true,
+            other => {
+                eprintln!("prova: specs: unexpected argument {other:?}\nusage: prova specs [--claims | --backlog] [--undated]");
+                return Err(ExitCode::from(2));
+            }
+        }
+    }
+    Ok((want, undated_only))
+}
+
 pub(crate) fn specs_subcommand(args: Vec<String>) -> ExitCode {
     // Drivers on the specs lane. `promote <id>` thaws a backlog item into a claim (the one
     // state-write, shared with `prova backlog promote`). `backfill` is the reverse-`owed` worklist:
@@ -226,47 +272,10 @@ pub(crate) fn specs_subcommand(args: Vec<String>) -> ExitCode {
             return run(full);
         }
     }
-    let mut want: Option<claims::Kind> = None;
-    // `--undated`: only items carrying no `YYYY-MM-DD` draw-down date (a date is what lets a reminder
-    // draw an item down). Composes with the state filter — `prova specs --backlog --undated`.
-    let mut undated_only = false;
-    for arg in &args {
-        match arg.as_str() {
-            "-h" | "--help" => {
-                println!(
-                    "usage: prova specs                 list the specs lane: every claim and backlog item\n\
-                     \x20      prova specs --claims        only the claims (owed obligations)\n\
-                     \x20      prova specs --backlog       only the backlog (captured, not yet owed)\n\
-                     \x20      prova specs --undated       only items with no draw-down date (composes)\n\
-                     \x20      prova specs promote <id>    thaw a backlog item into a claim, in place\n\
-                     \x20      prova specs backfill        proofs no claim backs — the reverse of `owed`\n\n\
-                     Claims and backlog are the two states of one prose obligation, sharing the\n\
-                     `[specs]` sources. Promotion is a keyword flip: the id and prose stay put.\n\
-                     Backfill gates (exit non-zero) while any proof is unbacked — a worklist to drive down."
-                );
-                return ExitCode::SUCCESS;
-            }
-            "--claims" | "--claim" => {
-                if want == Some(claims::Kind::Backlog) {
-                    eprintln!("prova: specs: --claims and --backlog are mutually exclusive");
-                    return ExitCode::from(2);
-                }
-                want = Some(claims::Kind::Claim);
-            }
-            "--backlog" => {
-                if want == Some(claims::Kind::Claim) {
-                    eprintln!("prova: specs: --claims and --backlog are mutually exclusive");
-                    return ExitCode::from(2);
-                }
-                want = Some(claims::Kind::Backlog);
-            }
-            "--undated" => undated_only = true,
-            other => {
-                eprintln!("prova: specs: unexpected argument {other:?}\nusage: prova specs [--claims | --backlog] [--undated]");
-                return ExitCode::from(2);
-            }
-        }
-    }
+    let (want, undated_only) = match parse_specs_args(&args) {
+        Ok(parsed) => parsed,
+        Err(code) => return code,
+    };
 
     let home = match resolve_home(None) {
         Ok(h) => h,
