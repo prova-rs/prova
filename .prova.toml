@@ -19,8 +19,9 @@ parallels = { git = "https://github.com/prova-rs/prova-parallels", tag = "v1" }
 # fast file-size gate in the same dir carries no switch, so it runs in the default loop too.
 # Ad hoc: `prova -s quality -k clippy`.
 [profiles.quality]
-proofs   = ["quality"]
-switches = ["quality"]
+description = "code-quality gates: clippy -D warnings, the unwrap/expect ratchet, file-size limits (recompiles the workspace)"
+proofs      = ["quality"]
+switches    = ["quality"]
 
 # The deputed unit-test leg: `prova run ut` conducts `cargo nextest` ONCE (a file-scoped fixture
 # compiles + runs the workspace's unit tests, emitting junit), adopts every case into the account,
@@ -30,9 +31,10 @@ switches = ["quality"]
 # the WORLD fact, so under this profile a missing nextest FAILS rather than skips — `prova run ut`
 # is a contract, not a courtesy.
 [profiles.ut]
-proofs   = ["ut"]
-switches = ["ut"]
-must_run = ["cargo-nextest"]
+description = "the workspace's unit tests, conducted once via cargo nextest and adopted into the account (deputed junit)"
+proofs      = ["ut"]
+switches    = ["ut"]
+must_run    = ["cargo-nextest"]
 
 # Prova's own specs — the prose layer. The point of declaring this is not bookkeeping — it is that
 # prova must be the exemplar of a proven application, and a lifecycle nobody has run end-to-end on a

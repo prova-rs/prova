@@ -132,6 +132,12 @@ const VERBS: &[Verb] = &[
         run: reminders_subcommand,
     },
     Verb {
+        name: "switches",
+        help: "  prova switches            every declared opt-in class (`switch = ...`): how many tests it\n\
+               \x20                           gates, and who throws it — a profile, [run], or ad-hoc only",
+        run: switches_subcommand,
+    },
+    Verb {
         name: "attest",
         help: "  prova attest [<address>]  did the proof covering this claim actually RUN? Fails when it was\n\
                \x20                           skipped, deselected or absent; no address gates EVERY claim (CI)",
@@ -985,6 +991,30 @@ fn lane_line(p: &crate::manifest::Profile) -> String {
 /// docs/design/reminders.md). Reports every reminder with its recorded state, DUE first, and exits
 /// non-zero when any is due — the `attest` pattern, so "is anything owed attention?" is one exit
 /// code for a pipeline.
+/// `prova switches` — the opt-in classes, listed: every declared `switch = "<class>"` with how
+/// many leaves it gates and WHO throws it ([run], the profiles that list it, or nobody — ad-hoc
+/// only). The ledger view that keeps a switched class from becoming a hidden test population
+/// (docs/design/manifest.md#switches-are-discoverable). A reporter: collects, executes nothing,
+/// exits 0.
+fn switches_subcommand(args: Vec<String>) -> ExitCode {
+    for arg in &args {
+        if arg == "-h" || arg == "--help" {
+            println!(
+                "usage: prova switches\n\n\
+                 Lists every declared opt-in class (`switch = \"<class>\"` on a test, group, or\n\
+                 suite.config): how many tests it gates, and who throws it — [run] (every run),\n\
+                 the profiles listing it in `switches = [...]`, or nobody (ad-hoc only: `-s`).\n\n\
+                 Collects the suite but executes nothing. An ad-hoc-only class is a legitimate\n\
+                 posture, surfaced so it is a visible fact rather than an accident."
+            );
+            return ExitCode::SUCCESS;
+        }
+    }
+    let mut full = vec!["--switches-list".to_string()];
+    full.extend(args);
+    run(full)
+}
+
 fn reminders_subcommand(args: Vec<String>) -> ExitCode {
     for arg in &args {
         if arg == "-h" || arg == "--help" {
@@ -2786,6 +2816,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
     // any run and shows live states after one. Not a user-facing flag.
     let mut reminders_list = false;
     let mut reminders_state: Option<&str> = None;
+    let mut switches_list = false;
     let mut promises_only = false;
     let mut proofs_only = false;
     let mut falsify = false;
@@ -2975,6 +3006,7 @@ fn run(cli_args: Vec<String>) -> ExitCode {
             }
             "--backfill" => backfill = true,
             "--reminders-list" => reminders_list = true,
+            "--switches-list" => switches_list = true,
             // Internal spellings of the reminders lane's state filters (`prova reminders --due`);
             // rewritten by reminders_subcommand because bare `--due` is the promise decree below.
             "--reminders-due" => reminders_state = Some("due"),
@@ -3363,6 +3395,60 @@ fn run(cli_args: Vec<String>) -> ExitCode {
                 Err(err) => eprintln!("prova: IDE annotations: {err}"),
             }
         }
+    }
+
+    if switches_list {
+        // The opt-in classes, listed: the census from collection (bodies never execute), the
+        // thrown-by column from the manifest — so an ad-hoc-only class is a stated fact, never a
+        // hidden test population (docs/design/manifest.md#switches-are-discoverable).
+        let census = prova_core::collect_switch_census(&suites, &config);
+        if census.is_empty() {
+            println!(
+                "prova: no switches declared — mark an opt-in class with `switch = \"<class>\"` \
+                 on a test, group, or suite.config (`prova learn running`)"
+            );
+            return ExitCode::SUCCESS;
+        }
+        // Who throws each class, straight from the manifest (config already unioned them for THIS
+        // run; the listing answers for every profile, so it re-reads the declarations).
+        let mut throwers: std::collections::BTreeMap<&str, Vec<String>> =
+            std::collections::BTreeMap::new();
+        let manifest_text = home
+            .as_ref()
+            .and_then(|h| std::fs::read_to_string(&h.manifest).ok());
+        let parsed = manifest_text.as_deref().and_then(|t| Manifest::parse(t).ok());
+        if let Some(m) = &parsed {
+            for s in &m.run.switches {
+                throwers.entry(s.as_str()).or_default().push("[run] — every run".to_string());
+            }
+            for (name, profile) in &m.profiles {
+                for s in &profile.switches {
+                    throwers.entry(s.as_str()).or_default().push(format!("profile `{name}`"));
+                }
+            }
+        }
+        for (class, gated) in &census {
+            let who = match throwers.get(class.as_str()) {
+                Some(list) => list.join(", "),
+                None => format!("nobody — ad-hoc only (`-s {class}`)"),
+            };
+            println!("  {class:<12} {gated} gated · thrown by: {who}");
+        }
+        // The reverse direction: a config throw naming a class nobody declares is a stale row.
+        for (class, who) in &throwers {
+            if !census.contains_key(*class) {
+                println!(
+                    "  {class:<12} 0 gated · thrown by: {} — no test declares this class (stale?)",
+                    who.join(", ")
+                );
+            }
+        }
+        println!();
+        println!(
+            "  {} class(es) · throw ad hoc with -s <switch>, or `prova run <profile>` where listed",
+            census.len()
+        );
+        return ExitCode::SUCCESS;
     }
 
     if reminders_list {

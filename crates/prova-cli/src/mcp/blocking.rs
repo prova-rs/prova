@@ -640,6 +640,42 @@ pub(super) fn reminders_blocking(env: &McpEnv, req: RemindersRequest) -> Result<
     Ok((json!({ "reminders": rows }), any_due))
 }
 
+/// `switches` tool body — the opt-in classes as JSON, the twin of `prova switches`: the census
+/// from collection (shared `collect_switch_census`), the thrown-by column from the manifest
+/// (docs/design/manifest.md#switches-are-discoverable).
+pub(super) fn switches_blocking(env: &McpEnv, req: SwitchesRequest) -> Result<(serde_json::Value, bool), String> {
+    let call = env.resolve_call(None, req.package.as_deref())?;
+    let suites = crate::collect_suites(&call.base_dir, &call.declared, &call.proofs, true)?;
+    let config = crate::engine_config(1, &call.dependencies, Some(&call.home), prova_core::progress::null())
+        .with_capabilities(call.capabilities.clone());
+    let census = prova_core::collect_switch_census(&suites, &config);
+    let mut throwers: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    if let Ok(text) = std::fs::read_to_string(&call.home.manifest) {
+        if let Ok(m) = crate::manifest::Manifest::parse(&text) {
+            for s in &m.run.switches {
+                throwers.entry(s.clone()).or_default().push("[run]".to_string());
+            }
+            for (name, profile) in &m.profiles {
+                for s in &profile.switches {
+                    throwers.entry(s.clone()).or_default().push(format!("profile:{name}"));
+                }
+            }
+        }
+    }
+    let rows: Vec<serde_json::Value> = census
+        .iter()
+        .map(|(class, gated)| {
+            json!({
+                "class": class,
+                "gated": gated,
+                "thrown_by": throwers.get(class).cloned().unwrap_or_default(),
+            })
+        })
+        .collect();
+    Ok((json!({ "switches": rows }), false))
+}
+
 /// `packages` tool body — registry search as JSON, the twin of `prova packages <query>`. Shares
 /// `registry::search_entries` (hence load_all + matches) with the CLI verb, so both surfaces return
 /// the same hits. `query` is an optional substring over name + description + keywords; omit to list

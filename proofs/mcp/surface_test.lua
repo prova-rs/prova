@@ -95,8 +95,8 @@ prova.test("the tool surface mirrors the CLI verbs, warm holder included",
   -- the warm holder. `tests` is the tests lane (formerly `list`); `status` is the held-registry
   -- view (increment 7 reconciles its name with the CLI's `ps`).
   for _, expected in ipairs({
-    "run", "tests", "specs", "reminders", "eval", "learn", "introspect", "capabilities",
-    "packages", "attest", "evidence", "owed", "up", "down", "status",
+    "run", "tests", "specs", "reminders", "switches", "eval", "learn", "introspect",
+    "capabilities", "packages", "attest", "evidence", "owed", "up", "down", "status",
   }) do
     t:expect(names[expected], "tool " .. expected .. " is served"):is_truthy()
   end

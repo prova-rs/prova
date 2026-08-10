@@ -93,6 +93,10 @@ impl Topic {
         ("burndown", Topic::Promises),
         ("xfail", Topic::Promises),
         ("pending", Topic::Promises),
+        // The switches primitive is taught where selection is taught — the running topic's
+        // opt-in-classes section (docs/design/manifest.md#switches-not-env-capabilities).
+        ("switches", Topic::Running),
+        ("switch", Topic::Running),
         ("falsifier", Topic::Falsify),
         ("falsifiers", Topic::Falsify),
         ("falsified_by", Topic::Falsify),
@@ -272,6 +276,12 @@ enum Slot {
     Registries,
     Topologies,
     Profiles,
+    /// `[[specs.source]]` — where prose obligations live, and where a new one should be written.
+    Specs,
+    /// The opt-in classes thrown by config, with the pointer at `prova switches` for the live set.
+    Switches,
+    /// Where prova's own files live: the manifest variant, the config companion, the state dir.
+    Artifacts,
     ContextFiles,
 }
 
@@ -286,6 +296,9 @@ impl Slot {
             "registries" => Some(Slot::Registries),
             "topologies" => Some(Slot::Topologies),
             "profiles" => Some(Slot::Profiles),
+            "specs" => Some(Slot::Specs),
+            "switches" => Some(Slot::Switches),
+            "artifacts" => Some(Slot::Artifacts),
             "context_files" => Some(Slot::ContextFiles),
             _ => None,
         }
@@ -302,6 +315,11 @@ struct PackageFacts {
     nook_dir: std::path::PathBuf,
     resolved: Resolved,
     profiles: BTreeMap<String, Profile>,
+    /// `[[specs.source]]` declarations — the prose layer's roots (empty when the package never
+    /// opted in).
+    specs: Vec<crate::manifest::SpecSource>,
+    /// `[run] switches` — the classes the package baseline itself throws.
+    run_switches: Vec<String>,
     /// `[agent] spec_first` (default on) — drives the `{{agent}}` nudge in the project topic.
     spec_first: bool,
 }
@@ -397,6 +415,8 @@ impl RenderEnv {
                         .map(|p| p.to_path_buf())
                         .unwrap_or_else(|| home.dir.clone()),
                     resolved,
+                    specs: m.specs.as_ref().map(|s| s.source.clone()).unwrap_or_default(),
+                    run_switches: m.run.switches.clone(),
                     profiles: m.profiles,
                     spec_first: m.agent.spec_first(),
                 })
@@ -639,59 +659,133 @@ fn render_slot(slot: Slot, env: &RenderEnv, transport: Transport) -> String {
             // prose design doc, and burn the backlog down. When off, the slot is empty.
             Some(p) if p.spec_first => "**Spec-first here.** Prefer capturing new behaviour as a \
                 `promises`-flagged proof (the proof *is* the contract — no prose doc to drift) over a \
-                design doc: `prova promises` lists the open surface, `prova burndown` implements it, \
+                design doc: `prova tests --promises` lists the open surface, `prova tests burndown` implements it, \
                 graduate `promises = \"…\"` to `proves = \"…\"` when green. (`[agent] spec_first = false` to silence.)"
                 .into(),
             _ => String::new(),
         },
         Slot::Profiles => match &env.package {
             Some(p) if !p.profiles.is_empty() => {
+                // Rich rows, so "which profile, when?" is answered here: the author's description
+                // first, then the facts an agent keys on — what it selects, which switches it
+                // throws, what it guarantees.
                 let rows: Vec<String> = p
                     .profiles
                     .iter()
                     .map(|(name, profile)| {
-                        let mut overrides: Vec<&str> = Vec::new();
+                        let mut chips: Vec<String> = Vec::new();
                         if !profile.proofs.is_empty() {
-                            overrides.push("proofs");
+                            chips.push(format!("selects: {}", profile.proofs.join(", ")));
                         }
-                        if profile.packages.is_some() {
-                            overrides.push("packages");
+                        if !profile.tags.is_empty() {
+                            chips.push(format!("tags: {}", profile.tags.join(", ")));
                         }
-                        if profile.config.is_some() {
-                            overrides.push("config");
-                        }
-                        if profile.jobs.is_some() {
-                            overrides.push("jobs");
-                        }
-                        if profile.format.is_some() {
-                            overrides.push("format");
-                        }
-                        if !profile.env.is_empty() {
-                            overrides.push("env");
-                        }
-                        if !profile.dependencies.is_empty() {
-                            overrides.push("dependencies");
+                        if !profile.switches.is_empty() {
+                            chips.push(format!("throws: {}", profile.switches.join(", ")));
                         }
                         if !profile.must_run.is_empty() {
-                            overrides.push("must_run");
+                            chips.push(format!("guarantees: {}", profile.must_run.join(", ")));
                         }
-                        let what = if overrides.is_empty() {
+                        if !profile.env.is_empty() {
+                            chips.push("env".to_string());
+                        }
+                        if !profile.dependencies.is_empty() {
+                            chips.push("dependencies".to_string());
+                        }
+                        let what = if chips.is_empty() {
                             "(no overrides)".to_string()
                         } else {
-                            overrides.join(", ")
+                            chips.join(" · ")
                         };
-                        format!("  {name}  → {what}")
+                        match &profile.description {
+                            Some(d) => format!("  {name}  — {d}\n           {what}"),
+                            None => format!("  {name}  — {what}"),
+                        }
                     })
                     .collect();
                 let select = match transport {
-                    Transport::Cli => "`prova --profile <name>`",
+                    Transport::Cli => "`prova run <name>`",
                     Transport::Mcp => "`run { profile = \"<name>\" }`",
                 };
-                format!("**Profiles** (select with {select}):\n{}", rows.join("\n"))
+                format!("**Profiles** (run with {select}):\n{}", rows.join("\n"))
             }
             Some(_) => "**Profiles**: none — `[profiles.<name>]` overlays `[run]` (CI is the \
                         usual first one)."
                 .into(),
+            None => String::new(),
+        },
+        Slot::Specs => match &env.package {
+            Some(p) if !p.specs.is_empty() => {
+                let roots: Vec<String> = p
+                    .specs
+                    .iter()
+                    .map(|s| match s {
+                        crate::manifest::SpecSource::Directory { path } => {
+                            format!("`{path}` (directory, writable)")
+                        }
+                    })
+                    .collect();
+                format!(
+                    "**Specs** (`[[specs.source]]`): {} — write a new `<!-- claim: id -->` or \
+                     `<!-- backlog: id -->` anchor in the doc whose subject fits (create one under \
+                     a writable source if none does). `prova specs` lists the lane; `prova owed` \
+                     says what is still unproven.",
+                    roots.join(", ")
+                )
+            }
+            Some(_) => "**Specs**: none declared — `[[specs.source]]` opts the prose layer in \
+                        (`prova learn spec`); until then claims and backlog have no home."
+                .into(),
+            None => String::new(),
+        },
+        Slot::Switches => match &env.package {
+            Some(p) => {
+                // The classes CONFIG throws (statically knowable); the live class inventory needs
+                // collection, which is `prova switches`' job — the card points, never loads.
+                let mut thrown: Vec<String> = Vec::new();
+                if !p.run_switches.is_empty() {
+                    thrown.push(format!("{} ([run] — every run)", p.run_switches.join(", ")));
+                }
+                for (name, profile) in &p.profiles {
+                    if !profile.switches.is_empty() {
+                        thrown.push(format!(
+                            "{} (profile `{name}`)",
+                            profile.switches.join(", ")
+                        ));
+                    }
+                }
+                let lead = "**Switches** (opt-in classes: `switch = \"<class>\"` is off unless \
+                            thrown with `-s <class>` or a profile)";
+                if thrown.is_empty() {
+                    format!(
+                        "{lead}: none thrown by config — `prova switches` lists every declared \
+                         class and who throws it."
+                    )
+                } else {
+                    format!(
+                        "{lead}: thrown by config: {} — `prova switches` lists every declared \
+                         class and who throws it.",
+                        thrown.join("; ")
+                    )
+                }
+            }
+            None => String::new(),
+        },
+        Slot::Artifacts => match &env.package {
+            Some(p) => {
+                let config = p
+                    .resolved
+                    .config
+                    .as_deref()
+                    .unwrap_or("prova.lua (beside the manifest, if present)");
+                format!(
+                    "**Prova's own files**: manifest `{}` · Lua companion `{config}` \
+                     (`runtime.capability` lives there) · state under `.prova/var/` at the root \
+                     (run records, baselines — machine-local, never committed). Host check: \
+                     `prova capabilities` reports the built-in vocabulary MET/UNMET on this box.",
+                    p.manifest_name
+                )
+            }
             None => String::new(),
         },
     }

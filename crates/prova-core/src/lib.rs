@@ -82,7 +82,7 @@ pub fn default_inject() -> Vec<String> {
 }
 
 pub use engine::{
-    builtin_capability_names, collect_reminders, discover_path, discover_path_with, docker_runs_linux_containers, eval_snippet,
+    builtin_capability_names, collect_reminders, collect_switch_census, discover_path, discover_path_with, docker_runs_linux_containers, eval_snippet,
     evaluate_reminders, hold_topology,
     inspect_package, is_builtin_capability, list_topologies, load_project_config, obligations_for_suite,
     qualify_leaf_path, run_path, ProofObligation,

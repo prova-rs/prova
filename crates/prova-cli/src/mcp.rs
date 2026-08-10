@@ -57,7 +57,7 @@ use prova_core::{
 mod blocking;
 use blocking::{
     attest_blocking, capabilities_blocking, down_blocking, eval_blocking, evidence_blocking,
-    list_blocking, owed_blocking, packages_blocking, reminders_blocking, run_blocking,
+    list_blocking, owed_blocking, packages_blocking, reminders_blocking, run_blocking, switches_blocking,
     specs_blocking, up_blocking, warm_eval_blocking, warm_run_blocking,
 };
 
@@ -535,6 +535,13 @@ struct RemindersRequest {
 
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[serde(deny_unknown_fields)]
+struct SwitchesRequest {
+    /// A directory or manifest path: report THAT package's switches. Resolves fresh.
+    package: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+#[serde(deny_unknown_fields)]
 struct PackagesRequest {
     /// A substring to search over name + description + keywords. Omit to list every entry.
     query: Option<String>,
@@ -959,6 +966,16 @@ impl ProvaMcpServer {
         let _serialized = self.run_lock.lock().await;
         let env = self.env.clone();
         blocking(move || reminders_blocking(&env, req)).await
+    }
+
+    #[tool(
+        name = "switches",
+        description = "The opt-in classes — every declared `switch = \"<class>\"` (a test, group, or suite gated OFF unless thrown), with how many tests it gates and WHO throws it: [run] (every run), the profiles listing it in `switches = [...]`, or nobody (ad-hoc only, thrown per-call via run { switches }). Returns compact JSON: { switches: [{ class, gated, thrown_by }] } — thrown_by is [] for an ad-hoc-only class, a legitimate but stated posture. Collects the suite but executes no test. The agent twin of `prova switches`; the answer to 'why does this test never run?' and 'which profile conducts the heavy classes?'. Pass `package` to target another package. See learn { topic = \"switches\" }."
+    )]
+    async fn switches(&self, Parameters(req): Parameters<SwitchesRequest>) -> CallToolResult {
+        let _serialized = self.run_lock.lock().await;
+        let env = self.env.clone();
+        blocking(move || switches_blocking(&env, req)).await
     }
 
     #[tool(

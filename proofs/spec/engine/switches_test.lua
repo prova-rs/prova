@@ -120,3 +120,27 @@ prova.test("adopts the deputy", function(t) t:expect(true):is_true() end)
   local all = shell.run(prova.bin .. " -s soak,ut", { cwd = proj, merge_stderr = true })
   t:expect(all.stdout, "-s takes a comma list, like --tags"):contains("4 passed")
 end)
+
+prova.test("`prova switches` is the ledger: every class, its size, and who throws it", {
+  covers = "docs/design/manifest.md#switches-are-discoverable",
+  proves = "a switched class no profile throws must be a stated fact (`ad-hoc only`), not an accident discovered when someone asks why a gate never ran",
+}, function(t)
+  local proj = mkpkg(t:use(scratch), MANIFEST .. '\n[profiles.full]\nswitches = ["heavy"]\n', MIXED .. [[
+prova.test("orphan gate", { switch = "bench" }, function(t) t:expect(true):is_true() end)
+]])
+  local r = shell.run(prova.bin .. " switches", { cwd = proj, merge_stderr = true })
+  t:expect(r.code, r.stdout):equals(0)
+  t:expect(r.stdout):contains("heavy")
+  t:expect(r.stdout):contains("1 gated")
+  t:expect(r.stdout):contains("profile `full`")
+  -- The footgun row: a class nobody throws says so, in words.
+  t:expect(r.stdout):contains("bench")
+  t:expect(r.stdout):contains("ad-hoc only")
+  -- And a package with no switches teaches the primitive instead of listing nothing silently.
+  local plain = mkpkg(t:use(scratch) .. "/plain", MANIFEST, [[
+prova.test("ordinary", function(t) t:expect(true):is_true() end)
+]])
+  local none = shell.run(prova.bin .. " switches", { cwd = plain, merge_stderr = true })
+  t:expect(none.code):equals(0)
+  t:expect(none.stdout):contains("no switches declared")
+end)

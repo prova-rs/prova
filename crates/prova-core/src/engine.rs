@@ -5119,6 +5119,44 @@ pub fn collect_reminders(suites: &[crate::suite::Suite], config: &RunConfig) -> 
     out
 }
 
+/// Census the declared opt-in classes: every `switch = "<class>"` in the suite (own or inherited
+/// from a group/`suite.config`), with how many leaves each class gates. Loads like `--list` —
+/// bodies never execute — so `prova switches` answers before any run
+/// (docs/design/manifest.md#switches-are-discoverable).
+pub fn collect_switch_census(
+    suites: &[crate::suite::Suite],
+    config: &RunConfig,
+) -> std::collections::BTreeMap<String, usize> {
+    let mut census = std::collections::BTreeMap::new();
+    for suite in suites {
+        let loaded = (|| -> mlua::Result<SharedCollector> {
+            if suite.setup.is_none() && suite.files.len() == 1 {
+                return read_and_collect(&suite.files[0], config).map(|(_, col)| col);
+            }
+            let (lua, col) = build_lua(suite.name.clone(), config)?;
+            if let Some(setup) = suite.setup.as_deref() {
+                let code = std::fs::read_to_string(setup).map_err(|e| {
+                    mlua::Error::RuntimeError(format!("cannot read {}: {e}", setup.display()))
+                })?;
+                lua.load(&code).set_name(file_chunk_name(setup)).exec()?;
+            }
+            load_member_files(&lua, &col, &suite.files)?;
+            Ok(col)
+        })();
+        let Ok(col) = loaded else { continue };
+        let col = col.borrow();
+        let Ok(plan) = build_plan(&col, &config.capabilities) else {
+            continue;
+        };
+        for leaf in &plan.leaves {
+            for class in &leaf.switches {
+                *census.entry(class.clone()).or_insert(0) += 1;
+            }
+        }
+    }
+    census
+}
+
 /// Evaluate one reminder's condition against the run's account.
 ///
 /// The mapping is the whole contract: a falsy return is `Watching`; a truthy return is `Due`,

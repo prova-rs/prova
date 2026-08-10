@@ -12,11 +12,17 @@ anchor repo paths on them, never on cwd.
 
 {{proof_paths}}
 
+{{specs}}
+
 {{packages_dir}}
 
 {{topologies}}
 
 {{profiles}}
+
+{{switches}}
+
+{{artifacts}}
 
 {{packages}}
 
