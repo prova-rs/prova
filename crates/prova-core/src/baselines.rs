@@ -168,3 +168,142 @@ impl UpdateReport {
         self.refused.is_empty()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::make_tempdir;
+
+    fn m(name: &str, value: f64, direction: Direction) -> Measurement {
+        Measurement {
+            name: name.to_string(),
+            value,
+            direction,
+            set: "quality".to_string(),
+        }
+    }
+
+    /// A missing file is an empty set, not an error — "no baseline" is the ratchet GATE's loud
+    /// failure, never the loader's.
+    #[test]
+    fn load_absent_is_empty() {
+        let root = make_tempdir().unwrap();
+        let base = load(&root, "quality");
+        assert_eq!(base.schema, SCHEMA);
+        assert!(base.metrics.is_empty());
+    }
+
+    /// An unparseable file also loads empty rather than erroring — same contract as absent.
+    #[test]
+    fn load_garbage_is_empty() {
+        let root = make_tempdir().unwrap();
+        std::fs::create_dir_all(root.join(".prova/baselines")).unwrap();
+        std::fs::write(root.join(".prova/baselines/quality.json"), "not json {").unwrap();
+        assert!(load(&root, "quality").metrics.is_empty());
+    }
+
+    /// First sight of a metric establishes it: value AND direction land in the file, and the
+    /// report says `established`, not `tightened`.
+    #[test]
+    fn update_establishes_first_sight() {
+        let root = make_tempdir().unwrap();
+        let report = update(&root, &[m("rust.unwraps", 20.0, Direction::LowerIsBetter)]);
+        assert_eq!(report.established.len(), 1);
+        assert!(report.tightened.is_empty() && report.refused.is_empty());
+        let base = load(&root, "quality");
+        let metric = &base.metrics["rust.unwraps"];
+        assert_eq!(metric.value, 20.0);
+        assert_eq!(metric.direction, "lower_is_better");
+    }
+
+    /// The guard, both directions: an improvement tightens the committed value; a regression is
+    /// REFUSED and the committed value stays exactly where it was.
+    #[test]
+    fn update_tightens_and_refuses_lower_is_better() {
+        let root = make_tempdir().unwrap();
+        update(&root, &[m("clones", 10.0, Direction::LowerIsBetter)]);
+
+        let report = update(&root, &[m("clones", 8.0, Direction::LowerIsBetter)]);
+        assert_eq!(report.tightened.len(), 1);
+        assert_eq!(load(&root, "quality").metrics["clones"].value, 8.0);
+
+        let report = update(&root, &[m("clones", 12.0, Direction::LowerIsBetter)]);
+        assert_eq!(report.refused.len(), 1);
+        assert!(report.tightened.is_empty());
+        assert_eq!(load(&root, "quality").metrics["clones"].value, 8.0);
+    }
+
+    /// The same guard mirrored for higher_is_better: coverage climbing banks, slipping is refused.
+    #[test]
+    fn update_tightens_and_refuses_higher_is_better() {
+        let root = make_tempdir().unwrap();
+        update(&root, &[m("coverage", 60.0, Direction::HigherIsBetter)]);
+
+        let report = update(&root, &[m("coverage", 70.0, Direction::HigherIsBetter)]);
+        assert_eq!(report.tightened.len(), 1);
+        assert_eq!(load(&root, "quality").metrics["coverage"].value, 70.0);
+
+        let report = update(&root, &[m("coverage", 65.0, Direction::HigherIsBetter)]);
+        assert_eq!(report.refused.len(), 1);
+        assert_eq!(load(&root, "quality").metrics["coverage"].value, 70.0);
+    }
+
+    /// An equal value counts as an improvement (`<=` / `>=`), so re-banking an unchanged metric
+    /// is a tighten, not a refusal — what keeps `--update-baseline` idempotent.
+    #[test]
+    fn update_equal_value_rebanks() {
+        let root = make_tempdir().unwrap();
+        update(&root, &[m("clones", 5.0, Direction::LowerIsBetter)]);
+        let report = update(&root, &[m("clones", 5.0, Direction::LowerIsBetter)]);
+        assert_eq!(report.tightened.len(), 1);
+        assert!(report.refused.is_empty());
+    }
+
+    /// The paydown fields survive a tightening update untouched — the goal machinery depends on
+    /// this: banking a gain must never silently retire the goal that demanded it.
+    #[test]
+    fn update_carries_goal_through_tighten() {
+        let root = make_tempdir().unwrap();
+        update(&root, &[m("expects", 25.0, Direction::LowerIsBetter)]);
+        // Hand-edit the file the way a human schedules a paydown.
+        let p = root.join(".prova/baselines/quality.json");
+        let mut base: Baselines = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        let metric = base.metrics.get_mut("expects").unwrap();
+        metric.goal = Some(10.0);
+        metric.deadline = Some("2026-12-31".to_string());
+        std::fs::write(&p, serde_json::to_string(&base).unwrap()).unwrap();
+
+        update(&root, &[m("expects", 20.0, Direction::LowerIsBetter)]);
+        let metric = &load(&root, "quality").metrics["expects"];
+        assert_eq!(metric.value, 20.0);
+        assert_eq!(metric.goal, Some(10.0));
+        assert_eq!(metric.deadline.as_deref(), Some("2026-12-31"));
+    }
+
+    /// Sets partition into separate files — the ownership/merge-conflict isolation the per-set
+    /// split exists for.
+    #[test]
+    fn update_splits_sets_into_files() {
+        let root = make_tempdir().unwrap();
+        let mut a = m("x", 1.0, Direction::LowerIsBetter);
+        a.set = "alpha".to_string();
+        let mut b = m("y", 2.0, Direction::LowerIsBetter);
+        b.set = "beta".to_string();
+        update(&root, &[a, b]);
+        assert!(root.join(".prova/baselines/alpha.json").is_file());
+        assert!(root.join(".prova/baselines/beta.json").is_file());
+        assert_eq!(load(&root, "alpha").metrics["x"].value, 1.0);
+        assert_eq!(load(&root, "beta").metrics["y"].value, 2.0);
+    }
+
+    /// The report's verdict: refusals flip `print`'s bool — the exit-code seam an embedder gates on.
+    #[test]
+    fn report_verdict_tracks_refusals() {
+        assert!(UpdateReport::default().print());
+        let refused = UpdateReport {
+            refused: vec!["x".to_string()],
+            ..Default::default()
+        };
+        assert!(!refused.print());
+    }
+}

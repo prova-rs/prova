@@ -50,3 +50,40 @@ pub(super) fn files_table(lua: &Lua, files: &[PathBuf]) -> mlua::Result<Table> {
     }
     Ok(files_t)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::make_tempdir;
+
+    /// A literal path answers itself when the file exists and empty when it does not — never an
+    /// error, because "no results yet" is the verifier recipe's own vacuity check to make loud.
+    #[test]
+    fn literal_paths_answer_existence() {
+        let dir = make_tempdir().unwrap();
+        let file = dir.join("results.xml");
+        std::fs::write(&file, "<x/>").unwrap();
+        let hits = resolve_files(&file.to_string_lossy(), None, "junit.load").unwrap();
+        assert_eq!(hits, vec![file]);
+        let misses = resolve_files(&dir.join("absent.xml").to_string_lossy(), None, "junit.load");
+        assert_eq!(misses.unwrap(), Vec::<std::path::PathBuf>::new());
+    }
+
+    /// A relative pattern resolves against `cwd`; globs expand sorted, files only.
+    #[test]
+    fn globs_resolve_against_cwd_sorted() {
+        let dir = make_tempdir().unwrap();
+        std::fs::write(dir.join("b.xml"), "").unwrap();
+        std::fs::write(dir.join("a.xml"), "").unwrap();
+        std::fs::create_dir(dir.join("c.xml")).unwrap(); // a DIRECTORY the glob must skip
+        let hits = resolve_files("*.xml", Some(&dir.to_string_lossy()), "sarif.load").unwrap();
+        assert_eq!(hits, vec![dir.join("a.xml"), dir.join("b.xml")]);
+    }
+
+    /// A malformed glob is the caller's error, named after the verb that asked.
+    #[test]
+    fn bad_glob_names_the_verb()  {
+        let err = resolve_files("[", None, "junit.load").unwrap_err();
+        assert!(err.contains("junit.load"), "error names the verb: {err}");
+    }
+}

@@ -72,6 +72,16 @@ end
 -- expensive stage and stay for incremental conducts. The suite must be green to be measured.
 local conduct = prova.fixture("layered-coverage", Scope.File, function()
   local env = cov_env()
+  -- A stale-generation guard: instrumented objects from a previous workspace version inflate the
+  -- report's denominator (measured live: the 0.19.0 bump left 0.18.0 objects behind and both
+  -- layers "regressed" by the same ~27% — a denominator artifact, not lost coverage). The stamp
+  -- is this tree's own version; a mismatch wipes the whole coverage target before anything builds.
+  local stamp = COV_DIR .. "/.prova-version-stamp"
+  if not fs.exists(stamp) or fs.read(stamp) ~= prova.version then
+    fs.remove_all(COV_DIR)
+    fs.mkdir(COV_DIR)
+    fs.write(stamp, prova.version)
+  end
   purge(COV_DIR, "*.profraw")
   purge(COV_DIR, "*.profdata")
   purge(prova.root .. "/target", "*.profraw") -- strays from the misdirected show-env path

@@ -1138,3 +1138,24 @@ fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
         Ok(ud)
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The scheme IS the parse: tcp:// keeps its host:port, anything else is a taught error.
+    #[test]
+    fn parse_addr_schemes() {
+        assert!(matches!(parse_addr("tcp://127.0.0.1:80"), Ok(Addr::Tcp(hp)) if hp == "127.0.0.1:80"));
+        let Err(err) = parse_addr("http://x") else {
+            panic!("http:// must not parse as a socket address");
+        };
+        let err = err.to_string();
+        assert!(err.contains("tcp://host:port"), "teaches the grammar: {err}");
+        #[cfg(unix)]
+        assert!(matches!(
+            parse_addr("unix:///tmp/s.sock"),
+            Ok(Addr::Unix(p)) if p == std::path::Path::new("/tmp/s.sock")
+        ));
+    }
+}

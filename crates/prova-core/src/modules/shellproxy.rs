@@ -427,3 +427,43 @@ fn player_turns(mut player: super::cassette::Player) -> Vec<ReplayTurn> {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// POSIX single-quoting: the only special character inside single quotes is the quote itself,
+    /// escaped by ending, escaping, and reopening — `'\''`.
+    #[test]
+    fn sh_quote_survives_embedded_quotes() {
+        assert_eq!(sh_quote("plain"), "'plain'");
+        assert_eq!(sh_quote("it's"), r"'it'\''s'");
+        assert_eq!(sh_quote(""), "''");
+        // The classic injection shapes stay inert data.
+        assert_eq!(sh_quote("$(rm -rf /)"), "'$(rm -rf /)'");
+        assert_eq!(sh_quote("`id`; echo x"), "'`id`; echo x'");
+    }
+
+    /// A recorded key is `argv-joined \u{1} stdin` with `\u{0}` argv separators; the replay arm
+    /// recovers the argv half (space-joined) and pairs it with the decoded stdout and exit code.
+    #[test]
+    fn player_turns_recover_argv_and_code() {
+        use crate::engine::make_tempdir;
+        let dir = make_tempdir().unwrap();
+        let path = dir.join("cas.json").to_string_lossy().into_owned();
+        let rec = super::super::cassette::Recorder::new(path.clone(), "shell");
+        rec.record(
+            "status\u{0}--short\u{1}some stdin".to_string(),
+            "on branch main".to_string(),
+            Some(3),
+        );
+        rec.flush().unwrap();
+
+        let player = super::super::cassette::Player::load(&path).unwrap();
+        let turns = player_turns(player);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].argv_joined, "status --short");
+        assert_eq!(turns[0].stdout, b"on branch main");
+        assert_eq!(turns[0].code, 3);
+    }
+}
