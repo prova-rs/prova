@@ -34,10 +34,6 @@
       "value": 20.0,
       "direction": "lower_is_better",
       "goal": 15.0
-    },
-    "rust.file_lines.engine": {
-      "value": 6654.0,
-      "direction": "lower_is_better"
     }
   }
 }
