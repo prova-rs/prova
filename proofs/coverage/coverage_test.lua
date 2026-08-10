@@ -78,7 +78,13 @@ local conduct = prova.fixture("layered-coverage", Scope.File, function()
   purge(prova.root, "default_*.profraw") -- pre-run root strays (see the sweep below) are stale
   fs.remove_all(UNIT_STAGE)
 
-  local build = shell.run({ "cargo", "build", "-p", "prova-cli" },
+  -- `--target-dir` is EXPLICIT because newer cargo-llvm-cov stopped setting CARGO_TARGET_DIR in
+  -- show-env (it instruments via RUSTC_WRAPPER instead): without it this build lands the
+  -- instrumented binary in target/debug — the TRAMPOLINE's binary — and every later `prova`
+  -- invocation is silently instrumented, dropping a default_*.profraw into its cwd at exit
+  -- (36 of them once reached the repo root and the snapshot). Isolation is the contract the
+  -- header describes; this pin is what enforces it now that show-env no longer does.
+  local build = shell.run({ "cargo", "build", "-p", "prova-cli", "--target-dir", COV_DIR },
     { cwd = prova.root, env = env, timeout = "1800s", merge_stderr = true })
   if build.code ~= 0 then
     return { error = "instrumented build failed:\n" .. (build.stdout or "") }
