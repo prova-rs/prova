@@ -4,8 +4,13 @@ A **capability** is a fact about the *environment*, not the code: a daemon that 
 `PATH`, a client compiled in, an OS. Tests state what they need; prova checks it against the host.
 
 ```
-prova capabilities        # the built-in vocabulary, each MET or UNMET on THIS machine (and why)
+prova capabilities        # what VARIES: the host probes, plus everything THIS package's
+                          # manifest and companion reference — each MET or UNMET (and why)
 ```
+
+The report answers "what in my world that varies is available to me?" — a fact that cannot be
+false on any machine is not a check, so compiled-in batteries appear only when a slim build
+lacks one, and unprobed assumptions (network/internet) are not reported as facts.
 
 ## The vocabulary
 

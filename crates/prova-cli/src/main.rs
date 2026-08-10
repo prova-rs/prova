@@ -419,15 +419,12 @@ fn package_subcommand(args: Vec<String>) -> ExitCode {
     }
 }
 
-/// `prova capabilities` — what can prova detect on THIS machine? Lists the built-in capability
-/// vocabulary (the names `requires`/`must_run` probe for) with each one's host status: MET, or UNMET
-/// with the reason (an absent daemon, a missing token, the wrong OS). A report, exit 0 — never a
-/// gate; the gate is `must_run` at run time. Beyond these, any executable on PATH is a capability,
-/// and a package registers its own via `runtime.capability` (`prova learn capabilities`).
-///
-/// v1 reports the host vocabulary, which needs no package. Folding in this package's declared
-/// `must_run`/`requires` (which needs the run context to load `prova.lua`'s registrations) is a
-/// tracked follow-up — see docs/plans/query-consolidation.md.
+/// `prova capabilities` — what in my world that VARIES is available to me? The variable host
+/// probes (docker/github/OS), then what THIS package references (profiles' `must_run`, topology
+/// `requires`, companion registrations), each MET or UNMET with the reason. A report, exit 0 —
+/// never a gate; the gate is `must_run` at run time. Always-available facts are not checks:
+/// compiled-in batteries appear only when a slim build lacks one, and unprobed assumptions
+/// (network/internet) are not reported at all.
 fn capabilities_subcommand(args: Vec<String>) -> ExitCode {
     if args.iter().any(|a| a == "-h" || a == "--help") {
         println!(
@@ -443,25 +440,113 @@ fn capabilities_subcommand(args: Vec<String>) -> ExitCode {
         eprintln!("prova: capabilities: unexpected argument {bad:?} (this verb takes none)");
         return ExitCode::from(2);
     }
-    let caps = prova_core::Capabilities::default();
-    let names = prova_core::builtin_capability_names();
-    println!("built-in capabilities on this host (any binary on PATH is also a capability):");
+    // The report answers "what in my world that VARIES is available to me?" — a fact that cannot
+    // be false on any machine is not a capability check. So: the variable host probes, then what
+    // THIS package's manifest and companion reference (probed the same way), and the compiled-in
+    // batteries only when a slim build actually lacks one.
+    let mut caps = prova_core::Capabilities::default();
+
+    // The package context, when a manifest is in reach: profiles' must_run, topology requires,
+    // and the companion's registered capabilities. Parsed raw — never resolve_from_manifest,
+    // whose must_run gate would FAIL on exactly the unmet guarantee this report exists to show.
+    let mut package: Vec<(String, String)> = Vec::new(); // (expr, where it is referenced)
+    let home = home::find(std::path::Path::new(".")).ok().flatten();
+    if let Some(home) = &home {
+        if let Ok(text) = std::fs::read_to_string(&home.manifest) {
+            if let Ok(m) = Manifest::parse(&text) {
+                for cap in &m.run.must_run {
+                    package.push((cap.clone(), "must_run: [run]".to_string()));
+                }
+                for (name, profile) in &m.profiles {
+                    for cap in &profile.must_run {
+                        package.push((cap.clone(), format!("must_run: profile `{name}`")));
+                    }
+                }
+                for (name, topo) in &m.topologies {
+                    for cap in &topo.requires {
+                        package.push((cap.clone(), format!("topology `{name}`")));
+                    }
+                }
+                // The companion's `runtime.capability` registrations, loaded so a registered
+                // name probes with the project's own predicate.
+                let companion_rel = m.run.config.clone().unwrap_or_else(|| "prova.lua".to_string());
+                let companion = home.dir.join(&companion_rel);
+                if companion.is_file() {
+                    if let Ok(loaded) = prova_core::load_project_config(
+                        &companion,
+                        &engine_config(1, &packages::ResolvedPackages::default(), Some(home), prova_core::progress::null()),
+                    ) {
+                        for name in loaded.registered_names() {
+                            package.push((name.clone(), "registered in the companion".to_string()));
+                        }
+                        caps = loaded;
+                    }
+                }
+            }
+        }
+    }
+
+    // Host probes that genuinely vary by machine or environment. `network`/`internet` are
+    // deliberately absent: prova assumes them today (no probe), and an always-MET row is noise.
+    const VARIABLE_HOST: &[&str] = &["docker", "github", "unix", "windows"];
+    println!("what varies on this host (any binary on PATH is also a capability):");
     println!();
     let mut met = 0usize;
-    for name in names {
+    let mut total = 0usize;
+    let mut report = |name: &str, origin: Option<&str>, caps: &prova_core::Capabilities| {
+        total += 1;
+        let suffix = origin.map(|o| format!("   ({o})")).unwrap_or_default();
         match caps.expr_status(name) {
             Ok(None) => {
                 met += 1;
-                println!("  MET    {name}");
+                println!("  MET    {name:<16}{suffix}");
             }
-            Ok(Some(reason)) => println!("  UNMET  {name:<9} {reason}"),
-            Err(e) => println!("  ERROR  {name:<9} {e}"),
+            Ok(Some(reason)) => println!("  UNMET  {name:<16} {reason}{suffix}"),
+            Err(e) => println!("  ERROR  {name:<16} {e}{suffix}"),
+        }
+    };
+    for name in VARIABLE_HOST {
+        report(name, None, &caps);
+    }
+    // What this package references — deduped, first origin wins the label.
+    let mut seen: std::collections::BTreeSet<String> = VARIABLE_HOST.iter().map(|s| s.to_string()).collect();
+    if !package.is_empty() {
+        println!();
+        println!("what this package references:");
+        println!();
+        for (expr, origin) in &package {
+            if seen.insert(expr.clone()) {
+                report(expr, Some(origin), &caps);
+            }
+        }
+    }
+    // Compiled-in batteries: a capability only when a slim build lacks one — always-available
+    // is not a check, so a full build shows a single footnote instead of rows.
+    let natives: Vec<&str> = prova_core::builtin_capability_names()
+        .iter()
+        .filter(|n| !VARIABLE_HOST.contains(n) && !matches!(**n, "network" | "internet"))
+        .copied()
+        .collect();
+    let missing: Vec<&str> = natives
+        .iter()
+        .filter(|n| matches!(caps.expr_status(n), Ok(Some(_))))
+        .copied()
+        .collect();
+    println!();
+    if missing.is_empty() {
+        println!(
+            "  compiled in (always available in this build): {} — batteries, not checks",
+            natives.join(", ")
+        );
+    } else {
+        println!("  missing from THIS BUILD (feature-gated):");
+        for name in &missing {
+            report(name, Some("compiled-in module"), &caps);
         }
     }
     println!();
     println!(
-        "  {met}/{} met · a package's `must_run`/`requires` name more (`prova learn capabilities`)",
-        names.len()
+        "  {met}/{total} met · per-test `requires` gate at run time (`prova learn capabilities`)"
     );
     ExitCode::SUCCESS
 }
@@ -1014,18 +1099,68 @@ fn lane_line(p: &crate::manifest::Profile) -> String {
 ///     running exe anyway).
 ///
 /// Empty-string guards count as unset, so a proof can re-arm the trampoline in a sandbox.
+/// Is any file at/under `root` modified after `stamped`? The freshness sweep behind the
+/// `[runner] sources` skip — cheap (hundreds of stats), and errs toward "newer" on any
+/// unreadable entry so doubt always rebuilds.
+fn newer_than(root: &std::path::Path, stamped: std::time::SystemTime) -> bool {
+    let meta = match std::fs::symlink_metadata(root) {
+        Ok(m) => m,
+        Err(_) => return true,
+    };
+    if meta.is_dir() {
+        let entries = match std::fs::read_dir(root) {
+            Ok(e) => e,
+            Err(_) => return true,
+        };
+        for entry in entries {
+            match entry {
+                Ok(e) => {
+                    if newer_than(&e.path(), stamped) {
+                        return true;
+                    }
+                }
+                Err(_) => return true,
+            }
+        }
+        false
+    } else {
+        meta.modified().map(|m| m > stamped).unwrap_or(true)
+    }
+}
+
 fn runner_trampoline() -> Option<ExitCode> {
     let non_empty = |k: &str| std::env::var(k).map(|v| !v.is_empty()).unwrap_or(false);
     if non_empty("PROVA_TRAMPOLINED") || non_empty("PROVA_RUN_DEPTH") {
         return None;
     }
     let home = home::find(std::path::Path::new(".")).ok()??;
-    // A manifest this build cannot parse is not the trampoline's problem — the normal path owns
-    // that diagnostic (and a NEWER manifest field is exactly why the hop might be needed; parse
-    // leniently enough to read `[runner]` alone would be ideal, but serde's deny_unknown_fields
-    // lives on inner tables, so the top-level parse tolerates unknown keys already).
+    // Parse `[runner]` LENIENTLY, never through the strict Manifest schema: the whole point of
+    // the hop is bridging version skew, and a manifest field this binary predates must not
+    // silently disarm the trampoline (deny_unknown_fields would fail the full parse, `.ok()?`
+    // would proceed as self, and the stale binary would answer wearing the repo's face — the
+    // exact footgun the mechanism exists to kill). Unknown keys inside [runner] are the future's
+    // business; build/bin/sources are read by name and everything else is ignored.
     let text = std::fs::read_to_string(&home.manifest).ok()?;
-    let runner = Manifest::parse(&text).ok()?.runner?;
+    let value: toml::Value = toml::from_str(&text).ok()?;
+    let table = value.get("runner")?.as_table()?;
+    // A DECLARED [runner] that cannot be understood is loud, never a silent proceed-as-self:
+    // a typo'd `bin` disarming the hop would put the stale binary back in the judge's seat.
+    let Some(bin_rel) = table.get("bin").and_then(|v| v.as_str()) else {
+        eprintln!(
+            "prova: [runner] declares no readable `bin` — the trampoline cannot hop; fix the \
+             manifest ([runner] bin = \"<home-relative path>\")"
+        );
+        return Some(ExitCode::from(2));
+    };
+    let runner = crate::manifest::RunnerSection {
+        build: table.get("build").and_then(|v| v.as_str()).map(String::from),
+        bin: bin_rel.to_string(),
+        sources: table
+            .get("sources")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_str()).map(String::from).collect())
+            .unwrap_or_default(),
+    };
     let bin = home.dir.join(&runner.bin);
     if let Ok(me) = std::env::current_exe() {
         let same = match (me.canonicalize(), bin.canonicalize()) {
@@ -1037,23 +1172,45 @@ fn runner_trampoline() -> Option<ExitCode> {
         }
     }
     if let Some(build) = runner.build.as_deref() {
-        let status = if cfg!(windows) {
-            std::process::Command::new("cmd").args(["/C", build]).current_dir(&home.dir).status()
-        } else {
-            std::process::Command::new("sh").args(["-c", build]).current_dir(&home.dir).status()
-        };
-        match status {
-            Ok(s) if s.success() => {}
-            Ok(s) => {
-                eprintln!(
-                    "prova: [runner] build failed ({s}) — the declared runner could not be \
-                     provisioned; fix the build, or invoke a prova without this manifest"
-                );
-                return Some(ExitCode::from(2));
-            }
-            Err(e) => {
-                eprintln!("prova: [runner] build could not start: {e}");
-                return Some(ExitCode::from(2));
+        // `sources` is the speed opt-in: when the manifest names the build's input roots and
+        // nothing under them (nor the manifest itself) is newer than the last successful
+        // provision, the multi-second no-op build is skipped — freshness still holds, because any
+        // edit under a declared root re-arms the build. Undeclared sources always build.
+        let stamp = home.dir.join("target").join(".prova-runner-stamp");
+        let fresh = !runner.sources.is_empty()
+            && std::fs::metadata(&stamp)
+                .and_then(|m| m.modified())
+                .map(|stamped| {
+                    let mut roots: Vec<std::path::PathBuf> =
+                        runner.sources.iter().map(|s| home.dir.join(s)).collect();
+                    roots.push(home.manifest.clone());
+                    !roots.iter().any(|r| newer_than(r, stamped))
+                })
+                .unwrap_or(false);
+        if !fresh {
+            let status = if cfg!(windows) {
+                std::process::Command::new("cmd").args(["/C", build]).current_dir(&home.dir).status()
+            } else {
+                std::process::Command::new("sh").args(["-c", build]).current_dir(&home.dir).status()
+            };
+            match status {
+                Ok(s) if s.success() => {
+                    if !runner.sources.is_empty() {
+                        let _ = std::fs::create_dir_all(stamp.parent().expect("stamp has a parent"));
+                        let _ = std::fs::write(&stamp, b"");
+                    }
+                }
+                Ok(s) => {
+                    eprintln!(
+                        "prova: [runner] build failed ({s}) — the declared runner could not be \
+                         provisioned; fix the build, or invoke a prova without this manifest"
+                    );
+                    return Some(ExitCode::from(2));
+                }
+                Err(e) => {
+                    eprintln!("prova: [runner] build could not start: {e}");
+                    return Some(ExitCode::from(2));
+                }
             }
         }
     }

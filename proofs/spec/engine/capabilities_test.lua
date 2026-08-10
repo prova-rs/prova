@@ -1,16 +1,46 @@
---- `prova capabilities` — the host capability report. What can prova detect on THIS machine: the
---- built-in vocabulary (docker / github / OS / native clients), each MET or UNMET with a reason. A
---- report (exit 0), never a gate — the gate is `must_run` at run time. Host-agnostic assertions
---- only: which capabilities are present depends on the box, but the report's SHAPE does not.
+--- `prova capabilities` — what in my world that VARIES is available to me? The variable host
+--- probes (docker / github / OS), then what THIS package's manifest and companion reference,
+--- probed the same way. A fact that cannot be false on any machine is not a capability check:
+--- the compiled-in batteries appear only when a slim build lacks one, and the unprobed
+--- assumptions (network/internet) do not appear at all. A report (exit 0), never a gate — the
+--- gate is `must_run` at run time. Host-agnostic assertions only.
 
-prova.test("`prova capabilities` reports the built-in vocabulary with host status, and never gates",
+prova.test("the report is the VARIABLE world: probes yes, batteries and assumptions no",
   function(t)
   local r = shell.run(prova.bin .. " capabilities", { merge_stderr = true })
   t:expect(r.code, "a report exits 0 whatever the host lacks"):equals(0)
   t:expect(r.stdout, "the named host probes"):contains("docker")
-  t:expect(r.stdout, "the native clients"):contains("sqlite")
-  -- network/internet/the compiled natives are always available, so at least one line reads MET.
   t:expect(r.stdout, "a status per capability"):contains("MET")
+  -- Always-available is not a check: full builds show the batteries as one footnote, never rows.
+  t:expect(r.stdout):contains("batteries, not checks")
+  t:expect(r.stdout:match("%f[%a]MET%s+sqlite"), "a compiled-in module is never a MET row"):is_nil()
+  -- Unprobed assumptions are not reported as facts.
+  t:expect(r.stdout:match("%f[%a]MET%s+network"), "an assumed capability is not a row"):is_nil()
+end)
+
+prova.test("the report includes what THIS package references — must_run, topologies, registrations", {
+  proves = "'do I have llvm-cov available to me?' is answered by the report because the manifest names it — the package's variable world beside the host's",
+}, function(t)
+  local root = t:tempdir()
+  local proj = root .. "/pkg"
+  fs.mkdir(proj .. "/proofs")
+  fs.write(proj .. "/prova.toml", [=[
+[run]
+proofs = ["proofs"]
+
+[profiles.cov]
+must_run = ["sh", "definitely-not-a-tool-xyz"]
+]=])
+  fs.write(proj .. "/prova.lua", 'runtime.capability("blessed", function() return true end)\n')
+  fs.write(proj .. "/proofs/one_test.lua", 'prova.test("g", function(t) t:expect(1):equals(1) end)\n')
+  local r = shell.run(prova.bin .. " capabilities", { cwd = proj, merge_stderr = true })
+  t:expect(r.code, "unmet guarantees REPORT here; they gate only at run time"):equals(0)
+  t:expect(r.stdout):contains("what this package references")
+  t:expect(r.stdout:match("%f[%a]MET%s+sh"), "a PATH tool the manifest names, probed"):never():is_nil()
+  t:expect(r.stdout):contains("must_run: profile `cov`")
+  t:expect(r.stdout:match("UNMET%s+definitely%-not%-a%-tool%-xyz"), "the missing tool is the point of the report"):never():is_nil()
+  t:expect(r.stdout):contains("blessed")
+  t:expect(r.stdout):contains("registered in the companion")
 end)
 
 prova.test("exactly one OS capability is met — unix XOR windows, whatever the host", function(t)

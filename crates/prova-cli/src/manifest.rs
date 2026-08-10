@@ -106,10 +106,6 @@ pub struct Manifest {
     /// prose that holds claims AND backlog items, so it was under-named.)
     #[serde(default)]
     pub specs: Option<SpecsSection>,
-    /// `[runner]` — the self-hosting trampoline: which prova runs this package
-    /// (docs/design/manifest.md#manifest-declared-runner). A property of the package.
-    #[serde(default)]
-    pub runner: Option<RunnerSection>,
     /// `[placement]` — the broker prova dials at run start (docs/design/placement.md §Transport).
     /// A property of the package, not a profile: where capability and contention questions are
     /// answered does not vary by run profile. `PROVA_PLACEMENT_BROKER` overrides it per
@@ -122,8 +118,12 @@ pub struct Manifest {
 /// The self-hosting trampoline: any prova invoked at this home provisions the declared runner and
 /// re-execs through it, so freshness and identity are mechanism, not prose. A property of the
 /// package, never a profile — which binary judges the suite cannot vary by lane.
-#[derive(Debug, Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
+///
+/// Deliberately NOT a field on `Manifest`, and read WITHOUT serde: the trampoline parses the
+/// `[runner]` table leniently (by key, unknown keys ignored) precisely because its job is
+/// bridging version skew — a manifest field this binary predates must never disarm the hop by
+/// failing the strict schema.
+#[derive(Debug, Clone)]
 pub struct RunnerSection {
     /// Provision the runner before re-exec (e.g. `"cargo build -p prova-cli"`). Runs at the home,
     /// stdio inherited — a failed build is a loud failed provision (exit 2), never a verdict.
@@ -132,6 +132,11 @@ pub struct RunnerSection {
     /// The runner binary, home-relative. The trampoline execs it with the original argv;
     /// `PROVA_TRAMPOLINED` marks the hop so the child proceeds normally.
     pub bin: String,
+    /// The build's input roots, home-relative (dirs or files). When declared, the hop skips the
+    /// build while no file under them is newer than the last successful provision — a ~15ms mtime
+    /// sweep instead of a multi-second no-op `cargo build` on every invocation. Undeclared means
+    /// always build: correctness needs no configuration, speed is the opt-in.
+    pub sources: Vec<String>,
 }
 
 /// `[placement]` — where capability and contention questions are answered (docs/design/placement.md).

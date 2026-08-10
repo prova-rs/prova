@@ -6,8 +6,11 @@
 # an installed prova" prose is retired. Invoking target/debug/prova directly skips the hop (you
 # named the artifact; you meant it).
 [runner]
-build = "cargo build -q -p prova-cli"
-bin   = "target/debug/prova"
+build   = "cargo build -q -p prova-cli"
+bin     = "target/debug/prova"
+# The build's input roots: while nothing under these is newer than the last provision, the hop
+# skips the no-op cargo build (~3.5s of dep-graph fingerprinting) — a ~15ms sweep instead.
+sources = ["crates", "xtask", "library", "Cargo.toml", "Cargo.lock", ".config"]
 
 [run]
 proofs       = ["proofs"]            # dir-name pattern: every `proofs/` below the root (the default)

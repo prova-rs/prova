@@ -87,3 +87,60 @@ bin   = "fake-runner.sh"
   t:expect(r.stdout):contains("build failed")
   t:expect(r.stdout):never():contains("RUNNER_OK")
 end)
+
+prova.test("[runner] sources: the hop skips the build while nothing is newer, and re-arms on an edit", {
+  covers = "docs/design/manifest.md#manifest-declared-runner",
+  proves = "freshness-by-cargo cost multi-second no-ops on EVERY invocation; the declared input roots make the steady-state hop a ~15ms sweep without giving up rebuild-on-edit",
+  requires = { "unix" },
+}, function(t)
+  local proj = runnered(t:use(scratch))
+  fs.write(proj .. "/prova.toml", [=[
+[run]
+proofs = ["proofs"]
+
+[runner]
+build   = "echo provisioned >> build.log"
+bin     = "fake-runner.sh"
+sources = ["proofs"]
+]=])
+  local function hops()
+    local r = shell.run(prova.bin .. " tests", { cwd = proj, env = armed(), merge_stderr = true })
+    t:expect(r.stdout, "the hop itself always happens"):contains("RUNNER_OK")
+  end
+  local function builds()
+    local _, n = (fs.read(proj .. "/build.log") or ""):gsub("provisioned", "")
+    return n
+  end
+  hops()
+  t:expect(builds(), "first invocation provisions and stamps"):equals(1)
+  hops()
+  t:expect(builds(), "nothing newer: the build is skipped, the exec is not"):equals(1)
+  shell.run({ "touch", proj .. "/proofs/one_test.lua" }, { cwd = proj })
+  hops()
+  t:expect(builds(), "an edit under a declared root re-arms the build"):equals(2)
+end)
+
+prova.test("[runner] parses leniently: a field this binary predates never disarms the hop", {
+  covers = "docs/design/manifest.md#manifest-declared-runner",
+  proves = "the hop exists to bridge version skew — a strict schema failing on a NEWER manifest key would put the stale binary back in the judge's seat, silently (the footgun fired live: an installed prova ignored [runner] because `sources` postdated it)",
+  requires = { "unix" },
+}, function(t)
+  local proj = runnered(t:use(scratch))
+  fs.write(proj .. "/prova.toml", [=[
+[run]
+proofs = ["proofs"]
+
+[runner]
+build      = "echo provisioned >> build.log"
+bin        = "fake-runner.sh"
+frobnicate = "a key from the future"
+]=])
+  local r = shell.run(prova.bin .. " tests", { cwd = proj, env = armed(), merge_stderr = true })
+  t:expect(r.stdout, "unknown [runner] keys are the future's business"):contains("RUNNER_OK")
+  -- And the opposite failure is LOUD: a declared [runner] whose bin is unreadable must not
+  -- silently proceed as self.
+  fs.write(proj .. "/prova.toml", '[run]\nproofs = ["proofs"]\n\n[runner]\nbuild = "true"\n')
+  local broken = shell.run(prova.bin .. " tests", { cwd = proj, env = armed(), merge_stderr = true })
+  t:expect(broken.code):equals(2)
+  t:expect(broken.stdout):contains("no readable `bin`")
+end)

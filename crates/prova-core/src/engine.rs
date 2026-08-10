@@ -4046,6 +4046,12 @@ impl Capabilities {
         self.0.insert(name.to_string(), version);
     }
 
+    /// The names a project registered via `runtime.capability` — the `prova capabilities` report
+    /// lists them beside what the manifest references, probed with the project's own predicates.
+    pub fn registered_names(&self) -> impl Iterator<Item = &String> {
+        self.0.keys()
+    }
+
     /// Available = registered by the project, OR a built-in the host provides. Registered wins, but
     /// registering over a built-in is refused at load, so this cannot shadow `docker`.
     pub fn available(&self, name: &str) -> bool {
