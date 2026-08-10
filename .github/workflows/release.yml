@@ -122,14 +122,17 @@ jobs:
       # the proofs are what say the binary still behaves as documented, not just that the crates
       # compile and their units pass.
       #
-      # `cargo xtask proofs` builds prova-cli and runs the suite through `target/debug/prova`, so the
-      # binary under proof is the one this commit produces. It is the same command developers run, so
-      # this gate cannot drift from the local loop. It replaced an `export PATH="$PWD/target/debug"`
-      # prelude: nested runs now resolve through `prova.bin` (the runtime's own executable), which
-      # needs no ambient PATH and cannot be defeated by whatever else is installed on the runner.
+      # Build then invoke target/debug/prova directly: the binary under proof is the one this
+      # commit produces (naming the artifact skips the [runner] trampoline's provisioning hop —
+      # you meant it), and nested runs resolve through `prova.bin`, needing no ambient PATH. The
+      # old `cargo xtask proofs` wrapper is retired — the xtask slimmed down to artifact chores
+      # when prova became this repo's sole quality interface (v0.19.0 stalled on the release pad
+      # because this gate still spoke it) — so the gate now runs the same `prova` developers do.
       - name: Proofs (release gate)
         shell: bash
-        run: cargo xtask proofs
+        run: |
+          cargo build -p prova-cli
+          ./target/debug/prova
 
       - name: Create Draft Release
         env:
