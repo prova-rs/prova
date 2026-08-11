@@ -234,3 +234,14 @@ in one line:
   right semantics are promises-aware `depends_on`: upstream PROMISED → downstream reports
   PROMISED "waiting on X" — never SKIP. The reporter judged it nice-to-have, not needed; park
   until a checklist that genuinely cannot express its sequencing in data asks for it.
+
+## Field reports (Substrate gate-integration run, 2026-08-11)
+
+<!-- backlog: fixture-failure-memoization -->
+**A failed fixture re-provisions per consumer; expensive conducts pay it N times.** A
+`Scope.File` deputy fixture (a `cargo nextest` conduct) hit its `shell.run` timeout; each of
+the five dependent readers re-attempted the provision, burning 5 × 600s of cargo before the
+run ended. A fixture failure should be memoized for its scope — dependents get poisoned with
+the one recorded error — or retry-vs-poison should be an explicit policy on the fixture.
+Re-provisioning an expensive conduct on failure has no upside at file scope: nothing changed
+between attempts except the clock.

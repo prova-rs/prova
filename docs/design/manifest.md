@@ -218,3 +218,15 @@ The `plugin` spellings those replaced — `[plugin]`, `[plugins]`, `plugin_root`
 each still works for one release and warns once per process naming its successor (the
 `spec` → `promises` pattern), and all of them retire together at 1.0. The canonical spellings
 warn nothing.
+
+## Field reports (Substrate gate-integration run, 2026-08-11)
+
+<!-- backlog: lane-time-budgets -->
+**"The bare run stays seconds" is a convention nothing enforces; lanes should carry ratcheted
+time budgets.** When five graduated proofs landed switchless in Substrate's default lane, the
+seconds-fast inner loop silently became a 10-minute gate — the exact regression that
+discourages TDD, caught only by a human noticing. The manifest already knows the intent
+(heavy legs sit behind switches); let a profile declare a time budget (`budget = "30s"`) and
+report/ratchet against it, so a conduct-carrying proof in the wrong lane is red at placement
+time, not discovered at usage time. Composes with the graduation moment: the promises→proves
+flip is when a proof acquires its conduct cost and must name its lane.

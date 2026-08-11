@@ -199,3 +199,25 @@ level further out.
 
 - **Drafted 2026-08-04**, implementation landing with it as one proof-carrying change —
   anchors above are covered by `proofs/spec/engine/junit_test.lua`.
+
+## Field reports (Substrate gate-integration run, 2026-08-11)
+
+<!-- backlog: conduct-heartbeat-not-deadline -->
+**`shell.run` timeouts are wall-clock task budgets; conducts should be supervised by
+liveness.** A cold `cargo nextest` conduct of two large crates was killed at `timeout=600s`
+while making steady progress — the suite author's guess about build time became a false
+failure. The Anemnez doctrine (bound the resource, never the work): clocks are legitimate as
+sampling rates, illegitimate as task budgets. Conducts run externally-sized work by design;
+cargo and most build tools emit continuous progress. Supervise by output heartbeat ("no
+bytes for N seconds = dead") with the wall-clock as an optional outer bound, and a genuine
+hang is caught *faster* than any honest deadline while a slow-but-alive conduct is never
+falsely killed.
+
+<!-- backlog: suite-scoped-shared-deputies -->
+**"Conduct once, read many" stops at file scope; suites need named shared conducts.** The ut
+lane conducts the whole workspace and adopts every case; a kernel-integration proof file in
+another directory needs those same cases and today must either re-conduct its crates (double
+cargo, double wall-clock in `run all`) or read the ut lane's junit artifact with no ordering
+guarantee. A suite-scoped named deputy — declared once, provisioned once per run, adoptable
+from any proof file, with ordering semantics — would let cross-file readers bind to one
+conduct's account.

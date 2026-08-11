@@ -171,3 +171,13 @@ before answering with the address. Recorded 2026-08-08; landed in full 2026-08-1
 - No MCP-only capabilities beyond warmth: anything the server can do cold, the CLI can do, so the
   skill stays "everything else is identical."
 - No skill duplication per transport: one document, one conditional section.
+
+## Field reports (Substrate gate-integration run, 2026-08-11)
+
+<!-- backlog: cli-mcp-verb-parity -->
+**The MCP surface has `status`; the CLI does not — first-try calls miss across frontends.**
+An agent that learned the MCP tool names typed `prova status` at the CLI and got "No such
+file or directory". The skill's own promise is "everything the server can do cold, the CLI
+can do" — verb parity is part of that contract. Either add the missing CLI verbs or rename
+the MCP tools to the CLI vocabulary; an audit of the two surfaces against each other belongs
+in the deprecation/terminology machinery so drift is caught structurally.
