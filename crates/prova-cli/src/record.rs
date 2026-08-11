@@ -169,3 +169,130 @@ pub fn store(home: &Option<Home>, record: &Record, also: Option<&Path>) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn tempdir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("prova-record-ut-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn home_in(dir: &Path) -> Home {
+        Home {
+            dir: dir.to_path_buf(),
+            manifest: dir.join("prova.toml"),
+        }
+    }
+
+    fn minimal_record() -> Record {
+        Record {
+            schema: 1,
+            version: "0.0.0-test".into(),
+            binary: "test".into(),
+            selection: vec!["engine".into()],
+            duration_ms: 7,
+            summary: Counts {
+                passed: 2,
+                ..Counts::default()
+            },
+            executed: BTreeMap::from([("f › t".to_string(), Executed::Passed)]),
+            skipped: vec![],
+            deselected: vec!["f › other".into()],
+            measurements: vec![],
+            attached: vec![],
+            reminders: vec![],
+            deputed: vec![],
+        }
+    }
+
+    /// The record's key form: the declaring file's stem prefixes the path, unless the path
+    /// already leads with it — the rule that keeps executed/skipped (qualified here) and
+    /// deselected (qualified in core) under ONE spelling per address.
+    #[test]
+    fn qualified_prefixes_the_file_stem_exactly_once() {
+        assert_eq!(qualified("a › b", Some("proofs/x.lua")), "x › a › b");
+        assert_eq!(qualified("x › a", Some("proofs/x.lua")), "x › a");
+        assert_eq!(qualified("a › b", None), "a › b");
+    }
+
+    /// Each mapper carries the engine's fields through by name; the reminder mapper also owns
+    /// the state→string spelling, which the record file then freezes.
+    #[test]
+    fn row_mappers_carry_engine_fields_and_spell_reminder_states() {
+        use prova_core::{ReminderOutcome, ReminderState};
+        let spell = |state: ReminderState| {
+            let rows = reminder_entries(&[ReminderOutcome {
+                name: "n".into(),
+                message: "do the thing".into(),
+                tags: vec!["ops".into()],
+                file: Some("r.lua".into()),
+                line: Some(3),
+                state,
+            }]);
+            (rows[0].state.clone(), rows[0].why.clone())
+        };
+        assert_eq!(spell(ReminderState::Watching), ("watching".into(), None));
+        assert_eq!(
+            spell(ReminderState::Due { why: Some("date passed".into()) }),
+            ("due".into(), Some("date passed".into()))
+        );
+        assert_eq!(
+            spell(ReminderState::Unevaluated { reason: "no clock".into() }),
+            ("unevaluated".into(), Some("no clock".into()))
+        );
+
+        let deputed = deputed_rows(&[prova_core::DeputedCase {
+            verifier: "junit".into(),
+            suite: "SuiteA".into(),
+            name: "case_1".into(),
+            outcome: "failed".into(),
+            message: Some("boom".into()),
+            time_ms: Some(12),
+            file: "target/junit.xml".into(),
+        }]);
+        assert_eq!(deputed[0].verifier, "junit");
+        assert_eq!(deputed[0].outcome, "failed");
+        assert_eq!(deputed[0].time_ms, Some(12));
+
+        let measured = measurement_rows(&[prova_core::Measurement {
+            name: "rust.coverage.unit".into(),
+            value: 64.9,
+            direction: prova_core::Direction::HigherIsBetter,
+            set: "quality".into(),
+        }]);
+        assert_eq!(measured[0].direction, "higher_is_better");
+        assert_eq!(measured[0].set, "quality");
+    }
+
+    /// The full lifecycle in a tempdir: store materializes var/, load reads the same record
+    /// back, a corrupt file reads as None (never an error), and an explicit `--record` copy
+    /// lands even with no home to put the var/ copy in.
+    #[test]
+    fn store_then_load_round_trips_and_corruption_reads_as_none() {
+        let dir = tempdir("roundtrip");
+        let home = home_in(&dir);
+
+        assert!(load(&home).is_none(), "a never-run package has no record");
+
+        let record = minimal_record();
+        store(&Some(home.clone()), &record, None);
+        let back = load(&home).expect("stored record loads");
+        assert_eq!(back.summary.passed, 2);
+        assert_eq!(back.deselected, vec!["f › other".to_string()]);
+        assert!(matches!(back.executed["f › t"], Executed::Passed));
+
+        std::fs::write(path(&home), "{ not json").unwrap();
+        assert!(load(&home).is_none(), "a corrupt record loads as None");
+
+        let also = dir.join("artifacts").join("run.json");
+        store(&None, &record, Some(&also));
+        assert!(also.is_file(), "--record writes even with no package home");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

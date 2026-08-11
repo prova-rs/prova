@@ -781,3 +781,94 @@ pub(crate) fn resolve_from_manifest(
         switches: resolved.switches,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tempdir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("prova-suites-ut-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn touch(path: &Path) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "").unwrap();
+    }
+
+    #[test]
+    fn skipped_dirs_and_pattern_matching_spell_the_discovery_grammar() {
+        for name in [".git", ".prova", "prova", "target", "node_modules", "testdata"] {
+            assert!(is_skipped_dir(name), "{name} must be skipped");
+        }
+        assert!(!is_skipped_dir("proofs"));
+
+        let pats = |ps: &[&str]| ps.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(name_matches("proofs", &pats(&["proofs"])));
+        assert!(!name_matches("proofs-extra", &pats(&["proofs"])), "exact match, not prefix");
+        assert!(name_matches("acceptance-tests", &pats(&["*-tests"])), "a metachar makes it a glob");
+        assert!(!name_matches("x", &pats(&["[bad"])), "an unparseable glob matches nothing");
+    }
+
+    /// The discovery walk end to end in a tempdir: matches prune (a nested `proofs/` inside a
+    /// matched one is the suite's own subtree), nested packages are independent, prova's nook and
+    /// build trees are never scanned, and `"."` is the flat escape hatch.
+    #[test]
+    fn find_proof_dirs_prunes_at_matches_packages_and_the_nook() {
+        let root = tempdir("discover");
+        for d in [
+            "proofs/inner/proofs",     // nested match inside a match — pruned away
+            "src/deep/proofs",         // a match anywhere below root
+            "plugin/proofs",           // shadowed by plugin/prova.toml below
+            ".hidden/proofs",          // hidden dirs are skipped
+            "target/proofs",           // build trees are skipped
+        ] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        touch(&root.join("plugin/prova.toml")); // makes plugin/ an independent package
+
+        let found = find_proof_dirs(&root, &["proofs".to_string()]);
+        let rel: Vec<String> = found
+            .iter()
+            .map(|p| p.strip_prefix(&root).unwrap().display().to_string())
+            .collect();
+        assert_eq!(rel, vec!["proofs", "src/deep/proofs"]);
+
+        let flat = find_proof_dirs(&root, &[".".to_string()]);
+        assert_eq!(flat.first(), Some(&root.to_path_buf()), "'.' discovers from the root itself");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The stray hint fires only when a proof file exists OUTSIDE any discovered directory —
+    /// and names the file, relative to the root, so the fix is legible.
+    #[test]
+    fn stray_proof_hint_names_unreachable_proofs_and_stays_quiet_otherwise() {
+        let root = tempdir("stray");
+        assert!(stray_proof_hint(&root, &["proofs".to_string()]).is_none());
+
+        touch(&root.join("src/checks/api_test.lua"));
+        let hint = stray_proof_hint(&root, &["proofs".to_string()]).unwrap();
+        assert!(hint.contains("src/checks/api_test.lua"), "the stray is named: {hint}");
+        assert!(hint.contains("`proofs/`"), "the first pattern is offered as the fix");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn expand_pattern_passes_plain_paths_and_globs_the_starred_ones() {
+        let base = tempdir("expand");
+        assert_eq!(
+            expand_pattern(&base, "proofs/x.lua").unwrap(),
+            vec![base.join("proofs/x.lua")],
+            "no metachar: joined verbatim, existence not required"
+        );
+        touch(&base.join("a_test.lua"));
+        touch(&base.join("b_test.lua"));
+        let hits = expand_pattern(&base, "*_test.lua").unwrap();
+        assert_eq!(hits, vec![base.join("a_test.lua"), base.join("b_test.lua")]);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+}

@@ -32,7 +32,12 @@ pub struct Skipped {
 }
 
 /// Run totals. Mirrors `prova_core::Summary`, minus the parts that are not durable facts.
+/// Every field is defaulted on read: a record written before a count existed (schema 1 predates
+/// `promised`) must LOAD — the same stale-record tolerance as `Executed`'s `spec` alias, and
+/// without it that alias is dead code: the summary's parse failure silently reads as "no run
+/// recorded" before the alias ever gets its chance.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Counts {
     pub passed: usize,
     pub failed: usize,
@@ -285,6 +290,32 @@ pub fn account(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The schema-1 back-compat contract: `"promised"` is the current spelling, and a pre-rename
+    /// record's `"spec"` still loads (until the next run rewrites it) — a stale record must load,
+    /// never error. Unknown spellings refuse rather than silently misread.
+    #[test]
+    fn executed_reads_both_spellings_and_refuses_unknown() {
+        assert_eq!(serde_json::to_string(&Executed::Promised).unwrap(), "\"promised\"");
+        assert_eq!(serde_json::from_str::<Executed>("\"promised\"").unwrap(), Executed::Promised);
+        assert_eq!(serde_json::from_str::<Executed>("\"spec\"").unwrap(), Executed::Promised);
+        assert_eq!(serde_json::from_str::<Executed>("\"passed\"").unwrap(), Executed::Passed);
+        assert!(serde_json::from_str::<Executed>("\"exploded\"").is_err());
+    }
+
+    /// A record from before `measurements`/`deputed`/`reminders` existed still parses — the
+    /// defaulted fields are what let an old var/ record survive an upgrade.
+    #[test]
+    fn a_minimal_old_record_still_parses() {
+        let old = r#"{
+            "schema": 1, "version": "0.11.0", "binary": "x", "selection": [],
+            "duration_ms": 5, "summary": {},
+            "executed": { "a › b": "spec" }, "skipped": [], "deselected": []
+        }"#;
+        let rec: Record = serde_json::from_str(old).unwrap();
+        assert_eq!(rec.executed["a › b"], Executed::Promised);
+        assert!(rec.measurements.is_empty());
+    }
 
     fn record_with(executed: &[(&str, Executed)], skipped: &[(&str, &str)], desel: &[&str]) -> Record {
         Record {

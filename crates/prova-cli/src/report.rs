@@ -579,3 +579,56 @@ impl Reporter for HumanReporter {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The two escape layers of a workflow command: data escapes the message body's `%`/CR/LF;
+    /// a property value additionally escapes `:` and `,` (the property-list delimiters). Getting
+    /// these wrong doesn't error — GitHub just truncates the annotation at the first raw
+    /// delimiter, silently.
+    #[test]
+    fn gha_escaping_covers_each_layer_s_delimiters() {
+        assert_eq!(gha_escape_data("50% done\r\nnext"), "50%25 done%0D%0Anext");
+        assert_eq!(gha_escape_property("a:b,c\nd"), "a%3Ab%2Cc%0Ad");
+        // Data escaping leaves property delimiters alone — the layers are distinct on purpose.
+        assert_eq!(gha_escape_data("a:b,c"), "a:b,c");
+    }
+
+    /// A summary cell must survive a markdown table: newlines flattened, pipes escaped, and
+    /// truncation cuts on a char boundary (a multibyte message must not split a codepoint).
+    #[test]
+    fn summary_cell_flattens_escapes_and_truncates_on_char_boundaries() {
+        assert_eq!(summary_cell("a\nb|c"), "a b\\|c");
+        let long = "é".repeat(300);
+        let cell = summary_cell(&long);
+        assert_eq!(cell.chars().count(), 201, "200 kept plus the ellipsis");
+        assert!(cell.ends_with('…'));
+    }
+
+    /// Multi-line failure messages: first line behind `↳ `, continuations aligned beneath it.
+    #[test]
+    fn write_message_indents_continuation_lines_under_the_arrow() {
+        let mut out = Vec::new();
+        write_message(&mut out, "    ", "expected 3\ngot 4");
+        assert_eq!(String::from_utf8(out).unwrap(), "    ↳ expected 3\n      got 4\n");
+    }
+
+    /// Annotation paths are workspace-relative or kept verbatim — never mangled halfway.
+    #[test]
+    fn github_reporter_relativizes_only_inside_the_workspace() {
+        let r = GitHubReporter {
+            workspace: PathBuf::from("/ws"),
+            step_summary: None,
+            rows: Vec::new(),
+        };
+        assert_eq!(r.rel("/ws/proofs/a.lua"), "proofs/a.lua");
+        assert_eq!(r.rel("/elsewhere/a.lua"), "/elsewhere/a.lua");
+        assert_eq!(
+            r.props(Some("/ws/p.lua"), Some(9), "engine › t"),
+            "file=p.lua,line=9,title=engine › t"
+        );
+        assert_eq!(r.props(None, Some(9), "t"), "title=t");
+    }
+}

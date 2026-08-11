@@ -16,9 +16,10 @@
 -- show-env's LLVM_PROFILE_FILE points at the MAIN target root, which report never reads — a
 -- census after a "identical three ways" conduct found 768 visible nextest profraws nested and
 -- 444 invisible suite profraws at the main root. The suite's profile path is therefore pinned
--- into the scan root, and the unit stage lives OUTSIDE it so staged files are truly unseen.
+-- into the scan root, and the staging dir lives OUTSIDE it so staged files are truly unseen.
 local COV_DIR = prova.root .. "/target/llvm-cov-target"
-local UNIT_STAGE = prova.root .. "/target/unit-profraws"
+local SUITE_STAGE = prova.root .. "/target/suite-profraws"
+local EXEC_STAGE = prova.root .. "/target/exec-stage"
 
 --- `cargo llvm-cov show-env` as a table (values are single-quoted).
 local function cov_env()
@@ -52,13 +53,37 @@ local function pct(rep)
   return rep.data[1].totals.lines.percent
 end
 
+--- Move the linked executables out of `deps/` (or back). `report` derives its denominator from
+--- every instrumented object it can scan, so the previous conduct's TEST binaries must be out of
+--- sight while the black-box layer reports (measured live: their `#[cfg(test)]` code cost that
+--- layer 8.2 points — 68.9% read as 60.7%). Extensionless files in deps are the linked
+--- executables; the .rlib/.d fingerprint artifacts that drive incremental compiles stay put, so
+--- the round trip costs one prova relink and nothing else. Moving back never clobbers: a fresh
+--- artifact under a staged name (the just-relinked prova bin) wins and the stale copy is dropped.
+local function stage_execs(back)
+  fs.mkdir(EXEC_STAGE)
+  local deps = COV_DIR .. "/debug/deps"
+  local from = back and EXEC_STAGE or deps
+  local to = back and deps or EXEC_STAGE
+  for _, f in ipairs(fs.glob(from, "*")) do
+    if not f:match("%.%w+$") then
+      local dest = to .. "/" .. f:match("([^/]+)$")
+      if fs.exists(dest) then
+        fs.remove_all(f)
+      else
+        shell.run({ "mv", f, dest }, { cwd = prova.root })
+      end
+    end
+  end
+end
+
 --- Move every profraw at the scan root into the stage (or back out of it). Loud when a stage
 --- that must move files moves none — a silent no-op staging is how three identical "layers"
 --- passed for a merge, live.
 local function stage(back)
-  fs.mkdir(UNIT_STAGE)
-  local from = back and UNIT_STAGE or COV_DIR
-  local to = back and COV_DIR or UNIT_STAGE
+  fs.mkdir(SUITE_STAGE)
+  local from = back and SUITE_STAGE or COV_DIR
+  local to = back and COV_DIR or SUITE_STAGE
   local moved = 0
   for _, f in ipairs(fs.glob(from, "*.profraw")) do
     shell.run({ "mv", f, to .. "/" }, { cwd = prova.root })
@@ -67,9 +92,10 @@ local function stage(back)
   return moved
 end
 
--- Conduct once: data-clean, instrumented build, the unit layer (reported alone), the black-box
--- layer (reported alone), the merge. DATA-only clean — the instrumented build artifacts are the
--- expensive stage and stay for incremental conducts. The suite must be green to be measured.
+-- Conduct once: data-clean, instrumented build, the black-box layer (reported alone, against
+-- the shipping binary only), the unit layer (reported alone), the merge. DATA-only clean — the
+-- instrumented build artifacts are the expensive stage and stay for incremental conducts. The
+-- suite must be green to be measured.
 local conduct = prova.fixture("layered-coverage", Scope.File, function()
   local env = cov_env()
   -- A stale-generation guard: instrumented objects from a previous workspace version inflate the
@@ -79,6 +105,7 @@ local conduct = prova.fixture("layered-coverage", Scope.File, function()
   local stamp = COV_DIR .. "/.prova-version-stamp"
   if not fs.exists(stamp) or fs.read(stamp) ~= prova.version then
     fs.remove_all(COV_DIR)
+    fs.remove_all(EXEC_STAGE) -- staged executables are the wiped generation's — stale with it
     fs.mkdir(COV_DIR)
     fs.write(stamp, prova.version)
   end
@@ -86,7 +113,12 @@ local conduct = prova.fixture("layered-coverage", Scope.File, function()
   purge(COV_DIR, "*.profdata")
   purge(prova.root .. "/target", "*.profraw") -- strays from the misdirected show-env path
   purge(prova.root, "default_*.profraw") -- pre-run root strays (see the sweep below) are stale
-  fs.remove_all(UNIT_STAGE)
+  fs.remove_all(SUITE_STAGE)
+  stage_execs(true) -- an aborted conduct leaves executables staged; restore before building
+
+  -- The previous conduct's nextest executables leave the scan before the black-box layer reports
+  -- (see `stage_execs`); the build below then relinks the one executable that layer measures.
+  stage_execs(false)
 
   -- `--target-dir` is EXPLICIT because newer cargo-llvm-cov stopped setting CARGO_TARGET_DIR in
   -- show-env (it instruments via RUSTC_WRAPPER instead): without it this build lands the
@@ -100,18 +132,16 @@ local conduct = prova.fixture("layered-coverage", Scope.File, function()
     return { error = "instrumented build failed:\n" .. (build.stdout or "") }
   end
 
-  -- Layer 1, deputed: unit tests. Report alone, then stage its profraws aside.
-  shell.run({ "cargo", "llvm-cov", "nextest", "--workspace", "--no-report" },
-    { cwd = prova.root, timeout = "1800s" })
-  local unit = fresh_report()
-  if stage(false) == 0 then
-    return { error = "staging moved no unit profraws — the scan-root assumption broke again" }
-  end
-
-  -- Layer 2, observed: the black-box suite through the instrumented binary. ONLY what
-  -- instrumentation needs crosses in: LLVM_PROFILE_FILE (the %p pattern rides into every
-  -- prova.bin child — the recursion is what gets measured) and PROVA_TRAMPOLINED (this IS this
-  -- tree's build — skip the hop). Ambient cargo vars redirected sandbox proofs' builds, live.
+  -- Layer 1, observed: the black-box suite through the instrumented binary — reported BEFORE
+  -- the unit stage builds anything, deliberately. `report` derives its denominator from every
+  -- instrumented object in the target dir, so once nextest's test binaries exist, the black-box
+  -- layer pays denominator rent for `#[cfg(test)]` code it can never execute — measured live:
+  -- each unit-test batch sank the black-box percent (~0.2–1.2%/batch) until the layer breached
+  -- its own tolerance band with no behavior change anywhere. Suite-first, the black-box
+  -- denominator is the shipping code alone. ONLY what instrumentation needs crosses in:
+  -- LLVM_PROFILE_FILE (the %p pattern rides into every prova.bin child — the recursion is what
+  -- gets measured) and PROVA_TRAMPOLINED (this IS this tree's build — skip the hop). Ambient
+  -- cargo vars redirected sandbox proofs' builds, live.
   local suite = shell.run({ COV_DIR .. "/debug/prova" },
     { cwd = prova.root, timeout = "1200s", merge_stderr = true,
       env = { LLVM_PROFILE_FILE = COV_DIR .. "/suite-%p-%m.profraw", PROVA_TRAMPOLINED = "1" } })
@@ -128,8 +158,19 @@ local conduct = prova.fixture("layered-coverage", Scope.File, function()
     shell.run({ "mv", f, COV_DIR .. "/" }, { cwd = prova.root })
   end
   local blackbox = fresh_report()
+  if stage(false) == 0 then
+    return { error = "staging moved no suite profraws — the scan-root assumption broke again" }
+  end
+  stage_execs(true) -- the black-box layer has reported; nextest reuses these instead of relinking
 
-  -- The merge: unit profraws rejoin, one whole-bar total.
+  -- Layer 2, deputed: unit tests. Reported alone (the suite's profraws are staged aside); the
+  -- test binaries this builds join the denominator from here on, which is honest for a layer
+  -- whose own tests are what run.
+  shell.run({ "cargo", "llvm-cov", "nextest", "--workspace", "--no-report" },
+    { cwd = prova.root, timeout = "1800s" })
+  local unit = fresh_report()
+
+  -- The merge: suite profraws rejoin, one whole-bar total.
   stage(true)
   local merged = fresh_report()
   return { unit = unit, blackbox = blackbox, merged = merged }

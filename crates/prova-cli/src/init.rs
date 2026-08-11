@@ -401,3 +401,85 @@ impl std::fmt::Display for Choice {
         write!(f, "{}  —  {}", self.key, self.description)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<InitCli, ExitCode> {
+        parse_args(args.iter().map(|s| s.to_string()).collect())
+    }
+
+    #[test]
+    fn parse_args_reads_the_full_grammar() {
+        let cli = parse(&[
+            "starter", "--no-ide", "--headless", "--defaults", "--offline", "-a", "org=acme",
+            "--answer", "team=core", "-s", "ci", "--switch", "docker",
+        ])
+        .ok()
+        .unwrap();
+        assert_eq!(cli.key.as_deref(), Some("starter"));
+        assert!(!cli.luals);
+        assert!(cli.headless && cli.defaults && cli.offline && !cli.list);
+        assert_eq!(
+            cli.answers,
+            vec![("org".into(), "acme".into()), ("team".into(), "core".into())]
+        );
+        assert_eq!(cli.switches, vec!["ci".to_string(), "docker".to_string()]);
+    }
+
+    /// Every malformed spelling is refused up front — a bad flag must never reach the render.
+    #[test]
+    fn parse_args_refuses_malformed_arguments() {
+        assert!(parse(&["--answer"]).is_err(), "-a with no pair");
+        assert!(parse(&["-a", "no-equals"]).is_err(), "-a without k=v");
+        assert!(parse(&["--switch"]).is_err(), "-s with no name");
+        assert!(parse(&["--bogus"]).is_err(), "unknown option");
+        assert!(parse(&["one", "two"]).is_err(), "two positional keys");
+    }
+
+    /// Precedence, exactly as documented: state < entry < CLI for answers; switches are the
+    /// deduplicated union with `prova:in-package` marking a package-rooted render.
+    #[test]
+    fn merged_inputs_layer_state_entry_then_cli() {
+        let state = Some(PackageState {
+            package_root: "../..".into(),
+            packages_dir: Some("proofs/packages".into()),
+        });
+        let entry = crate::catalog::Resolved {
+            source: "unused".into(),
+            origin: "test".into(),
+            description: String::new(),
+            switches: vec!["ci".into()],
+            defaults: false,
+            answers: BTreeMap::from([("org".to_string(), "entry-org".to_string())]),
+            in_package: crate::catalog::InPackage::Allow,
+        };
+        let cli = InitCli {
+            luals: true,
+            list: false,
+            headless: false,
+            defaults: false,
+            offline: false,
+            key: None,
+            answers: vec![("org".into(), "cli-org".into())],
+            switches: vec!["ci".into(), "docker".into()],
+        };
+        let (answers, switches) = merged_inputs(&state, &entry, &cli);
+        assert_eq!(answers["org"], "cli-org", "CLI answer beats the entry's");
+        assert_eq!(answers["prova_package_root"], "../..");
+        assert_eq!(
+            answers["prova_plugin_root"], "proofs/packages",
+            "the deprecated alias is still served"
+        );
+        assert_eq!(
+            switches,
+            vec!["prova:in-package".to_string(), "ci".to_string(), "docker".to_string()],
+            "union keeps first occurrence only"
+        );
+
+        let (answers, switches) = merged_inputs(&None, &entry, &cli);
+        assert!(!answers.contains_key("prova_package_root"));
+        assert!(!switches.iter().any(|s| s == "prova:in-package"));
+    }
+}

@@ -2,16 +2,17 @@
   "schema": 1,
   "metrics": {
     "rust.coverage.blackbox": {
-      "value": 61.85381788485096,
+      "value": 68.94997951845615,
       "direction": "higher_is_better",
       "tolerance": 1.0
     },
     "rust.coverage.lines": {
-      "value": 83.051740205016,
-      "direction": "higher_is_better"
+      "value": 83.22109988776656,
+      "direction": "higher_is_better",
+      "tolerance": 0.25
     },
     "rust.coverage.unit": {
-      "value": 64.86366030549816,
+      "value": 65.59746916546531,
       "direction": "higher_is_better",
       "goal": 70.0
     },

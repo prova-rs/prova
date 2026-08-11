@@ -304,3 +304,45 @@ pub(crate) fn switches_subcommand(args: Vec<String>) -> ExitCode {
     full.extend(args);
     run(full)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A lane's `--list` line: the declared description verbatim when present, else a chip
+    /// summary of exactly what the lane overrides — and an honest "same as default" when nothing.
+    #[test]
+    fn lane_line_prefers_description_then_summarizes_overrides() {
+        let mut p = crate::manifest::Profile::default();
+        assert_eq!(lane_line(&p), "(no overrides — same as default)");
+
+        p.tags = vec!["unit".into()];
+        p.jobs = Some(4);
+        p.env.insert("RUST_LOG".into(), "debug".into());
+        assert_eq!(lane_line(&p), "tags: unit; jobs: 4; env: 1 var(s)");
+
+        p.description = Some("the fast lane".into());
+        assert_eq!(lane_line(&p), "the fast lane");
+        p.description = Some("   ".into());
+        assert_ne!(lane_line(&p), "   ", "a blank description is no description");
+    }
+
+    /// The `[runner] sources` freshness sweep: older trees say no, any newer file says yes,
+    /// and an unreadable root errs toward "newer" so doubt always rebuilds.
+    #[test]
+    fn newer_than_finds_the_one_fresh_file_and_doubts_toward_rebuild() {
+        let root = std::env::temp_dir().join(format!("prova-newer-ut-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "x").unwrap();
+
+        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+        assert!(!newer_than(&root, future), "nothing is newer than a future stamp");
+
+        let past = std::time::SystemTime::UNIX_EPOCH;
+        assert!(newer_than(&root, past), "everything is newer than the epoch");
+
+        assert!(newer_than(&root.join("absent"), future), "unreadable ⇒ assume newer");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
