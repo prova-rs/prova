@@ -174,7 +174,7 @@ before answering with the address. Recorded 2026-08-08; landed in full 2026-08-1
 
 ## Field reports (Substrate gate-integration run, 2026-08-11)
 
-<!-- backlog: cli-mcp-verb-parity -->
+<!-- backlog: cli-mcp-verb-parity recorded=2026-08-11 -->
 **The MCP surface has `status`; the CLI does not — first-try calls miss across frontends.**
 An agent that learned the MCP tool names typed `prova status` at the CLI and got "No such
 file or directory". The skill's own promise is "everything the server can do cold, the CLI

@@ -378,32 +378,30 @@ pub(crate) fn evaluate_run_reminders(
     summary: &prova_core::Summary,
     measurements: &[prova_core::Measurement],
 ) -> Vec<record::ReminderEntry> {
-    // One scan feeds both the owed count and the dated obligations a draw-down condition reads —
-    // the anchors are already in hand, so exposing their deadlines costs nothing extra.
-    let reconciled = (|| -> Result<(usize, Vec<prova_core::DatedObligation>), String> {
+    // One scan feeds both the owed count and the spec items a draw-down condition reads — the
+    // anchors are already in hand, so exposing their properties costs nothing extra.
+    let reconciled = (|| -> Result<(usize, Vec<prova_core::SpecItem>), String> {
         let (manifest, packages_resolved) =
             resolve_for_obligations(home).map_err(|_| "could not resolve the package".to_string())?;
         let docs = spec_scan_roots(&manifest);
         let claims = claims::scan(&home.dir, &docs).map_err(|e| e.to_string())?;
         let proofs = collect_obligations(home, &manifest, &packages_resolved)?;
         let owed = claims::reconcile(&claims, &proofs).len();
-        let dated = claims
+        let specs = claims
             .iter()
-            .filter_map(|c| {
-                c.date.as_ref().map(|d| prova_core::DatedObligation {
-                    address: c.address.clone(),
-                    date: d.clone(),
-                    kind: match c.kind {
-                        claims::Kind::Backlog => "backlog",
-                        claims::Kind::Claim => "claim",
-                    }
-                    .to_string(),
-                })
+            .map(|c| prova_core::SpecItem {
+                address: c.address.clone(),
+                kind: match c.kind {
+                    claims::Kind::Backlog => "backlog",
+                    claims::Kind::Claim => "claim",
+                }
+                .to_string(),
+                props: c.props.clone(),
             })
             .collect();
-        Ok((owed, dated))
+        Ok((owed, specs))
     })();
-    let (owed, dated) = match reconciled {
+    let (owed, specs) = match reconciled {
         Ok(pair) => pair,
         Err(e) => {
             eprintln!("prova: reminders not evaluated — could not reconcile the ledger: {e}");
@@ -416,7 +414,7 @@ pub(crate) fn evaluate_run_reminders(
         skipped: summary.skipped,
         promised: summary.promised,
         owed,
-        dated,
+        specs,
         measurements: measurements
             .iter()
             .map(|m| (m.name.clone(), m.value))

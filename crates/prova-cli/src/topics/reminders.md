@@ -48,27 +48,26 @@ state**: reminders cannot observe reminders. This is what makes an ephemeral che
 terminal item honest — `when = function(a) return a.owed == 0 and a.failed == 0 end`, watching
 while work remains, due exactly once, when deletion is the only thing left.
 
-## Drawing down dated obligations
+## Drawing down the spec lane
 
-`account.dated` is every claim/backlog anchor that carries a `YYYY-MM-DD` (`prova learn spec`), as
-`{ address, date, kind }`. With the `date.*` helpers (`date.past`, `date.days_until`, …), a reminder
-draws them down — silent while there is time, due once a deadline passes:
+`account.specs` is every claim/backlog anchor with its `key=value` properties (`prova learn
+backlog`): `address`, `kind`, blessed `recorded`/`due` flattened on, the full map as `props`.
+A draw-down policy is whatever the condition composes:
 
 ```lua
-prova.remind("backlog-drawdown", {
-  when = function(a)
-    local late = {}
-    for _, o in ipairs(a.dated) do
-      if o.kind == "backlog" and date.past(o.date) then late[#late + 1] = o.address end
-    end
-    if #late > 0 then return #late .. " backlog item(s) past their draw-down date" end
-  end,
-}, "promote or drop the overdue backlog items")
+prova.remind("backlog-drawdown", { when = function(a)
+  local late = {}
+  for _, o in ipairs(a.specs) do
+    if o.kind == "backlog" and ((o.due and date.past(o.due))
+      or (o.recorded and date.days_since(o.recorded) > 30)) then late[#late + 1] = o.address end
+  end
+  if #late > 0 then return #late .. " item(s) owed attention" end
+end }, "promote, remove, or reschedule (`prova specs --backlog`)")
 ```
 
-The item does not become owed — a human still promotes it — but it can no longer rot unnoticed:
-WATCHING before the date, DUE after, fatal under `--heed`. One `when` over `account.dated` draws down
-authored dates (anchors) and, in time, computed ones the same way.
+WATCHING while every policy holds, DUE once one trips, fatal under `--heed`. The sliding window
+(`days_since(o.recorded)`) is the default posture — every captured item gets a deadline for free,
+slid for the whole lane by one number; `due=` is the hard external commitment.
 
 ## Reading the account
 

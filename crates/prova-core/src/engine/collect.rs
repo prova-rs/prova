@@ -215,7 +215,34 @@ pub(super) fn parse_opts(t: &mlua::Table) -> mlua::Result<UnitOpts> {
             })
             .collect::<mlua::Result<Vec<_>>>()?,
     };
-    let resources = match t.get::<Option<Vec<Value>>>("resources")? {
+    let lock_vals = match (
+        t.get::<Option<Vec<Value>>>("locks")?,
+        t.get::<Option<Vec<Value>>>("resources")?,
+    ) {
+        (Some(_), Some(_)) => {
+            return Err(mlua::Error::RuntimeError(
+                "a unit carries `locks` or the deprecated `resources`, not both — they are one \
+                 option; keep `locks`"
+                    .into(),
+            ))
+        }
+        (Some(vals), None) => Some(vals),
+        (None, Some(vals)) => {
+            // The pre-rename spelling: the scheduler's tokens were never the topology world's
+            // provisioned resources, and one word for both taught the wrong model. Warn once
+            // per load, keep working until 1.0.
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| {
+                eprintln!(
+                    "prova: `resources = {{ … }}` is deprecated — the option is `locks` (same \
+                     grammar: prova.writes/reads/port; retires at 1.0)"
+                );
+            });
+            Some(vals)
+        }
+        (None, None) => None,
+    };
+    let locks = match lock_vals {
         None => Vec::new(),
         Some(vals) => vals
             .into_iter()
@@ -248,7 +275,7 @@ pub(super) fn parse_opts(t: &mlua::Table) -> mlua::Result<UnitOpts> {
         timeout,
         tags,
         depends_on,
-        resources,
+        locks,
         serial,
         requires,
         switch,
@@ -326,28 +353,53 @@ pub(super) fn parse_resource(v: Value) -> mlua::Result<ResourceReq> {
         Value::String(s) => Ok(ResourceReq {
             token: s.to_string_lossy().to_string(),
             shared: false,
+            machine: false,
         }),
         Value::UserData(ud) => ud
             .borrow::<ResourceRef>()
             .map(|r| ResourceReq {
                 token: r.token.clone(),
                 shared: r.shared,
+                machine: r.machine,
             })
             .map_err(|_| mlua::Error::RuntimeError(RESOURCE_ENTRY_ERR.into())),
         _ => Err(mlua::Error::RuntimeError(RESOURCE_ENTRY_ERR.into())),
     }
 }
 
-/// What a `resources` list accepts, said once so the two rejection paths can't drift.
+/// What a `locks` list accepts, said once so the two rejection paths can't drift.
 pub(super) const RESOURCE_ENTRY_ERR: &str =
-    "resources entries must be strings or prova.port/writes/reads refs";
+    "locks entries must be strings or prova.port/writes/reads refs";
 
-/// Build a typed resource ref in `shared` mode from a bare token or an existing ref. Re-moding is
-/// deliberate: `prova.reads(prova.port(5432))` widens a port to a concurrent hold.
-pub(super) fn resource_ref(lua: &Lua, v: Value, shared: bool) -> mlua::Result<mlua::AnyUserData> {
+/// Read the optional second argument of `prova.writes`/`reads`: `{ scope = "machine" }` widens
+/// the hold to the whole box; the default (and explicit `"package"`) binds every prova instance
+/// at this home. Anything else is a taught error.
+pub(super) fn parse_lock_scope(opts: &Option<Table>) -> mlua::Result<Option<bool>> {
+    let Some(t) = opts else { return Ok(None) };
+    match t.get::<Option<String>>("scope")?.as_deref() {
+        None => Ok(None),
+        Some("machine") => Ok(Some(true)),
+        Some("package") => Ok(Some(false)),
+        Some(other) => Err(mlua::Error::RuntimeError(format!(
+            "scope must be \"package\" (default — every prova at this home) or \"machine\" \
+             (the whole box), got {other:?}"
+        ))),
+    }
+}
+
+/// Build a typed lock ref in `shared` mode from a bare token or an existing ref. Re-moding is
+/// deliberate: `prova.reads(prova.port(5432))` widens a port to a concurrent hold. `machine`
+/// overrides the scope when given, else the existing ref's scope carries through.
+pub(super) fn resource_ref(
+    lua: &Lua,
+    v: Value,
+    shared: bool,
+    machine: Option<bool>,
+) -> mlua::Result<mlua::AnyUserData> {
     let req = parse_resource(v)?;
     lua.create_userdata(ResourceRef {
         token: req.token,
         shared,
+        machine: machine.unwrap_or(req.machine),
     })
 }

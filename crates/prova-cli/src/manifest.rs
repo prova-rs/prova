@@ -114,28 +114,28 @@ pub struct Manifest {
     pub placement: Option<PlacementSection>,
 }
 
-/// `[runner]` — which prova runs this package (docs/design/manifest.md#manifest-declared-runner).
-/// The self-hosting trampoline: any prova invoked at this home provisions the declared runner and
-/// re-execs through it, so freshness and identity are mechanism, not prose. A property of the
-/// package, never a profile — which binary judges the suite cannot vary by lane.
+/// `[runner]` — the binary UNDER TEST
+/// (docs/design/manifest.md#runner-is-the-subject-not-the-conductor). Nothing re-execs: the
+/// binary you invoke conducts, and a RUN provisions this subject just in time, injecting it as
+/// `prova.bin` so nested proofs judge the tree's build. A property of the package, never a
+/// profile — which binary the suite tests cannot vary by lane.
 ///
-/// Deliberately NOT a field on `Manifest`, and read WITHOUT serde: the trampoline parses the
-/// `[runner]` table leniently (by key, unknown keys ignored) precisely because its job is
-/// bridging version skew — a manifest field this binary predates must never disarm the hop by
-/// failing the strict schema.
+/// Deliberately NOT a field on `Manifest`, and read WITHOUT serde: the section is parsed
+/// leniently (by key, unknown keys ignored) because its job is bridging version skew — a field
+/// this binary predates must never disarm subject resolution by failing the strict schema.
 #[derive(Debug, Clone)]
 pub struct RunnerSection {
-    /// Provision the runner before re-exec (e.g. `"cargo build -p prova-cli"`). Runs at the home,
-    /// stdio inherited — a failed build is a loud failed provision (exit 2), never a verdict.
+    /// Provision the subject (e.g. `"cargo build -p prova-cli"`). Runs at the home, stdio
+    /// inherited — a failed build is a loud failed provision (exit 2), never a verdict.
     /// Optional: omit when `bin` is prebuilt by something else.
     pub build: Option<String>,
-    /// The runner binary, home-relative. The trampoline execs it with the original argv;
-    /// `PROVA_TRAMPOLINED` marks the hop so the child proceeds normally.
+    /// The subject binary, home-relative — what `prova.bin` names during a run.
     pub bin: String,
-    /// The build's input roots, home-relative (dirs or files). When declared, the hop skips the
-    /// build while no file under them is newer than the last successful provision — a ~15ms mtime
-    /// sweep instead of a multi-second no-op `cargo build` on every invocation. Undeclared means
-    /// always build: correctness needs no configuration, speed is the opt-in.
+    /// The build's input roots, home-relative (dirs or files). When declared, a run skips the
+    /// build while no file under them is newer than the last provision (the stamp or the bin's
+    /// own mtime, whichever is later) — a ~15ms sweep instead of a multi-second no-op
+    /// `cargo build`. Undeclared means every run builds: correctness needs no configuration,
+    /// speed is the opt-in.
     pub sources: Vec<String>,
 }
 

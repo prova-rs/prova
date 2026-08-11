@@ -124,6 +124,7 @@ impl UserData for UnitHandle {}
 pub(super) struct ResourceRef {
     pub(super) token: String,
     pub(super) shared: bool,
+    pub(super) machine: bool,
 }
 impl UserData for ResourceRef {}
 

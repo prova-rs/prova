@@ -55,6 +55,9 @@ impl Params {
 pub struct ResourceReq {
     pub token: String,
     pub shared: bool,
+    /// Machine scope: the lock file lives in a machine-wide directory instead of the package's
+    /// `var/`, so the hold spans every repo on the box, not just every prova at this home.
+    pub machine: bool,
 }
 
 /// Per-unit options parsed from the Lua `opts` table.
@@ -68,8 +71,11 @@ pub struct UnitOpts {
     /// Units this one depends on, as arena indices (resolved from `depends_on` handles). A unit is
     /// skipped (not failed) if any transitive dependency leaf failed or was skipped.
     pub depends_on: Vec<NodeIx>,
-    /// External resources this unit needs; the scheduler gates concurrency on them.
-    pub resources: Vec<ResourceReq>,
+    /// The locks this unit takes (`locks = { prova.writes("cargo"), … }`): the scheduler gates
+    /// concurrency on them within the run, and the same holds are taken as file locks so they
+    /// bind across every prova instance at this package's home — `-j`, a second agent, CI on
+    /// the same box: one house rule (docs/design/architecture.md, the locks section).
+    pub locks: Vec<ResourceReq>,
     /// Process-wide exclusive: never run concurrently with anything (sugar for an exclusive hold on
     /// a global token every other unit reads).
     pub serial: bool,
@@ -151,11 +157,12 @@ pub struct ReminderAccount {
     /// gates on — the pre-authorship (future) surface of the claim the proof adjudicates in the past
     /// (docs/design/verifiers.md). Exposed to the `when` closure as `account.measurements[name]`.
     pub measurements: Vec<(String, f64)>,
-    /// Dated obligations — claim/backlog anchors carrying a `YYYY-MM-DD`. Exposed to `when` as
-    /// `account.dated` (an array of `{ address, date, kind }`), so a draw-down reminder can fire
-    /// once a deadline passes: `for _, o in ipairs(a.dated) do if date.past(o.date) then … end end`.
-    /// The one surface both authored dates (anchors) and computed ones (deprecations, later) feed.
-    pub dated: Vec<DatedObligation>,
+    /// Every claim/backlog anchor, with its properties. Exposed to `when` as `account.specs`
+    /// (an array of `{ address, kind, recorded?, due?, props }`), so draw-down policies compose
+    /// over the properties: the sliding window is `date.days_since(o.recorded) > 30`, the hard
+    /// deadline is `date.past(o.due)`, and a custom `props.owner` is the author's own workflow
+    /// (docs/design/lifecycle.md#anchor-records-when-it-was-captured).
+    pub specs: Vec<SpecItem>,
 }
 
 /// One declared `prova.remind`, as `collect_reminders` harvests it WITHOUT evaluating — the row
@@ -170,15 +177,17 @@ pub struct ReminderListing {
     pub line: Option<u32>,
 }
 
-/// One dated obligation — an anchor carrying a draw-down date — as a reminder condition sees it.
+/// One spec-lane anchor — claim or backlog, with its properties — as a reminder condition sees it.
 #[derive(Debug, Clone)]
-pub struct DatedObligation {
+pub struct SpecItem {
     /// `path#id`, the address a proof would name in `covers`.
     pub address: String,
-    /// The deadline, `YYYY-MM-DD`, verbatim from the anchor.
-    pub date: String,
     /// `"claim"` or `"backlog"` — so a condition can draw down one state and not the other.
     pub kind: String,
+    /// The anchor's `key=value` properties, verbatim — blessed (`recorded`, `due`) and custom
+    /// alike. The Lua view flattens the blessed pair onto the row and nests the whole map as
+    /// `props`, so custom keys can never shadow `address`/`kind`.
+    pub props: std::collections::BTreeMap<String, String>,
 }
 
 /// One deputed case — a verdict another verifier produced, conducted and adopted by a proof

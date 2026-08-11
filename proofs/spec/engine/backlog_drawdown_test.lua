@@ -1,11 +1,12 @@
---- Draw-down: a date on an anchor, plus a reminder, makes a parked item accountable to a clock.
+--- Draw-down: properties on an anchor, plus a reminder, make a parked item accountable to a clock.
 ---
---- This is the payoff of dated anchors. A reminder's `when` receives `account.dated` — every
---- claim/backlog anchor carrying a `YYYY-MM-DD` — and `date.past(o.date)` asks whether a deadline
---- has passed. Before the date the reminder is silent (WATCHING); after it, DUE; under `--heed`,
---- fatal. The item did not become owed — a human still promotes it — but it stopped being able to
---- rot unnoticed. One `when` over `account.dated` draws down authored dates (anchors) today and
---- computed ones (deprecations) later — the same surface.
+--- This is the payoff of anchor properties. A reminder's `when` receives `account.specs` — every
+--- claim/backlog anchor with its `key=value` properties (blessed `recorded`/`due` flattened onto
+--- the row, everything under `props`) — and the policy is the author's own composition:
+--- `date.past(o.due)` for a hard deadline, `date.days_since(o.recorded) > 30` for the sliding
+--- window that says the shelf is rotting. Before the policy trips the reminder is silent
+--- (WATCHING); after, DUE; under `--heed`, fatal. The item did not become owed — a human still
+--- promotes it — but it stopped being able to rot unnoticed.
 
 local function drawdown_project(t, date_str)
   local proj = t:tempdir() .. "/pkg"
@@ -14,13 +15,13 @@ local function drawdown_project(t, date_str)
   fs.write(proj .. "/prova.toml",
     '[run]\nproofs = ["proofs"]\n\n[[specs.source]]\ntype = "directory"\npath = "docs"\n')
   fs.write(proj .. "/docs/design.md",
-    "<!-- backlog: shape-me " .. date_str .. " -->\nA backlog item with a draw-down deadline.\n")
+    "<!-- backlog: shape-me due=" .. date_str .. " -->\nA backlog item with a hard deadline.\n")
   fs.write(proj .. "/proofs/drawdown_test.lua", [[
 prova.remind("backlog-drawdown", {
   when = function(a)
     local late = {}
-    for _, o in ipairs(a.dated) do
-      if o.kind == "backlog" and date.past(o.date) then late[#late + 1] = o.address end
+    for _, o in ipairs(a.specs) do
+      if o.kind == "backlog" and o.due and date.past(o.due) then late[#late + 1] = o.address end
     end
     if #late > 0 then
       return #late .. " backlog item(s) past their draw-down date"

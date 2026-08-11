@@ -44,6 +44,7 @@ pub enum Topic {
     Packages,
     PackageAuthoring,
     Running,
+    Locks,
     Capabilities,
     Mcp,
 }
@@ -71,6 +72,7 @@ impl Topic {
         Topic::Packages,
         Topic::PackageAuthoring,
         Topic::Running,
+        Topic::Locks,
         Topic::Capabilities,
         Topic::Mcp,
     ];
@@ -144,6 +146,12 @@ impl Topic {
         ("plugin-authoring", Topic::PackageAuthoring),
         ("create-package", Topic::PackageAuthoring),
         ("create-plugin", Topic::PackageAuthoring),
+        ("lock", Topic::Locks),
+        ("locking", Topic::Locks),
+        ("serial", Topic::Locks),
+        ("serialization", Topic::Locks),
+        ("resources", Topic::Locks),
+        ("scheduler", Topic::Locks),
         ("selection", Topic::Running),
         ("ci", Topic::Running),
         ("cli", Topic::Running),
@@ -189,6 +197,7 @@ impl Topic {
             Topic::Packages => "packages",
             Topic::PackageAuthoring => "package-authoring",
             Topic::Running => "running",
+            Topic::Locks => "locks",
             Topic::Capabilities => "capabilities",
             Topic::Mcp => "mcp",
         }
@@ -219,6 +228,7 @@ impl Topic {
             Topic::Packages => include_str!("topics/packages.md"),
             Topic::PackageAuthoring => include_str!("topics/package-authoring.md"),
             Topic::Running => include_str!("topics/running.md"),
+            Topic::Locks => include_str!("topics/locks.md"),
             Topic::Capabilities => include_str!("topics/capabilities.md"),
             Topic::Mcp => include_str!("topics/mcp.md"),
         }

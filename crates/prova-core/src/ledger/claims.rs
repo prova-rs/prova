@@ -60,11 +60,27 @@ pub struct Claim {
     pub line: usize,
     /// Short digest of the claim's normalized text — what a pinned binding compares against.
     pub digest: String,
-    /// An optional `YYYY-MM-DD` draw-down date carried on the anchor: the deadline by which a
-    /// backlog item should be promoted, or a claim discharged. A reminder condition compares it
-    /// against `now` to draw it down (docs/plans/deprecation-drawdown.md). Optional — but agents
-    /// are nudged to set one, and `prova backlog --undated` finds the items that lack it.
-    pub date: Option<String>,
+    /// The anchor's properties — `key=value` tokens after the id, all optional
+    /// (docs/design/lifecycle.md#anchor-records-when-it-was-captured). Two keys are BLESSED with
+    /// semantics prova itself relies on: `recorded` (when the item was first written down —
+    /// stamped by the capture tool, the ideal on every anchor) and `due` (a hard external
+    /// deadline). Both are ISO-date validated at parse. Every other key is the author's own
+    /// vocabulary, passed through verbatim to the reminder surface (`account.specs`) so workflows
+    /// compose over properties prova has never heard of.
+    pub props: BTreeMap<String, String>,
+}
+
+impl Claim {
+    /// When the item was first written down (`recorded=YYYY-MM-DD`) — the blessed capture stamp.
+    pub fn recorded(&self) -> Option<&str> {
+        self.props.get("recorded").map(String::as_str)
+    }
+
+    /// The hard external deadline (`due=YYYY-MM-DD`), when one exists. Most items want no due
+    /// date — age policies over `recorded` are the sliding window; `due` is for commitments.
+    pub fn due(&self) -> Option<&str> {
+        self.props.get("due").map(String::as_str)
+    }
 }
 
 /// The prose an anchor labels: the lines under it, to the next blank line. A paragraph is what an
@@ -247,7 +263,7 @@ fn collect_file(root: &Path, path: &Path, out: &mut Vec<Claim>) -> Result<(), Cl
     let mut seen: BTreeMap<String, usize> = BTreeMap::new();
     for (index, line) in text.lines().enumerate() {
         let line_no = index + 1;
-        let (kind, id, date) = match parse_anchor(line) {
+        let (kind, id, props) = match parse_anchor(line) {
             Anchor::Prose => continue,
             Anchor::Malformed(reason) => {
                 return Err(ClaimError::Malformed {
@@ -256,7 +272,7 @@ fn collect_file(root: &Path, path: &Path, out: &mut Vec<Claim>) -> Result<(), Cl
                     reason,
                 });
             }
-            Anchor::Found { kind, id, date } => (kind, id, date),
+            Anchor::Found { kind, id, props } => (kind, id, props),
         };
         if let Some(&first) = seen.get(&id) {
             return Err(ClaimError::Duplicate {
@@ -272,7 +288,7 @@ fn collect_file(root: &Path, path: &Path, out: &mut Vec<Claim>) -> Result<(), Cl
             file: relative.clone(),
             line: line_no,
             digest: digest(&claim_text(&all, index)),
-            date,
+            props,
         });
         seen.insert(id, line_no);
     }
@@ -283,16 +299,19 @@ fn collect_file(root: &Path, path: &Path, out: &mut Vec<Claim>) -> Result<(), Cl
 enum Anchor {
     /// No `claim:`/`backlog:` keyword — ordinary prose, and it must stay invisible.
     Prose,
-    /// A well-formed anchor: `<!-- claim: id -->`, optionally `<!-- backlog: id 2026-09-01 -->`.
-    Found { kind: Kind, id: String, date: Option<String> },
+    /// A well-formed anchor: `<!-- claim: id -->`, optionally with `key=value` properties —
+    /// `<!-- backlog: id recorded=2026-08-11 due=2027-01-01 -->`.
+    Found { kind: Kind, id: String, props: BTreeMap<String, String> },
     /// The keyword is there, so the line MEANS to be an anchor, but it cannot be read — with why.
     Malformed(String),
 }
 
 /// Read a line as an anchor. The keyword (`claim:`/`backlog:`) is the line of intent: without it,
 /// the line is prose and stays invisible; WITH it, a mistake is reported (`Malformed`), never
-/// silently dropped. Tolerant of spacing, strict about shape: an id, then an OPTIONAL `YYYY-MM-DD`,
-/// and nothing else.
+/// silently dropped. Tolerant of spacing, strict about shape: an id, then zero or more
+/// `key=value` properties — named, because the bare date this grammar once carried could never
+/// say whether it meant recorded-on or due-by, and a slot that cannot answer that is worse than
+/// no slot (docs/design/lifecycle.md#anchor-records-when-it-was-captured).
 fn parse_anchor(line: &str) -> Anchor {
     let Some(rest) = line.trim().strip_prefix("<!--").map(str::trim_start) else {
         return Anchor::Prose;
@@ -313,22 +332,39 @@ fn parse_anchor(line: &str) -> Anchor {
     let Some(id) = parts.next() else {
         return Anchor::Malformed(format!("`{kw}:` has no id — write `<!-- {kw}: some-id -->`"));
     };
-    let date = match parts.next() {
-        None => None,
-        Some(tok) if valid_iso_date(tok) => Some(tok.to_string()),
-        Some(tok) => {
+    let mut props: BTreeMap<String, String> = BTreeMap::new();
+    for tok in parts {
+        let Some((key, value)) = tok.split_once('=') else {
+            if valid_iso_date(tok) {
+                return Anchor::Malformed(format!(
+                    "a bare date after the id `{id}` no longer means anything — name it: \
+                     `recorded={tok}` (when the item was captured) or `due={tok}` (a hard \
+                     deadline)"
+                ));
+            }
             return Anchor::Malformed(format!(
-                "{tok:?} after the id `{id}` is not a valid YYYY-MM-DD date — the only thing that \
-                 may follow an id (an id itself has no spaces)"
-            ))
+                "unexpected {tok:?} — after the id, an anchor carries `key=value` properties \
+                 (e.g. `recorded=2026-08-11`), nothing bare"
+            ));
+        };
+        if key.is_empty() || value.is_empty() {
+            return Anchor::Malformed(format!(
+                "property {tok:?} — both halves of `key=value` are required"
+            ));
         }
-    };
-    if let Some(extra) = parts.next() {
-        return Anchor::Malformed(format!(
-            "unexpected {extra:?} — an anchor is an id and an optional YYYY-MM-DD date, nothing more"
-        ));
+        if matches!(key, "recorded" | "due") && !valid_iso_date(value) {
+            return Anchor::Malformed(format!(
+                "`{key}={value}` — `{key}` is a blessed property and its value must be a real \
+                 YYYY-MM-DD date"
+            ));
+        }
+        if props.insert(key.to_string(), value.to_string()).is_some() {
+            return Anchor::Malformed(format!(
+                "property `{key}` appears twice — one value per key"
+            ));
+        }
     }
-    Anchor::Found { kind, id: id.to_string(), date }
+    Anchor::Found { kind, id: id.to_string(), props }
 }
 
 /// A strict `YYYY-MM-DD` check: exact shape plus plausible month/day ranges, no date crate. The
@@ -510,11 +546,15 @@ pub fn promote(claim: &Claim, root: &Path) -> Result<(), ClaimError> {
 mod tests {
     use super::*;
 
-    fn ids(line: &str) -> Option<(Kind, String, Option<String>)> {
+    fn ids(line: &str) -> Option<(Kind, String, BTreeMap<String, String>)> {
         match parse_anchor(line) {
-            Anchor::Found { kind, id, date } => Some((kind, id, date)),
+            Anchor::Found { kind, id, props } => Some((kind, id, props)),
             _ => None,
         }
+    }
+
+    fn props(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
     }
     fn is_prose(line: &str) -> bool {
         matches!(parse_anchor(line), Anchor::Prose)
@@ -525,27 +565,39 @@ mod tests {
 
     #[test]
     fn an_anchor_is_recognised_regardless_of_spacing() {
-        assert_eq!(ids("<!-- claim: busy-not-absent -->"), Some((Kind::Claim, "busy-not-absent".into(), None)));
-        assert_eq!(ids("<!--claim:tight-->"), Some((Kind::Claim, "tight".into(), None)));
-        assert_eq!(ids("   <!-- claim: indented -->  "), Some((Kind::Claim, "indented".into(), None)));
+        assert_eq!(ids("<!-- claim: busy-not-absent -->"), Some((Kind::Claim, "busy-not-absent".into(), props(&[]))));
+        assert_eq!(ids("<!--claim:tight-->"), Some((Kind::Claim, "tight".into(), props(&[]))));
+        assert_eq!(ids("   <!-- claim: indented -->  "), Some((Kind::Claim, "indented".into(), props(&[]))));
     }
 
     #[test]
     fn a_backlog_anchor_is_the_same_shape_with_a_different_keyword() {
-        assert_eq!(ids("<!-- backlog: flaky-teardown -->"), Some((Kind::Backlog, "flaky-teardown".into(), None)));
-        assert_eq!(ids("<!--backlog:tight-->"), Some((Kind::Backlog, "tight".into(), None)));
+        assert_eq!(ids("<!-- backlog: flaky-teardown -->"), Some((Kind::Backlog, "flaky-teardown".into(), props(&[]))));
+        assert_eq!(ids("<!--backlog:tight-->"), Some((Kind::Backlog, "tight".into(), props(&[]))));
     }
 
+    /// The property grammar: named `key=value` tokens, blessed dates validated, custom keys
+    /// verbatim — and the bare date the grammar once carried is a TAUGHT refusal, because a slot
+    /// that cannot say recorded-or-due is worse than no slot.
     #[test]
-    fn an_anchor_carries_an_optional_iso_date() {
+    fn an_anchor_carries_named_properties() {
         assert_eq!(
-            ids("<!-- backlog: flaky-teardown 2026-09-01 -->"),
-            Some((Kind::Backlog, "flaky-teardown".into(), Some("2026-09-01".into())))
+            ids("<!-- backlog: flaky-teardown recorded=2026-08-11 -->"),
+            Some((Kind::Backlog, "flaky-teardown".into(), props(&[("recorded", "2026-08-11")])))
         );
         assert_eq!(
-            ids("<!-- claim: never-preempt 2026-12-31 -->"),
-            Some((Kind::Claim, "never-preempt".into(), Some("2026-12-31".into())))
+            ids("<!-- claim: never-preempt recorded=2026-08-11 due=2026-12-31 owner=jimmie -->"),
+            Some((
+                Kind::Claim,
+                "never-preempt".into(),
+                props(&[("recorded", "2026-08-11"), ("due", "2026-12-31"), ("owner", "jimmie")])
+            ))
         );
+        // The old positional date is refused BY NAME, teaching both spellings.
+        let Anchor::Malformed(why) = parse_anchor("<!-- backlog: id 2026-09-01 -->") else {
+            panic!("a bare date must be malformed now");
+        };
+        assert!(why.contains("recorded=2026-09-01") && why.contains("due=2026-09-01"), "{why}");
     }
 
     #[test]
@@ -564,10 +616,12 @@ mod tests {
         assert!(is_malformed("<!-- claim: two words -->"));
         assert!(is_malformed("<!-- claim: -->"));
         assert!(is_malformed("<!-- backlog: -->"));
-        assert!(is_malformed("<!-- backlog: id 2026-13-01 -->")); // impossible month
-        assert!(is_malformed("<!-- backlog: id 2026-9-1 -->")); // not zero-padded
-        assert!(is_malformed("<!-- backlog: id notadate -->"));
-        assert!(is_malformed("<!-- backlog: id 2026-09-01 extra -->"));
+        assert!(is_malformed("<!-- backlog: id due=2026-13-01 -->")); // impossible month
+        assert!(is_malformed("<!-- backlog: id recorded=2026-9-1 -->")); // not zero-padded
+        assert!(is_malformed("<!-- backlog: id notadate -->")); // bare token
+        assert!(is_malformed("<!-- backlog: id =value -->")); // no key
+        assert!(is_malformed("<!-- backlog: id owner= -->")); // no value
+        assert!(is_malformed("<!-- backlog: id owner=a owner=b -->")); // one value per key
     }
 
     /// The digest normalizes whitespace before hashing: a reflowed paragraph is the SAME claim,
@@ -599,7 +653,7 @@ mod tests {
         std::fs::create_dir_all(root.join("docs")).unwrap();
         std::fs::write(
             root.join("docs/design.md"),
-            "# Doc\n\n<!-- claim: never-preempt -->\nThe broker never preempts.\n\n<!-- backlog: flaky 2026-09-01 -->\nFlaky teardown.\n",
+            "# Doc\n\n<!-- claim: never-preempt -->\nThe broker never preempts.\n\n<!-- backlog: flaky recorded=2026-09-01 -->\nFlaky teardown.\n",
         )
         .unwrap();
         std::fs::write(
@@ -616,7 +670,8 @@ mod tests {
         assert_eq!(never.line, 3);
         assert_eq!(never.digest.len(), 8);
         let flaky_backlog = claims.iter().find(|c| c.kind == Kind::Backlog).unwrap();
-        assert_eq!(flaky_backlog.date.as_deref(), Some("2026-09-01"));
+        assert_eq!(flaky_backlog.recorded(), Some("2026-09-01"));
+        assert_eq!(flaky_backlog.due(), None);
 
         assert_eq!(matching_id(&claims, "never-preempt").len(), 1);
         assert_eq!(matching_id(&claims, "flaky").len(), 2, "ambiguity hands back candidates");

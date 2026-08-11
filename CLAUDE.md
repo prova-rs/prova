@@ -29,9 +29,11 @@ docs/design/            # durable design docs        docs/plans/  # in-flight pl
 ## Build & Quality
 
 **Prova is this repo's quality interface, and any `prova` is the right one to type.** The
-manifest's `[runner]` trampolines every invocation through this tree's freshly-built binary
-(docs/design/manifest.md#manifest-declared-runner), so freshness and identity are mechanism —
-the old "never prove through an installed prova" rule is retired. Ask the tool, not this file:
+manifest's `[runner]` names the binary UNDER TEST
+(docs/design/manifest.md#runner-is-the-subject-not-the-conductor): a RUN provisions it just in
+time and injects it as `prova.bin`, so nested proofs judge this tree's build — while queries,
+`prova mcp`, and every other verb answer as the binary you invoked, instantly. Refresh your own
+tools deliberately (`cargo xtask install`). Ask the tool, not this file:
 `prova learn project` (the card), `prova run --list` (the profiles), `prova switches` (the
 opt-in classes).
 

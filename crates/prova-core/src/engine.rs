@@ -886,6 +886,30 @@ pub fn collect_switch_census(
     census
 }
 
+/// The `account.specs` rows a reminder condition composes draw-down policies over: every anchor
+/// as `{ address, kind, recorded?, due?, props }`. Blessed keys are flattened onto the row; the
+/// full map rides as `props`, so a custom key can never shadow `address`/`kind`.
+fn specs_view(lua: &Lua, specs: &[crate::model::SpecItem]) -> mlua::Result<Table> {
+    let list = lua.create_table()?;
+    for (i, o) in specs.iter().enumerate() {
+        let row = lua.create_table()?;
+        row.set("address", o.address.as_str())?;
+        row.set("kind", o.kind.as_str())?;
+        for key in ["recorded", "due"] {
+            if let Some(v) = o.props.get(key) {
+                row.set(key, v.as_str())?;
+            }
+        }
+        let props = lua.create_table()?;
+        for (k, v) in &o.props {
+            props.set(k.as_str(), v.as_str())?;
+        }
+        row.set("props", props)?;
+        list.set(i + 1, row)?;
+    }
+    Ok(list)
+}
+
 /// Evaluate one reminder's condition against the run's account.
 ///
 /// The mapping is the whole contract: a falsy return is `Watching`; a truthy return is `Due`,
@@ -949,25 +973,13 @@ async fn evaluate_reminder(
             }
         }
     }
-    // The run's dated obligations, so a draw-down condition can compare each deadline to `now`
-    // (`date.past(o.date)`) and fire once it passes. A fresh array of read-only rows per condition.
-    match lua.create_table() {
+    // The run's spec items, so a draw-down condition can compose over their properties —
+    // `date.days_since(o.recorded)` for the sliding window, `date.past(o.due)` for a hard
+    // deadline, `o.props.<key>` for the author's own vocabulary. A fresh array of read-only
+    // rows per condition.
+    match specs_view(lua, &account.specs) {
         Ok(list) => {
-            for (i, o) in account.dated.iter().enumerate() {
-                let build = || -> mlua::Result<()> {
-                    let row = lua.create_table()?;
-                    row.set("address", o.address.as_str())?;
-                    row.set("date", o.date.as_str())?;
-                    row.set("kind", o.kind.as_str())?;
-                    list.set(i + 1, row)
-                };
-                if build().is_err() {
-                    return ReminderState::Unevaluated {
-                        reason: "could not build the account view".to_string(),
-                    };
-                }
-            }
-            if acct.set("dated", list).is_err() {
+            if acct.set("specs", list).is_err() {
                 return ReminderState::Unevaluated {
                     reason: "could not build the account view".to_string(),
                 };

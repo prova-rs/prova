@@ -27,11 +27,13 @@ end)
   `prova.test` inside either body is an error, not a child.
 - Cross-unit gating: `depends_on = { handle }` — handles, not strings. Upstream failure SKIPS
   downstream, never fails it, never passes state.
-- opts: `tags`, `requires`, `timeout = "60s"`, `serial = true`,
-  `resources = { prova.port(N), prova.writes("db"), prova.reads("cache") }` — name the ACCESS MODE:
+- opts: `tags`, `requires`, `timeout = "60s"`, `serial = true` (run-scoped whole-run exclusivity),
+  `locks = { prova.port(N), prova.writes("db"), prova.reads("cache") }` — name the ACCESS MODE:
   `prova.writes(x)` is an exclusive hold, `prova.reads(x)` a concurrent one, and either accepts a
   bare token or a ref the other made (`prova.reads(prova.port(5432))`). A bare string and
-  `prova.port` are writers by default. Groups' `tags`/`requires` are inherited.
+  `prova.port` are writers by default. Locks hold across every prova instance at this home —
+  house rules like "one cargo at a time" survive `-j` and concurrent runs (`prova learn locks`;
+  `resources` is the deprecated spelling). Groups' `tags`/`requires` are inherited.
   Tests and flows also take `promises = "reason"` — a proof authored ahead of its implementation
   (`prova learn promises`); never on a group or in `suite.config`.
 - Matchers on `t:expect(v, label?)` — negate any with `:never()`. Grouped by what the SUBJECT is,

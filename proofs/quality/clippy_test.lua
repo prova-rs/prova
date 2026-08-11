@@ -8,7 +8,13 @@
 -- #switches-not-env-capabilities). `prova run quality` throws it; `prova -s quality` is the
 -- ad-hoc door. Plain local runs hold it back, reported on the switched-off summary line.
 
-prova.test("clippy is clean (-D warnings, whole workspace)", { switch = "quality" }, function(t)
+prova.test("clippy is clean (-D warnings, whole workspace)", {
+  switch = "quality",
+  -- The house rule this repo bled for: cargo takes process-wide locks of its own, so two prova
+  -- instances that both reach for it (a bank + a sweep) contend unpredictably unless the rule
+  -- is said out loud. Held across instances (prova learn locks).
+  locks = { prova.writes("cargo") },
+}, function(t)
   local r = shell.run(
     { "cargo", "clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings" },
     { cwd = prova.root, merge_stderr = true }

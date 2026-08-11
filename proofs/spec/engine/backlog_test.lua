@@ -164,37 +164,47 @@ prova.test("`prova specs --backlog` with no spec source points to setup, and doe
   t:expect(r.stdout, "points to the topic"):contains("prova learn spec")
 end)
 
-prova.test("backlog items carry an optional date, and `--undated` finds the ones without", {
-  proves = "a date turns a parked item into something a reminder can draw down by a deadline; making the undated ones queryable is what keeps every item accountable to a date without forcing one on you",
+prova.test("anchors carry named properties, and `--undated` finds the ones no capture stamped", {
+  covers = "docs/design/lifecycle.md#anchor-records-when-it-was-captured",
+  proves = "the positional date could never say whether it meant recorded-on or due-by — the author of the format had to ask; named properties kill the ambiguity at its root, and the bare date is a taught refusal, not a silent reinterpretation",
 }, function(t)
   local proj = project(t, [[
-<!-- backlog: dated-item 2026-09-01 -->
-Has a deadline.
+<!-- backlog: stamped-item recorded=2026-08-11 due=2026-09-01 owner=jimmie -->
+Captured, deadlined, and carrying a custom property.
 
 <!-- backlog: bare-item -->
-No deadline yet.
+Captured before the stamp existed.
 ]])
   local listed = shell.run(prova.bin .. " specs --backlog", { cwd = proj, merge_stderr = true })
-  t:expect(listed.stdout, "the date is shown"):contains("2026-09-01")
-  t:expect(listed.stdout, "the dated item is listed"):contains("dated-item")
+  t:expect(listed.stdout, "the properties are shown"):contains("recorded=2026-08-11")
+  t:expect(listed.stdout, "custom keys ride along"):contains("owner=jimmie")
   t:expect(listed.stdout, "the bare item too"):contains("bare-item")
-  t:expect(listed.stdout, "the undated count is nudged"):contains("1 undated")
+  t:expect(listed.stdout, "the unstamped count is nudged"):contains("1 undated")
 
   local undated = shell.run(prova.bin .. " specs --backlog --undated", { cwd = proj, merge_stderr = true })
-  t:expect(undated.stdout, "only the undated one"):contains("bare-item")
-  t:expect(undated.stdout, "not the dated one"):never():contains("dated-item")
+  t:expect(undated.stdout, "only the unstamped one"):contains("bare-item")
+  t:expect(undated.stdout, "not the stamped one"):never():contains("stamped-item")
+
+  -- The old positional date is refused by name — never silently reinterpreted, because the one
+  -- anchor that used it meant *due* while the design intent was *recorded*.
+  local old = project(t, "<!-- backlog: legacy 2026-09-01 -->\nOld grammar.\n")
+  local r = shell.run(prova.bin .. " specs", { cwd = old, merge_stderr = true })
+  t:expect(r.code):never():equals(0)
+  t:expect(r.stdout, "both named spellings are taught"):contains("recorded=2026-09-01")
+  t:expect(r.stdout):contains("due=2026-09-01")
 end)
 
-prova.test("promoting a dated backlog item keeps its date", {
-  proves = "the date lives after the id on the same line, so the keyword flip cannot lose it — a deadline set while an item was cold carries into the claim it becomes",
+prova.test("promoting a backlog item keeps its properties", {
+  covers = "docs/design/lifecycle.md#anchor-records-when-it-was-captured",
+  proves = "properties live after the id on the same line, so the keyword flip cannot lose them — recorded keeps meaning when it was first written down, which on a claim is precisely the fact worth keeping",
 }, function(t)
   local proj = project(t, [[
-<!-- backlog: soon 2026-09-01 -->
+<!-- backlog: soon recorded=2026-08-11 due=2026-09-01 -->
 Due soon.
 ]])
   shell.run(prova.bin .. " specs promote soon", { cwd = proj, merge_stderr = true })
   local doc = fs.read(proj .. "/docs/design.md")
-  t:expect(doc, "now a claim, still dated"):contains("<!-- claim: soon 2026-09-01 -->")
+  t:expect(doc, "now a claim, properties intact"):contains("<!-- claim: soon recorded=2026-08-11 due=2026-09-01 -->")
 end)
 
 prova.test("the binary teaches the backlog: catalog and topic", {

@@ -1,9 +1,8 @@
 # backlog — capture work in place without owing it
 
-A bug surfaces mid-task. A section of a spec is worth shaping but not now. You do not want to lose
-it, and you do not want to *owe* it yet — an obligation admitted the moment you notice it distracts
-the very work that noticed it. A `<!-- backlog: id -->` anchor is the answer: it captures the thing,
-in the document where it belongs, in a state that is deliberately muted.
+A bug surfaces mid-task, worth keeping but not worth *owing* yet — an obligation admitted the
+moment you notice it distracts the very work that noticed it. A `<!-- backlog: id -->` anchor
+captures the thing, in the document where it belongs, in a state that is deliberately muted.
 
 ```markdown
 <!-- backlog: flaky-teardown -->
@@ -41,19 +40,20 @@ Demotion (claim → backlog) is not a keyword flip you should reach for blindly:
 is only safe when nothing binds it, and that check needs the proofs in hand. Do it by editing the
 anchor when you know the claim is unbound.
 
-## An optional draw-down date
+## Properties — named, optional, composable
 
-An anchor can carry a `YYYY-MM-DD` after the id — a deadline by which the item should be promoted:
+After the id: `key=value` properties. Blessed and ISO-validated: `recorded=` (when the item was
+written down — the `capture` tool stamps it; the ideal on every anchor) and `due=` (a hard
+external deadline). Any other key is yours, passed through verbatim:
 
 ```markdown
-<!-- backlog: flaky-teardown 2026-09-01 -->
+<!-- backlog: flaky-teardown recorded=2026-08-11 due=2026-09-01 owner=jimmie -->
 ```
 
-It is optional, but **set one**: a dated item is something a reminder can draw down by its deadline
-(WATCHING while there is time, DUE once it passes, fatal under `--heed`); an undated one just sits.
-`prova specs --backlog` shows each item's date; `prova specs --backlog --undated` lists exactly the
-ones missing a date, so a team can keep the shelf accountable without forcing a date on anything. The date survives promotion — it lives after the id, untouched by the
-keyword flip, so a claim inherits the deadline set while it was cold.
+**Stamp `recorded`**: a reminder composes draw-down policy over `account.specs`
+(`days_since(o.recorded) > 30` slides the whole lane by one number; `date.past(o.due)` draws down
+commitments — `prova learn reminders`). A bare date after the id is an error naming both
+spellings. `--undated` lists the unstamped; properties survive promotion untouched.
 
 ## Only a claim can be bound
 

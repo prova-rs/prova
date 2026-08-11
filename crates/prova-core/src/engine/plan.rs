@@ -98,12 +98,12 @@ pub(super) struct Leaf {
     pub(super) promises: Option<String>,
 }
 
-/// Group-level options that flow down to every contained leaf: `depends_on`, `resources`, `serial`,
+/// Group-level options that flow down to every contained leaf: `depends_on`, `locks`, `serial`,
 /// `requires`.
 #[derive(Clone, Default)]
 pub(super) struct Inherited {
     pub(super) deps: Vec<NodeIx>,
-    pub(super) resources: Vec<ResourceReq>,
+    pub(super) locks: Vec<ResourceReq>,
     pub(super) serial: bool,
     pub(super) requires: Vec<String>,
     pub(super) tags: Vec<String>,
@@ -118,7 +118,7 @@ pub(super) struct Plan {
 }
 
 /// Walk the tree, emitting a `Leaf` per test/flow and recording, for every node, which leaves live
-/// under it (so a `depends_on`/`resources` on a group can expand to that group's leaves).
+/// under it (so a `depends_on`/`locks` on a group can expand to that group's leaves).
 /// `inherited` carries ancestor groups' options down so a group-level declaration applies to each
 /// contained leaf.
 pub(super) fn collect_leaves(
@@ -141,8 +141,8 @@ pub(super) fn collect_leaves(
                 .deps
                 .extend(node.opts.depends_on.iter().copied());
             child_inherited
-                .resources
-                .extend(node.opts.resources.iter().cloned());
+                .locks
+                .extend(node.opts.locks.iter().cloned());
             child_inherited.serial |= node.opts.serial;
             child_inherited
                 .requires
@@ -193,8 +193,8 @@ pub(super) fn collect_leaves(
 pub(super) fn push_leaf(leaves: &mut Vec<Leaf>, unit: PlanUnit, node: &Node, inherited: &Inherited) -> usize {
     let mut raw_deps = inherited.deps.clone();
     raw_deps.extend(node.opts.depends_on.iter().copied());
-    let mut reqs = inherited.resources.clone();
-    reqs.extend(node.opts.resources.iter().cloned());
+    let mut reqs = inherited.locks.clone();
+    reqs.extend(node.opts.locks.iter().cloned());
     let mut requires = inherited.requires.clone();
     requires.extend(node.opts.requires.iter().cloned());
     let mut tags = inherited.tags.clone();
@@ -498,6 +498,9 @@ pub(super) fn build_plan(col: &Collector, caps: &Capabilities) -> mlua::Result<P
             leaf.reqs.push(ResourceReq {
                 token: SERIAL_TOKEN.to_string(),
                 shared: !leaf.serial,
+                // Run-scoped by definition: `serial` is this run's own parallelism dial. The
+                // reserved prefix also exempts it from the cross-instance file locks.
+                machine: false,
             });
         }
     }

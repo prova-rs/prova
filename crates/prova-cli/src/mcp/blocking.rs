@@ -575,8 +575,14 @@ pub(super) fn specs_blocking(env: &McpEnv, req: SpecsRequest) -> Result<(serde_j
                 "file": c.file.display().to_string(),
                 "line": c.line,
             });
-            if let Some(d) = &c.date {
-                v["date"] = json!(d);
+            if let Some(d) = c.recorded() {
+                v["recorded"] = json!(d);
+            }
+            if let Some(d) = c.due() {
+                v["due"] = json!(d);
+            }
+            if !c.props.is_empty() {
+                v["props"] = json!(c.props);
             }
             v
         })
@@ -647,21 +653,16 @@ pub(super) fn capture_blocking(env: &McpEnv, req: CaptureRequest) -> Result<(ser
         ));
     }
 
-    // The write: append the anchor + prose, stamping the capture date into the prose (the
-    // anchor's own date slot means *deadline* until lifecycle.md#anchor-records-when-it-was-captured
-    // lands). A fresh file gets a heading so the doc reads as a doc.
+    // The write: append the anchor + prose, stamping `recorded=<today>` as the anchor's blessed
+    // capture property (docs/design/lifecycle.md#anchor-records-when-it-was-captured — the ideal
+    // on every anchor, structural rather than prose). A fresh file gets a heading so the doc
+    // reads as a doc.
     let path = call.home.dir.join(rel);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
     }
     let stamp = humantime::format_rfc3339(std::time::SystemTime::now()).to_string();
     let today = &stamp[..10];
-    let prose = req.prose.trim();
-    let dated = if prose.contains("Recorded ") {
-        prose.to_string()
-    } else {
-        format!("{prose} Recorded {today}.")
-    };
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
     let mut out = if existing.is_empty() {
         let stem = rel.file_stem().and_then(|s| s.to_str()).unwrap_or("notes");
@@ -672,7 +673,11 @@ pub(super) fn capture_blocking(env: &McpEnv, req: CaptureRequest) -> Result<(ser
     while !out.ends_with("\n\n") {
         out.push('\n');
     }
-    out.push_str(&format!("<!-- {keyword}: {} -->\n{dated}\n", req.id));
+    out.push_str(&format!(
+        "<!-- {keyword}: {} recorded={today} -->\n{}\n",
+        req.id,
+        req.prose.trim()
+    ));
     std::fs::write(&path, out).map_err(|e| format!("write {}: {e}", path.display()))?;
 
     // Verify: the ledger itself must see the anchor, or the capture did not happen.

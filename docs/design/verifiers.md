@@ -202,7 +202,7 @@ level further out.
 
 ## Field reports (Substrate gate-integration run, 2026-08-11)
 
-<!-- backlog: conduct-heartbeat-not-deadline -->
+<!-- backlog: conduct-heartbeat-not-deadline recorded=2026-08-11 -->
 **`shell.run` timeouts are wall-clock task budgets; conducts should be supervised by
 liveness.** A cold `cargo nextest` conduct of two large crates was killed at `timeout=600s`
 while making steady progress — the suite author's guess about build time became a false
@@ -213,7 +213,7 @@ bytes for N seconds = dead") with the wall-clock as an optional outer bound, and
 hang is caught *faster* than any honest deadline while a slow-but-alive conduct is never
 falsely killed.
 
-<!-- backlog: suite-scoped-shared-deputies -->
+<!-- backlog: suite-scoped-shared-deputies recorded=2026-08-11 -->
 **"Conduct once, read many" stops at file scope; suites need named shared conducts.** The ut
 lane conducts the whole workspace and adopts every case; a kernel-integration proof file in
 another directory needs those same cases and today must either re-conduct its crates (double
@@ -222,7 +222,7 @@ guarantee. A suite-scoped named deputy — declared once, provisioned once per r
 from any proof file, with ordering semantics — would let cross-file readers bind to one
 conduct's account.
 
-<!-- backlog: exclusive-conduct-resources -->
+<!-- backlog: exclusive-conduct-resources recorded=2026-08-11 -->
 **The resource scheduler exists (`prova.writes(x)` / `serial = true`) but the learn/skill
 surface never teaches it — an agent that hit exclusive-resource contention could not discover
 the cure.** A `run all` sweep ran three cargo-nextest conducts concurrently; all starved on

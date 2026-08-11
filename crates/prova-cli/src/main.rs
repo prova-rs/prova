@@ -328,12 +328,9 @@ fn main() -> ExitCode {
     }
     var::announce();
 
-    // The self-hosting trampoline (docs/design/manifest.md#manifest-declared-runner): when the
-    // package declares `[runner]`, provision it and re-exec through it BEFORE any dispatch, so
-    // whichever prova was invoked, the one that judges is the one the manifest names.
-    if let Some(code) = runner_trampoline() {
-        return code;
-    }
+    // Nothing re-execs (docs/design/manifest.md#runner-is-the-subject-not-the-conductor): the
+    // binary you invoke conducts. `[runner]` names the binary UNDER TEST, provisioned just in
+    // time by the run path and injected as `prova.bin` — see `cmd_run::provision_subject`.
 
     // Subcommands dispatch through the verb table; everything else is the run path.
     let mut raw = std::env::args().skip(1).peekable();

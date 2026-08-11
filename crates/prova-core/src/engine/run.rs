@@ -372,13 +372,76 @@ pub(super) fn emit_finished(reporter: &mut dyn Reporter, summary: &mut Summary, 
     }
 }
 
-/// A readers-writer accounting table over resource tokens. Per token it tracks how many shared
-/// (reader) and exclusive (writer) holds are live. A reader may acquire when there is no writer; a
-/// writer may acquire only when there is neither reader nor writer. Acquisition is all-or-nothing
-/// per leaf (checked before any hold is taken), so no leaf ever holds-and-waits — hence no deadlock.
+/// A readers-writer accounting table over lock tokens — the within-run half of `locks`. Per
+/// token it tracks how many shared (reader) and exclusive (writer) holds are live. A reader may
+/// acquire when there is no writer; a writer only when there is neither. Acquisition is
+/// all-or-nothing per leaf (nothing is held until everything can be), so no leaf ever
+/// holds-and-waits — hence no deadlock.
+///
+/// The cross-instance half: every non-run-scoped token is ALSO held as a file lock — `LOCK_SH`
+/// for readers, `LOCK_EX` for writers, `flock(2)` so the kernel releases it the instant the
+/// process dies (crash-safe, no daemon, no stale-lock reaping). Package scope keys the file
+/// under the package's `var/locks/`, so every prova instance at this home shares one namespace
+/// — `-j`, a second agent, CI on the same box; machine scope keys it under the OS temp dir so
+/// the rule spans repos. One process holds ONE descriptor per token while any of its leaves
+/// hold the token; the in-run table arbitrates between this run's own leaves.
 #[derive(Default)]
 pub(super) struct ResourceTable {
     pub(super) holders: HashMap<String, (u32, u32)>, // token -> (shared, exclusive)
+    /// The cross-instance holds: token -> (descriptor, leaves holding it here). Dropping the
+    /// `File` releases the flock.
+    files: HashMap<String, (std::fs::File, u32)>,
+    /// Tokens whose lock file could not even be opened — degraded to run-scoped, warned ONCE
+    /// (visible, never silent: a cross-instance rule that quietly stopped holding is the
+    /// loophole this mechanism exists to close).
+    degraded: std::collections::HashSet<String>,
+}
+
+/// Where a token's lock file lives. Run-scoped tokens (the reserved `__prova_` prefix — `serial`)
+/// have none.
+fn lock_path(r: &ResourceReq, project_dir: Option<&std::path::Path>) -> Option<std::path::PathBuf> {
+    if r.token.starts_with("__prova_") {
+        return None;
+    }
+    let sanitized: String = r
+        .token
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '-' })
+        .collect();
+    let dir = if r.machine {
+        std::env::temp_dir().join("prova-locks")
+    } else {
+        match project_dir {
+            Some(p) => p.join(".prova").join("var").join("locks"),
+            // A bare run (no manifest) still honors the rule machine-wide rather than not at all.
+            None => std::env::temp_dir().join("prova-locks"),
+        }
+    };
+    Some(dir.join(format!("{sanitized}.lock")))
+}
+
+#[cfg(unix)]
+fn try_flock(file: &std::fs::File, shared: bool) -> std::io::Result<bool> {
+    use std::os::unix::io::AsRawFd;
+    let op = if shared { libc::LOCK_SH } else { libc::LOCK_EX } | libc::LOCK_NB;
+    match unsafe { libc::flock(file.as_raw_fd(), op) } {
+        0 => Ok(true),
+        _ => {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::WouldBlock {
+                Ok(false)
+            } else {
+                Err(err)
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn try_flock(_file: &std::fs::File, _shared: bool) -> std::io::Result<bool> {
+    // The Windows twin (LockFileEx) lands with the Windows runner; until then locks are
+    // run-scoped there, which is exactly the pre-lock behavior.
+    Ok(true)
 }
 
 impl ResourceTable {
@@ -393,7 +456,58 @@ impl ResourceTable {
         })
     }
 
-    fn acquire(&mut self, reqs: &[ResourceReq]) {
+    /// The whole gate, all-or-nothing: the in-run table first, then a non-blocking `flock` per
+    /// token this process does not already hold. Any refusal rolls back the descriptors taken
+    /// this attempt and reports false — the leaf stays queued and the scheduler tries again on
+    /// the next tick, so a hold in another prova instance simply delays the leaf, never fails it.
+    fn try_acquire(&mut self, reqs: &[ResourceReq], project_dir: Option<&std::path::Path>) -> bool {
+        if !self.can_acquire(reqs) {
+            return false;
+        }
+        let mut taken: Vec<String> = Vec::new();
+        for r in reqs {
+            if self.files.contains_key(&r.token) || self.degraded.contains(&r.token) {
+                continue; // this process already holds the flock (mode arbitration is the table's)
+            }
+            let Some(path) = lock_path(r, project_dir) else { continue };
+            let opened = path
+                .parent()
+                .map(std::fs::create_dir_all)
+                .transpose()
+                .and_then(|_| std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path));
+            let file = match opened {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!(
+                        "prova: lock {:?}: cannot open {} ({e}) — holding within this run only",
+                        r.token,
+                        path.display()
+                    );
+                    self.degraded.insert(r.token.clone());
+                    continue;
+                }
+            };
+            match try_flock(&file, r.shared) {
+                Ok(true) => {
+                    self.files.insert(r.token.clone(), (file, 0));
+                    taken.push(r.token.clone());
+                }
+                Ok(false) => {
+                    // Held by another prova instance — roll back this attempt entirely.
+                    for tok in taken {
+                        self.files.remove(&tok);
+                    }
+                    return false;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "prova: lock {:?}: flock failed ({e}) — holding within this run only",
+                        r.token
+                    );
+                    self.degraded.insert(r.token.clone());
+                }
+            }
+        }
         for r in reqs {
             let entry = self.holders.entry(r.token.clone()).or_insert((0, 0));
             if r.shared {
@@ -401,7 +515,11 @@ impl ResourceTable {
             } else {
                 entry.1 += 1;
             }
+            if let Some(hold) = self.files.get_mut(&r.token) {
+                hold.1 += 1;
+            }
         }
+        true
     }
 
     fn release(&mut self, reqs: &[ResourceReq]) {
@@ -413,8 +531,43 @@ impl ResourceTable {
                     entry.1 = entry.1.saturating_sub(1);
                 }
             }
+            if let Some(hold) = self.files.get_mut(&r.token) {
+                hold.1 = hold.1.saturating_sub(1);
+                if hold.1 == 0 {
+                    self.files.remove(&r.token); // drop the descriptor — the kernel releases the flock
+                }
+            }
         }
     }
+}
+
+/// The idle-but-blocked tick: with nothing in flight, is some leaf runnable except for a lock
+/// another prova instance holds? True means sleep-and-retry (and the wait announces itself
+/// through the progress channel — Kind::Waiting, the same one a readiness poll uses — because a
+/// wedged holder elsewhere would otherwise look like a hung run with no evidence of why).
+fn start_lock_wait(
+    leaves: &[Leaf],
+    started: &[bool],
+    outcome: &[Option<Outcome>],
+    lock_wait: &mut Option<crate::progress::Activity>,
+    config: &RunConfig,
+) -> bool {
+    let Some(first) = (0..leaves.len()).find(|&i| {
+        !started[i]
+            && outcome[i].is_none()
+            && leaves[i].deps.iter().all(|&d| outcome[d] == Some(Outcome::Passed))
+    }) else {
+        return false;
+    };
+    if lock_wait.is_none() {
+        let tokens: Vec<&str> = leaves[first].reqs.iter().map(|r| r.token.as_str()).collect();
+        *lock_wait = Some(crate::progress::start(
+            config.progress(),
+            crate::progress::Kind::Waiting,
+            format!("lock(s) {} held by another prova instance", tokens.join(", ")),
+        ));
+    }
+    true
 }
 
 /// Dependency- and resource-aware scheduler. A leaf runs once all its dependency leaves have
@@ -433,6 +586,9 @@ pub(super) async fn run_plan(
     let leaves = &plan.leaves;
     let n = leaves.len();
     let concurrency = config.concurrency.max(1);
+    // The visible face of an idle-but-blocked run: set while every runnable leaf is waiting on a
+    // lock another prova instance holds, resolved the moment one acquires.
+    let mut lock_wait: Option<crate::progress::Activity> = None;
     let mut outcome: Vec<Option<Outcome>> = vec![None; n];
     let mut started = vec![false; n];
     let mut resources = ResourceTable::default();
@@ -494,10 +650,12 @@ pub(super) async fn run_plan(
             {
                 continue;
             }
-            if !resources.can_acquire(&leaves[i].reqs) {
+            if !resources.try_acquire(&leaves[i].reqs, config.project_dir.as_deref()) {
                 continue;
             }
-            resources.acquire(&leaves[i].reqs);
+            if let Some(activity) = lock_wait.take() {
+                activity.done();
+            }
             started[i] = true;
             for path in leaves[i].unit.leaf_paths() {
                 reporter.event(&Event::NodeStarted { path });
@@ -506,7 +664,16 @@ pub(super) async fn run_plan(
         }
 
         if in_flight.is_empty() {
-            break; // nothing running and nothing became ready — all leaves resolved
+            // Nothing running and nothing became ready. Before cross-instance locks that meant
+            // "all leaves resolved" — an in-run block always implied something in flight to wait
+            // on. A lock held by ANOTHER prova instance breaks that implication: a leaf can be
+            // runnable-but-refused with this run fully idle, and it must wait for the other
+            // instance, not be silently dropped.
+            if start_lock_wait(leaves, &started, &outcome, &mut lock_wait, config) {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                continue;
+            }
+            break; // all leaves resolved (or cascade-skipping on failed deps below)
         }
 
         let Some((i, mut results)) = in_flight.next().await else {

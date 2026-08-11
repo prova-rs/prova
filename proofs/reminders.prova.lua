@@ -6,21 +6,28 @@
 --- add one as it earns its place. Reminders here are evaluated on every full run and reported by
 --- `prova reminders`.
 
---- Draw down prova's own dated backlog. A `<!-- backlog: id YYYY-MM-DD -->` past its deadline is
---- work prova said it would do and hasn't — most immediately, removing the deprecation bridges in
---- docs/design/deprecations.md. WATCHING while there is time; DUE, with the addresses named, once a
---- date passes. It never forces the work owed — a human still promotes or reschedules — but it
---- cannot rot unseen.
+--- Draw down prova's own backlog, composed over anchor properties
+--- (docs/design/lifecycle.md#anchor-records-when-it-was-captured). Two policies in one watcher:
+--- a `due=` past its date is a commitment broken (most immediately the deprecation bridges in
+--- docs/design/deprecations.md), and a `recorded=` older than the window is a shelf rotting —
+--- the sliding deadline every item gets for free from its capture stamp, moved for the whole
+--- lane by changing one number here. WATCHING while there is time; DUE, with the addresses
+--- named, once a policy trips. It never forces the work owed — a human still promotes or
+--- reschedules — but it cannot rot unseen.
 prova.remind("backlog-drawdown", {
   when = function(a)
     local late = {}
-    for _, o in ipairs(a.dated) do
-      if o.kind == "backlog" and date.past(o.date) then
-        late[#late + 1] = o.address
+    for _, o in ipairs(a.specs) do
+      if o.kind == "backlog" then
+        if o.due and date.past(o.due) then
+          late[#late + 1] = o.address .. " (due " .. o.due .. ")"
+        elseif o.recorded and date.days_since(o.recorded) > 60 then
+          late[#late + 1] = o.address .. " (on the shelf " .. date.days_since(o.recorded) .. " days)"
+        end
       end
     end
     if #late > 0 then
-      return #late .. " backlog item(s) past their draw-down date: " .. table.concat(late, ", ")
+      return #late .. " backlog item(s) owed attention: " .. table.concat(late, ", ")
     end
   end,
 }, "promote, remove, or reschedule the overdue backlog items (`prova specs --backlog`)")

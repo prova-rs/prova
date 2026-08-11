@@ -25,30 +25,28 @@ Three origins, and the distinction is not decoration — it decides who can reti
 An external obligation is the only one that can outlive everyone who remembers it, which is why
 it is the only one that needs an anchor.
 
-<!-- backlog: anchor-records-when-it-was-captured -->
-**An anchor's date should record when the item was captured; deadlines should be computed, not
-written.** Today the optional `YYYY-MM-DD` after the id means *deadline* and `backlog-drawdown`
-fires on `date.past(o.date)`, which puts the burden in the wrong place: every item wants a
-hand-picked date nobody can honestly choose at capture time, pushing one back means editing the
-doc, and the item's **age** — the thing that actually says the shelf is rotting — is recorded
-nowhere. Invert it. The anchor stamps *when*, written once at capture and never edited again, and
-draw-down becomes a policy the condition computes: `date.days_since(o.recorded) > 30`. Then a lane
-slides all its deadlines by changing one number in one reminder, "everything older than two months"
-is a query rather than a bulk rewrite of anchors, and a policy can differ per lane or per doc
-without the items knowing. `date.days_since` already ships for exactly this; what changes is the
-anchor's meaning, the `dated` row's field (`recorded`, beside `kind`), the `prova backlog` wording
-(its column and the `--undated` nudge stop meaning "no deadline" and start meaning "captured before
-we recorded when"), `prova learn backlog`, and prova's own `backlog-drawdown`. The date belongs to
-the **anchor**, not to the cold state, so promotion leaves it untouched — the keyword flips, the
-date does not — and its meaning does not shift either: it is when the obligation was first written
-down, which on a claim is precisely the fact worth keeping (when this was specified). `dated` rows
-already carry `kind`, so the mirror policy on the owed side — "no claim has sat unproven for more
-than N months" — is the same one-liner against the same field. One question to
-settle before the parser moves, because it decides positional-date versus keyed-pair: a genuinely
-**external** deadline — the deprecation bridges' "gone by 2027-01-01", a compatibility commitment
-rather than a function of age — either keeps an optional `due=` beside the recorded date, or
-becomes an age policy of its own ("no deprecation bridge older than twelve months"). Migration is
-cheap right now: exactly one anchor in this tree carries a date. Recorded 2026-08-08.
+<!-- claim: anchor-records-when-it-was-captured -->
+**An anchor carries named properties; `recorded` stamps when the item was captured; deadlines
+are composed, not hand-picked.** The positional `YYYY-MM-DD` this grammar once carried could
+never say whether it meant recorded-on or due-by — its own author had to ask — and the one
+anchor that used it meant *due* while the design intent was *recorded*, so the slot was retired
+outright rather than reinterpreted: a bare date after the id is a taught error naming both named
+spellings. The grammar now: `<!-- backlog: id key=value … -->`. Two keys are **blessed** — prova
+itself relies on them, both ISO-validated, both optional: `recorded=` (when the item was first
+written down; the MCP `capture` tool stamps it automatically, making it the ideal on every
+anchor) and `due=` (a hard external deadline — the deprecation bridges' "gone by 2027-01-01", a
+commitment rather than a function of age). Every other key is the author's own vocabulary,
+parsed and passed through verbatim. The reminder surface `account.specs` carries every anchor as
+`{ address, kind, recorded?, due?, props }`, so draw-down is whatever a `when` composes:
+`date.days_since(o.recorded) > 30` is the sliding window every captured item gets for free —
+the lane slides all its deadlines by changing one number in one reminder — and `date.past(o.due)`
+draws down the commitments; the mirror policy on the owed side ("no claim has sat unproven for
+more than N months") is the same one-liner against `kind`. Properties belong to the **anchor**,
+not to the cold state: promotion flips the keyword and touches nothing else, so `recorded` keeps
+meaning what it says — when this was first specified, which on a claim is precisely the fact
+worth keeping. Blessed keys may grow over time; they never become required. The `--undated`
+nudge means "captured before the stamp existed"; the pass that stamps `recorded` onto existing
+anchors across repos is a prova-driven checklist of its own.
 
 <!-- claim: found-work-is-captured-not-absorbed -->
 **A bug found while working a promise — and not covered by it — is recorded as backlog, claim, or
@@ -237,7 +235,7 @@ in one line:
 
 ## Field reports (Substrate gate-integration run, 2026-08-11)
 
-<!-- backlog: fixture-failure-memoization -->
+<!-- backlog: fixture-failure-memoization recorded=2026-08-11 -->
 **A failed fixture re-provisions per consumer; expensive conducts pay it N times.** A
 `Scope.File` deputy fixture (a `cargo nextest` conduct) hit its `shell.run` timeout; each of
 the five dependent readers re-attempted the provision, burning 5 × 600s of cargo before the

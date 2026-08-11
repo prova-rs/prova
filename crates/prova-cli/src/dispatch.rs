@@ -1135,6 +1135,17 @@ pub(crate) fn run(cli_args: Vec<String>) -> ExitCode {
         Ok(resolved) => resolved,
         Err(code) => return code,
     };
+    // A run is TESTING, so the binary under test provisions here — just in time, only when
+    // asked (docs/design/manifest.md#runner-is-the-subject-not-the-conductor). Query verbs and
+    // `prova mcp` never reach this path; `-U` forces even a fresh subject to rebuild; pure
+    // discoveries (`--list`, the switches census) execute nothing and skip it.
+    if let Some(h) = home.as_ref() {
+        if !cli.list && !cli.switches_list {
+            if let Some(code) = crate::cmd_run::provision_subject(h, cli.update_force) {
+                return code;
+            }
+        }
+    }
     let suites = match collect_run_suites(&env, from_manifest) {
         Ok(suites) => suites,
         Err(code) => return code,

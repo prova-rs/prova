@@ -105,22 +105,6 @@ pub(crate) fn lane_line(p: &crate::manifest::Profile) -> String {
 /// docs/design/reminders.md). Reports every reminder with its recorded state, DUE first, and exits
 /// non-zero when any is due — the `attest` pattern, so "is anything owed attention?" is one exit
 /// code for a pipeline.
-/// The self-hosting trampoline (docs/design/manifest.md#manifest-declared-runner). When the
-/// nearest manifest declares `[runner]`, provision it (`build`, loud on failure) and re-exec the
-/// declared `bin` with the original argv — so any prova invoked at this home judges through the
-/// binary the manifest names, and freshness/identity are mechanism rather than prose.
-///
-/// `Some(code)` means the invocation was handled here (a completed re-exec on Windows, or a
-/// failed provision); `None` means proceed as the runner. Guards, in order:
-///   - `PROVA_TRAMPOLINED` non-empty: we ARE the hop's child (the flag rides the exec env and
-///     inherits to every descendant, so nested work never re-provisions).
-///   - `PROVA_RUN_DEPTH` non-empty: a `prova.bin` sub-run inside a proof — already the right
-///     binary by injection; rebuilding underneath a live suite would thrash it.
-///   - current exe IS the declared bin: invoking the artifact directly means that artifact;
-///     re-execing it into itself buys nothing (and on Windows the build could not replace a
-///     running exe anyway).
-///
-/// Empty-string guards count as unset, so a proof can re-arm the trampoline in a sandbox.
 /// Is any file at/under `root` modified after `stamped`? The freshness sweep behind the
 /// `[runner] sources` skip — cheap (hundreds of stats), and errs toward "newer" on any
 /// unreadable entry so doubt always rebuilds.
@@ -150,17 +134,33 @@ pub(crate) fn newer_than(root: &std::path::Path, stamped: std::time::SystemTime)
     }
 }
 
-/// Run the `[runner]` build when the sources say it is owed. `sources` is the speed opt-in:
-/// when the manifest names the build's input roots and nothing under them (nor the manifest
-/// itself) is newer than the last successful provision, the multi-second no-op build is skipped —
-/// freshness still holds, because any edit under a declared root re-arms the build. Undeclared
-/// sources always build. `Some(code)` is a provisioning failure to exit with.
-fn provision_runner(home: &Home, runner: &crate::manifest::RunnerSection) -> Option<ExitCode> {
+/// When the subject was last made current: the LATER of the provision stamp and the bin's own
+/// mtime. A direct `cargo build` of the subject produces exactly the artifact `prova.bin`
+/// injects — it IS a provision, and the stamp not knowing about it once sent an MCP handshake
+/// into a redundant multi-second build (measured live, under the retired re-exec model).
+fn provision_reference(
+    home: &Home,
+    runner: &crate::manifest::RunnerSection,
+) -> Option<std::time::SystemTime> {
+    let read = |p: std::path::PathBuf| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    let stamp = read(home.dir.join("target").join(".prova-runner-stamp"));
+    let bin = read(home.dir.join(&runner.bin));
+    match (stamp, bin) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+fn provision_runner(
+    home: &Home,
+    runner: &crate::manifest::RunnerSection,
+    force: bool,
+) -> Option<ExitCode> {
     let build = runner.build.as_deref()?;
     let stamp = home.dir.join("target").join(".prova-runner-stamp");
-    let fresh = !runner.sources.is_empty()
-        && std::fs::metadata(&stamp)
-            .and_then(|m| m.modified())
+    let fresh = !force
+        && !runner.sources.is_empty()
+        && provision_reference(home, runner)
             .map(|stamped| {
                 let mut roots: Vec<std::path::PathBuf> =
                     runner.sources.iter().map(|s| home.dir.join(s)).collect();
@@ -200,92 +200,65 @@ fn provision_runner(home: &Home, runner: &crate::manifest::RunnerSection) -> Opt
     }
 }
 
-pub(crate) fn runner_trampoline() -> Option<ExitCode> {
-    let non_empty = |k: &str| std::env::var(k).map(|v| !v.is_empty()).unwrap_or(false);
-    if non_empty("PROVA_TRAMPOLINED") || non_empty("PROVA_RUN_DEPTH") {
-        return None;
-    }
-    let home = home::find(std::path::Path::new(".")).ok()??;
-    // Parse `[runner]` LENIENTLY, never through the strict Manifest schema: the whole point of
-    // the hop is bridging version skew, and a manifest field this binary predates must not
-    // silently disarm the trampoline (deny_unknown_fields would fail the full parse, `.ok()?`
-    // would proceed as self, and the stale binary would answer wearing the repo's face — the
-    // exact footgun the mechanism exists to kill). Unknown keys inside [runner] are the future's
-    // business; build/bin/sources are read by name and everything else is ignored.
+/// The `[runner]` section, read leniently (bridging version skew is its job — a field this
+/// binary predates must not silently disarm it). `None` when the manifest declares none.
+pub(crate) fn declared_subject(home: &Home) -> Option<Result<crate::manifest::RunnerSection, ExitCode>> {
     let text = std::fs::read_to_string(&home.manifest).ok()?;
     let value: toml::Value = toml::from_str(&text).ok()?;
     let table = value.get("runner")?.as_table()?;
-    // A DECLARED [runner] that cannot be understood is loud, never a silent proceed-as-self:
-    // a typo'd `bin` disarming the hop would put the stale binary back in the judge's seat.
-    let Some(bin_rel) = table.get("bin").and_then(|v| v.as_str()) else {
+    // A DECLARED [runner] that cannot be read is loud, never a silent proceed: a typo'd `bin`
+    // would put the conductor in the subject's seat — the installed binary judging the tree,
+    // the exact footgun this section exists to kill.
+    let Some(bin) = table.get("bin").and_then(|v| v.as_str()) else {
         eprintln!(
-            "prova: [runner] declares no readable `bin` — the trampoline cannot hop; fix the \
-             manifest ([runner] bin = \"<home-relative path>\")"
+            "prova: [runner] declares no readable `bin` — the subject cannot be resolved; fix \
+             the manifest ([runner] bin = \"<home-relative path>\")"
         );
-        return Some(ExitCode::from(2));
+        return Some(Err(ExitCode::from(2)));
     };
-    let runner = crate::manifest::RunnerSection {
+    Some(Ok(crate::manifest::RunnerSection {
         build: table.get("build").and_then(|v| v.as_str()).map(String::from),
-        bin: bin_rel.to_string(),
+        bin: bin.to_string(),
         sources: table
             .get("sources")
             .and_then(|v| v.as_array())
             .map(|a| a.iter().filter_map(|v| v.as_str()).map(String::from).collect())
             .unwrap_or_default(),
-    };
-    let bin = home.dir.join(&runner.bin);
-    if let Ok(me) = std::env::current_exe() {
-        let same = match (me.canonicalize(), bin.canonicalize()) {
-            (Ok(a), Ok(b)) => a == b,
-            _ => false,
-        };
-        if same {
-            return None;
-        }
-    }
-    if let Some(code) = provision_runner(&home, &runner) {
-        return Some(code);
-    }
-    if !bin.is_file() {
-        eprintln!(
-            "prova: [runner] bin {} does not exist after the build — the manifest names a \
-             runner the provision step never produced",
-            bin.display()
-        );
-        return Some(ExitCode::from(2));
-    }
-    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        let err = std::process::Command::new(&bin)
-            .args(&args)
-            .env("PROVA_TRAMPOLINED", "1")
-            .exec();
-        eprintln!("prova: [runner] exec {} failed: {err}", bin.display());
-        Some(ExitCode::from(2))
-    }
-    #[cfg(not(unix))]
-    {
-        match std::process::Command::new(&bin)
-            .args(&args)
-            .env("PROVA_TRAMPOLINED", "1")
-            .status()
-        {
-            Ok(s) => Some(ExitCode::from(s.code().unwrap_or(1) as u8)),
-            Err(e) => {
-                eprintln!("prova: [runner] exec {} failed: {e}", bin.display());
-                Some(ExitCode::from(2))
-            }
-        }
-    }
+    }))
 }
 
-/// `prova switches` — the opt-in classes, listed: every declared `switch = "<class>"` with how
-/// many leaves it gates and WHO throws it ([run], the profiles that list it, or nobody — ad-hoc
-/// only). The ledger view that keeps a switched class from becoming a hidden test population
-/// (docs/design/manifest.md#switches-are-discoverable). A reporter: collects, executes nothing,
-/// exits 0.
+/// Provision the binary under test — just in time, only when a RUN asks
+/// (docs/design/manifest.md#runner-is-the-subject-not-the-conductor). Nothing re-execs anymore:
+/// the binary you invoke conducts, and `[runner]` names the SUBJECT — the build `prova.bin`
+/// injects, so nested proofs judge this tree's build while your installed prova stays the tool
+/// in your hand. Freshness compares sources against the LATER of the provision stamp and the
+/// bin's own mtime (a direct `cargo build` of the subject IS a provision); `force` (-U) builds
+/// unconditionally. `Some(code)` is a provisioning failure to exit with.
+pub(crate) fn provision_subject(home: &Home, force: bool) -> Option<ExitCode> {
+    // A `prova.bin` child inside a proof IS the subject — rebuilding underneath a live suite
+    // would thrash it. Empty counts as unset, so a sandbox proof re-arms provisioning.
+    let nested = std::env::var("PROVA_RUN_DEPTH").map(|v| !v.is_empty()).unwrap_or(false);
+    if nested {
+        return None;
+    }
+    let runner = match declared_subject(home)? {
+        Ok(r) => r,
+        Err(code) => return Some(code),
+    };
+    provision_runner(home, &runner, force)
+}
+
+/// The binary nested proofs reach as `prova.bin`: the declared subject when the manifest names
+/// one, else this executable. Resolution only — provisioning is the run path's explicit act.
+pub(crate) fn subject_bin(home: Option<&Home>) -> Option<std::path::PathBuf> {
+    if let Some(home) = home {
+        if let Some(Ok(runner)) = declared_subject(home) {
+            return Some(home.dir.join(runner.bin));
+        }
+    }
+    std::env::current_exe().ok()
+}
+
 pub(crate) fn switches_subcommand(args: Vec<String>) -> ExitCode {
     for arg in &args {
         if arg == "-h" || arg == "--help" {

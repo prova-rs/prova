@@ -122,26 +122,38 @@ small for a profile, and ad-hoc iteration on one heavy test; if those never mate
 dishonesty the reminders lane just killed); fuzzy `-k`/`--tags` must not (a grazing keyword must
 never conduct a workspace compile by accident). Recorded 2026-08-09.
 
-<!-- claim: manifest-declared-runner -->
-**The manifest can say everything about a run except which prova runs it — the Gradle Wrapper
-gap.** `cargo xtask proofs` existed to do three jobs prova could not state for itself: rebuild the
-runner from this tree (freshness), run the suite through that build (identity — the suite
-exercises the engine in-process AND probes `prova.bin` black-box, so both halves must be this
-commit's), and never prove through the machine-shared installed binary (the footgun that fired
-2026-08-09, when `~/.cargo/bin/prova` predated the `switches` manifest field and failed to parse
-this repo). Today those live in prose (CLAUDE.md's "never prove through an installed prova") and
-convention (`binary_identity_test` checks inner==outer, not outer==this-tree). The primitive: a
-`[run] runner` declaration — the self-hosting form `{ build = "cargo build -p prova-cli", bin =
-"target/debug/prova" }` provisions the runner and re-execs through it (depth-guarded, same argv;
-build failure is a loud failed provision, not a verdict), and the consumer form is a version gate
-(`runner = ">= 0.18"`). Provisioning the runner is fixture-work, not a quality gate, so the
-two-provenances boundary holds. Landed 2026-08-09: `cargo xtask proofs` is retired outright, the
-CLAUDE.md warning paragraph is replaced by mechanism, and bare `prova` is the one command even in
-prova's own repo — the exemplar bar (#exclusive-quality-interface's endgame). Invoking the
-declared bin directly skips the hop (naming the artifact means that artifact — and Windows could
-not replace a running exe anyway); the guard env vars treat empty as unset, the designed seam
-that lets a sandboxed proof re-arm the hop. The consumer form (`runner = ">= 0.18"`, a version
-gate with auto-fetch) remains open — it wants the registry's release channel.
+<!-- claim: runner-is-the-subject-not-the-conductor -->
+**`[runner]` names the binary UNDER TEST; nothing re-execs — the binary you invoke conducts.**
+The section's first life was a re-exec trampoline ("whichever prova was invoked, the one that
+judges is the one the manifest names"), and it earned its retirement empirically: every
+invocation paid a provision the verb rarely needed — a ledger read (`prova owed`) sat behind a
+cargo build, and an MCP handshake with a 30s client budget died behind one while the
+freshly-hopped server came up speaking into an abandoned pipe. The reframe: the trampoline's
+whole purpose was TESTING, so testing is the only thing that pays for it. A **run** provisions
+the declared subject just in time (`build`, skipped while `sources` are older than the LATER of
+the provision stamp and the bin's own mtime — a direct `cargo build` of the subject IS a
+provision; `-U` forces; failure is a loud exit 2 and nothing judges) and injects it as
+`prova.bin`, so nested proofs judge this tree's build. **Everything else** — query verbs,
+`prova mcp`, the tool in your hand — answers as the binary you invoked, immediately; a human
+refreshes their own tools deliberately (`cargo xtask install`). Identity holds where it matters:
+`binary_identity_test` guarantees nested runs and the suite AGREE on the subject, and the
+subject is the tree's build whenever a run conducted it. A `prova.bin` child never re-provisions
+(the depth guard inherits; empty-counts-as-unset re-arms a sandbox), and a declared-but-
+unreadable `bin` is loud — a typo must never put the conductor in the subject's seat. The
+consumer form (`runner = ">= 0.18"`, a version gate with auto-fetch) remains open — it wants
+the registry's release channel.
+
+<!-- backlog: subject-provisions-at-first-read recorded=2026-08-11 -->
+**The subject should provision at first `prova.bin` READ, not at run start.** The subject model
+made runs the only payers; the minimal form makes the *reaching proof* the only payer: a
+selected proof that never touches `prova.bin` bears zero build cost, so "run this one proof"
+costs exactly that proof — the granular-efficiency half of the platform sketch, applied to the
+subject itself (`prova -k one_pure_proof` after an engine edit should not compile the engine).
+Wants design, not just plumbing: the read is a Lua field access, so laziness is an `__index`
+seam feeding a CLI-provided provisioner; concurrent first-reads under `-j` must single-flight;
+and the provision itself must take the package's `cargo` lock — a lazy build racing a proof
+that holds `writes("cargo")` would violate the exact house rule the locks exist to enforce.
+Until it lands, a run's up-front provision is the honest over-approximation.
 
 <!-- claim: switches-are-discoverable -->
 **A switched class can never become a hidden test population.** Three sightlines, one per way of
@@ -221,7 +233,7 @@ warn nothing.
 
 ## Field reports (Substrate gate-integration run, 2026-08-11)
 
-<!-- backlog: lane-time-budgets -->
+<!-- backlog: lane-time-budgets recorded=2026-08-11 -->
 **"The bare run stays seconds" is a convention nothing enforces; lanes should carry ratcheted
 time budgets.** When five graduated proofs landed switchless in Substrate's default lane, the
 seconds-fast inner loop silently became a 10-minute gate — the exact regression that

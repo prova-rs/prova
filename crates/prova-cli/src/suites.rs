@@ -414,7 +414,7 @@ pub(crate) fn engine_config(
     // Surface the running binary (`prova.bin`) so a suite that drives prova recursively names the
     // build under test. Unlike `prova.root` this is available with or without a manifest — it
     // describes the process, not the package.
-    if let Some(bin) = prova_bin() {
+    if let Some(bin) = crate::cmd_run::subject_bin(home) {
         config = config.with_prova_bin(bin);
     }
     for (name, path) in &packages_resolved.named {

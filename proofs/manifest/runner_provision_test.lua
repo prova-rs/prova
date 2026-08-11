@@ -1,0 +1,122 @@
+-- `[runner]` names the SUBJECT, not the conductor
+-- (docs/design/manifest.md#runner-is-the-subject-not-the-conductor). Nothing re-execs: the
+-- binary you invoke answers as itself — your installed prova stays the tool in your hand for
+-- queries, MCP, everything. A RUN is testing, so it provisions the declared subject just in
+-- time and injects it as `prova.bin`; the sandbox build here appends to a log, so every
+-- provision is a countable fact.
+
+local function sandbox(t)
+  local dir = t:tempdir()
+  fs.mkdir(dir .. "/proofs")
+  fs.mkdir(dir .. "/src")
+  fs.mkdir(dir .. "/bin")
+  fs.write(dir .. "/src/marker.txt", "v1\n")
+  -- The sandbox suite records which binary its proofs would drive recursively.
+  fs.write(dir .. "/proofs/subject_test.lua",
+    'prova.test("who is the subject", function(t)\n' ..
+    '  fs.write(prova.root .. "/subject.txt", prova.bin)\n' ..
+    '  t:expect(true):is_true()\nend)\n')
+  fs.write(dir .. "/prova.toml", table.concat({
+    '[run]', 'proofs = ["proofs"]', '',
+    '[runner]',
+    "build   = 'echo built >> build.log && cp \"$PROVA_SRC\" bin/prova'",
+    'bin     = "bin/prova"',
+    'sources = ["src"]',
+  }, "\n"))
+  return dir
+end
+
+local function invoke(dir, args)
+  -- Re-arm provisioning inside the proof sandbox: empty-string guards count as unset.
+  return shell.run({ prova.bin, table.unpack(args) }, {
+    cwd = dir, timeout = "120s", merge_stderr = true,
+    env = { PROVA_RUN_DEPTH = "", PROVA_SRC = prova.bin },
+  })
+end
+
+local function provisions(dir)
+  local ok, text = pcall(fs.read, dir .. "/build.log")
+  if not ok then return 0 end
+  local n = 0
+  for _ in text:gmatch("built") do n = n + 1 end
+  return n
+end
+
+prova.test("a run provisions the subject and injects it as prova.bin — the conductor never re-execs", {
+  covers = "docs/design/manifest.md#runner-is-the-subject-not-the-conductor",
+  proves = "the re-exec trampoline taxed every invocation with a build the verb never needed — an MCP handshake died behind one, live; a run is the only thing that is TESTING, so it is the only thing that provisions",
+}, function(t)
+  local dir = sandbox(t)
+  local r = invoke(dir, {})
+  t:expect(r.code, r.stdout):equals(0)
+  t:expect(provisions(dir), "the run provisioned the subject"):equals(1)
+  -- The suite's nested reach IS the declared subject — not the (different) conductor binary.
+  t:expect(fs.read(dir .. "/subject.txt"), "prova.bin is the subject"):contains("bin/prova")
+
+  -- Freshness counts the bin's own mtime: nothing changed, so a second run does not rebuild.
+  local again = invoke(dir, {})
+  t:expect(again.code):equals(0)
+  t:expect(provisions(dir), "fresh subject, no rebuild"):equals(1)
+
+  -- -U is the freshness-knob family's force: rebuild even when fresh.
+  invoke(dir, { "-U" })
+  t:expect(provisions(dir), "-U forces the provision"):equals(2)
+
+  -- Sources move on; the next run re-provisions on its own.
+  prova.sleep(1100) -- mtime granularity
+  fs.write(dir .. "/src/marker.txt", "v2\n")
+  invoke(dir, {})
+  t:expect(provisions(dir), "a stale subject rebuilds for a run"):equals(3)
+end)
+
+prova.test("queries and `prova mcp` never provision — the tool in your hand answers as itself", {
+  covers = "docs/design/manifest.md#runner-is-the-subject-not-the-conductor",
+  proves = "re-provisioning a runner to answer `prova owed` taxed every ledger read in a self-hosting repo, and the same hop's build outran an MCP client's 30s handshake budget — navigation must be immediate; a human refreshes their tools deliberately",
+}, function(t)
+  local dir = sandbox(t)
+  -- No subject has ever been built; the ledger read answers anyway, building nothing.
+  local q = invoke(dir, { "specs", "--backlog" })
+  t:expect(q.code, q.stdout):equals(0)
+  t:expect(provisions(dir), "no build for a ledger read"):equals(0)
+
+  -- The MCP server starts (and EOF-exits) without a provision in the handshake path.
+  -- An immediate EOF is a failed handshake from the SERVER's point of view (non-zero is its
+  -- honest answer); what this proof pins is that it got to answer AT ALL without a provision.
+  local m = shell.run("printf '' | " .. prova.bin .. " mcp", {
+    cwd = dir, timeout = "60s", merge_stderr = true, env = { PROVA_RUN_DEPTH = "" },
+  })
+  t:expect(m.stdout, "the server reached the handshake, not a build"):contains("initialize")
+  t:expect(provisions(dir), "no build in the handshake path"):equals(0)
+end)
+
+prova.test("a failed provision is loud (exit 2) and nothing judges", {
+  covers = "docs/design/manifest.md#runner-is-the-subject-not-the-conductor",
+  proves = "a build failure is a failed provision, not a verdict — and never a silent run against whatever subject happened to be lying around",
+}, function(t)
+  local dir = sandbox(t)
+  fs.write(dir .. "/prova.toml", table.concat({
+    '[run]', 'proofs = ["proofs"]', '',
+    '[runner]',
+    'build   = "echo attempted >> build.log && exit 1"',
+    'bin     = "bin/prova"',
+    'sources = ["src"]',
+  }, "\n"))
+  local r = invoke(dir, {})
+  t:expect(r.code, "a failed provision exits 2"):equals(2)
+  t:expect(r.stdout):contains("build failed")
+  t:expect(fs.exists(dir .. "/subject.txt"), "no proof body ran"):is_false()
+end)
+
+prova.test("a nested prova.bin child never re-provisions under a live suite", {
+  covers = "docs/design/manifest.md#runner-is-the-subject-not-the-conductor",
+  proves = "the guard env inherits to every descendant — no rebuild storm underneath the very suite the subject is running",
+}, function(t)
+  local dir = sandbox(t)
+  -- No re-arm: this child inherits the real proof context's PROVA_RUN_DEPTH, exactly as a
+  -- nested run inside a proof would.
+  local r = shell.run({ prova.bin, "--allow-empty" }, {
+    cwd = dir, timeout = "120s", merge_stderr = true, env = { PROVA_SRC = prova.bin },
+  })
+  t:expect(r.code, r.stdout):equals(0)
+  t:expect(provisions(dir), "no provision under the guard"):equals(0)
+end)

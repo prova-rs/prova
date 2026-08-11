@@ -211,8 +211,8 @@ pub(crate) fn tests_subcommand(args: Vec<String>) -> ExitCode {
 /// state (docs/plans/query-consolidation.md). Selectors (`-k`/`--tags`) arrive with the shared
 /// query engine in a later increment.
 /// Parse the specs lane's filters: the state (`--claims` xor `--backlog`) and `--undated` —
-/// only items carrying no `YYYY-MM-DD` draw-down date (a date is what lets a reminder draw an
-/// item down); it composes with the state filter. `Err(ExitCode::SUCCESS)` is `--help`.
+/// only items with no `recorded=` capture stamp (the stamp is what gives an item its sliding
+/// deadline); it composes with the state filter. `Err(ExitCode::SUCCESS)` is `--help`.
 fn parse_specs_args(args: &[String]) -> Result<(Option<claims::Kind>, bool), ExitCode> {
     // The state flags derive from the lane registry — mutual exclusion is structural, and a
     // filter cannot name a state the lane lacks (alignment invariant 4).
@@ -234,7 +234,7 @@ fn parse_specs_args(args: &[String]) -> Result<(Option<claims::Kind>, bool), Exi
                     "usage: prova specs                 list the specs lane: every claim and backlog item\n\
                      \x20      prova specs --claims        only the claims (owed obligations)\n\
                      \x20      prova specs --backlog       only the backlog (captured, not yet owed)\n\
-                     \x20      prova specs --undated       only items with no draw-down date (composes)\n\
+                     \x20      prova specs --undated       only items with no recorded= capture stamp (composes)\n\
                      \x20      prova specs promote <id>    thaw a backlog item into a claim, in place\n\
                      \x20      prova specs backfill        proofs no claim backs — the reverse of `owed`\n\n\
                      Claims and backlog are the two states of one prose obligation, sharing the\n\
@@ -314,13 +314,13 @@ pub(crate) fn specs_subcommand(args: Vec<String>) -> ExitCode {
             Some(k) => c.kind == *k,
             None => true,
         })
-        .filter(|c| !undated_only || c.date.is_none())
+        .filter(|c| !undated_only || c.recorded().is_none())
         .collect();
 
     if items.is_empty() {
         match (want, undated_only) {
             (_, true) => {
-                println!("prova: nothing undated — every matching item carries a draw-down date")
+                println!("prova: nothing undated — every matching item carries a recorded= stamp")
             }
             (Some(claims::Kind::Claim), _) => {
                 println!("prova: no claims — no `<!-- claim: id -->` anchors in the spec sources")
@@ -341,14 +341,17 @@ pub(crate) fn specs_subcommand(args: Vec<String>) -> ExitCode {
             claims::Kind::Backlog => "BACKLOG",
         };
         let loc = format!("{}:{}", c.file.display(), c.line);
-        match &c.date {
-            Some(d) => println!("  {tag:<8} {:<40} {loc}  ({d})", c.address),
-            None => println!("  {tag:<8} {:<40} {loc}", c.address),
+        if c.props.is_empty() {
+            println!("  {tag:<8} {:<40} {loc}", c.address);
+        } else {
+            let props: Vec<String> =
+                c.props.iter().map(|(k, v)| format!("{k}={v}")).collect();
+            println!("  {tag:<8} {:<40} {loc}  ({})", c.address, props.join(" "));
         }
     }
     let claim_n = items.iter().filter(|c| c.kind == claims::Kind::Claim).count();
     let backlog_n = items.len() - claim_n;
-    let undated_n = items.iter().filter(|c| c.date.is_none()).count();
+    let undated_n = items.iter().filter(|c| c.recorded().is_none()).count();
     println!();
     let head = match want {
         Some(claims::Kind::Claim) => format!("{claim_n} claim(s)"),

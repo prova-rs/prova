@@ -26,6 +26,7 @@ local deputy = prova.fixture("nextest-junit", Scope.File, function()
 end)
 
 prova.test("the workspace's unit-test account holds — every nextest case adopted", {
+  locks = { prova.writes("cargo") },
   requires = { "cargo-nextest" },
   covers = "docs/design/verifiers.md#conduct-once-read-many",
   proves = "one compilation feeds the whole adoption: the fixture conducts, this proof ledgers every case as deputed rows, and the readers below pay only a parse",
@@ -50,6 +51,7 @@ local function expect_passed(t, report, name)
 end
 
 prova.test("the lane alignment invariants hold, spoken for by the account", {
+  locks = { prova.writes("cargo") },
   requires = { "cargo-nextest" },
   covers = "docs/design/mcp-mode.md#mcp-cli-parity",
   proves = "increment 1 deferred exactly this: the parity unit tests existed but evidence/owed/attest could not speak for them — now the account adopts their verdicts",
@@ -60,6 +62,7 @@ prova.test("the lane alignment invariants hold, spoken for by the account", {
 end)
 
 prova.test("selection-axes parity holds at the unit level, bound to its claim", {
+  locks = { prova.writes("cargo") },
   requires = { "cargo-nextest" },
   covers = "docs/design/mcp-mode.md#selection-axes-parity",
   proves = "the structural half of the parity claim (the exhaustive destructure + wire-schema match) reaches the account beside the behavioral black-box half",

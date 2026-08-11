@@ -186,6 +186,7 @@ local function by_file(rep)
 end
 
 prova.test("whole-bar line coverage — unit AND black-box merged — does not regress past the baseline", {
+  locks = { prova.writes("cargo") },
   requires = { "cargo-llvm-cov", "cargo-nextest" },
   covers = "docs/design/verifiers.md#coverage-of-the-whole-bar",
   proves = "unit-only coverage read modules/socket.rs at 2% while it owned a whole proof directory — a number that misleads at the edges is worse than none; the merged total is the bar prova actually holds",
@@ -203,6 +204,7 @@ prova.test("whole-bar line coverage — unit AND black-box merged — does not r
 end)
 
 prova.test("each layer's coverage holds on its own — and the delta names where unit tests are owed", {
+  locks = { prova.writes("cargo") },
   requires = { "cargo-llvm-cov", "cargo-nextest" },
   covers = "docs/design/verifiers.md#coverage-of-the-whole-bar",
   proves = "the delta is the signal: proven-black-box but unit-naked files are behavior with no fast local feedback — the granular-unit-test worklist, computed rather than guessed",

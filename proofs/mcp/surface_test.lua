@@ -364,8 +364,7 @@ prova.test("the capture tool writes a scanned anchor, stamps the date, and refus
   t:expect(err, "the capture succeeded"):never():is_truthy()
   t:expect(captured.captured.address):equals("docs/design.md#lease-renewal")
   local doc = fs.read(root .. "/docs/design.md")
-  t:expect(doc):contains("<!-- backlog: lease-renewal -->")
-  t:expect(doc, "the capture date is stamped into the prose"):contains("Recorded 20")
+  t:expect(doc, "the capture stamp is the anchor's blessed property"):contains("<!-- backlog: lease-renewal recorded=20")
 
   t:expect(by_id[3].result.isError, "an unscanned path is refused"):is_truthy()
   t:expect(by_id[3].result.content[1].text, "the refusal names the sources"):contains("docs")

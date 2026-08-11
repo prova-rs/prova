@@ -57,8 +57,24 @@ collect (run the .lua file)        →  Node arena (groups/flows/tests + fixture
 
 The **plan** is where strategy is resolved: a group flattens to its leaves (independent,
 parallelizable), a flow becomes one leaf whose steps are an ordered sub-run on one worker,
-`depends_on` becomes leaf edges that gate/order, and `resources` become the readers-writer
-constraints the scheduler co-schedules against. Keeping the plan a distinct artifact is what lets a
+`depends_on` becomes leaf edges that gate/order, and `locks` become the readers-writer
+constraints the scheduler co-schedules against — within the run AND across prova instances:
+
+<!-- claim: locks-cross-instance -->
+**A lock is held across every prova instance at the package's home, not just within one run.**
+Each non-run-scoped token is also a `flock` on a file under the package's `var/locks/` —
+`LOCK_SH` for readers, `LOCK_EX` for writers, kernel-released the instant a holder dies (crash-
+safe by construction; no daemon, no stale-lock reaping). So a house rule like "never two cargos"
+(`locks = { prova.writes("cargo") }`) binds `-j 10`, a second agent's run, and CI on the same box
+identically; a leaf blocked by another instance's hold waits its turn (the scheduler idles
+rather than dropping it). `scope = "machine"` moves the file to a machine-wide directory for
+rules that span repos; `prova.port(N)` defaults there, a host port being a machine-wide fact.
+`serial = true` stays deliberately run-scoped — it is the run's own parallelism dial, and rides
+a reserved `__prova_`-prefixed token the file-lock layer exempts. (`resources` is the deprecated
+spelling of `locks`; a topology *resource* — a provisioned service — is an unrelated concept
+that shares nothing but the retired name.)
+
+Keeping the plan a distinct artifact is what lets a
 **load executor** be a drop-in alternative to the acceptance executor over the same leaves.
 
 ## Timeouts (the three mechanisms)

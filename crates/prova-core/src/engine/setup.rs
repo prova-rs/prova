@@ -324,20 +324,30 @@ fn install_utilities(lua: &Lua, prova: &Table) -> mlua::Result<()> {
 fn install_resources(lua: &Lua, prova: &Table) -> mlua::Result<()> {
     prova.set(
         "port",
-        lua.create_function(|lua, number: u64| {
+        lua.create_function(|lua, (number, opts): (u64, Option<Table>)| {
+            let machine = parse_lock_scope(&opts)?;
             lua.create_userdata(ResourceRef {
                 token: format!("port:{number}"),
                 shared: false,
+                // A listener binds a HOST port, so the honest default scope is the machine:
+                // two provas at one home already collide on :8080, and so do two homes.
+                machine: machine.unwrap_or(true),
             })
         })?,
     )?;
     prova.set(
         "writes",
-        lua.create_function(|lua, v: Value| resource_ref(lua, v, false))?,
+        lua.create_function(|lua, (v, opts): (Value, Option<Table>)| {
+            let machine = parse_lock_scope(&opts)?;
+            resource_ref(lua, v, false, machine)
+        })?,
     )?;
     prova.set(
         "reads",
-        lua.create_function(|lua, v: Value| resource_ref(lua, v, true))?,
+        lua.create_function(|lua, (v, opts): (Value, Option<Table>)| {
+            let machine = parse_lock_scope(&opts)?;
+            resource_ref(lua, v, true, machine)
+        })?,
     )?;
     // The pre-`reads`/`writes` spellings, kept working but deliberately unadvertised: `resource` ==
     // `writes`, `shared` == `reads`. Their stubs are `---@deprecated`, which keeps an existing suite
@@ -345,11 +355,11 @@ fn install_resources(lua: &Lua, prova: &Table) -> mlua::Result<()> {
     // them, and no one's tests break the day they upgrade.
     prova.set(
         "resource",
-        lua.create_function(|lua, v: Value| resource_ref(lua, v, false))?,
+        lua.create_function(|lua, v: Value| resource_ref(lua, v, false, None))?,
     )?;
     prova.set(
         "shared",
-        lua.create_function(|lua, v: Value| resource_ref(lua, v, true))?,
+        lua.create_function(|lua, v: Value| resource_ref(lua, v, true, None))?,
     )?;
     Ok(())
 }

@@ -141,8 +141,10 @@ end)
   `flow:step(...)`); a bare `prova.test` inside either body is an error. Cross-unit gating: `depends_on = { handle }` (handles, not strings) —
   upstream failure **skips** downstream, never fails it, never passes state.
 - opts: `tags`, `requires`, `timeout = "60s"`,
-  `resources = { prova.port(N), prova.writes("db"), prova.reads("cache") }` (say what the test does
-  to the resource: `writes` = exclusive, `reads` = concurrent), `serial = true`, `falsified_by = fn` (the mutation that must break it — `prova tests falsify`),
+  `locks = { prova.port(N), prova.writes("db"), prova.reads("cache") }` (say what the test does
+  to the token: `writes` = exclusive, `reads` = concurrent; held across every prova instance at
+  this home, so house rules like "one cargo at a time" survive `-j` and concurrent runs —
+  `prova learn locks`), `serial = true` (run-scoped), `falsified_by = fn` (the mutation that must break it — `prova tests falsify`),
   `promises = "reason"` (a
   proof authored ahead of its implementation — `prova learn promises`). `--jobs` is throughput
   only — it can never change what a run means.

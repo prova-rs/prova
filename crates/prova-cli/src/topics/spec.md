@@ -32,8 +32,10 @@ same shape and one shared id namespace, one keyword apart:
 <!-- claim: never-preempt -->       owed — reconciled, dischargeable (prova learn claims)
 ```
 
-Either state can carry an optional `YYYY-MM-DD` after the id (`<!-- backlog: id 2026-09-01 -->`) — a
-draw-down deadline a reminder can hold you to. A **backlog** item is muted: out of `owed`, off CI,
+Either state can carry named `key=value` properties after the id (`<!-- backlog: id
+recorded=2026-08-11 due=2026-09-01 -->`) — `recorded` (the capture stamp, blessed) and `due` (a
+hard deadline, blessed) feed the draw-down policies a reminder composes; custom keys pass through
+(`prova learn backlog`). A **backlog** item is muted: out of `owed`, off CI,
 invisible to a run — captured without obligation. A **claim** is owed until a proof covers it. Promotion flips the keyword in place — the id and prose
 do not move — which is only possible because the directory source is read/write. `prova owed`
 reconciles the claims; `prova specs --backlog` lists the cold ones.

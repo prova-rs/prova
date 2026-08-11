@@ -9,6 +9,6 @@ schedule it asks of everyone else. This is the exemplar: the feature, demonstrat
 Promote one to a claim (and delete the bridge, and prove it gone) when its time comes, or push the
 date deliberately. Do not let it rot silently — that is the whole point of the date.
 
-<!-- backlog: retire-specs-docs-shim 2027-01-01 -->
+<!-- backlog: retire-specs-docs-shim recorded=2026-08-08 due=2027-01-01 -->
 The `[specs] docs = [...]` shorthand is a deprecation bridge for the pre-`[[specs.source]]` config;
 remove it, and its warning, once consumers have migrated. (`prova learn spec`.)
