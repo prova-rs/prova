@@ -1143,6 +1143,41 @@ fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
 mod tests {
     use super::*;
 
+    /// Framing::parse speaks the whole grammar — the string form, both table forms, the bounds,
+    /// and the taught refusals. Encode wraps a payload in its on-wire form, with the length
+    /// prefix big-endian across its declared width.
+    #[test]
+    fn framing_parse_and_encode() {
+        let lua = Lua::new();
+        assert!(Framing::parse(None).unwrap().is_raw());
+        assert!(matches!(
+            Framing::parse(Some(Value::String(lua.create_string("line").unwrap()))),
+            Ok(Framing::Line)
+        ));
+        let t = lua.create_table().unwrap();
+        t.set("length_prefixed", 4).unwrap();
+        assert!(matches!(Framing::parse(Some(Value::Table(t))), Ok(Framing::LengthPrefixed(4))));
+        let t = lua.create_table().unwrap();
+        t.set("length_prefixed", 9).unwrap();
+        assert!(Framing::parse(Some(Value::Table(t))).is_err(), "width capped at 8");
+        let t = lua.create_table().unwrap();
+        t.set("delimiter", "\u{1}").unwrap();
+        assert!(matches!(Framing::parse(Some(Value::Table(t))), Ok(Framing::Delimiter(_))));
+        let t = lua.create_table().unwrap();
+        t.set("delimiter", "").unwrap();
+        assert!(Framing::parse(Some(Value::Table(t))).is_err(), "empty delimiter refused");
+        assert!(Framing::parse(Some(Value::Integer(3))).is_err(), "wrong type taught");
+
+        assert_eq!(Framing::Raw.encode(b"ab"), b"ab");
+        assert_eq!(Framing::Line.encode(b"ab"), b"ab\n");
+        assert_eq!(Framing::LengthPrefixed(2).encode(b"abc"), vec![0, 3, b'a', b'b', b'c']);
+        assert_eq!(
+            Framing::Delimiter(vec![0xff]).encode(b"x"),
+            vec![b'x', 0xff],
+            "delimiter appends"
+        );
+    }
+
     /// The scheme IS the parse: tcp:// keeps its host:port, anything else is a taught error.
     #[test]
     fn parse_addr_schemes() {

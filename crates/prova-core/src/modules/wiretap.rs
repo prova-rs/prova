@@ -276,6 +276,19 @@ mod tests {
         assert_eq!(only.get::<i64>("seq").unwrap(), 3);
     }
 
+    /// The `.network` vantage: absent when never requested (nil, not an empty table), and the
+    /// host-gateway address when present — a mock is a host process, not a DNS alias.
+    #[test]
+    fn network_table_present_only_when_requested() {
+        let lua = Lua::new();
+        assert!(matches!(network_table(&lua, &None, 8080).unwrap(), Value::Nil));
+        let v = network_table(&lua, &Some("gw.docker.internal".into()), 8080).unwrap();
+        let Value::Table(t) = v else { panic!("expected a table") };
+        assert_eq!(t.get::<String>("url").unwrap(), "http://gw.docker.internal:8080");
+        assert_eq!(t.get::<String>("host").unwrap(), "gw.docker.internal");
+        assert_eq!(t.get::<u16>("port").unwrap(), 8080);
+    }
+
     /// A filter of the wrong type is a taught error, not a silent keep-nothing.
     #[test]
     fn filtered_journal_refuses_a_scalar_filter() {

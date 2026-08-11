@@ -444,6 +444,49 @@ mod tests {
         assert_eq!(sh_quote("`id`; echo x"), "'`id`; echo x'");
     }
 
+    /// The generated shim is the process transport's whole contract, as a plain script: stubs are
+    /// PREFIX-matched case arms in declaration order, replay arms are EXACT-argv, and with no
+    /// upstream the tail fails LOUD (exit 127 with a prova-branded message) — an unstubbed call
+    /// with nowhere to go is the most interesting thing a double can say.
+    #[test]
+    fn write_shim_renders_the_contract() {
+        use crate::engine::make_tempdir;
+        let dir = make_tempdir().unwrap();
+        let state = ShimState {
+            dir: dir.clone(),
+            shim: dir.join("git"),
+            spool: dir.join("spool"),
+            upstream: None,
+            stubs: vec![Stub {
+                argv: vec!["status".into()],
+                stdout: b"clean".to_vec(),
+                code: 3,
+            }],
+            cassette: None,
+            recording: false,
+            replay: vec![ReplayTurn {
+                argv_joined: "log --oneline".into(),
+                stdout: b"abc123".to_vec(),
+                code: 0,
+            }],
+            redact: Vec::new(),
+        };
+        write_shim(&state).unwrap();
+        let script = std::fs::read_to_string(dir.join("git")).unwrap();
+        assert!(script.starts_with("#!/bin/sh"), "a POSIX shim");
+        assert!(script.contains(r"'status'|'status'\ *)"), "stubs prefix-match: {script}");
+        assert!(script.contains("exit 3"), "the stub's exit code rides along");
+        assert!(script.contains("'log --oneline')"), "replay arms are exact: {script}");
+        assert!(script.contains("exit 127"), "no upstream → the loud tail");
+        assert!(script.contains("prova shell.proxy: no stub"), "and it says why");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.join("git")).unwrap().permissions().mode();
+            assert_eq!(mode & 0o111, 0o111, "the shim is executable");
+        }
+    }
+
     /// A recorded key is `argv-joined \u{1} stdin` with `\u{0}` argv separators; the replay arm
     /// recovers the argv half (space-joined) and pairs it with the decoded stdout and exit code.
     #[test]
