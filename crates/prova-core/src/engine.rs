@@ -1257,4 +1257,36 @@ mod tests {
             }]
         );
     }
+
+    /// The whole selection algebra in one place: lanes gate first and the CLI narrows WITHIN
+    /// them; include axes compose as OR; excludes narrow after; and an empty selection admits
+    /// everything.
+    #[test]
+    fn selection_selects_lanes_gate_and_axes_compose() {
+        let empty = Selection::default();
+        assert!(empty.selects(&["a › b"], &[]));
+
+        let mut sel = Selection::default();
+        sel.keywords.push("orders".into());
+        assert!(sel.selects(&["Orders › creates"], &[]), "keywords are case-insensitive substrings");
+        assert!(!sel.selects(&["billing › charges"], &[]));
+
+        sel.tags.push("slow".into());
+        assert!(sel.selects(&["billing › charges"], &["slow".into()]), "include axes compose as OR");
+
+        sel.keyword_excludes.push("charges".into());
+        assert!(!sel.selects(&["billing › charges"], &["slow".into()]), "excludes narrow after includes");
+
+        let mut lane = Selection::default();
+        lane.lane_tags.push("ut".into());
+        assert!(!lane.selects(&["anything"], &[]), "outside the lane, nothing else matters");
+        assert!(lane.selects(&["anything"], &["ut".into()]));
+        lane.keywords.push("orders".into());
+        assert!(!lane.selects(&["billing"], &["ut".into()]), "the CLI narrows WITHIN the lane");
+
+        let mut lane_ex = Selection::default();
+        lane_ex.lane_tag_excludes.push("soak".into());
+        assert!(!lane_ex.selects(&["x"], &["soak".into()]));
+        assert!(lane_ex.selects(&["x"], &[]));
+    }
 }

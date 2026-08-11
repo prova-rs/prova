@@ -6,11 +6,11 @@
       "direction": "higher_is_better"
     },
     "rust.coverage.lines": {
-      "value": 82.76439363005308,
+      "value": 82.82618436596195,
       "direction": "higher_is_better"
     },
     "rust.coverage.unit": {
-      "value": 63.39730502245814,
+      "value": 63.538229663122735,
       "direction": "higher_is_better",
       "goal": 70.0
     },

@@ -523,3 +523,51 @@ pub(super) async fn run_plan(
         emit_finished(reporter, summary, &results);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node(path: &str, outcome: Outcome, teardown: bool) -> NodeResult {
+        NodeResult {
+            path: path.to_string(),
+            outcome,
+            duration: std::time::Duration::ZERO,
+            assertions: 0,
+            message: None,
+            file: None,
+            line: None,
+            teardown,
+            promises: None,
+        }
+    }
+
+    /// Path arithmetic for the cascade-skip messages: a flow's label is its path minus the step,
+    /// and a step's name is the last segment.
+    #[test]
+    fn flow_paths_split_on_the_separator() {
+        assert_eq!(flow_label("suite › flow › step one"), "suite › flow");
+        assert_eq!(flow_label("bare"), "bare");
+        assert_eq!(step_name("suite › flow › step one"), "step one");
+        assert_eq!(step_name("bare"), "bare");
+    }
+
+    /// The dependency gate's verdict: teardown leaves never gate (a leaked container must not
+    /// cascade-skip a subgraph), and an open promise gates like a failure — the upstream's
+    /// implementation does not exist, so a dependent's premise cannot hold.
+    #[test]
+    fn unit_outcome_gates_on_work_not_cleanup() {
+        assert_eq!(unit_outcome(&[node("a", Outcome::Passed, false)]), Outcome::Passed);
+        assert_eq!(
+            unit_outcome(&[node("a", Outcome::Passed, false), node("a ⟶ teardown", Outcome::Failed, true)]),
+            Outcome::Passed,
+            "a raising cleanup does not fail the unit's work"
+        );
+        assert_eq!(
+            unit_outcome(&[node("a", Outcome::Promised, false)]),
+            Outcome::Failed,
+            "an open promise gates like a failure"
+        );
+        assert_eq!(unit_outcome(&[node("a", Outcome::Skipped, false)]), Outcome::Skipped);
+    }
+}

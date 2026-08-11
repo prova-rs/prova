@@ -1041,4 +1041,18 @@ mod tests {
             ("prova".into(), "solo".into())
         );
     }
+
+    /// Every duration spelling a manifest, proof, or wait option accepts — and the ones that must
+    /// refuse. The grammar every timeout in the system rides on.
+    #[test]
+    fn parse_duration_grammar() {
+        assert_eq!(parse_duration("500ms"), Some(Duration::from_millis(500)));
+        assert_eq!(parse_duration("2s"), Some(Duration::from_secs(2)));
+        assert_eq!(parse_duration("1.5s"), Some(Duration::from_millis(1500)));
+        assert_eq!(parse_duration("3m"), Some(Duration::from_secs(180)));
+        assert_eq!(parse_duration("  10s  "), Some(Duration::from_secs(10)), "whitespace-tolerant");
+        assert_eq!(parse_duration("7"), Some(Duration::from_secs(7)), "bare numbers are seconds");
+        assert_eq!(parse_duration("fast"), None);
+        assert_eq!(parse_duration(""), None);
+    }
 }
