@@ -85,19 +85,51 @@ fn store(root: &Path, set: &str, base: &Baselines) -> std::io::Result<()> {
     std::fs::write(path(root, set), text + "\n")
 }
 
+/// Which metrics a banking pass may move — the steady-state policy
+/// (docs/design/verifiers.md#baseline-bank-policy).
+#[derive(Debug, Clone, PartialEq)]
+pub enum BankSelection {
+    /// Bare `--update-baseline`: establish first-sights, tighten ONLY goal-carrying metrics
+    /// (active debt). A goal-less metric is a protection whose committed floor never moves
+    /// without a hand — its improvements stay green and unbanked (steady-state slack).
+    GoalCarrying,
+    /// `--update-baseline=<sel,…>`: move exactly the matching metrics (each selector is a
+    /// substring over the metric name — the `--heed=SEL` spelling family), goal or no goal.
+    /// A selector that matches nothing is reported loudly, never a silent no-op.
+    Named(Vec<String>),
+}
+
+impl BankSelection {
+    fn covers(&self, name: &str, existing: &Metric) -> bool {
+        match self {
+            BankSelection::GoalCarrying => existing.goal.is_some(),
+            BankSelection::Named(sels) => sels.iter().any(|s| name.contains(s.as_str())),
+        }
+    }
+}
+
 /// What an [`update`] pass did, for the caller to report.
 #[derive(Debug, Default)]
 pub struct UpdateReport {
     pub established: Vec<String>,
     pub tightened: Vec<String>,
     pub refused: Vec<String>,
+    /// Improvements a goal-less metric measured but did not bank — steady-state slack, named so
+    /// the human can bank deliberately (`--update-baseline=<name>`) instead of wondering.
+    pub held: Vec<String>,
 }
 
-/// Update baselines under `root` from this run's measurements, grouped by set. Tightens freely
-/// (improvement or first sight); refuses to loosen (regression), leaving that metric's committed
-/// floor intact. The refused ones are reported, not written — the guard.
-pub fn update(root: &Path, measurements: &[Measurement]) -> UpdateReport {
+/// Update baselines under `root` from this run's measurements, grouped by set, moving only what
+/// `selection` covers. First sight of a metric always establishes (a metric with no floor gates
+/// nothing). A covered metric tightens on improvement and REFUSES to loosen — the guard is
+/// absolute on every flag path; loosening is a hand edit reviewed in the diff. An uncovered
+/// metric holds: its improvement is reported, not written.
+pub fn update(root: &Path, measurements: &[Measurement], selection: &BankSelection) -> UpdateReport {
     let mut report = UpdateReport::default();
+    let mut matched: Vec<bool> = match selection {
+        BankSelection::Named(sels) => vec![false; sels.len()],
+        BankSelection::GoalCarrying => Vec::new(),
+    };
     let mut by_set: BTreeMap<String, Vec<&Measurement>> = BTreeMap::new();
     for m in measurements {
         by_set.entry(m.set.clone()).or_default().push(m);
@@ -106,6 +138,13 @@ pub fn update(root: &Path, measurements: &[Measurement]) -> UpdateReport {
         let mut base = load(root, &set);
         base.schema = SCHEMA;
         for m in ms {
+            if let BankSelection::Named(sels) = selection {
+                for (i, s) in sels.iter().enumerate() {
+                    if m.name.contains(s.as_str()) {
+                        matched[i] = true;
+                    }
+                }
+            }
             let dir_str = m.direction.as_str().to_string();
             match base.metrics.get(&m.name) {
                 None => {
@@ -129,6 +168,17 @@ pub fn update(root: &Path, measurements: &[Measurement]) -> UpdateReport {
                         Direction::LowerIsBetter => m.value <= existing.value,
                         Direction::HigherIsBetter => m.value >= existing.value,
                     };
+                    if !selection.covers(&m.name, existing) {
+                        // Steady-state: not this pass's to move. A strict improvement is worth a
+                        // line; an equal or regressed value is the gate's business, not the bank's.
+                        if improves && m.value != existing.value {
+                            report.held.push(format!(
+                                "{set}:{} stays at {} (measured {}; no goal — bank it by name: --update-baseline={})",
+                                m.name, existing.value, m.value, m.name
+                            ));
+                        }
+                        continue;
+                    }
                     if improves {
                         let mut updated = existing.clone();
                         let from = updated.value;
@@ -153,6 +203,15 @@ pub fn update(root: &Path, measurements: &[Measurement]) -> UpdateReport {
                 .push(format!("{set}: could not write baseline: {e}"));
         }
     }
+    if let BankSelection::Named(sels) = selection {
+        for (s, hit) in sels.iter().zip(matched) {
+            if !hit {
+                report.refused.push(format!(
+                    "--update-baseline={s}: no recorded measurement matches {s:?} (a typo never silently no-ops)"
+                ));
+            }
+        }
+    }
     report
 }
 
@@ -166,10 +225,17 @@ impl UpdateReport {
         for line in &self.tightened {
             eprintln!("prova: baseline tightened {line}");
         }
+        for line in &self.held {
+            eprintln!("prova: baseline held {line}");
+        }
         for line in &self.refused {
             eprintln!("prova: baseline REFUSED {line}");
         }
-        if self.established.is_empty() && self.tightened.is_empty() && self.refused.is_empty() {
+        if self.established.is_empty()
+            && self.tightened.is_empty()
+            && self.held.is_empty()
+            && self.refused.is_empty()
+        {
             eprintln!("prova: --update-baseline: no measurements recorded this run");
         }
         self.refused.is_empty()
@@ -180,6 +246,15 @@ impl UpdateReport {
 mod tests {
     use super::*;
     use crate::engine::make_tempdir;
+
+    /// Hand-edit a goal into a committed metric, the way a human schedules a paydown.
+    fn schedule_goal(root: &std::path::Path, set: &str, name: &str, goal: f64) {
+        let p = root.join(format!(".prova/baselines/{set}.json"));
+        let mut base: Baselines =
+            serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        base.metrics.get_mut(name).unwrap().goal = Some(goal);
+        std::fs::write(&p, serde_json::to_string(&base).unwrap()).unwrap();
+    }
 
     fn m(name: &str, value: f64, direction: Direction) -> Measurement {
         Measurement {
@@ -214,7 +289,11 @@ mod tests {
     #[test]
     fn update_establishes_first_sight() {
         let root = make_tempdir().unwrap();
-        let report = update(&root, &[m("rust.unwraps", 20.0, Direction::LowerIsBetter)]);
+        let report = update(
+            &root,
+            &[m("rust.unwraps", 20.0, Direction::LowerIsBetter)],
+            &BankSelection::GoalCarrying,
+        );
         assert_eq!(report.established.len(), 1);
         assert!(report.tightened.is_empty() && report.refused.is_empty());
         let base = load(&root, "quality");
@@ -228,13 +307,14 @@ mod tests {
     #[test]
     fn update_tightens_and_refuses_lower_is_better() {
         let root = make_tempdir().unwrap();
-        update(&root, &[m("clones", 10.0, Direction::LowerIsBetter)]);
+        update(&root, &[m("clones", 10.0, Direction::LowerIsBetter)], &BankSelection::GoalCarrying);
+        schedule_goal(&root, "quality", "clones", 0.0);
 
-        let report = update(&root, &[m("clones", 8.0, Direction::LowerIsBetter)]);
+        let report = update(&root, &[m("clones", 8.0, Direction::LowerIsBetter)], &BankSelection::GoalCarrying);
         assert_eq!(report.tightened.len(), 1);
         assert_eq!(load(&root, "quality").metrics["clones"].value, 8.0);
 
-        let report = update(&root, &[m("clones", 12.0, Direction::LowerIsBetter)]);
+        let report = update(&root, &[m("clones", 12.0, Direction::LowerIsBetter)], &BankSelection::GoalCarrying);
         assert_eq!(report.refused.len(), 1);
         assert!(report.tightened.is_empty());
         assert_eq!(load(&root, "quality").metrics["clones"].value, 8.0);
@@ -244,13 +324,14 @@ mod tests {
     #[test]
     fn update_tightens_and_refuses_higher_is_better() {
         let root = make_tempdir().unwrap();
-        update(&root, &[m("coverage", 60.0, Direction::HigherIsBetter)]);
+        update(&root, &[m("coverage", 60.0, Direction::HigherIsBetter)], &BankSelection::GoalCarrying);
+        schedule_goal(&root, "quality", "coverage", 100.0);
 
-        let report = update(&root, &[m("coverage", 70.0, Direction::HigherIsBetter)]);
+        let report = update(&root, &[m("coverage", 70.0, Direction::HigherIsBetter)], &BankSelection::GoalCarrying);
         assert_eq!(report.tightened.len(), 1);
         assert_eq!(load(&root, "quality").metrics["coverage"].value, 70.0);
 
-        let report = update(&root, &[m("coverage", 65.0, Direction::HigherIsBetter)]);
+        let report = update(&root, &[m("coverage", 65.0, Direction::HigherIsBetter)], &BankSelection::GoalCarrying);
         assert_eq!(report.refused.len(), 1);
         assert_eq!(load(&root, "quality").metrics["coverage"].value, 70.0);
     }
@@ -260,10 +341,11 @@ mod tests {
     #[test]
     fn update_equal_value_rebanks() {
         let root = make_tempdir().unwrap();
-        update(&root, &[m("clones", 5.0, Direction::LowerIsBetter)]);
-        let report = update(&root, &[m("clones", 5.0, Direction::LowerIsBetter)]);
+        update(&root, &[m("clones", 5.0, Direction::LowerIsBetter)], &BankSelection::GoalCarrying);
+        schedule_goal(&root, "quality", "clones", 0.0);
+        let report = update(&root, &[m("clones", 5.0, Direction::LowerIsBetter)], &BankSelection::GoalCarrying);
         assert_eq!(report.tightened.len(), 1);
-        assert!(report.refused.is_empty());
+        assert!(report.refused.is_empty() && report.held.is_empty(), "equal is a rebank, never held noise");
     }
 
     /// The paydown fields survive a tightening update untouched — the goal machinery depends on
@@ -271,7 +353,7 @@ mod tests {
     #[test]
     fn update_carries_goal_through_tighten() {
         let root = make_tempdir().unwrap();
-        update(&root, &[m("expects", 25.0, Direction::LowerIsBetter)]);
+        update(&root, &[m("expects", 25.0, Direction::LowerIsBetter)], &BankSelection::GoalCarrying);
         // Hand-edit the file the way a human schedules a paydown.
         let p = root.join(".prova/baselines/quality.json");
         let mut base: Baselines = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
@@ -280,7 +362,7 @@ mod tests {
         metric.deadline = Some("2026-12-31".to_string());
         std::fs::write(&p, serde_json::to_string(&base).unwrap()).unwrap();
 
-        update(&root, &[m("expects", 20.0, Direction::LowerIsBetter)]);
+        update(&root, &[m("expects", 20.0, Direction::LowerIsBetter)], &BankSelection::GoalCarrying);
         let metric = &load(&root, "quality").metrics["expects"];
         assert_eq!(metric.value, 20.0);
         assert_eq!(metric.goal, Some(10.0));
@@ -292,13 +374,13 @@ mod tests {
     #[test]
     fn update_carries_tolerance_through_tighten() {
         let root = make_tempdir().unwrap();
-        update(&root, &[m("bb", 60.0, Direction::HigherIsBetter)]);
+        update(&root, &[m("bb", 60.0, Direction::HigherIsBetter)], &BankSelection::GoalCarrying);
         let p = root.join(".prova/baselines/quality.json");
         let mut base: Baselines = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
         base.metrics.get_mut("bb").unwrap().tolerance = Some(1.0);
         std::fs::write(&p, serde_json::to_string(&base).unwrap()).unwrap();
 
-        update(&root, &[m("bb", 62.0, Direction::HigherIsBetter)]);
+        update(&root, &[m("bb", 62.0, Direction::HigherIsBetter)], &BankSelection::Named(vec!["bb".into()]));
         let metric = &load(&root, "quality").metrics["bb"];
         assert_eq!(metric.value, 62.0);
         assert_eq!(metric.tolerance, Some(1.0));
@@ -313,7 +395,7 @@ mod tests {
         a.set = "alpha".to_string();
         let mut b = m("y", 2.0, Direction::LowerIsBetter);
         b.set = "beta".to_string();
-        update(&root, &[a, b]);
+        update(&root, &[a, b], &BankSelection::GoalCarrying);
         assert!(root.join(".prova/baselines/alpha.json").is_file());
         assert!(root.join(".prova/baselines/beta.json").is_file());
         assert_eq!(load(&root, "alpha").metrics["x"].value, 1.0);
@@ -329,5 +411,71 @@ mod tests {
             ..Default::default()
         };
         assert!(!refused.print());
+    }
+
+    /// The steady-state policy: a goal-less metric's improvement is HELD (green, unbanked,
+    /// named in the report with the named-banking spelling) — a lucky run never mints a floor
+    /// nobody chose. The refuse-to-loosen guard needs no bank coverage: the gate owns regressions.
+    #[test]
+    fn bare_update_holds_goalless_improvements() {
+        let root = make_tempdir().unwrap();
+        update(&root, &[m("coverage", 60.0, Direction::HigherIsBetter)], &BankSelection::GoalCarrying);
+
+        let report = update(&root, &[m("coverage", 75.0, Direction::HigherIsBetter)], &BankSelection::GoalCarrying);
+        assert!(report.tightened.is_empty(), "no goal, no tighten");
+        assert_eq!(report.held.len(), 1);
+        assert!(report.held[0].contains("--update-baseline=coverage"), "{:?}", report.held);
+        assert_eq!(load(&root, "quality").metrics["coverage"].value, 60.0, "the floor did not move");
+
+        // A goal-less regression is the ratchet gate's business — the bank stays silent.
+        let report = update(&root, &[m("coverage", 50.0, Direction::HigherIsBetter)], &BankSelection::GoalCarrying);
+        assert!(report.held.is_empty() && report.refused.is_empty() && report.tightened.is_empty());
+    }
+
+    /// Named banking moves exactly what was asked for — goal or no goal — and the loosen guard
+    /// stays absolute even when the metric is named.
+    #[test]
+    fn named_banking_moves_exactly_the_named_metrics() {
+        let root = make_tempdir().unwrap();
+        update(
+            &root,
+            &[
+                m("coverage.unit", 60.0, Direction::HigherIsBetter),
+                m("coverage.lines", 80.0, Direction::HigherIsBetter),
+            ],
+            &BankSelection::GoalCarrying,
+        );
+
+        let sel = BankSelection::Named(vec!["coverage.unit".into()]);
+        let report = update(
+            &root,
+            &[
+                m("coverage.unit", 65.0, Direction::HigherIsBetter),
+                m("coverage.lines", 85.0, Direction::HigherIsBetter),
+            ],
+            &sel,
+        );
+        assert_eq!(report.tightened.len(), 1, "{report:?}");
+        assert_eq!(load(&root, "quality").metrics["coverage.unit"].value, 65.0);
+        assert_eq!(load(&root, "quality").metrics["coverage.lines"].value, 80.0, "unnamed holds");
+
+        let report = update(&root, &[m("coverage.unit", 55.0, Direction::HigherIsBetter)], &sel);
+        assert_eq!(report.refused.len(), 1, "naming a metric never authorizes loosening it");
+        assert_eq!(load(&root, "quality").metrics["coverage.unit"].value, 65.0);
+    }
+
+    /// A selector that matches no recorded measurement is a loud refusal — a typo must never
+    /// read as a successful no-op bank.
+    #[test]
+    fn named_banking_reports_selectors_that_matched_nothing() {
+        let root = make_tempdir().unwrap();
+        let report = update(
+            &root,
+            &[m("coverage.unit", 60.0, Direction::HigherIsBetter)],
+            &BankSelection::Named(vec!["covrage".into()]),
+        );
+        assert_eq!(report.refused.len(), 1);
+        assert!(report.refused[0].contains("covrage"), "{:?}", report.refused);
+        assert!(!report.print(), "an unmatched selector flips the verdict");
     }
 }

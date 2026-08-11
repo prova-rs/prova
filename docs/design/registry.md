@@ -132,6 +132,15 @@ the archetype knows whether it creates a package (`deny` — refuse to render ov
 or augments one (`allow` — e.g. scaffolding a local package into `packages`). A consumer who declares
 the key in their own config can still override it, but they should not have to know it.
 
+<!-- claim: render-preserves-by-default -->
+**Below the manifest gate, rendering into a live project never clobbers it.** `in_package` decides
+whether a render may *start* over an existing package; this claim is about what happens to
+individual files once it does. The default `if_exists` policy is **preserve**: a file the project
+already owns survives byte-for-byte while everything non-colliding still lands — which is exactly
+what retrofit archetypes (an `allow` entry augmenting a live repo) depend on. An archetype that
+means to replace declares `Existing.Overwrite` per render call; destruction is opt-in and
+declared, never a default.
+
 <!-- claim: archetype-key-resolution -->
 **The key does not encode the repo.** `prova init acme-api` resolves `acme-api` through this table; it
 does not derive a URL from the key's spelling. That distinction is the point of the indirection — an

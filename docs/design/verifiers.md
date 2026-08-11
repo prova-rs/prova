@@ -144,21 +144,20 @@ llvm-cov's own target dir and only measurement DATA is cleaned between conducts 
 incremental), the class is switch-gated out of every sweep, and CI gives it a nightly leg rather
 than a per-push one.
 
-<!-- backlog: baseline-update-policy -->
-**Baselines need a steady-state mode: hold by default, ratchet by declaration.** Today
-`--update-baseline` tightens every improved in-scope metric — over-ratcheting: a lucky run's
-incidental unwrap improvement becomes a floor nobody chose, and a noisy metric (coverage %) gets
-a floor riding its jitter ceiling into flaky reds. The policy, using fields the baseline file
-already carries: **`goal` is the intent marker** — bare `--update-baseline` establishes
-first-sights and tightens ONLY goal-carrying metrics (active debt); goal-less metrics are
-protections whose committed floor never moves without a hand (improvements stay green and
-unbanked — steady-state slack is a feature). **Named banking** (`--update-baseline=<name,…>`,
-the `--heed=SEL` spelling family) moves exactly the metrics asked for. **`tolerance`** per
-metric absorbs measurement noise: red only when worse than floor − tolerance, a reviewed number
-in the committed file, never a loosened floor. The refuse-to-loosen guard stays absolute on the
-flag path; deliberate loosening remains a hand edit reviewed in the PR diff (and the ratchet
-failure message must say so — today it points at `--update-baseline`, which would refuse).
-Recorded 2026-08-09.
+<!-- claim: baseline-bank-policy -->
+**Baselines hold by default and ratchet by declaration — `goal` is the intent marker.** Bare
+`--update-baseline` establishes first-sights (a metric with no floor gates nothing) and tightens
+ONLY goal-carrying metrics (active debt); a goal-less metric is a protection whose committed
+floor never moves without a hand — its improvements stay green and unbanked (steady-state slack
+is a feature; the report names each held metric with the deliberate-banking spelling). **Named
+banking** (`--update-baseline=<name,…>`, the `--heed=SEL` spelling family) moves exactly the
+matching metrics, goal or no goal, and a selector matching nothing recorded is a loud refusal —
+a typo never reads as a successful bank. **`tolerance`** per metric absorbs measurement noise:
+red only when worse than floor − tolerance, a reviewed number in the committed file, never a
+loosened floor. The refuse-to-loosen guard is absolute on every flag path; deliberate loosening
+is a hand edit reviewed in the PR diff, and the ratchet failure message says exactly that.
+(The pre-policy behavior — every improved metric tightened on every bank — was over-ratcheting,
+measured live on this repo's own coverage floors, 2026-08-09→11.)
 
 ## The facet convention (for the verifiers that follow)
 

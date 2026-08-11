@@ -33,6 +33,9 @@ inquire = "0.9"
 # discharges is reported instead of passing silently.
 sha2 = "0.10"
 hex = "0.4"
+# The capture date on `capture`-tool anchors (RFC3339 prefix = YYYY-MM-DD) — same zero-dep
+# crate prova-core stamps JUnit timestamps with.
+humantime = "2"
 # The suite manifest (`prova.toml`): declare what to run and how, for local + CI.
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"

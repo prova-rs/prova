@@ -297,3 +297,46 @@ prova.test("`prova learn plugins` teaches the registries and the search-first mo
   t:expect(r.stdout):contains("prova plugins")         -- the verb an agent should reach for
   t:expect(r.stdout):contains("main")                  -- the configured registries, rendered live
 end)
+
+-- ── the MCP mirror: one implementation, two transports ───────────────────────────────────────
+
+prova.test("the MCP packages tool searches the same registries the CLI verb does",
+  { covers = "docs/design/registry.md#registry-mcp-mirror" }, function(t)
+  local sb = t:use(sandbox)
+
+  -- The CLI leg: rows on stdout. "database" appears only in postgres's keywords, so the query
+  -- exercises the full match (name + description + keywords), not a name prefix.
+  local cli = plugins(sb, "database")
+  t:expect(cli.code):equals(0)
+  t:expect(cli.stdout):contains("postgres")
+  t:expect(cli.stdout):never():contains("rabbitmq")
+
+  -- The MCP leg: the same query through `prova mcp` stdio JSON-RPC, same sandboxed registries.
+  local req = sb.root .. "/mirror-requests.jsonl"
+  fs.write(req, table.concat({
+    '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05",'
+      .. '"capabilities":{},"clientInfo":{"name":"proof","version":"0"}}}',
+    '{"jsonrpc":"2.0","method":"notifications/initialized"}',
+    '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"packages",'
+      .. '"arguments":{"query":"database"}}}',
+  }, "\n") .. "\n")
+  local r = shell.run(prova.bin .. " mcp < " .. req, {
+    cwd = sb.root, env = sb.env(), timeout = "60s",
+  })
+  local answer
+  for line in r.stdout:gmatch("[^\n]+") do
+    local ok, msg = pcall(json.decode, line)
+    if ok and type(msg) == "table" and msg.id == 2 then answer = msg end
+  end
+  t:expect(answer, "the packages tool answered"):is_truthy()
+  local payload = json.decode(answer.result.content[1].text)
+
+  -- Parity is the claim: the same one entry, with the fields the CLI's info view prints —
+  -- one shared implementation serving both transports, not two searchers that happen to agree.
+  t:expect(#payload.packages):equals(1)
+  local entry = payload.packages[1]
+  t:expect(entry.name):equals("postgres")
+  t:expect(entry.registry):equals("main")
+  t:expect(entry.repo):equals("https://github.com/prova-rs/prova-postgres")
+  t:expect(entry.latest):equals("v2")
+end)

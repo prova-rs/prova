@@ -390,3 +390,32 @@ prova.test("the binary teaches the account: `prova learn reminders` names the ve
   t:expect(r.stdout):contains("prova reminders")
   t:expect(r.stdout):contains("heed")
 end)
+
+prova.test("scope-level requires reaches the scope's reminders — the honest reason, not the raw raise", {
+  covers = "docs/design/reminders.md#reminder-gating-follows-scope",
+  proves = "a suite gated on docker skipped every test with one sentence naming the capability while its reminders still evaluated and reported whatever the condition raised (`docker: command not found`) — the author had to repeat the suite's capability on every reminder, and forgetting was invisible",
+}, function(t)
+  local root = t:use(scratch)
+  local proj = root .. "/scoped"
+  fs.mkdir(proj .. "/proofs/gated")
+  fs.write(proj .. "/prova.toml", MANIFEST)
+  -- The suite's setup file gates the WHOLE suite on a capability this machine lacks.
+  fs.write(proj .. "/proofs/gated/suite.lua", [[
+suite.config { requires = { "no-such-capability-zz" } }
+]])
+  fs.write(proj .. "/proofs/gated/watch_test.lua", [[
+prova.test("gated with the suite", function(t) t:expect(true):is_true() end)
+
+prova.remind("scoped watcher", {
+  when = function() error("no-such-tool: command not found") end,
+}, "act")
+]])
+
+  local run = shell.run(prova.bin, { cwd = proj, merge_stderr = true })
+  t:expect(run.code, run.stdout):equals(0)
+
+  local r = shell.run(prova.bin .. " reminders", { cwd = proj, merge_stderr = true })
+  t:expect(r.stdout):contains("UNEVALUATED")
+  t:expect(r.stdout, "the scope's capability is the reason"):contains("no-such-capability-zz")
+  t:expect(r.stdout, "not whatever the condition happened to raise"):never():contains("command not found")
+end)

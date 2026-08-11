@@ -598,7 +598,11 @@ mod tests {
         // MCP tools with no same-named CLI verb, and why. `status` is drift — the CLI spells the same
         // capability `ps`; increment 7 unifies the topology lifecycle and retires this name.
         // (`introspect` graduated: it now has a `prova introspect` CLI verb — increment 8.)
-        const KNOWN_MCP_ONLY: &[&str] = &["status"];
+        // `capture` exists for the agent boundary specifically: a human's editor writes the anchor
+        // directly (it is one line of markdown in a doc they have open), while an agent needs the
+        // VERIFIED write — refuse-unscanned-path, refuse-duplicate-id, rescan-to-prove-it-landed —
+        // that a hand edit cannot enforce (docs/design/mcp-mode.md#backlog-capture-is-a-taught-procedure).
+        const KNOWN_MCP_ONLY: &[&str] = &["status", "capture"];
         let known: std::collections::BTreeSet<&str> = VERBS.iter().map(|v| v.name).collect();
 
         // Read the LIVE router (never a hand-kept list) — a tool added or renamed in a `#[tool]`

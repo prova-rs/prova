@@ -200,7 +200,7 @@ fn install_remind(lua: &Lua, prova: &Table, col: &SharedCollector) -> mlua::Resu
                                     .into(),
                             )
                         })?;
-                    let requires: Vec<String> = opts
+                    let own_requires: Vec<String> = opts
                         .get::<Option<Vec<String>>>("requires")?
                         .unwrap_or_default();
                     let tags: Vec<String> =
@@ -208,6 +208,25 @@ fn install_remind(lua: &Lua, prova: &Table, col: &SharedCollector) -> mlua::Resu
                     let line = caller_line(lua, &col);
                     let mut c = col.borrow_mut();
                     let file = c.current_file;
+                    // Gating follows scope (docs/design/reminders.md#reminder-gating-follows-scope):
+                    // a reminder inherits the ambient chain's `requires` — `suite.config`'s root
+                    // fold, an enclosing describe's — exactly as a test declared here would, so
+                    // on a machine missing the capability it reports `requires "…" (unavailable)`
+                    // instead of whatever the condition happened to raise. Scope first, own after:
+                    // the first unmet expression names the reason, and the scope's is the broader fact.
+                    let mut requires: Vec<String> = Vec::new();
+                    for &ix in &c.parent_stack {
+                        for r in &c.nodes[ix].opts.requires {
+                            if !requires.contains(r) {
+                                requires.push(r.clone());
+                            }
+                        }
+                    }
+                    for r in own_requires {
+                        if !requires.contains(&r) {
+                            requires.push(r);
+                        }
+                    }
                     c.reminders.push(ReminderDef {
                         name,
                         when,

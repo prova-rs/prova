@@ -53,3 +53,21 @@ prova.test("a profile's heed list heeds a subset (phase shaping)", function(t)
   local dir2 = workspace(t, '[profiles.deps-only]\nheed = ["deps"]\n')
   t:expect(run(dir2, "--profile", "deps-only").code, "deps watching"):equals(0)
 end)
+
+prova.test("heed speaks the one selector grammar — `!` excludes, exactly as everywhere else", {
+  covers = "docs/design/reminders.md#heed-selector-is-the-one-grammar",
+  proves = "matches_selector was the last private selector dialect in the tree (substring-or-exact-tag, two lines, 'mirroring selection in spirit') — heed now constructs the same Selection the lane report narrows through, so the grammar cannot drift between reading the lane and gating on it",
+}, function(t)
+  -- `--heed=!maintenance` heeds everything NOT maintenance-tagged: line-counts (quality) is DUE
+  -- and heeded — fatal.
+  local dir = workspace(t)
+  t:expect(run(dir, "--heed=!maintenance").code, "excluded-by-tag leaves quality heeded"):never():equals(0)
+
+  -- Excluding the quality tag spares the one DUE reminder — the run stays green even though
+  -- everything else is heeded.
+  t:expect(run(dir, "--heed=!quality").code, "the DUE reminder is excluded"):equals(0)
+
+  -- The exclude composes with an include, `-k`-style: heed line-counts but not its tag's
+  -- siblings — include-then-exclude narrows, exactly as test selection does.
+  t:expect(run(dir, "--heed=line-counts,!line-counts").code, "an exclude beats its include"):equals(0)
+end)

@@ -10,7 +10,11 @@ approach", this is what they mean:
 3. Write the proof FIRST, in a `*.prova.lua` file where the manifest points (`prova learn
    project` says where in this repo). Run it. **Red is correct at this stage** — a proof that
    passes before you implement proves nothing.
-4. Implement. Re-run with `prova --last-failed` until green.
+4. Implement. Re-run with `prova --last-failed` until green. Driving it green will surface
+   things this proof does not cover — a defect, a gap, a wrong assumption. What you find and do
+   not fix NOW is **captured before the work moves on** — a `<!-- backlog: id -->` anchor for a
+   shelf item, a claim for something specified but unproven, a promise when the proof can be
+   written today — never scope-crept into this change, never a mental note. `prova learn backlog`.
 5. Commit proof + implementation together: a proof-carrying change. Pushed, CI runs the SAME
    suite byte-identical (`uses: prova-rs/run-action@v1`) — the bar you just set holds without
    you, no translation step, no second harness to drift.

@@ -50,26 +50,24 @@ rather than a function of age — either keeps an optional `due=` beside the rec
 becomes an age policy of its own ("no deprecation bridge older than twelve months"). Migration is
 cheap right now: exactly one anchor in this tree carries a date. Recorded 2026-08-08.
 
-<!-- backlog: found-work-is-captured-not-absorbed -->
+<!-- claim: found-work-is-captured-not-absorbed -->
 **A bug found while working a promise — and not covered by it — is recorded as backlog, claim, or
-promise before the work moves on; the taught loop should say so.** The table above names three
-origins, but the commonest in practice is a fourth: *discovery mid-work* — driving one promise
-green surfaces a defect, a gap, or a wrong assumption the promise does not cover. Today the taught
-surfaces (the skill, `prova learn`, the loop as the design docs state it) say "write the proof,
-drive it green" and stop, so a discovery has exactly two informal exits: scope-creep into the
-current change (the fix rides along, unstated and unproven at its own bar) or a mental note (the
-one ledger that never survives the session). Both lose the fact. The doctrine wants one sentence
-wherever the loop is taught: what you find and do not fix NOW is captured — a backlog anchor when
-it is a shelf item, a claim when it is specified but unproven, a promise when the proof can be
-written today (the red-by-design body *is* the record) — and choosing among the three is nothing
-new to learn, it is just how far the discovery has already travelled (the ladder above). Session
-evidence, the day this was recorded: shipping the first registry-resolved archetype surfaced three
-prova defects (the headless driver dropping `ExistingFilePolicy`, a release gate invoking a
-retired xtask verb, the registry→archetect URL bridge); each was fixed-with-proof on the spot, but
-only because the finder happened to hold the context to — a finder without it had no taught place
-to put them down. Capture *mechanics* are the sibling item
+promise before the work moves on; the taught loop says so.** The table above names three origins,
+but the commonest in practice is a fourth: *discovery mid-work* — driving one promise green
+surfaces a defect, a gap, or a wrong assumption the promise does not cover. Without the teaching,
+a discovery has exactly two informal exits: scope-creep into the current change (the fix rides
+along, unstated and unproven at its own bar) or a mental note (the one ledger that never survives
+the session); both lose the fact. So every surface that teaches the loop carries the sentence —
+the skill's step 4 routes what green surfaces to its capture block, and `prova learn pdd`'s step 4
+names the three lanes in place: a backlog anchor when it is a shelf item, a claim when it is
+specified but unproven, a promise when the proof can be written today (the red-by-design body *is*
+the record). Choosing among the three is nothing new to learn — it is just how far the discovery
+has already travelled (the ladder above). Session evidence, the day this was recorded (2026-08-10):
+shipping the first registry-resolved archetype surfaced three prova defects; each was
+fixed-with-proof on the spot, but only because the finder happened to hold the context to — a
+finder without it had no taught place to put them down. Capture *mechanics* are the sibling item
 (`docs/design/mcp-mode.md#backlog-capture-is-a-taught-procedure` — where an item goes so the
-ledger scans it); this one is *when* the loop demands one exists at all. Recorded 2026-08-10.
+ledger scans it); this one is *when* the loop demands one exists at all.
 
 ## How far it has travelled
 

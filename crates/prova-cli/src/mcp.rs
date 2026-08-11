@@ -57,7 +57,8 @@ use prova_core::{
 mod blocking;
 use blocking::{
     attest_blocking, capabilities_blocking, down_blocking, eval_blocking, evidence_blocking,
-    list_blocking, owed_blocking, packages_blocking, reminders_blocking, run_blocking, switches_blocking,
+    capture_blocking, list_blocking, owed_blocking, packages_blocking, reminders_blocking, run_blocking,
+    switches_blocking,
     specs_blocking, up_blocking, warm_eval_blocking, warm_run_blocking,
 };
 
@@ -526,6 +527,27 @@ struct SpecsRequest {
     package: Option<String>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct CaptureRequest {
+    /// `"backlog"` (captured in place, deliberately not yet owed) or `"claim"` (owed the moment
+    /// it is written — a proof discharges it via `covers`).
+    state: String,
+    /// The anchor id — one token, no spaces (it becomes the address `<file>#<id>`). Must not
+    /// already be anchored anywhere in the spec sources: a duplicate id makes an address ambiguous.
+    id: String,
+    /// The item's prose — what is owed or shelved, with enough context to act on later. The
+    /// capture date is appended automatically unless the text already carries "Recorded".
+    prose: String,
+    /// Repo-relative path of the spec doc whose SUBJECT the item belongs to. Must sit under a
+    /// `[[specs.source]]` directory (anywhere else the ledger never scans — refused, naming the
+    /// sources); created with a heading if absent. `learn { topic = "project" }` names this
+    /// package's writable sources.
+    file: String,
+    /// A directory or manifest path: capture into THAT package. Resolves fresh.
+    package: Option<String>,
+}
+
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[serde(deny_unknown_fields)]
 struct RemindersRequest {
@@ -970,6 +992,16 @@ impl ProvaMcpServer {
         let _serialized = self.run_lock.lock().await;
         let env = self.env.clone();
         blocking(move || specs_blocking(&env, req)).await
+    }
+
+    #[tool(
+        name = "capture",
+        description = "Write a backlog or claim anchor into a spec doc — the specs lane's one capture write, verified. Performs the taught procedure (see the skill's capture block): you choose the file whose subject fits (`learn { topic = \"project\" }` names the writable [[specs.source]] roots), this tool refuses any path the ledger would never scan, refuses an id that is already anchored (an address must stay unambiguous), appends `<!-- backlog: id -->` / `<!-- claim: id -->` plus the prose (capture date stamped), and RESCANS to prove the anchor landed before answering. Returns compact JSON: { captured: { state, address, file, line } } — address is what a proof's `covers` names. Promotion (backlog → claim) stays CLI-side: `prova specs promote <id>`. See learn { topic = \"backlog\" }."
+    )]
+    async fn capture(&self, Parameters(req): Parameters<CaptureRequest>) -> CallToolResult {
+        let _serialized = self.run_lock.lock().await;
+        let env = self.env.clone();
+        blocking(move || capture_blocking(&env, req)).await
     }
 
     #[tool(

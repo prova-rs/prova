@@ -387,11 +387,33 @@ impl Heed {
     }
 
     /// Does this policy make `entry` (a DUE reminder) fatal?
+    ///
+    /// `Matching` speaks the one selector grammar
+    /// (docs/design/reminders.md#heed-selector-is-the-one-grammar): each selector is a `-k`-style
+    /// substring over the reminder's name and declaring file AND a tag include (the axes compose
+    /// as OR, exactly as the lane report narrows), and a `!`-prefixed selector excludes on both
+    /// axes — so `--heed=deps`, `--heed=quality`, and `--heed=!flaky` all mean what the same
+    /// spelling means everywhere else.
     pub fn heeds(&self, entry: &prova_core::ledger::ReminderEntry) -> bool {
         match self {
             Heed::None => false,
             Heed::All => true,
-            Heed::Matching(sels) => sels.iter().any(|s| entry.matches_selector(s)),
+            Heed::Matching(sels) => {
+                let mut selection = prova_core::Selection::default();
+                for s in sels {
+                    match s.strip_prefix('!') {
+                        Some(rest) => {
+                            selection.keyword_excludes.push(rest.to_string());
+                            selection.tag_excludes.push(rest.to_string());
+                        }
+                        None => {
+                            selection.keywords.push(s.clone());
+                            selection.tags.push(s.clone());
+                        }
+                    }
+                }
+                selection.selects_reminder(&entry.name, entry.file.as_deref(), &entry.tags)
+            }
         }
     }
 }

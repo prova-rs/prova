@@ -137,23 +137,23 @@ the adoption thesis: a novice with an agent loads prova and gets spec-driven eng
 matter of course, because the binary teaches its own practice — prose files drift, computed cards
 cannot.
 
-<!-- backlog: backlog-capture-is-a-taught-procedure -->
-**"Add a backlog item" must be a taught procedure, not a syntax an agent reassembles.** The skill
-and `prova learn backlog` teach the anchor's *shape* — the keyword, promotion, the draw-down date —
-and neither teaches *where it goes*, so an agent told to capture something guesses at a file, and a
-plausible guess (a plan, a README, a scratch note) lands the item somewhere the ledger never scans:
-capture that silently does not capture. Three steps, taught as one: **(1)** ask the config which
-spec sources exist and which of them can be written to
-(`docs/design/manifest.md#spec-sources-are-queryable`); **(2)** locate the spec file whose subject
-the item belongs to, or create one under a writable source; **(3)** write the anchor with the date
-it was captured (`docs/design/lifecycle.md#anchor-records-when-it-was-captured` — until that lands,
-the capture date goes in the item's prose, because the anchor's one date slot means *deadline*).
-The same three steps are what an MCP `backlog` tool would have to perform, so the procedure is the
-tool's spec as much as the skill's text. Recorded 2026-08-08. *Largely landed 2026-08-11:* the
-project card names the writable sources and the anchor to write, the skill's capture block routes
-every "add …" verb to its lane, `learn backlog` hands off to the card for placement, and a
-`.prova/CONTEXT.md` carries this repo's register rules — what remains of this item is the MCP
-capture *tool* the procedure specs.
+<!-- claim: backlog-capture-is-a-taught-procedure -->
+**"Add a backlog item" is a taught procedure, not a syntax an agent reassembles.** The failure
+this closes: an agent told to capture something guessed at a file, and a plausible guess (a plan,
+a README, a scratch note) landed the item somewhere the ledger never scans — capture that silently
+did not capture. Three steps, taught as one: **(1)** ask the config which spec sources exist and
+which of them can be written to (`docs/design/manifest.md#spec-sources-are-queryable`); **(2)**
+locate the spec file whose subject the item belongs to, or create one under a writable source;
+**(3)** write the anchor with the date it was captured
+(`docs/design/lifecycle.md#anchor-records-when-it-was-captured` — until that lands, the capture
+date goes in the item's prose, because the anchor's one date slot means *deadline*). The taught
+surfaces carry it — the project card names the writable sources, the skill's capture block routes
+every "add …" verb to its lane, `learn backlog` hands off to the card for placement, a
+`.prova/CONTEXT.md` carries this repo's register rules — and the MCP **`capture` tool** performs
+the same procedure as one verified write: the caller's judgment picks the file, the tool refuses
+any path the ledger would never scan (naming the sources) and any already-anchored id (an address
+stays unambiguous), stamps the capture date into the prose, and rescans to prove the anchor landed
+before answering with the address. Recorded 2026-08-08; landed in full 2026-08-11.
 
 ## Phasing
 

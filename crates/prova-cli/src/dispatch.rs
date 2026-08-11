@@ -17,7 +17,7 @@ struct Cli {
     gha: Option<report::GhaMode>,
     jobs: Option<usize>,
     update_snapshots: bool,
-    update_baseline: bool,
+    update_baseline: Option<prova_core::baselines::BankSelection>,
     unreferenced: String, // ignore | warn | delete
     config: Option<String>,
     list: bool,
@@ -73,7 +73,7 @@ impl Default for Cli {
             gha: None,
             jobs: None,
             update_snapshots: false,
-            update_baseline: false,
+            update_baseline: None,
             unreferenced: String::from("ignore"),
             config: None,
             list: false,
@@ -176,6 +176,20 @@ impl Cli {
             self.record_to = Some(std::path::PathBuf::from(v));
         // `--heed` (bare) heeds all DUE reminders; `--heed=<sel>[,<sel>]` heeds only the matching
         // ones (by reminder name/tag) — the ad-hoc form of a profile's `heed` list. Accumulates.
+        } else if let Some(sels) = arg.strip_prefix("--update-baseline=") {
+            // Named banking (docs/design/verifiers.md#baseline-bank-policy): move exactly the
+            // matching metrics. An empty list is the bare form misspelled — refuse it.
+            let names: Vec<String> = sels
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .collect();
+            if names.is_empty() {
+                eprintln!("prova: --update-baseline= expects metric name(s), e.g. --update-baseline=rust.coverage.unit");
+                return Err(ExitCode::from(2));
+            }
+            self.update_baseline = Some(prova_core::baselines::BankSelection::Named(names));
         } else if let Some(sels) = arg.strip_prefix("--heed=") {
             let list: Vec<String> = sels
                 .split(',')
@@ -290,7 +304,9 @@ impl Cli {
             "--due" => self.due = true,
             "--allow-empty" => self.allow_empty = true,
             "--update-snapshots" | "-u" => self.update_snapshots = true,
-            "--update-baseline" => self.update_baseline = true,
+            "--update-baseline" => {
+                self.update_baseline = Some(prova_core::baselines::BankSelection::GoalCarrying)
+            }
             "--update" | "-U" => self.update_force = true,
             "--offline" => self.offline = true,
             "--json" => self.format = Some(Format::Json),
@@ -963,11 +979,12 @@ fn conclude_run(
     }
 
     // `--update-baseline`: move the committed baselines toward this run's observed values,
-    // through the guard (tightens freely; refuses to loosen). Never happens on a plain run.
-    if cli.update_baseline {
+    // through the guard and the steady-state policy (first-sights establish; bare tightens only
+    // goal-carrying metrics; =names moves exactly those; loosening is never an option here).
+    if let Some(selection) = &cli.update_baseline {
         match home.as_ref() {
             Some(h) => {
-                prova_core::baselines::update(&h.dir, &measurements).print();
+                prova_core::baselines::update(&h.dir, &measurements, selection).print();
             }
             None => eprintln!("prova: --update-baseline: no project home; nothing to write"),
         }

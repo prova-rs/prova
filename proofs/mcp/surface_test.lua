@@ -334,3 +334,50 @@ prova.test("the one embedded skill: printed, served as instructions, and install
   t:expect(root .. "/.claude/skills/prova/SKILL.md"):exists()
   t:expect(fs.read(root .. "/.claude/skills/prova/SKILL.md")):contains(fingerprint)
 end)
+
+-- ── capture: the specs lane's one write, verified ────────────────────────────────────────────
+
+prova.test("the capture tool writes a scanned anchor, stamps the date, and refuses the unscannable", {
+  covers = "docs/design/mcp-mode.md#backlog-capture-is-a-taught-procedure",
+  proves = "an agent told to capture something used to guess at a file, and a plausible guess (a plan, a README) landed the item where the ledger never scans — capture that silently did not capture",
+}, function(t)
+  local root = t:use(scratch)()
+  fs.mkdir(root .. "/docs")
+  fs.mkdir(root .. "/proofs")
+  fs.write(root .. "/prova.toml",
+    '[run]\nproofs = ["proofs"]\n\n[[specs.source]]\ntype = "directory"\npath = "docs"\n')
+  fs.write(root .. "/docs/design.md",
+    "# design\n\n<!-- claim: existing-item -->\nAlready anchored, for the duplicate-id refusal.\n")
+
+  local by_id = mcp(root, {
+    -- A good capture: under the source, fresh id — lands, dated, addressable.
+    call(2, "capture", '{"state":"backlog","id":"lease-renewal","prose":"Leases should renew before expiry.","file":"docs/design.md"}'),
+    -- A plausible-but-unscanned path: refused, naming the sources.
+    call(3, "capture", '{"state":"backlog","id":"lost-item","prose":"x","file":"README.md"}'),
+    -- A duplicate id: refused, naming the existing address.
+    call(4, "capture", '{"state":"claim","id":"existing-item","prose":"x","file":"docs/design.md"}'),
+    -- The lane sees the capture (the same server, same scan the ledger uses).
+    call(5, "specs", '{"state":"backlog"}'),
+  })
+
+  local captured, err = tool_json(by_id[2])
+  t:expect(err, "the capture succeeded"):never():is_truthy()
+  t:expect(captured.captured.address):equals("docs/design.md#lease-renewal")
+  local doc = fs.read(root .. "/docs/design.md")
+  t:expect(doc):contains("<!-- backlog: lease-renewal -->")
+  t:expect(doc, "the capture date is stamped into the prose"):contains("Recorded 20")
+
+  t:expect(by_id[3].result.isError, "an unscanned path is refused"):is_truthy()
+  t:expect(by_id[3].result.content[1].text, "the refusal names the sources"):contains("docs")
+
+  t:expect(by_id[4].result.isError, "a duplicate id is refused"):is_truthy()
+  t:expect(by_id[4].result.content[1].text, "the refusal names the existing address")
+    :contains("docs/design.md#existing-item")
+
+  local lane = tool_json(by_id[5])
+  local seen = false
+  for _, row in ipairs(lane.specs) do
+    if row.address == "docs/design.md#lease-renewal" then seen = true end
+  end
+  t:expect(seen, "the lane scans what capture wrote"):is_true()
+end)

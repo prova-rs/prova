@@ -261,29 +261,31 @@ composition, taught by `learn` and rendered by archetypes, never grown into core
   then re-fired" is just the condition's value over time, readable from run records. If real
   event semantics are ever wanted, that is a different design and should say so.
 
-<!-- backlog: reminder-gating-follows-scope -->
-Capability gating on a reminder is per-declaration only — `requires` on the `remind` call is the
-entire surface. A test inherits its gating from the scope it lives in: `suite.config { requires =
-{ "docker" } }` folds into the root node, so every test in the suite skips with one sentence naming
-the missing capability. Reminders are collected beside the nodes rather than in the tree, so that
-same suite's reminders still evaluate on a machine with no docker — and report UNEVALUATED with
-whatever the condition happened to raise (`docker: command not found`) instead of `requires
-"docker" (unavailable)`. The disarmed-watcher contract holds either way, so nothing is unsound; the
-gap is that the author must repeat the suite's capability on every reminder to get the honest
-reason, and forgetting it is invisible. Make scope-level `requires` reach the reminders declared in
-that scope. Recorded 2026-08-08.
+<!-- claim: reminder-gating-follows-scope -->
+**Scope-level `requires` reaches the reminders declared in that scope.** A test inherits its
+gating from the scope it lives in — `suite.config { requires = { "docker" } }` folds into the root
+node, so every test skips with one sentence naming the missing capability — and a reminder
+declared in that scope now inherits the same expressions at declaration (the ambient chain's
+`requires`, scope's first, the call's own after), even though reminders are collected beside the
+nodes rather than in the tree. On a machine missing the capability the reminder reports
+UNEVALUATED with `requires "docker" (…)` — the honest reason — instead of whatever the condition
+happened to raise (`docker: command not found`). The disarmed-watcher contract held either way;
+what this closes is the author repeating the suite's capability on every reminder to get an
+honest diagnosis, and the invisibility of forgetting to.
 
-<!-- backlog: heed-selector-is-the-one-grammar -->
-**`--heed <selector>` still speaks a private grammar — fold it into the one `Selection`.**
-`ledger.rs`'s `matches_selector` (substring-of-name OR exact tag, two lines) is its own selector
-dialect, "mirroring selection in spirit" — the second grammar alignment invariant 5
-(`docs/plans/query-consolidation.md`) exists to kill. With the reminders *report* now narrowing
-through the shared grammar (#reminders-selectors-narrow), heed is the last private selector in the
-tree. Fold it: a heed narrowing should construct the same `Selection` value the report constructs,
-so `--heed` gains `-k`-style excludes and tag semantics for free and the grammar cannot drift
-between reading the lane and gating on it. Wants care at the record boundary — heed evaluates
-against *recorded* entries (`ReminderEntry`), the report against *declared* rows, so the fold
-decides where the shared matcher lives. Recorded 2026-08-09.
+<!-- claim: heed-selector-is-the-one-grammar -->
+**`--heed <selector>` speaks the one `Selection` grammar.** `ledger.rs`'s `matches_selector`
+(substring-of-name OR exact tag, two lines, "mirroring selection in spirit") was the last private
+selector dialect in the tree — the second grammar that alignment invariant 5
+(`docs/plans/query-consolidation.md`) exists to kill. The fold: `Selection::selects_reminder` is
+the ONE reminder matcher — the lane report narrows declared rows through it and heed gates
+recorded entries through it — and a heed narrowing constructs the same `Selection` value the
+report constructs (each selector a `-k`-style substring over name + declaring file AND a tag
+include, axes composing as OR; `!` excluding on both). So `--heed` has `-k`-style excludes and
+file-substring matching for free, and the grammar cannot drift between reading the lane and
+gating on it. The record boundary resolved where the item predicted care was needed: the matcher
+lives on `Selection` (prova-core), taking `(name, file?, tags)` so declared rows and recorded
+entries answer through one door.
 
 ## Decided, and open
 

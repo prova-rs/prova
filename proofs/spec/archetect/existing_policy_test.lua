@@ -42,7 +42,7 @@ local function occupied(t)
 end
 
 prova.test("the default policy preserves — rendering into a live project never clobbers it", {
-  covers = "docs/design/registry.md",
+  covers = "docs/design/registry.md#render-preserves-by-default",
   proves = "retrofit archetypes depend on exactly this: the project's own files win by DEFAULT, while everything non-colliding still lands",
 }, function(t)
   local s = t:use(sandbox)

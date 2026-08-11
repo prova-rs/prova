@@ -73,13 +73,6 @@ impl ReminderEntry {
     pub fn is_due(&self) -> bool {
         self.state == "due"
     }
-
-    /// Whether this reminder matches a heed selector — the same grammar tests use: a substring of
-    /// the name, or an exact tag. Empty selector never matches (use "heed all" for that).
-    pub fn matches_selector(&self, selector: &str) -> bool {
-        !selector.is_empty()
-            && (self.name.contains(selector) || self.tags.iter().any(|t| t == selector))
-    }
 }
 
 /// One deputed case — a verdict another verifier produced, conducted by a proof and adopted

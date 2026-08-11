@@ -84,6 +84,20 @@ impl Selection {
             && self.lane_tag_excludes.is_empty()
     }
 
+    /// Does a reminder survive this selection? The ONE reminder matcher — the report narrows
+    /// declared rows through it and heed gates recorded entries through it, so the grammar
+    /// cannot drift between reading the lane and gating on it
+    /// (docs/design/reminders.md#heed-selector-is-the-one-grammar). The paths a reminder
+    /// answers to: its name (the exact `--node` address, a `-k` substring) and its declaring
+    /// file when known (recorded entries carry it; a bare declaration may not).
+    pub fn selects_reminder(&self, name: &str, file: Option<&str>, tags: &[String]) -> bool {
+        let mut paths: Vec<&str> = vec![name];
+        if let Some(f) = file {
+            paths.push(f);
+        }
+        self.selects(&paths, tags)
+    }
+
     /// Does a leaf with these paths and effective tags survive this selection?
     fn selects(&self, paths: &[&str], tags: &[String]) -> bool {
         // The lane gate first, independent of the CLI axes: a leaf outside the lane's tag set is
@@ -831,13 +845,8 @@ pub fn collect_reminders(suites: &[crate::suite::Suite], config: &RunConfig) -> 
             // The one selector grammar narrows this lane like every lane
             // (docs/design/reminders.md#reminders-selectors-narrow): `-k` is a substring over the
             // name and declaring file, `--node` the exact address, `--tags` the reminder's tags.
-            let selected = {
-                let mut paths: Vec<&str> = vec![def.name.as_str()];
-                if let Some(f) = file.as_deref() {
-                    paths.push(f);
-                }
-                config.selection.selects(&paths, &def.tags)
-            };
+            let selected =
+                config.selection.selects_reminder(&def.name, file.as_deref(), &def.tags);
             if !selected {
                 continue;
             }

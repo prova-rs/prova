@@ -221,3 +221,25 @@ is a --flag on its lane now, not its own verb, and muscle memory meets a redirec
   t:expect(r.code, "backlog no longer dispatches"):equals(2)
   t:expect(r.stdout, "it names its successor"):contains("prova specs --backlog")
 end)
+
+prova.test("the taught loop routes mid-work discoveries to capture — skill and learn pdd alike", {
+  covers = "docs/design/lifecycle.md#found-work-is-captured-not-absorbed",
+  proves = "shipping the first registry-resolved archetype surfaced three prova defects mid-work (2026-08-10); they were captured only because the finder held the context — the loop itself must say where a discovery goes",
+}, function(t)
+  local proj = project(t, TWO_STATES)
+
+  -- The loop as `prova learn pdd` teaches it: step 4 (drive it green) names the three capture
+  -- lanes in place, so the discovery moment and the teaching are one step, not two topics.
+  local pdd = shell.run(prova.bin .. " learn pdd", { cwd = proj, merge_stderr = true })
+  t:expect(pdd.code):equals(0)
+  t:expect(pdd.stdout, "the trigger"):contains("not fix NOW")
+  t:expect(pdd.stdout, "captured, with the scope-creep exit named shut"):contains("never scope-crept")
+  t:expect(pdd.stdout, "the shelf lane"):contains("backlog")
+  t:expect(pdd.stdout, "the executable lane"):contains("promise")
+
+  -- The skill (the agent-facing loop) routes step 4's discoveries to its capture block.
+  local skill = shell.run(prova.bin .. " skill", { cwd = proj, merge_stderr = true })
+  t:expect(skill.code):equals(0)
+  t:expect(skill.stdout, "the loop step routes to capture"):contains("goes to the capture block")
+  t:expect(skill.stdout, "the standing rule"):contains("what you find and do not fix NOW is captured")
+end)

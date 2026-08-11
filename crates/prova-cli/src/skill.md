@@ -22,7 +22,8 @@ The loop:
    patterns** (directory names, `["proofs"]` by default — `prova learn project` names this
    package's). Red is correct at this stage.
 4. Implement. Re-run with `prova --last-failed` until green. Never weaken a proof to pass it —
-   fix the system, or renegotiate the bar with the human.
+   fix the system, or renegotiate the bar with the human. What driving it green surfaces and you
+   do not fix now goes to the capture block below before the work moves on — never into this change.
 5. Commit suite + implementation together: a proof-carrying change.
 
 **Capture — when the user says "add …", the move is already decided.** Work surfaces obligations
