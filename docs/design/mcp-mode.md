@@ -65,17 +65,16 @@ the test answers for it. `to_selection` was the one place the surfaces could dri
 (`docs/plans/query-consolidation.md` invariant 2); a new axis now either reaches both surfaces or
 names why not.
 
-<!-- backlog: state-filters-from-lane-registry -->
-**A lane's state filters should be generated from the lane registry, not hand-rolled per verb.**
-Each lane verb currently parses its own state flags — `specs` hand-checks `--claims`/`--backlog`
-mutual exclusion, `tests` hand-checks `--promises`/`--proofs`, `reminders` grew its pair last and
-latest — and the MCP twin re-declares each as an argument. `prova_core::lanes::LANES` already
-carries every lane's two state names; derive the flags from it (one optional `state` slot per lane
-report, populated from the registry) and mutual exclusion becomes structural, a new lane cannot
-ship without its filters on both surfaces, and alignment invariant 4 (state-filter parity,
-`docs/plans/query-consolidation.md`) reduces to "the registry is consulted." Rides best with the
-lane-polymorphic `Query { lane, selectors, state }` when the shared engine lands. Recorded
-2026-08-09.
+<!-- claim: state-filters-from-lane-registry -->
+**A lane's state filters are generated from the lane registry, not hand-rolled per verb.**
+`Lane::state_flag`/`fold_state_flag` derive the CLI spellings (`--<state>`/`--<state>s`, one
+state slot per lane report, mutual exclusion structural and taught in the lane's own vocabulary)
+and `Lane::parse_state` is the MCP twin — `specs`, `tests` (via the run parser's two flags), and
+`reminders` all read their states through the registry, on both surfaces. A filter cannot name a
+state its lane lacks, a new lane cannot ship without its filters, and alignment invariant 4
+(state-filter parity, `docs/plans/query-consolidation.md`) reduces to "the registry is
+consulted." When the lane-polymorphic `Query { lane, selectors, state }` engine lands, its state
+slot is this same derivation.
 
 ### Warm re-run: the one engine feature this needs
 

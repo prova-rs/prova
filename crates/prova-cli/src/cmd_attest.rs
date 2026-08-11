@@ -35,19 +35,17 @@ pub(crate) fn reminders_subcommand(args: Vec<String>) -> ExitCode {
     // States are adjectives on the lane (docs/design/reminders.md#reminders-state-filters). The
     // spellings are rewritten to internal flags before forwarding because the run parser already
     // owns `--due` for something else entirely (promises falling due by decree).
-    let mut state: Option<&str> = None;
+    let lane = prova_core::lanes::REMINDERS;
+    let mut state: Option<&'static str> = None;
     let mut rest: Vec<String> = Vec::new();
     for arg in args {
-        match arg.as_str() {
-            "--due" | "--watching" => {
-                let want = if arg == "--due" { "due" } else { "watching" };
-                if state.is_some_and(|s| s != want) {
-                    eprintln!("prova: reminders: --due and --watching are mutually exclusive");
-                    return ExitCode::from(2);
-                }
-                state = Some(want);
+        match lane.fold_state_flag(&mut state, &arg) {
+            Ok(true) => {}
+            Ok(false) => rest.push(arg),
+            Err(e) => {
+                eprintln!("prova: reminders: {e}");
+                return ExitCode::from(2);
             }
-            _ => rest.push(arg),
         }
     }
     // Report: route through the run machinery to collect declared reminders (loading the suite, like

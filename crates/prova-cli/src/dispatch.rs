@@ -299,8 +299,15 @@ impl Cli {
             "--last-failed" => self.last_failed = true,
             "--falsify" => self.falsify = true,
             "--fresh" => self.fresh = true,
-            "--promises" => self.promises_only = true,
-            "--proofs" => self.proofs_only = true,
+            // The tests lane's state flags, derived from the registry (`--promise(s)` /
+            // `--proof(s)`): two bools rather than one slot because the run parser owns them
+            // beyond the lane report; build_config refuses the contradictory pair.
+            arg if prova_core::lanes::TESTS.state_flag(arg) == Some("promise") => {
+                self.promises_only = true
+            }
+            arg if prova_core::lanes::TESTS.state_flag(arg) == Some("proof") => {
+                self.proofs_only = true
+            }
             "--due" => self.due = true,
             "--allow-empty" => self.allow_empty = true,
             "--update-snapshots" | "-u" => self.update_snapshots = true,

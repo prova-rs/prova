@@ -214,9 +214,20 @@ pub(crate) fn tests_subcommand(args: Vec<String>) -> ExitCode {
 /// only items carrying no `YYYY-MM-DD` draw-down date (a date is what lets a reminder draw an
 /// item down); it composes with the state filter. `Err(ExitCode::SUCCESS)` is `--help`.
 fn parse_specs_args(args: &[String]) -> Result<(Option<claims::Kind>, bool), ExitCode> {
-    let mut want: Option<claims::Kind> = None;
+    // The state flags derive from the lane registry — mutual exclusion is structural, and a
+    // filter cannot name a state the lane lacks (alignment invariant 4).
+    let lane = prova_core::lanes::SPECS;
+    let mut state: Option<&'static str> = None;
     let mut undated_only = false;
     for arg in args {
+        match lane.fold_state_flag(&mut state, arg) {
+            Ok(true) => continue,
+            Ok(false) => {}
+            Err(e) => {
+                eprintln!("prova: specs: {e}");
+                return Err(ExitCode::from(2));
+            }
+        }
         match arg.as_str() {
             "-h" | "--help" => {
                 println!(
@@ -232,20 +243,6 @@ fn parse_specs_args(args: &[String]) -> Result<(Option<claims::Kind>, bool), Exi
                 );
                 return Err(ExitCode::SUCCESS);
             }
-            "--claims" | "--claim" => {
-                if want == Some(claims::Kind::Backlog) {
-                    eprintln!("prova: specs: --claims and --backlog are mutually exclusive");
-                    return Err(ExitCode::from(2));
-                }
-                want = Some(claims::Kind::Claim);
-            }
-            "--backlog" => {
-                if want == Some(claims::Kind::Claim) {
-                    eprintln!("prova: specs: --claims and --backlog are mutually exclusive");
-                    return Err(ExitCode::from(2));
-                }
-                want = Some(claims::Kind::Backlog);
-            }
             "--undated" => undated_only = true,
             other => {
                 eprintln!("prova: specs: unexpected argument {other:?}\nusage: prova specs [--claims | --backlog] [--undated]");
@@ -253,6 +250,9 @@ fn parse_specs_args(args: &[String]) -> Result<(Option<claims::Kind>, bool), Exi
             }
         }
     }
+    let want = state.map(|s| {
+        if s == lane.active { claims::Kind::Claim } else { claims::Kind::Backlog }
+    });
     Ok((want, undated_only))
 }
 

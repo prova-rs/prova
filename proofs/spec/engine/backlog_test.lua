@@ -243,3 +243,32 @@ prova.test("the taught loop routes mid-work discoveries to capture — skill and
   t:expect(skill.stdout, "the loop step routes to capture"):contains("goes to the capture block")
   t:expect(skill.stdout, "the standing rule"):contains("what you find and do not fix NOW is captured")
 end)
+
+prova.test("every lane's state filters speak the registry — one slot, structural exclusion, both spellings", {
+  covers = "docs/design/mcp-mode.md#state-filters-from-lane-registry",
+  proves = "specs hand-checked --claims/--backlog, tests hand-checked --promises/--proofs, reminders grew its pair last and latest — three parsers to drift; now a filter cannot name a state its lane lacks because there is nothing to hand-roll",
+}, function(t)
+  local proj = project(t, TWO_STATES, [=[
+prova.test("settled", function(t) t:expect(1):equals(1) end)
+]=])
+
+  -- The contradictory pair is a taught refusal in each lane's own vocabulary — all three lanes,
+  -- one derivation.
+  local specs = shell.run(prova.bin .. " specs --claims --backlog", { cwd = proj, merge_stderr = true })
+  t:expect(specs.code):equals(2)
+  t:expect(specs.stdout):contains("mutually exclusive")
+
+  local reminders = shell.run(prova.bin .. " reminders --due --watching", { cwd = proj, merge_stderr = true })
+  t:expect(reminders.code):equals(2)
+  t:expect(reminders.stdout):contains("mutually exclusive")
+
+  local tests = shell.run(prova.bin .. " tests --promises --proofs", { cwd = proj, merge_stderr = true })
+  t:expect(tests.code):equals(2)
+  t:expect(tests.stdout):contains("mutually exclusive")
+
+  -- The spelling family is derived, so the singular reads wherever the plural does.
+  local singular = shell.run(prova.bin .. " specs --claim", { cwd = proj, merge_stderr = true })
+  t:expect(singular.code, singular.stdout):equals(0)
+  local plural = shell.run(prova.bin .. " tests --promise", { cwd = proj, merge_stderr = true })
+  t:expect(plural.code, plural.stdout):equals(0)
+end)

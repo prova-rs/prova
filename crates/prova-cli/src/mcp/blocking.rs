@@ -546,15 +546,15 @@ pub(super) fn specs_blocking(env: &McpEnv, req: SpecsRequest) -> Result<(serde_j
     let manifest = std::fs::read_to_string(&call.home.manifest)
         .map_err(|e| e.to_string())
         .and_then(|t| crate::manifest::Manifest::parse(&t))?;
+    // The state vocabulary derives from the lane registry — the tool twin of the CLI flags,
+    // so the two surfaces cannot drift (alignment invariant 4).
+    let lane = prova_core::lanes::SPECS;
     let want = match req.state.as_deref() {
         None => None,
-        Some("backlog") => Some(crate::claims::Kind::Backlog),
-        Some("claim") | Some("claims") => Some(crate::claims::Kind::Claim),
-        Some(other) => {
-            return Err(format!(
-                "unknown specs state {other:?} — expected \"backlog\" or \"claim\""
-            ))
-        }
+        Some(value) => Some(match lane.parse_state(value)? {
+            s if s == lane.active => crate::claims::Kind::Claim,
+            _ => crate::claims::Kind::Backlog,
+        }),
     };
     let docs = manifest.specs.as_ref().map(|s| s.scan_roots()).unwrap_or_default();
     let scanned = crate::claims::scan(&call.home.dir, &docs).map_err(|e| e.to_string())?;
@@ -703,16 +703,13 @@ pub(super) fn capture_blocking(env: &McpEnv, req: CaptureRequest) -> Result<(ser
 /// unevaluated / pending). Same declared+recorded overlay the CLI's `list_reminders` renders.
 /// `isError` when any is DUE — mirroring the CLI verb's non-zero exit on a due reminder.
 pub(super) fn reminders_blocking(env: &McpEnv, req: RemindersRequest) -> Result<(serde_json::Value, bool), String> {
-    // The lane's state filter (docs/design/reminders.md#reminders-state-filters): due/watching are
-    // the lane states; pending/unevaluated are evaluation outcomes, visible only in the full report.
+    // The lane's state filter (docs/design/reminders.md#reminders-state-filters), derived from
+    // the lane registry like every surface: due/watching are the lane states; pending/unevaluated
+    // are evaluation outcomes, visible only in the full report.
+    let lane = prova_core::lanes::REMINDERS;
     let state = match req.state.as_deref() {
         None => None,
-        Some(s @ ("due" | "watching")) => Some(s.to_string()),
-        Some(other) => {
-            return Err(format!(
-                "reminders: unknown state {other:?} — the lane states are \"due\" and \"watching\""
-            ))
-        }
+        Some(value) => Some(lane.parse_state(value)?.to_string()),
     };
     let call = env.resolve_call(None, req.package.as_deref())?;
     let suites = crate::collect_suites(&call.base_dir, &call.declared, &call.proofs, true)?;
