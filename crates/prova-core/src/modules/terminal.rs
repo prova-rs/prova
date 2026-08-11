@@ -903,3 +903,69 @@ fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
         Ok(ud)
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opt_timeout_parses_or_defaults() {
+        let lua = Lua::new();
+        let default = Duration::from_secs(5);
+        assert_eq!(opt_timeout(&None, default).unwrap(), default);
+        let t = lua.create_table().unwrap();
+        assert_eq!(opt_timeout(&Some(t), default).unwrap(), default, "opts without timeout");
+        let t = lua.create_table().unwrap();
+        t.set("timeout", "150ms").unwrap();
+        assert_eq!(opt_timeout(&Some(t), default).unwrap(), Duration::from_millis(150));
+        let t = lua.create_table().unwrap();
+        t.set("timeout", "soon").unwrap();
+        assert!(opt_timeout(&Some(t), default).is_err(), "a bad spelling is refused, not defaulted");
+    }
+
+    /// The screen vocabulary a proof matches colors by: the 16 ANSI names, idx-N beyond them,
+    /// hex for RGB, and "default" for the terminal's own.
+    #[test]
+    fn color_names_speak_ansi_idx_and_rgb() {
+        assert_eq!(color_name(vt100::Color::Default), "default");
+        assert_eq!(color_name(vt100::Color::Idx(1)), "red");
+        assert_eq!(color_name(vt100::Color::Idx(15)), "bright-white");
+        assert_eq!(color_name(vt100::Color::Idx(42)), "idx-42");
+        assert_eq!(color_name(vt100::Color::Rgb(255, 0, 16)), "#ff0010");
+    }
+
+    /// The scripted responder end to end as a file: expect→send pairs render as substring case
+    /// arms in declaration order, the tail is the LOUD no-match exit, and the shim is executable.
+    #[test]
+    fn write_shim_renders_the_scripted_responder() {
+        let dir = std::env::temp_dir().join(format!("prova-term-ut-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let state = MockCliState {
+            dir: dir.clone(),
+            shim: dir.join("psql"),
+            pairs: vec![
+                (b"SELECT 1".to_vec(), b"1 row".to_vec()),
+                (b"it's".to_vec(), b"quoted".to_vec()),
+            ],
+        };
+        write_shim(&state).unwrap();
+        let script = std::fs::read_to_string(dir.join("psql")).unwrap();
+        assert!(script.starts_with("#!/bin/sh"), "a POSIX responder");
+        assert!(script.contains("*'SELECT 1'*) printf '%s' '1 row' ; exit 0 ;;"), "{script}");
+        assert!(script.contains(r"'it'\''s'"), "embedded quotes survive: {script}");
+        assert!(script.contains("no scripted expectation matched") && script.contains("exit 1"),
+            "the no-match tail is loud: {script}");
+        assert!(
+            script.find("SELECT 1").unwrap() < script.find("it's escaped").unwrap_or(usize::MAX),
+            "pairs render in declaration order"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.join("psql")).unwrap().permissions().mode();
+            assert_eq!(mode & 0o111, 0o111, "executable");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

@@ -790,13 +790,11 @@ mod tests {
         assert_eq!(code(attest_subcommand(argv(&["one", "two"]))), code(ExitCode::from(2)));
     }
 
-    /// `prova attest` against a recorded package, every verdict exercised. ONE test so cwd
-    /// changes once (nextest is process-per-test; every other test here uses absolute paths).
-    #[test]
-    fn attest_walks_a_recorded_package() {
-        let code = |c: ExitCode| format!("{c:?}");
-        let argv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        let dir = std::env::temp_dir().join(format!("prova-attest-ut-{}", std::process::id()));
+    /// A minimal package in a tempdir: a manifest with a docs spec source, one anchored claim
+    /// (`never-preempt`), and the given proof-file body — the shared scaffold of every
+    /// package-walking test in this module.
+    fn scaffold_package(tag: &str, proof_body: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("prova-{tag}-ut-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("docs")).unwrap();
         std::fs::create_dir_all(dir.join("proofs")).unwrap();
@@ -810,15 +808,24 @@ mod tests {
             "<!-- claim: never-preempt -->\nThe broker never preempts a lease.\n",
         )
         .unwrap();
-        std::fs::write(
-            dir.join("proofs/ledger_test.lua"),
+        std::fs::write(dir.join("proofs/ledger_test.lua"), proof_body).unwrap();
+        dir
+    }
+
+    /// `prova attest` against a recorded package, every verdict exercised. ONE test so cwd
+    /// changes once (nextest is process-per-test; every other test here uses absolute paths).
+    #[test]
+    fn attest_walks_a_recorded_package() {
+        let code = |c: ExitCode| format!("{c:?}");
+        let argv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let dir = scaffold_package(
+            "attest",
             r#"
 prova.test("covers the claim", { covers = "docs/design.md#never-preempt" }, function(t)
   t:expect(true):is_true()
 end)
 "#,
-        )
-        .unwrap();
+        );
         std::env::set_current_dir(&dir).unwrap();
         let home = home::find(&dir).unwrap().expect("the tempdir package has a manifest");
 
@@ -904,22 +911,8 @@ end)
     /// run recorded, ATTESTED is None (a stated fact), never a zero.
     #[test]
     fn evidence_account_reconciles_a_real_package() {
-        let dir = std::env::temp_dir().join(format!("prova-evidence-ut-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("docs")).unwrap();
-        std::fs::create_dir_all(dir.join("proofs")).unwrap();
-        std::fs::write(
-            dir.join("prova.toml"),
-            "[run]\nproofs = [\"proofs\"]\n\n[[specs.source]]\ntype = \"directory\"\npath = \"docs\"\n",
-        )
-        .unwrap();
-        std::fs::write(
-            dir.join("docs/design.md"),
-            "<!-- claim: never-preempt -->\nThe broker never preempts a lease.\n",
-        )
-        .unwrap();
-        std::fs::write(
-            dir.join("proofs/ledger_test.lua"),
+        let dir = scaffold_package(
+            "evidence",
             r#"
 prova.test("covers the claim", { covers = "docs/design.md#never-preempt" }, function(t)
   t:expect(true):is_true()
@@ -928,8 +921,7 @@ prova.test("promised work", { promises = "unit-test fixture" }, function(t)
   t:expect(false):is_true()
 end)
 "#,
-        )
-        .unwrap();
+        );
 
         let home = home::find(&dir).unwrap().expect("the tempdir package has a manifest");
         let (manifest, packages_resolved) =

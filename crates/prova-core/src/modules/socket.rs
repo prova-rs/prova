@@ -1283,4 +1283,67 @@ mod tests {
             Ok(Addr::Unix(p)) if p == std::path::Path::new("/tmp/s.sock")
         ));
     }
+
+    /// The frame readers against a real loopback pair: a frame split across writes completes,
+    /// leftovers past a frame boundary carry into the next read, an EOF'd partial frame is None
+    /// (never a half-turn), and raw reads report exactly how much arrived before an early close.
+    #[test]
+    fn frame_readers_recover_turns_across_chunk_boundaries() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let pair = || async {
+                let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = l.local_addr().unwrap();
+                let client = tokio::net::TcpStream::connect(addr).await.unwrap();
+                let (server, _) = l.accept().await.unwrap();
+                (Stream::Tcp(client), server)
+            };
+
+            // Line framing: one write carries a whole frame AND the head of the next; the
+            // second frame completes only when the rest arrives.
+            let (mut conn, mut server) = pair().await;
+            let mut buf = Vec::new();
+            server.write_all(b"hello\nwor").await.unwrap();
+            let frame = read_frame(&mut conn, &mut buf, &Framing::Line).await.unwrap();
+            assert_eq!(frame.as_deref(), Some(&b"hello"[..]));
+            server.write_all(b"ld\n").await.unwrap();
+            let frame = read_frame(&mut conn, &mut buf, &Framing::Line).await.unwrap();
+            assert_eq!(frame.as_deref(), Some(&b"world"[..]));
+            drop(server);
+            let frame = read_frame(&mut conn, &mut buf, &Framing::Line).await.unwrap();
+            assert_eq!(frame, None, "a clean EOF with no partial frame is the end of turns");
+
+            // Length-prefixed: the prefix and payload arrive in separate writes.
+            let (mut conn, mut server) = pair().await;
+            let mut buf = Vec::new();
+            server.write_all(&[0, 5, b'a', b'b']).await.unwrap();
+            server.write_all(b"cde").await.unwrap();
+            let frame = read_frame(&mut conn, &mut buf, &Framing::LengthPrefixed(2)).await.unwrap();
+            assert_eq!(frame.as_deref(), Some(&b"abcde"[..]));
+
+            // A partial frame at EOF never surfaces as a turn.
+            let (mut conn, mut server) = pair().await;
+            let mut buf = Vec::new();
+            server.write_all(b"dangling").await.unwrap();
+            drop(server);
+            let frame = read_frame(&mut conn, &mut buf, &Framing::Line).await.unwrap();
+            assert_eq!(frame, None, "an unterminated frame is not a frame");
+
+            // Raw reads: exact counts across chunks, leftovers kept; an early close names the
+            // shortfall.
+            let (mut conn, mut server) = pair().await;
+            let mut buf = Vec::new();
+            server.write_all(b"abcdef").await.unwrap();
+            let got = read_exact_buffered(&mut conn, &mut buf, 4).await.unwrap();
+            assert_eq!(got, b"abcd");
+            assert_eq!(buf, b"ef", "the surplus stays buffered for the next read");
+            drop(server);
+            let err = read_exact_buffered(&mut conn, &mut buf, 4).await.unwrap_err();
+            assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
+            assert!(err.to_string().contains("2/4"), "names the shortfall: {err}");
+        });
+    }
 }

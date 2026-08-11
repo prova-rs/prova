@@ -7,12 +7,12 @@
       "tolerance": 1.0
     },
     "rust.coverage.lines": {
-      "value": 83.6802270577105,
+      "value": 83.99341873310611,
       "direction": "higher_is_better",
       "tolerance": 0.25
     },
     "rust.coverage.unit": {
-      "value": 68.26316619362977,
+      "value": 69.09546754416893,
       "direction": "higher_is_better",
       "goal": 70.0
     },
