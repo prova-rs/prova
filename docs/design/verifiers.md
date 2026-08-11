@@ -244,3 +244,18 @@ flock on a well-known path keyed by token + scope root (default per `prova.root`
 cargo contends per target dir; opt-in global tokens), `reads(x)` shared. The blocked side
 narrates the holder ("waiting on `cargo`: held by prova pid 1234, 40s") so cross-process
 contention is a report, not a `ps` investigation.
+
+<!-- backlog: selection-pushdown-into-conducts -->
+**Selection should push down into deputies: one interface for every test granularity, with
+the framework's rules riding along.** Today selection is proof-granular — the ut deputy
+conducts its complete account even when the developer needs one case, so "run exactly this
+test now" drops to raw `cargo nextest -E` incantations outside prova, where resource locks,
+profiles, and the account do not follow (operator briefs end up teaching two vocabularies;
+cross-cutting rules like "one cargo at a time" get re-enforced by convention at every
+bypass). Wanted: a deputy that receives the run's selection and narrows its conduct to the
+matching adopted cases — `prova -k seed_memory` compiles to a filtered conduct under the
+same lock, profile, and junit adoption. The development ladder then lives in one tool:
+one case → module → crate → integration → suite, each stage honoring the same
+framework-enforced rules *without the operator thinking about them*. Composes with
+resumable-runs-incremental-verdicts (automatic narrowing from the diff) — this item is the
+manual scalpel, that one the automatic planner. (Substrate field report, 2026-08-11.)
