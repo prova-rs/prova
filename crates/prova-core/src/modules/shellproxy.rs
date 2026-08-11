@@ -487,6 +487,83 @@ mod tests {
         }
     }
 
+    /// The turn key discriminates on BOTH halves: argv (NUL-joined, empty segments dropped —
+    /// the spool file ends with a trailing NUL) and stdin, so two invocations that differ only
+    /// in what was piped in are distinct turns.
+    #[test]
+    fn turn_key_keeps_stdin_separate_from_argv() {
+        assert_eq!(turn_key(b"git\0status\0", b""), "git\u{0}status\u{1}");
+        assert_eq!(turn_key(b"git\0status\0", b"piped"), "git\u{0}status\u{1}piped");
+        assert_ne!(
+            turn_key(b"git\0status\0", b""),
+            turn_key(b"git\0status\0", b"piped"),
+            "stdin-only differences are distinct turns"
+        );
+    }
+
+    /// The flush reads the shim's spool and writes the cassette: only forwarded (source=target)
+    /// invocations are recorded — a stub answering itself is not a recording of a real
+    /// dependency — and record-time redactions scrub the response before it touches disk.
+    #[test]
+    fn flush_cassette_records_forwarded_turns_only_and_redacts() {
+        use crate::engine::make_tempdir;
+        let dir = make_tempdir().unwrap();
+        let spool = dir.join("journal");
+        let write_turn = |i: usize, source: &str, stdout: &[u8]| {
+            let rec = spool.join(i.to_string());
+            std::fs::create_dir_all(&rec).unwrap();
+            std::fs::write(rec.join("source"), source).unwrap();
+            std::fs::write(rec.join("argv"), b"git\0push\0").unwrap();
+            std::fs::write(rec.join("stdin"), b"").unwrap();
+            std::fs::write(rec.join("stdout"), stdout).unwrap();
+            std::fs::write(rec.join("code"), "7").unwrap();
+        };
+        write_turn(1, "target", b"pushed with token=SECRET");
+        write_turn(2, "stub", b"a stub answering itself");
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(spool.join(".seq"), "2").unwrap();
+
+        let cassette = dir.join("cas.json").to_string_lossy().into_owned();
+        let state = Rc::new(RefCell::new(ShimState {
+            dir: dir.clone(),
+            shim: dir.join("git"),
+            spool,
+            upstream: Some("/usr/bin/git".into()),
+            stubs: Vec::new(),
+            cassette: Some(cassette.clone()),
+            recording: true,
+            replay: Vec::new(),
+            redact: vec!["SECRET".into()],
+        }));
+        flush_cassette(&state).unwrap();
+
+        let mut player = super::super::cassette::Player::load(&cassette).unwrap();
+        let keys = player.keys();
+        assert_eq!(keys.len(), 1, "the stub turn is not recorded: {keys:?}");
+        assert_eq!(keys[0], "git\u{0}push\u{1}");
+        let turn = player.answer(&keys[0]).unwrap();
+        assert!(!turn.response.contains("SECRET"), "redacted: {}", turn.response);
+        assert!(turn.response.contains("pushed with token="), "the rest survives");
+        assert_eq!(turn.code, Some(7));
+
+        // Not recording (passthrough/replay): the flush is a quiet no-op, no cassette appears.
+        let dir2 = make_tempdir().unwrap();
+        let cas2 = dir2.join("cas.json").to_string_lossy().into_owned();
+        let state = Rc::new(RefCell::new(ShimState {
+            dir: dir2.clone(),
+            shim: dir2.join("git"),
+            spool: dir2.join("journal"),
+            upstream: None,
+            stubs: Vec::new(),
+            cassette: Some(cas2.clone()),
+            recording: false,
+            replay: Vec::new(),
+            redact: Vec::new(),
+        }));
+        flush_cassette(&state).unwrap();
+        assert!(!std::path::Path::new(&cas2).exists());
+    }
+
     /// A recorded key is `argv-joined \u{1} stdin` with `\u{0}` argv separators; the replay arm
     /// recovers the argv half (space-joined) and pairs it with the decoded stdout and exit code.
     #[test]

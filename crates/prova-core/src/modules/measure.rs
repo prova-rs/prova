@@ -145,3 +145,57 @@ pub(crate) fn make(lua: &Lua, measurements: Option<MeasurementRegistry>) -> mlua
 pub(crate) fn install_recipe(lua: &Lua) -> mlua::Result<()> {
     lua.load(RATCHET_RECIPE).set_name("@prova/measure").exec()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn direction_defaults_to_lower_and_reads_the_higher_spellings() {
+        for higher in ["higher_is_better", "higher", "more"] {
+            assert_eq!(parse_direction(Some(higher.into())), Direction::HigherIsBetter);
+        }
+        assert_eq!(parse_direction(Some("lower_is_better".into())), Direction::LowerIsBetter);
+        assert_eq!(parse_direction(Some("upward".into())), Direction::LowerIsBetter, "unknown → the safe default");
+        assert_eq!(parse_direction(None), Direction::LowerIsBetter);
+    }
+
+    /// `measure.record` files into the attached account with the declared direction and set —
+    /// and with NO registry attached (an eval, a bare embedder) it is a value-returning no-op,
+    /// so recording never leaks outside a run.
+    #[test]
+    fn record_files_into_the_account_or_quietly_does_not() {
+        let lua = Lua::new();
+        let registry: MeasurementRegistry = Default::default();
+        let measure = make(&lua, Some(registry.clone())).unwrap();
+        lua.globals().set("measure", measure).unwrap();
+        let returned: f64 = lua
+            .load(
+                r#"
+                measure.record("files.big", 3, {})
+                return measure.record("cov.lines", 81.5, { direction = "higher", set = "quality" })
+                "#,
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(returned, 81.5, "record returns the value it filed");
+        let account = registry.lock().unwrap();
+        assert_eq!(account.len(), 2);
+        assert_eq!(
+            (account[0].name.as_str(), account[0].direction, account[0].set.as_str()),
+            ("files.big", Direction::LowerIsBetter, "default"),
+            "empty opts take both defaults"
+        );
+        assert_eq!(
+            (account[1].name.as_str(), account[1].direction, account[1].set.as_str()),
+            ("cov.lines", Direction::HigherIsBetter, "quality")
+        );
+        drop(account);
+
+        let lua = Lua::new();
+        let measure = make(&lua, None).unwrap();
+        lua.globals().set("measure", measure).unwrap();
+        let returned: f64 = lua.load(r#"return measure.record("x", 7)"#).eval().unwrap();
+        assert_eq!(returned, 7.0, "no registry: still the value, nowhere filed");
+    }
+}

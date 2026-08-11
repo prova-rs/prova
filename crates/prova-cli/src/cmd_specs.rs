@@ -390,4 +390,64 @@ mod tests {
         assert!(parse_specs_args(&args(&["--backlog", "--claims"])).is_err(), "exclusive both ways");
         assert!(parse_specs_args(&args(&["stray"])).is_err());
     }
+
+    /// The one door to spec scan roots: no `[specs]` (or an empty one) opts out entirely; each
+    /// `[[specs.source]]` directory contributes its path.
+    #[test]
+    fn spec_scan_roots_are_opt_in() {
+        let m = Manifest::parse("[run]\n").unwrap();
+        assert!(spec_scan_roots(&m).is_empty(), "no [specs] means no scan");
+        let m = Manifest::parse(
+            "[[specs.source]]\ntype = \"directory\"\npath = \"docs\"\n\
+             [[specs.source]]\ntype = \"directory\"\npath = \"notes\"\n",
+        )
+        .unwrap();
+        assert_eq!(spec_scan_roots(&m), vec!["docs".to_string(), "notes".to_string()]);
+    }
+
+    /// The specs lane against a real package, end to end. ONE test so cwd changes once: nextest
+    /// runs process-per-test, and every other test in this binary uses absolute paths.
+    #[test]
+    fn the_specs_lane_walks_a_real_package() {
+        let code = |c: ExitCode| format!("{c:?}");
+        let dir = std::env::temp_dir().join(format!("prova-specs-ut-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("docs")).unwrap();
+        std::fs::write(
+            dir.join("prova.toml"),
+            "[run]\nproofs = [\"proofs\"]\n\n[[specs.source]]\ntype = \"directory\"\npath = \"docs\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("docs/design.md"),
+            "<!-- claim: never-preempt -->\nThe broker never preempts a lease.\n\n\
+             <!-- backlog: lease-renewal -->\nLeases renew before expiry.\n",
+        )
+        .unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+
+        // The report lists both states; the filters narrow it; all of it exits 0 (a query verb).
+        for argv in [vec![], vec!["--claims".to_string()], vec!["--undated".to_string()]] {
+            assert_eq!(code(specs_subcommand(argv)), code(ExitCode::SUCCESS));
+        }
+
+        // Promotion refusals: no id is usage, an unknown id is a failure naming it.
+        assert_eq!(code(promote_claim(None)), code(ExitCode::from(2)));
+        assert_eq!(code(promote_claim(Some("ghost".into()))), code(ExitCode::FAILURE));
+
+        // The one state-write: backlog → claim is a keyword flip in place, id and prose intact.
+        assert_eq!(code(promote_claim(Some("lease-renewal".into()))), code(ExitCode::SUCCESS));
+        let doc = std::fs::read_to_string(dir.join("docs/design.md")).unwrap();
+        assert!(doc.contains("<!-- claim: lease-renewal -->"), "flipped: {doc}");
+        assert!(!doc.contains("backlog: lease-renewal"), "the old keyword is gone");
+        assert!(doc.contains("Leases renew before expiry."), "prose stays put");
+
+        // Promoting a claim again is a no-op courtesy, not an error.
+        assert_eq!(code(promote_claim(Some("lease-renewal".into()))), code(ExitCode::SUCCESS));
+
+        // `owed` reports the two uncovered claims and still exits 0 — reports never gate.
+        assert_eq!(code(owed_subcommand(vec![])), code(ExitCode::SUCCESS));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
