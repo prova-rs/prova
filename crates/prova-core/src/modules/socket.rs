@@ -193,7 +193,7 @@ impl Drop for Acceptor {
 
 /// What turns bytes into matchable TURNS. `Raw` is the absence of framing: `send` writes bytes
 /// verbatim and `recv(n)` reads exact counts — the driver-level escape hatch.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum Framing {
     Raw,
     Line,
@@ -659,7 +659,7 @@ struct ProxyUd {
 /// The cassette posture of a proxy (docs/design/mocks-proxies-drivers.md). `Passthrough` is the
 /// plain bidirectional wiretap (the fault/full-duplex path); the other three drive the
 /// request/response turn loop, because a cassette IS the VCR discipline.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum Mode {
     Passthrough,
     Record,
@@ -1176,6 +1176,96 @@ mod tests {
             vec![b'x', 0xff],
             "delimiter appends"
         );
+    }
+
+    /// recv's arity IS the framing: raw connections read exact byte counts (n required),
+    /// framed connections read whole turns (a byte count is refused, taught) — and the
+    /// timeout opt parses through either form.
+    #[test]
+    fn recv_args_follow_the_framing() {
+        let lua = Lua::new();
+        let (want, dur) = recv_args(&Framing::Raw, Some(Value::Integer(64)), None).unwrap();
+        assert_eq!((want, dur), (64, DEFAULT_IO_TIMEOUT));
+        assert!(recv_args(&Framing::Raw, None, None).is_err(), "raw without n");
+        assert!(recv_args(&Framing::Raw, Some(Value::Integer(0)), None).is_err(), "zero bytes");
+
+        let (want, dur) = recv_args(&Framing::Line, None, None).unwrap();
+        assert_eq!((want, dur), (0, DEFAULT_IO_TIMEOUT));
+        assert!(
+            recv_args(&Framing::Line, Some(Value::Integer(64)), None).is_err(),
+            "framed refuses a byte count"
+        );
+        let opts = lua.create_table().unwrap();
+        opts.set("timeout", "250ms").unwrap();
+        let (_, dur) = recv_args(&Framing::Line, Some(Value::Table(opts)), None).unwrap();
+        assert_eq!(dur, Duration::from_millis(250));
+        let opts = lua.create_table().unwrap();
+        opts.set("timeout", "eleventy").unwrap();
+        assert!(recv_args(&Framing::Line, Some(Value::Table(opts)), None).is_err());
+    }
+
+    /// Rates are declared in bits (bps/kbps/mbps, the units networks speak) and applied in
+    /// bytes per second.
+    #[test]
+    fn parse_rate_converts_bits_to_bytes() {
+        assert_eq!(parse_rate("8bps").unwrap(), 1.0);
+        assert_eq!(parse_rate("16kbps").unwrap(), 2_000.0);
+        assert_eq!(parse_rate("1 mbps").unwrap(), 125_000.0, "whitespace before the unit is fine");
+        assert!(parse_rate("100").is_err(), "unitless is refused");
+        assert!(parse_rate("fastbps").is_err(), "non-numeric is refused");
+    }
+
+    /// The proxy's option contract: passthrough by default, auto collapses on the cassette's
+    /// presence, cassettes demand framing (a raw stream has no turn to key on) and a path,
+    /// and every non-replay mode validates its upstream at the call site.
+    #[test]
+    fn proxy_config_speaks_the_mode_contract() {
+        let lua = Lua::new();
+        let opts = |pairs: &[(&str, &str)]| {
+            let t = lua.create_table().unwrap();
+            for (k, v) in pairs {
+                t.set(*k, *v).unwrap();
+            }
+            t
+        };
+
+        let (up, framing, mode, cas) =
+            proxy_config(&opts(&[("upstream", "tcp://127.0.0.1:9")])).unwrap();
+        assert_eq!(up.as_deref(), Some("tcp://127.0.0.1:9"));
+        assert!(framing.is_raw() && mode == Mode::Passthrough && cas.is_none());
+
+        let missing = std::env::temp_dir().join("prova-socket-ut-no-such.json");
+        let _ = std::fs::remove_file(&missing);
+        let missing = missing.to_string_lossy().into_owned();
+        let (_, _, mode, cas) = proxy_config(&opts(&[
+            ("upstream", "tcp://127.0.0.1:9"),
+            ("framing", "line"),
+            ("mode", "auto"),
+            ("cassette", &missing),
+        ]))
+        .unwrap();
+        assert_eq!(mode, Mode::Record, "auto with no cassette on disk records");
+        assert_eq!(cas.as_deref(), Some(missing.as_str()));
+
+        for (broken, teaches) in [
+            (opts(&[("mode", "record"), ("cassette", "c.json")]), "framing"),
+            (opts(&[("mode", "record"), ("framing", "line")]), "cassette"),
+            (opts(&[("mode", "auto"), ("framing", "line")]), "cassette"),
+            (opts(&[("mode", "record"), ("framing", "line"), ("cassette", "c.json")]), "upstream"),
+            (opts(&[("upstream", "not-an-addr"), ("mode", "record"), ("framing", "line"), ("cassette", "c.json")]), "tcp://"),
+            (opts(&[("mode", "sideways")]), "passthrough|record|replay|auto"),
+        ] {
+            let e = proxy_config(&broken).unwrap_err().to_string();
+            assert!(e.contains(teaches), "expected the error to teach {teaches:?}: {e}");
+        }
+
+        let (up, _, mode, _) = proxy_config(&opts(&[
+            ("mode", "replay"),
+            ("framing", "line"),
+            ("cassette", "c.json"),
+        ]))
+        .unwrap();
+        assert!(up.is_none() && mode == Mode::Replay, "replay needs no upstream");
     }
 
     /// The scheme IS the parse: tcp:// keeps its host:port, anything else is a taught error.

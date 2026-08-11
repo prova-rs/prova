@@ -779,6 +779,126 @@ mod tests {
         assert_eq!(spelled, vec!["-k orders", "--tags !slow", "--node a › b"]);
     }
 
+    /// The attest grammar settles before any package resolution: help exits 0, and anything
+    /// beyond one bare address is refused with usage.
+    #[test]
+    fn attest_grammar_refuses_extra_arguments() {
+        let code = |c: ExitCode| format!("{c:?}");
+        let argv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(code(attest_subcommand(argv(&["--help"]))), code(ExitCode::SUCCESS));
+        assert_eq!(code(attest_subcommand(argv(&["--bogus"]))), code(ExitCode::from(2)));
+        assert_eq!(code(attest_subcommand(argv(&["one", "two"]))), code(ExitCode::from(2)));
+    }
+
+    /// `prova attest` against a recorded package, every verdict exercised. ONE test so cwd
+    /// changes once (nextest is process-per-test; every other test here uses absolute paths).
+    #[test]
+    fn attest_walks_a_recorded_package() {
+        let code = |c: ExitCode| format!("{c:?}");
+        let argv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let dir = std::env::temp_dir().join(format!("prova-attest-ut-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("docs")).unwrap();
+        std::fs::create_dir_all(dir.join("proofs")).unwrap();
+        std::fs::write(
+            dir.join("prova.toml"),
+            "[run]\nproofs = [\"proofs\"]\n\n[[specs.source]]\ntype = \"directory\"\npath = \"docs\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("docs/design.md"),
+            "<!-- claim: never-preempt -->\nThe broker never preempts a lease.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("proofs/ledger_test.lua"),
+            r#"
+prova.test("covers the claim", { covers = "docs/design.md#never-preempt" }, function(t)
+  t:expect(true):is_true()
+end)
+"#,
+        )
+        .unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+        let home = home::find(&dir).unwrap().expect("the tempdir package has a manifest");
+
+        // Absence of evidence is not absence of a problem: no record fails the attestation.
+        assert_eq!(code(attest_subcommand(argv(&["never-preempt"]))), code(ExitCode::FAILURE));
+
+        let store = |executed: record::Executed, skip: bool| {
+            let mut record = prova_core::ledger::Record {
+                schema: 1,
+                version: "0.0.0-test".into(),
+                binary: "test".into(),
+                selection: vec![],
+                duration_ms: 1,
+                summary: record::Counts::default(),
+                executed: std::collections::BTreeMap::new(),
+                skipped: vec![],
+                deselected: vec![],
+                measurements: vec![],
+                attached: vec![],
+                reminders: vec![],
+                deputed: vec![record::DeputedRow {
+                    verifier: "junit".into(),
+                    suite: "SuiteA".into(),
+                    name: "case_1".into(),
+                    outcome: "passed".into(),
+                    message: None,
+                    time_ms: None,
+                    file: "junit.xml".into(),
+                }],
+            };
+            let path = "ledger_test › covers the claim".to_string();
+            if skip {
+                record.skipped.push(record::Skipped {
+                    path,
+                    reason: "requires docker (docker: not on PATH)".into(),
+                });
+            } else {
+                record.executed.insert(path, executed);
+            }
+            record::store(&Some(home.clone()), &record, None);
+        };
+
+        // A passing run attests, through the bare id and the full address alike.
+        store(record::Executed::Passed, false);
+        assert_eq!(code(attest_subcommand(argv(&["never-preempt"]))), code(ExitCode::SUCCESS));
+        assert_eq!(
+            code(attest_subcommand(argv(&["docs/design.md#never-preempt"]))),
+            code(ExitCode::SUCCESS)
+        );
+        // Unbound addresses fail: an unclaimed anchor, and a ticket spelling (no `#`, no anchor —
+        // resolution falls through untouched by design).
+        assert_eq!(
+            code(attest_subcommand(argv(&["docs/design.md#ghost"]))),
+            code(ExitCode::FAILURE)
+        );
+        assert_eq!(code(attest_subcommand(argv(&["PROJ-123"]))), code(ExitCode::FAILURE));
+
+        // Red and no-evidence outcomes attest nothing.
+        store(record::Executed::Promised, false);
+        assert_eq!(code(attest_subcommand(argv(&["never-preempt"]))), code(ExitCode::FAILURE));
+        store(record::Executed::Passed, true); // skipped for want of docker
+        assert_eq!(code(attest_subcommand(argv(&["never-preempt"]))), code(ExitCode::FAILURE));
+
+        // Deputed addresses answer from the record's deputed rows; malformed spellings are usage.
+        store(record::Executed::Passed, false);
+        assert_eq!(code(attest_subcommand(argv(&["junit:SuiteA#case_1"]))), code(ExitCode::SUCCESS));
+        assert_eq!(code(attest_subcommand(argv(&["junit:SuiteA#ghost"]))), code(ExitCode::FAILURE));
+        assert_eq!(code(attest_subcommand(argv(&["junit:no-hash"]))), code(ExitCode::from(2)));
+
+        // A bare id carried by two anchors is ambiguous — exit 2, candidates listed.
+        std::fs::write(
+            dir.join("docs/other.md"),
+            "<!-- claim: never-preempt -->\nA second anchor with the same id.\n",
+        )
+        .unwrap();
+        assert_eq!(code(attest_subcommand(argv(&["never-preempt"]))), code(ExitCode::from(2)));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A whole package in a tempdir, reconciled end to end: one anchored claim covered by a
     /// settled proof, one open promise — the account counts every lifecycle stage, and with no
     /// run recorded, ATTESTED is None (a stated fact), never a zero.
