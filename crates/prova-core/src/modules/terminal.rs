@@ -968,4 +968,84 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// The scope-teardown seam's stand-in: accepts the registration so `manage` is satisfied;
+    /// the test tears its children down explicitly.
+    struct StubCtx;
+    impl UserData for StubCtx {
+        fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+            methods.add_method("manage", |_, _, _ud: mlua::AnyUserData| Ok(()));
+        }
+    }
+
+    /// The kernel PTY round-trip through the module's own Lua surface: spawn echoes through a
+    /// real pty (expect observes, never sleeps), the screen model renders the frame, signal
+    /// reaches the child, and wait reaps the exit code. Unix-gated like the spec suite's legs.
+    #[cfg(unix)]
+    #[test]
+    fn spawn_drives_a_real_pty_round_trip() {
+        use mlua::ObjectLike;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            let lua = Lua::new();
+            lua.globals().set("terminal", make(&lua).unwrap()).unwrap();
+            lua.globals()
+                .set("ctx", lua.create_userdata(StubCtx).unwrap())
+                .unwrap();
+
+            let refused = lua
+                .load(r#"terminal.spawn(ctx, {})"#)
+                .exec_async()
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(refused.contains("cmd is required"), "{refused}");
+
+            let outcome: Table = lua
+                .load(
+                    r#"
+                    local term = terminal.spawn(ctx, { cmd = { "cat" }, cols = 80, rows = 24 })
+                    term:send("marco\r")
+                    term:expect("marco", { timeout = "10s" })
+                    local s = term:screen()
+                    term:signal("TERM")
+                    term:wait({ timeout = "10s" })
+
+                    local exiter = terminal.spawn(ctx, { cmd = { "sh", "-c", "exit 3" } })
+                    local w = exiter:wait({ timeout = "10s" })
+                    return { echoed = s:contains("marco"), line = s:line(0), code = w.code }
+                    "#,
+                )
+                .eval_async()
+                .await
+                .unwrap();
+            assert!(outcome.get::<bool>("echoed").unwrap(), "the pty echo reached the screen");
+            assert!(outcome.get::<String>("line").unwrap().contains("marco"));
+            assert_eq!(outcome.get::<i64>("code").unwrap(), 3, "wait reaps the real exit code");
+
+            // The observation layer's failure teaching: an expect that cannot be satisfied
+            // reports the three facts (bytes read, reader state, child state), not just a
+            // timeout — pinned here because that diagnosis once cost a forty-run bisect.
+            let term: mlua::AnyUserData = lua
+                .load(r#"return terminal.spawn(ctx, { cmd = { "sh", "-c", "exit 0" } })"#)
+                .eval_async()
+                .await
+                .unwrap();
+            let opts = lua.create_table().unwrap();
+            opts.set("timeout", "5s").unwrap();
+            let err = term
+                .call_async_method::<()>("expect", ("never-appears", opts))
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("the stream ended without producing it") && err.contains("bytes read"),
+                "the diagnosis names why: {err}"
+            );
+        });
+    }
 }

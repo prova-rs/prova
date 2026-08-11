@@ -755,4 +755,61 @@ mod tests {
         assert!(floor.matches(&unknown));
         assert!(!real.matches(&unknown));
     }
+
+    /// The broker's side of the opening turn: an in-range minor is accepted (<= is the spec's
+    /// rule), a newer minor or wrong major is refused naming both versions, and a malformed
+    /// spelling is its own error.
+    #[test]
+    fn hello_accepts_in_range_minors_and_refuses_by_name() {
+        let id = serde_json::json!(7);
+        let ok = hello(&id, &serde_json::json!({ "protocol": "1.0" }));
+        assert_eq!(ok["ok"], true);
+        assert_eq!(ok["id"], 7);
+        assert_eq!(ok["features"], serde_json::json!(["exec", "materialize"]));
+
+        let refused = hello(&id, &serde_json::json!({ "protocol": "1.99" }));
+        assert_eq!(refused["ok"], false);
+        assert!(refused["message"].as_str().unwrap().contains("1.99"), "{refused}");
+        let refused = hello(&id, &serde_json::json!({ "protocol": "2.0" }));
+        assert_eq!(refused["ok"], false);
+        let malformed = hello(&id, &serde_json::json!({ "protocol": "one" }));
+        assert!(malformed["message"].as_str().unwrap().contains("malformed"), "{malformed}");
+        let absent = hello(&id, &serde_json::json!({}));
+        assert_eq!(absent["ok"], false, "no protocol at all is malformed, not accepted");
+    }
+
+    /// The capability list's parse and the conjunctive answer: no list is an empty ask (granted),
+    /// a non-list refuses, a nameless capability refuses, an on-PATH tool grants, and the first
+    /// unmet capability names the whole answer.
+    #[test]
+    fn resolve_grants_or_names_the_first_unmet_capability() {
+        let broker = Broker {
+            offers: BTreeMap::new(),
+            leases: Mutex::new(HashMap::new()),
+            workspaces: Mutex::new(HashMap::new()),
+            versions: Mutex::new(HashMap::new()),
+            next_lease: AtomicU64::new(1),
+        };
+        let id = serde_json::json!(1);
+        let granted = resolve(&broker, &id, &serde_json::json!({}));
+        assert_eq!(granted["outcome"], "granted", "an empty ask is satisfiable: {granted}");
+
+        let granted = resolve(&broker, &id,
+            &serde_json::json!({ "capabilities": [{ "name": "sh" }] }));
+        assert_eq!(granted["outcome"], "granted", "{granted}");
+
+        let unsat = resolve(&broker, &id,
+            &serde_json::json!({ "capabilities": [{ "name": "no-such-tool-zz" }, { "name": "sh" }] }));
+        assert_eq!(unsat["outcome"], "unsatisfiable");
+        assert!(unsat["reason"].as_str().unwrap().contains("no-such-tool-zz"), "{unsat}");
+
+        let err = resolve(&broker, &id, &serde_json::json!({ "capabilities": 3 }));
+        assert_eq!(err["outcome"], "error");
+        let err = resolve(&broker, &id, &serde_json::json!({ "capabilities": [{}] }));
+        assert!(err["message"].as_str().unwrap().contains("needs a name"), "{err}");
+
+        let err = resolve(&broker, &id,
+            &serde_json::json!({ "capabilities": [{ "name": "sh", "constraint": "not-a-req" }] }));
+        assert_eq!(err["outcome"], "error", "a malformed constraint is an error, not unmet: {err}");
+    }
 }

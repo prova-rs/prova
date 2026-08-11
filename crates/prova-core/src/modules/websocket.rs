@@ -430,3 +430,159 @@ fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
         Ok(ud)
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mlua::ObjectLike;
+
+    /// The scope-teardown seam: a real ctx tears the mock down with the test scope; the stub
+    /// only accepts the registration so `manage`'s contract is satisfied.
+    struct StubCtx;
+    impl UserData for StubCtx {
+        fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+            methods.add_method("manage", |_, _, _ud: mlua::AnyUserData| Ok(()));
+        }
+    }
+
+    /// The hosted harness every test here runs inside: a current-thread runtime + LocalSet
+    /// (exactly how the engine hosts the module), one Lua with `websocket` installed and the
+    /// stub ctx registered.
+    fn harness() -> (tokio::runtime::Runtime, tokio::task::LocalSet, Lua) {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let local = tokio::task::LocalSet::new();
+        let lua = Lua::new();
+        lua.globals().set("websocket", make(&lua).unwrap()).unwrap();
+        lua.globals()
+            .set("ctx", lua.create_userdata(StubCtx).unwrap())
+            .unwrap();
+        (rt, local, lua)
+    }
+
+    /// The whole transport through its own Lua surface, hosted under a LocalSet exactly as the
+    /// engine hosts it: the ctx contract refuses a nil, on_connect pushes before any request
+    /// (full duplex), a stubbed turn answers, an unmatched turn journals as unmatched (kept,
+    /// not dropped), and recv after close-with-no-traffic times out by name.
+    #[test]
+    fn mock_and_driver_round_trip_message_turns() {
+        let (rt, local, lua) = harness();
+        local.block_on(&rt, async {
+            let refused = lua
+                .load(r#"websocket.mock(nil)"#)
+                .exec_async()
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(refused.contains("pass the test or fixture context"), "{refused}");
+
+            let outcome: Table = lua
+                .load(
+                    r#"
+                    local m = websocket.mock(ctx)
+                    m:on_connect(function(conn) conn:send("welcome") end)
+                    m:on("ping"):reply("pong")
+                    local c = websocket.connect(m.url)
+                    local pushed = c:recv({ timeout = "5s" })
+                    c:send("ping")
+                    local answered = c:recv({ timeout = "5s" })
+                    c:send("stray")
+                    return { m = m, c = c, url = m.url, pushed = pushed, answered = answered }
+                    "#,
+                )
+                .eval_async()
+                .await
+                .unwrap();
+            assert_eq!(outcome.get::<String>("pushed").unwrap(), "welcome");
+            assert_eq!(outcome.get::<String>("answered").unwrap(), "pong");
+            assert!(outcome.get::<String>("url").unwrap().starts_with("ws://127.0.0.1:"));
+
+            // The stray turn journals as unmatched. The reader task shares this thread — yield
+            // to it until the row lands (bounded, so a regression fails rather than hangs).
+            let m: mlua::AnyUserData = outcome.get("m").unwrap();
+            let mut rows: Option<Table> = None;
+            for _ in 0..100 {
+                let got: Table = m.call_method("received", ()).unwrap();
+                if got.raw_len() == 2 {
+                    rows = Some(got);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            let rows = rows.expect("both turns journal within the bound");
+            let first: Table = rows.get(1).unwrap();
+            let second: Table = rows.get(2).unwrap();
+            assert_eq!(first.get::<String>("data").unwrap(), "ping");
+            assert!(first.get::<bool>("matched").unwrap());
+            assert_eq!(first.get::<String>("source").unwrap(), "stub");
+            assert_eq!(second.get::<String>("data").unwrap(), "stray");
+            assert!(!second.get::<bool>("matched").unwrap());
+            assert_eq!(second.get::<String>("source").unwrap(), "unmatched");
+
+            // Close is clean, and a recv on the closed driver says so rather than hanging.
+            let c: mlua::AnyUserData = outcome.get("c").unwrap();
+            c.call_async_method::<()>("close", ()).await.unwrap();
+            let err = c
+                .call_async_method::<mlua::String>("recv", ())
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("closed"), "{err}");
+        });
+    }
+
+    /// The interpose posture through the same harness: the proxy in front of the mock passes
+    /// traffic untouched, and its transcript records direction-tagged turns — up for the
+    /// client's, down for the upstream's. A missing upstream is refused at the call site.
+    #[test]
+    fn proxy_wiretaps_direction_tagged_turns() {
+        let (rt, local, lua) = harness();
+        local.block_on(&rt, async {
+            let refused = lua
+                .load(r#"websocket.proxy(ctx, {})"#)
+                .exec_async()
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(refused.contains("upstream is required"), "{refused}");
+
+            let outcome: Table = lua
+                .load(
+                    r#"
+                    local m = websocket.mock(ctx)
+                    m:on("ping"):reply("pong")
+                    local p = websocket.proxy(ctx, { upstream = m.url })
+                    local c = websocket.connect(p.url)
+                    c:send("ping")
+                    local answered = c:recv({ timeout = "5s" })
+                    return { p = p, url = p.url, answered = answered }
+                    "#,
+                )
+                .eval_async()
+                .await
+                .unwrap();
+            assert_eq!(outcome.get::<String>("answered").unwrap(), "pong", "traffic flows untouched");
+            assert!(outcome.get::<String>("url").unwrap().starts_with("ws://"), "endpoint symmetry");
+
+            let p: mlua::AnyUserData = outcome.get("p").unwrap();
+            let mut log: Option<Table> = None;
+            for _ in 0..100 {
+                let got: Table = p.call_method("transcript", ()).unwrap();
+                if got.raw_len() == 2 {
+                    log = Some(got);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            let log = log.expect("both directions transcribe within the bound");
+            let up: Table = log.get(1).unwrap();
+            let down: Table = log.get(2).unwrap();
+            assert_eq!(up.get::<String>("dir").unwrap(), "up");
+            assert_eq!(up.get::<String>("data").unwrap(), "ping");
+            assert_eq!(down.get::<String>("dir").unwrap(), "down");
+            assert_eq!(down.get::<String>("data").unwrap(), "pong");
+        });
+    }
+}

@@ -18,6 +18,31 @@ oversized functions 27 → 16, clones 31 → 19 (production-only scan), the prof
 Encoded goals: `functions.too_long → 0` · `duplication.clones → 8` · `expect.production → 0` ·
 `coverage.unit → 70` (first step-goal; merged bar already 81).
 
+## Where the arc CLOSED (2026-08-11) — every encoded goal reached and retired
+
+Every debt class sits at its floor with the ratchet holding it: files 0 · functions 0 ·
+unwraps 0 · expects 0 (two documented `#[allow]`s with their arguments in place) · clones 0.
+`coverage.unit` crossed its 70 goal and banked at **73.46** (from 60.22); the goal is retired
+because the plan's own exit criterion — the unit-owed delta list empty of >40-point gaps — is
+met. The merged bar banked at 84.69, blackbox at 68.99 (its honest number after the
+denominator fix below). The floors are mechanism now; raise a `goal` again when the next
+paydown is chosen, and this document has nothing left to order.
+
+What Phase 3 proved along the way, beyond the numbers:
+
+- **Test-writing found real defects**: cassette encode's b64-sentinel spoofing, and `Counts`
+  refusing schema-1 run records (which silently voided `Executed`'s `spec`-alias back-compat).
+- **The coverage conduct needed two corrections its own ratchets caught**: banking per batch
+  exposed the black-box layer paying denominator rent for nextest's test binaries (8.2 points;
+  fixed by suite-first ordering + staging executables out of the scan), and run-to-run wobble
+  motivated the `tolerance` field (declared noise bands on blackbox 1.0 / lines 0.25).
+- **The duplication ratchet caught the tests themselves cloning** — the fix was a shared
+  scaffold, not a looser baseline. The gates gate their own arc's work; that is the exemplar
+  property this arc exists to demonstrate.
+- **The last mile was harnesses, not helpers**: websocket/terminal/socket unit coverage came
+  from driving each transport's own Lua surface (mock + driver + proxy) under a `LocalSet`
+  in-process — loopback sockets and a real PTY, tens of milliseconds per test.
+
 ## The ordering argument: why unit tests come LAST
 
 The unit-owed worklist (the layered coverage conduct's delta report) and the clone census point
@@ -124,8 +149,9 @@ leaves room for honest residuals like the grpc reflection drains. When the censu
 8, the ratchet fails demanding the goal be banked and re-aimed — decide then whether the
 residuals are debt or idiom.
 
-## Phase 3 note: what the spine buys the tests
+## Phase 3 note: what the spine buys the tests — CONFIRMED 2026-08-11
 
 After Phase 1, the wiretap surface, endpoint fields, `resolve_files`, and `client_opts` are each
 ONE unit — testable with plain values, no sockets, no docker. That, plus the pure-logic trio
-(`baselines.rs`, `measure.rs`, `cassette.rs`), is the bulk of the 60 → 70 unit-coverage climb.
+(`baselines.rs`, `measure.rs`, `cassette.rs`), was indeed the bulk of the 60 → 70 climb; the
+final points past 70 came from in-process transport harnesses (see the closing record above).

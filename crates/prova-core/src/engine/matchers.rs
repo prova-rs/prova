@@ -1193,4 +1193,99 @@ mod tests {
         assert_eq!(value_length(&Value::Table(arr)), Some(2));
         assert_eq!(value_length(&Value::Integer(7)), None);
     }
+
+    /// The diff-path rendering a subset mismatch reports: named keys join with dots, indices
+    /// append bracketed, and an empty path names the root.
+    #[test]
+    fn diff_paths_render_keys_dots_and_indices() {
+        let lua = Lua::new();
+        assert_eq!(key_segment(&Value::Integer(3)), "[3]");
+        assert_eq!(key_segment(&Value::String(lua.create_string("type").unwrap())), "type");
+        assert_eq!(key_segment(&Value::Boolean(true)), "[true]");
+        assert_eq!(path_str(&[]), "(root)");
+        assert_eq!(
+            path_str(&["status".into(), "conditions".into(), "[1]".into(), "type".into()]),
+            "status.conditions[1].type"
+        );
+    }
+
+    /// Deep table equality is exact on BOTH sides: a matched subset with extra keys on either
+    /// table is not equality, and nesting recurses through values_equal's number coercion.
+    #[test]
+    fn tables_equal_is_exact_both_ways() {
+        let lua = Lua::new();
+        let a = lua_table(&lua, &[("x", Value::Integer(1))]);
+        let b = lua_table(&lua, &[("x", Value::Number(1.0))]);
+        assert!(tables_equal(&a, &b), "coerced numbers are equal values");
+        let extra = lua_table(&lua, &[("x", Value::Integer(1)), ("y", Value::Integer(2))]);
+        assert!(!tables_equal(&a, &extra), "an extra key on the right is inequality");
+        assert!(!tables_equal(&extra, &a), "and on the left");
+
+        assert_eq!(as_number(&Value::Integer(2)), Some(2.0));
+        assert_eq!(as_number(&Value::Number(2.5)), Some(2.5));
+        assert_eq!(as_number(&Value::Boolean(true)), None);
+    }
+
+    /// The jinja-marker scan behind `is_rendered`: each marker form is found by byte offset,
+    /// GitHub Actions' `${{ … }}` is NOT an offender, and clean text is None.
+    #[test]
+    fn first_marker_finds_jinja_but_spares_actions_expressions() {
+        assert_eq!(first_marker("hello {{ name }}"), Some(6));
+        assert_eq!(first_marker("{% if x %}"), Some(0));
+        assert_eq!(first_marker("a {# note #}"), Some(2));
+        assert_eq!(first_marker("run: ${{ github.sha }}"), None, "$-prefixed is Actions, not jinja");
+        assert_eq!(first_marker("plain text { brace }"), None);
+        assert_eq!(first_marker("${{ ok }} but {{ bad }}"), Some(14), "the real one still reports");
+    }
+
+    /// The render-tree sweep: offenders are named as relpath:line: snippet, an unrendered path
+    /// SEGMENT is its own offender (once, not per child), clean trees answer empty, and a
+    /// missing root is itself the finding.
+    #[test]
+    fn unrendered_markers_name_every_offender_once() {
+        let root = std::env::temp_dir().join(format!("prova-markers-ut-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(root.join("README.md"), "# {{ project_name }}\n").unwrap();
+        std::fs::create_dir_all(root.join("{{ crate_dir }}")).unwrap();
+        std::fs::write(root.join("{{ crate_dir }}/lib.rs"), "clean\n").unwrap();
+
+        let found = unrendered_markers(&root);
+        assert_eq!(
+            found,
+            vec![
+                "README.md:1: {{ project_name }}".to_string(),
+                "{{ crate_dir }} (unrendered path segment)".to_string(),
+            ],
+            "one finding per offender, sorted; the bad dir is not re-reported per child"
+        );
+
+        assert!(unrendered_markers(&root.join("src")).is_empty(), "a clean tree answers empty");
+        let missing = root.join("gone");
+        let found = unrendered_markers(&missing);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].ends_with("path does not exist"), "{found:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `is_empty` on filesystem subjects: an empty dir and a zero-byte file are empty; a
+    /// populated dir, a non-empty file, and a missing path are not.
+    #[test]
+    fn path_emptiness_is_a_filesystem_fact() {
+        let lua = Lua::new();
+        let root = std::env::temp_dir().join(format!("prova-empty-ut-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("empty-dir")).unwrap();
+        std::fs::write(root.join("zero.txt"), "").unwrap();
+        std::fs::write(root.join("full.txt"), "x").unwrap();
+
+        let path_value = |p: &Path| Value::String(lua.create_string(p.to_str().unwrap()).unwrap());
+        assert!(path_is_empty(&path_value(&root.join("empty-dir"))));
+        assert!(path_is_empty(&path_value(&root.join("zero.txt"))));
+        assert!(!path_is_empty(&path_value(&root)), "a dir with entries is not empty");
+        assert!(!path_is_empty(&path_value(&root.join("full.txt"))));
+        assert!(!path_is_empty(&path_value(&root.join("absent"))), "missing is not empty");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

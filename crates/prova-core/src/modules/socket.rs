@@ -1346,4 +1346,109 @@ mod tests {
             assert!(err.to_string().contains("2/4"), "names the shortfall: {err}");
         });
     }
+
+    /// The scope-teardown seam's stand-in: accepts the registration so `manage` is satisfied.
+    struct StubCtx;
+    impl UserData for StubCtx {
+        fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+            methods.add_method("manage", |_, _, _ud: mlua::AnyUserData| Ok(()));
+        }
+    }
+
+    /// All three postures through the module's own Lua surface, hosted like the engine hosts
+    /// them: originate (listen/connect, raw bytes with exact counts), terminate (a framed mock
+    /// answering turns and journaling the unmatched), and interpose (the proxy's
+    /// direction-tagged transcript in front of the mock).
+    #[test]
+    fn the_three_postures_round_trip_over_loopback() {
+        use mlua::ObjectLike;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            let lua = Lua::new();
+            lua.globals().set("socket", make(&lua).unwrap()).unwrap();
+            lua.globals()
+                .set("ctx", lua.create_userdata(StubCtx).unwrap())
+                .unwrap();
+
+            let outcome: Table = lua
+                .load(
+                    r#"
+                    -- originate: raw bytes, exact counts
+                    local srv = socket.listen(ctx, { addr = "tcp://127.0.0.1:0" })
+                    local c = socket.connect(srv.addr)
+                    c:send("\1\2\3")
+                    local conn = srv:accept()
+                    local raw = conn:recv(3, { timeout = "5s" })
+                    conn:send("\4")
+                    local back = c:recv(1, { timeout = "5s" })
+                    c:close()
+
+                    -- terminate: a framed mock answers turns; strays journal as unmatched
+                    local m = socket.mock(ctx, { addr = "tcp://127.0.0.1:0", framing = "line" })
+                    m:on("PING"):reply("PONG")
+                    local mc = socket.connect(m.addr, { framing = "line" })
+                    mc:send("PING")
+                    local answered = mc:recv({ timeout = "5s" })
+                    mc:send("STRAY")
+
+                    -- interpose: the proxy wiretaps in front of the mock
+                    local p = socket.proxy(ctx, { upstream = m.addr, framing = "line" })
+                    local pc = socket.connect(p.addr, { framing = "line" })
+                    pc:send("PING")
+                    local through = pc:recv({ timeout = "5s" })
+
+                    return { raw = raw, back = back, answered = answered, through = through,
+                             m = m, p = p }
+                    "#,
+                )
+                .eval_async()
+                .await
+                .unwrap();
+            assert_eq!(outcome.get::<mlua::String>("raw").unwrap().as_bytes(), &b"\x01\x02\x03"[..]);
+            assert_eq!(outcome.get::<mlua::String>("back").unwrap().as_bytes(), &b"\x04"[..]);
+            assert_eq!(outcome.get::<String>("answered").unwrap(), "PONG");
+            assert_eq!(outcome.get::<String>("through").unwrap(), "PONG", "the proxy passes untouched");
+
+            // The mock's journal keeps the stray as unmatched (§6: kept, not dropped) and the
+            // proxy's transcript tags both directions.
+            let m: mlua::AnyUserData = outcome.get("m").unwrap();
+            let mut journal: Option<Table> = None;
+            for _ in 0..100 {
+                let got: Table = m.call_method("received", ()).unwrap();
+                // Three turns reached the mock: PING direct, STRAY, PING through the proxy.
+                if got.raw_len() == 3 {
+                    journal = Some(got);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            let journal = journal.expect("all three turns journal within the bound");
+            let stray: Table = journal.get(2).unwrap();
+            assert_eq!(stray.get::<String>("data").unwrap(), "STRAY");
+            assert!(!stray.get::<bool>("matched").unwrap());
+            assert_eq!(stray.get::<String>("source").unwrap(), "unmatched");
+
+            let p: mlua::AnyUserData = outcome.get("p").unwrap();
+            let mut transcript: Option<Table> = None;
+            for _ in 0..100 {
+                let got: Table = p.call_method("transcript", ()).unwrap();
+                if got.raw_len() == 2 {
+                    transcript = Some(got);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            let transcript = transcript.expect("both directions transcribe within the bound");
+            let up: Table = transcript.get(1).unwrap();
+            let down: Table = transcript.get(2).unwrap();
+            assert_eq!(up.get::<String>("dir").unwrap(), "up");
+            assert_eq!(up.get::<String>("data").unwrap(), "PING");
+            assert_eq!(down.get::<String>("dir").unwrap(), "down");
+            assert_eq!(down.get::<String>("data").unwrap(), "PONG");
+        });
+    }
 }
