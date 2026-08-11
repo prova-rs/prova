@@ -78,3 +78,37 @@ prova.test("the quality interface is profiles, each named and described — the 
   t:expect(r.stdout):contains("whole-bar merge")
   t:expect(r.stdout):contains("pre-push sweep")
 end)
+
+prova.test("CONTEXT.md rides the card — beside the manifest, or tucked in a flat layout's .prova/", {
+  covers = "docs/design/mcp-mode.md#project-card-self-teaching",
+  proves = "house rules the generic topics cannot know (register, conventions) reach the agent through the card; the flat-manifest + state-nook shape — prova's own — used to have NO working tuck-away spot, so its context silently never rendered",
+}, function(t)
+  -- Sibling of the manifest: the documented spot, at whatever directory the manifest lives in.
+  local beside = t:tempdir() .. "/beside"
+  fs.mkdir(beside .. "/proofs")
+  fs.write(beside .. "/prova.toml", '[run]\nproofs = ["proofs"]\n')
+  fs.write(beside .. "/CONTEXT.md", "House rule: items end with Recorded YYYY-MM-DD.")
+  local r = shell.run(prova.bin .. " learn project", { cwd = beside, merge_stderr = true })
+  t:expect(r.code, r.stdout):equals(0)
+  t:expect(r.stdout):contains("Project context (`CONTEXT.md`)")
+  t:expect(r.stdout):contains("Recorded YYYY-MM-DD")
+
+  -- The tuck-away: a FLAT manifest at the root plus a `.prova/` state nook — the brief lives with
+  -- prova's other files instead of becoming one more root file.
+  local tucked = t:tempdir() .. "/tucked"
+  fs.mkdir(tucked .. "/proofs")
+  fs.mkdir(tucked .. "/.prova")
+  fs.write(tucked .. "/.prova.toml", '[run]\nproofs = ["proofs"]\n')
+  fs.write(tucked .. "/.prova/CONTEXT.md", "House rule: never cargo fmt repo-wide.")
+  local n = shell.run(prova.bin .. " learn project", { cwd = tucked, merge_stderr = true })
+  t:expect(n.code, n.stdout):equals(0)
+  t:expect(n.stdout):contains("never cargo fmt repo-wide")
+
+  -- Absent everywhere: the nudge names both spots truthfully (it used to promise `.prova/` while
+  -- discovery only read beside the manifest).
+  local bare = t:tempdir() .. "/bare"
+  fs.mkdir(bare .. "/proofs")
+  fs.write(bare .. "/prova.toml", '[run]\nproofs = ["proofs"]\n')
+  local none = shell.run(prova.bin .. " learn project", { cwd = bare, merge_stderr = true })
+  t:expect(none.stdout):contains("drop a `CONTEXT.md` beside the manifest")
+end)

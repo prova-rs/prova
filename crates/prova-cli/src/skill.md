@@ -25,6 +25,26 @@ The loop:
    fix the system, or renegotiate the bar with the human.
 5. Commit suite + implementation together: a proof-carrying change.
 
+**Capture — when the user says "add …", the move is already decided.** Work surfaces obligations
+faster than it discharges them; what you find and do not fix NOW is captured in its lane — never
+scope-crept into the current change, never a mental note:
+
+- "add it to the **backlog**" → write a `<!-- backlog: id -->` anchor in the spec doc whose
+  subject fits — captured in place, deliberately not yet owed. `prova learn backlog`.
+- "add a **claim**" / "spec this in prose" → a `<!-- claim: id -->` anchor in the same docs —
+  owed the moment it is written; a proof discharges it via `covers`. `prova learn claims`.
+- "add a **promise**" → author the proof now, flagged `promises = "reason"` — the red-by-design
+  body IS the record and the spec is executable. Prefer this over prose whenever the contract
+  can be stated as a proof today. `prova learn promises`.
+- "add a **proof/test**" → a `*.prova.lua` file in a `[run] proofs` directory. `prova learn authoring`.
+- "add a **reminder**" → `prova.remind("id", { ... })` watching a condition the future must
+  satisfy. `prova learn reminders`.
+
+Never guess placement or syntax from repo archaeology: `prova learn project` names THIS package's
+writable spec sources, its proof directories, and the house rules its context carries. Then verify
+the capture landed with the lane's own verb — `prova specs --backlog`, `prova owed`,
+`prova tests --promises`, `prova reminders`.
+
 **Promises — the executable spec surface.** A contract you can state but are NOT implementing right now
 is still worth a proof: author it flagged `{ promises = "reason/ticket" }` (test/flow-level) —
 the test states what it will prove someday and does not prove today. Open promises report as

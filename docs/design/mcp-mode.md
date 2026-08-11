@@ -149,7 +149,11 @@ the item belongs to, or create one under a writable source; **(3)** write the an
 it was captured (`docs/design/lifecycle.md#anchor-records-when-it-was-captured` — until that lands,
 the capture date goes in the item's prose, because the anchor's one date slot means *deadline*).
 The same three steps are what an MCP `backlog` tool would have to perform, so the procedure is the
-tool's spec as much as the skill's text. Recorded 2026-08-08.
+tool's spec as much as the skill's text. Recorded 2026-08-08. *Largely landed 2026-08-11:* the
+project card names the writable sources and the anchor to write, the skill's capture block routes
+every "add …" verb to its lane, `learn backlog` hands off to the card for placement, and a
+`.prova/CONTEXT.md` carries this repo's register rules — what remains of this item is the MCP
+capture *tool* the procedure specs.
 
 ## Phasing
 

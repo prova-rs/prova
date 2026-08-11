@@ -25,8 +25,7 @@ prova owed          # the ledger: every obligation, from every origin
 
 ```
 DANGLING  docs/design.md#not-written-yet
-          contract_test › … covers it, but no anchor exists — write the prose, or
-          retire the reference into `proves`
+          contract_test › … covers it, but no anchor exists — write it, or retire into `proves`
 UNPROVEN  docs/design.md#never-preempt      docs/design.md:6 — no proof covers it
 PROMISED  contract_test › leases expire     not built yet
 ```
@@ -38,10 +37,9 @@ Origin is a column, not a separate concept.
 ## Opting in
 
 Declare a spec source under `[specs]` — `[[specs.source]] type = "directory"` (`prova learn spec`).
-**Absent by default**: no section
-means no scan, no cost, and no lecture about a subsystem the package never asked for. Scanning
-belongs to the verb — `prova` does not parse markdown to run a test, and an unproven claim never
-turns a green suite red.
+**Absent by default**: no section means no scan, no cost, and no lecture about a subsystem the
+package never asked for. Scanning belongs to the verb — `prova` does not parse markdown to run a
+test, and an unproven claim never turns a green suite red.
 
 ## The outcomes
 
@@ -88,3 +86,5 @@ of a claim, out of `owed` entirely until you `prova specs promote` it. See `prov
 The mirror of `owed` (claim → proof) runs proof → claim: `prova specs backfill` lists every proof no
 claim backs (empty `covers`) and gates — a red→green worklist for full spec-coverage. It names the
 proof; you anchor the claim that means something (never auto-stubbed — that would be vacuous prose).
+
+See also: `prova learn project` — WHERE to write one (this package's writable sources + house rules).

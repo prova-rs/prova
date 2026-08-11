@@ -606,7 +606,13 @@ fn render_context_files(env: &RenderEnv) -> String {
             // `<nook>/CONTEXT.md` — a zero-config project brief, inlined verbatim. Drop the file
             // and it rides `prova learn project`; no manifest entry needed. This is the project's
             // own words to an agent orienting here (team conventions, gotchas, where to start).
-            if let Ok(md) = std::fs::read_to_string(p.nook_dir.join("CONTEXT.md")) {
+            //
+            // Looked for beside the manifest first, then in `<root>/.prova/` — a FLAT manifest
+            // (`.prova.toml` at the root) very often still keeps a `.prova/` state nook, and the
+            // brief belongs tucked there with prova's other files, not as one more root file.
+            let context_md = std::fs::read_to_string(p.nook_dir.join("CONTEXT.md"))
+                .or_else(|_| std::fs::read_to_string(p.home_dir.join(".prova/CONTEXT.md")));
+            if let Ok(md) = context_md {
                 let md = md.trim_end();
                 if !md.is_empty() {
                     out.push_str("## Project context (`CONTEXT.md`)\n\n");
@@ -619,8 +625,9 @@ fn render_context_files(env: &RenderEnv) -> String {
             if docs.is_empty() {
                 if out.is_empty() {
                     out.push_str(
-                        "**Project context**: none — drop a `.prova/CONTEXT.md` (inlined here), \
-                         or declare `context = [\"docs/agent.md\"]` for `ctx:<stem>` topics.",
+                        "**Project context**: none — drop a `CONTEXT.md` beside the manifest (or \
+                         in `.prova/`; inlined here), or declare `context = [\"docs/agent.md\"]` \
+                         for `ctx:<stem>` topics.",
                     );
                 }
             } else {

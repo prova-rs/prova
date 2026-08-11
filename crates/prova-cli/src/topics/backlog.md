@@ -84,5 +84,7 @@ elevated to a gate with `--heed` when you're ready (`prova learn reminders`). Re
 primitive for cooking up draw-down schemes on top of the backlog; the backlog stays a plain,
 merge-friendly, promotable list.
 
-See also: `prova learn claims` (the owed state and its ledger), `prova learn promises` (the
-executable spec — a contract you *are* committing to prove, just not yet).
+**Where does it go?** Placement is the package's fact, not a guess: `prova learn project` names
+the writable spec sources and any house rules its context carries — write the anchor in the doc
+whose subject owns the item, never where the ledger does not scan. See also: `prova learn claims`
+(the owed state), `prova learn promises` (the executable spec, committed but not yet proven).
