@@ -760,3 +760,72 @@ pub(crate) fn proof_files(home: &home::Home, manifest: &Manifest) -> Result<Vec<
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The record's selection provenance: an EMPTY spelling is the load-bearing case (only an
+    /// unselected run speaks for the whole suite); everything else names its subset in replayable
+    /// flag form, exclusions included.
+    #[test]
+    fn spell_selection_names_the_subset_or_stays_empty() {
+        let mut config = prova_core::RunConfig::default();
+        assert!(spell_selection(&config).is_empty(), "a full run spells as nothing");
+        config.selection.keywords.push("orders".into());
+        config.selection.tag_excludes.push("slow".into());
+        config.selection.nodes.push("a › b".into());
+        let spelled = spell_selection(&config);
+        assert_eq!(spelled, vec!["-k orders", "--tags !slow", "--node a › b"]);
+    }
+
+    /// A whole package in a tempdir, reconciled end to end: one anchored claim covered by a
+    /// settled proof, one open promise — the account counts every lifecycle stage, and with no
+    /// run recorded, ATTESTED is None (a stated fact), never a zero.
+    #[test]
+    fn evidence_account_reconciles_a_real_package() {
+        let dir = std::env::temp_dir().join(format!("prova-evidence-ut-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("docs")).unwrap();
+        std::fs::create_dir_all(dir.join("proofs")).unwrap();
+        std::fs::write(
+            dir.join("prova.toml"),
+            "[run]\nproofs = [\"proofs\"]\n\n[[specs.source]]\ntype = \"directory\"\npath = \"docs\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("docs/design.md"),
+            "<!-- claim: never-preempt -->\nThe broker never preempts a lease.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("proofs/ledger_test.lua"),
+            r#"
+prova.test("covers the claim", { covers = "docs/design.md#never-preempt" }, function(t)
+  t:expect(true):is_true()
+end)
+prova.test("promised work", { promises = "unit-test fixture" }, function(t)
+  t:expect(false):is_true()
+end)
+"#,
+        )
+        .unwrap();
+
+        let home = home::find(&dir).unwrap().expect("the tempdir package has a manifest");
+        let (manifest, packages_resolved) =
+            resolve_for_obligations(&home).map_err(|_| "resolve failed").unwrap();
+        let account = evidence_account(&home, &manifest, &packages_resolved).unwrap();
+
+        assert_eq!(account.claimed, 1);
+        assert_eq!(account.bound, 1, "the covering proof binds the claim");
+        assert_eq!(account.promised, 1, "the open promise is owed");
+        assert_eq!(account.attested, None, "no record — a stated fact, never a zero");
+        assert!(
+            account.owed.iter().any(|o| o.subject.contains("promised work")),
+            "the open promise appears in the owed rows: {:?}",
+            account.owed
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

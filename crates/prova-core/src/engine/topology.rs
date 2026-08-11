@@ -633,3 +633,31 @@ pub(super) fn snapshot_mtimes(files: &[PathBuf]) -> Vec<Option<std::time::System
         .map(|f| std::fs::metadata(f).and_then(|m| m.modified()).ok())
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The held-topology snapshot bridge: a run-state JSON round-trips into the Lua shapes an
+    /// attaching run's fixtures expect — nested tables, 1-based arrays, nil for null. What a
+    /// warm attach actually hands a proof.
+    #[test]
+    fn json_to_lua_round_trips_the_snapshot_shapes() {
+        let lua = Lua::new();
+        let snapshot: serde_json::Value = serde_json::json!({
+            "db": { "url": "postgres://u", "port": 5432, "ready": true },
+            "aliases": ["a", "b"],
+            "gone": null,
+        });
+        let v = json_to_lua(&lua, &snapshot).unwrap();
+        let Value::Table(t) = v else { panic!("expected a table") };
+        let db: Table = t.get("db").unwrap();
+        assert_eq!(db.get::<String>("url").unwrap(), "postgres://u");
+        assert_eq!(db.get::<f64>("port").unwrap(), 5432.0);
+        assert!(db.get::<bool>("ready").unwrap());
+        let aliases: Table = t.get("aliases").unwrap();
+        assert_eq!(aliases.get::<String>(1).unwrap(), "a");
+        assert_eq!(aliases.get::<String>(2).unwrap(), "b");
+        assert!(matches!(t.get::<Value>("gone").unwrap(), Value::Nil));
+    }
+}
