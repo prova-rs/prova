@@ -245,3 +245,15 @@ run ended. A fixture failure should be memoized for its scope — dependents get
 the one recorded error — or retry-vs-poison should be an explicit policy on the fixture.
 Re-provisioning an expensive conduct on failure has no upside at file scope: nothing changed
 between attempts except the clock.
+
+<!-- backlog: resumable-runs-incremental-verdicts -->
+**A failed sweep re-pays the whole world; runs should resume and verdicts should cache
+against their inputs.** A ~45-minute `run all` that dies at minute 40 (contention, timeout,
+one ratchet regression) costs another 45 to re-ask questions whose answers did not change.
+Two composable remedies: (a) run journaling + `--resume` — re-execute only nodes that were
+red, unattested, or absent last run, in the same tree state; (b) verdict caching keyed on
+declared inputs (the conduct command + the tree paths a proof reads — the fixture/deputy
+already names both), so an unchanged proof over unchanged inputs replays its verdict and
+says so. The tally must distinguish replayed from re-earned — a cached green that reads
+identically to a fresh one would green-wash. Observed 2026-08-11: four sweep attempts to
+land one slice; three re-paid the ut conduct for reasons unrelated to it.
