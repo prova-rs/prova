@@ -50,6 +50,12 @@ pub struct Metric {
     // untouched.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal: Option<f64>,
+    /// Declared run-to-run noise: the gate holds `value - tolerance` (mirrored for
+    /// lower-is-better) while banking still records the best-seen value — a noisy metric
+    /// (black-box coverage wobbles with timing-dependent paths) declares its band instead of
+    /// flaking or being hand-loosened after every bank.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tolerance: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pace: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -111,6 +117,7 @@ pub fn update(root: &Path, measurements: &[Measurement]) -> UpdateReport {
                             goal: None,
                             pace: None,
                             deadline: None,
+                            tolerance: None,
                         },
                     );
                     report
@@ -278,6 +285,23 @@ mod tests {
         assert_eq!(metric.value, 20.0);
         assert_eq!(metric.goal, Some(10.0));
         assert_eq!(metric.deadline.as_deref(), Some("2026-12-31"));
+    }
+
+    /// A declared `tolerance` survives a tightening bank exactly like a goal — re-peaking the
+    /// floor must never silently drop the noise band that keeps it from flaking.
+    #[test]
+    fn update_carries_tolerance_through_tighten() {
+        let root = make_tempdir().unwrap();
+        update(&root, &[m("bb", 60.0, Direction::HigherIsBetter)]);
+        let p = root.join(".prova/baselines/quality.json");
+        let mut base: Baselines = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        base.metrics.get_mut("bb").unwrap().tolerance = Some(1.0);
+        std::fs::write(&p, serde_json::to_string(&base).unwrap()).unwrap();
+
+        update(&root, &[m("bb", 62.0, Direction::HigherIsBetter)]);
+        let metric = &load(&root, "quality").metrics["bb"];
+        assert_eq!(metric.value, 62.0);
+        assert_eq!(metric.tolerance, Some(1.0));
     }
 
     /// Sets partition into separate files — the ownership/merge-conflict isolation the per-set

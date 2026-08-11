@@ -95,7 +95,7 @@ end)
 -- honest runs. A noisy metric needs to DECLARE its noise: `tolerance` in the committed baseline,
 -- with the gate holding `floor - tolerance` while banking still records the best-seen value.
 prova.test("a baseline `tolerance` absorbs declared noise without loosening the banked floor", {
-  promises = "north-star arc: the blackbox coverage ratchet flaked on run-to-run noise (2026-08-10)",
+  proves = "north-star arc: the blackbox coverage ratchet flaked on run-to-run noise, and re-flaked after every bank re-peaked the floor (2026-08-10) — a noisy metric declares its band instead",
 }, function(t)
   local dir = t:tempdir()
   fs.mkdir(dir .. "/proofs")

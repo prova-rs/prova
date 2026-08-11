@@ -54,15 +54,21 @@ function measure.ratchet(t, name, value, opts)
   end
 
   local floor = m.value
+  -- Declared run-to-run noise: the gate holds the floor MINUS the band (mirrored for
+  -- lower-is-better) while banking still records the best-seen — so a noisy metric neither
+  -- flakes nor needs hand-loosening after every bank. Absent = 0: the ratchet is as hard as ever.
+  local tolerance = m.tolerance or 0
   -- 1) The ceiling: never regress past the committed baseline (the preventive ratchet).
   if dir == "higher_is_better" then
     t:expect(value, name .. " regressed to " .. value .. " (baseline floor " .. floor ..
+      (tolerance > 0 and (" − tolerance " .. tolerance) or "") ..
       ", higher is better) — recover it, or hand-edit the committed baseline if the regression is intended (--update-baseline refuses to loosen)")
-      :gte(floor)
+      :gte(floor - tolerance)
   else
     t:expect(value, name .. " regressed to " .. value .. " (baseline ceiling " .. floor ..
+      (tolerance > 0 and (" + tolerance " .. tolerance) or "") ..
       ", lower is better) — bring it back down, or hand-edit the committed baseline if the regression is intended (--update-baseline refuses to loosen)")
-      :never():gt(floor)
+      :never():gt(floor + tolerance)
   end
 
   -- 2) Paydown: when the baseline declares a `goal`, drive toward it (docs/design/verifiers.md).

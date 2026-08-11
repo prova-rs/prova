@@ -3,7 +3,8 @@
   "metrics": {
     "rust.coverage.blackbox": {
       "value": 61.85381788485096,
-      "direction": "higher_is_better"
+      "direction": "higher_is_better",
+      "tolerance": 1.0
     },
     "rust.coverage.lines": {
       "value": 82.82618436596195,
