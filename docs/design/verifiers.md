@@ -223,14 +223,15 @@ from any proof file, with ordering semantics — would let cross-file readers bi
 conduct's account.
 
 <!-- backlog: exclusive-conduct-resources -->
-**Concurrent conducts sharing an exclusive resource (the cargo target dir) starve each other;
-suites should declare the resource and prova should schedule around it.** A `run all` sweep
-executed three cargo-nextest conducts concurrently (a deputy fixture, the ut lane, a session
-conduct); all sat at 0% CPU contending on the target lock until their `shell.run` timeouts
-fired — two rounds of false timeout diagnoses before the contention was spotted in `ps`. The
-workaround is a global `--jobs 1`, which serializes everything including suites that could
-safely overlap. Better: let a fixture or suite declare `exclusive = "cargo"` (an opaque
-resource token) and have the scheduler serialize only the holders — the same lesson as
-Substrate's "one cargo at a time" rule, made a scheduling fact instead of an operator
-convention. Composes with conduct-heartbeat-not-deadline: liveness supervision would also
-have distinguished "blocked on a lock" from "working" immediately.
+**The resource scheduler exists (`prova.writes(x)` / `serial = true`) but the learn/skill
+surface never teaches it — an agent that hit exclusive-resource contention could not discover
+the cure.** A `run all` sweep ran three cargo-nextest conducts concurrently; all starved on
+the target lock until their timeouts fired. The fix was already in the product — declare
+`resources = { prova.writes("cargo") }` on the conducting units and the scheduler serializes
+only the holders — but `prova learn` has zero topics mentioning resources, serial, or
+concurrency (`architecture.md`/`api.md` carry it; the progressive-disclosure surface does
+not), so the operator diagnosed via `ps`, worked around with a global `--jobs 1`, and filed
+this item believing the feature missing. Wanted: a `learn` topic (scheduling/resources) +
+a skill section, and a pointer from the `--jobs` help text. Composes with
+conduct-heartbeat-not-deadline: liveness supervision would have named "blocked on a lock"
+immediately.
