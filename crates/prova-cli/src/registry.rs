@@ -769,7 +769,7 @@ pub fn learn_lines(cli: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::ArchetypeEntry;
+    use super::*;
 
     fn entry(repo: &str, latest: Option<&str>) -> ArchetypeEntry {
         ArchetypeEntry {
@@ -821,5 +821,154 @@ mod tests {
             entry("git@github.com:acme/acme-arch.git", Some("v1")).source(),
             "git@github.com:acme/acme-arch.git#v1"
         );
+    }
+
+    fn tempdir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("prova-registry-ut-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    struct FakeLayout(PathBuf);
+    impl SystemLayout for FakeLayout {
+        fn config_dir(&self) -> PathBuf {
+            self.0.join("config")
+        }
+        fn cache_dir(&self) -> PathBuf {
+            self.0.join("cache")
+        }
+        fn data_dir(&self) -> PathBuf {
+            self.0.join("data")
+        }
+    }
+
+    /// Tolerance is the contract: unparseable TOML, a newer schema, and missing required fields
+    /// each skip ONE entry with a warning naming it — the sibling still serves.
+    #[test]
+    fn load_entries_skips_bad_entries_by_name_and_serves_siblings() {
+        let dir = tempdir("entries");
+        let reg_dir = dir.join("registry");
+        std::fs::create_dir_all(&reg_dir).unwrap();
+        std::fs::write(
+            reg_dir.join("good.toml"),
+            "name = \"kit\"\nrepo = \"https://x/y\"\ndescription = \"a kit\"\nkeywords = [\"http\"]\n",
+        )
+        .unwrap();
+        std::fs::write(reg_dir.join("broken.toml"), "name = [not toml").unwrap();
+        std::fs::write(
+            reg_dir.join("future.toml"),
+            "schema = 2\nname = \"n\"\nrepo = \"r\"\ndescription = \"d\"\n",
+        )
+        .unwrap();
+        std::fs::write(reg_dir.join("bare.toml"), "name = \"only-a-name\"\n").unwrap();
+        std::fs::write(reg_dir.join("README.md"), "not an entry").unwrap();
+
+        let reg = RegistryRef { name: "test-reg".into(), source: dir.display().to_string() };
+        let mut warnings = Vec::new();
+        let entries = load_entries(&reg, &dir, &mut warnings);
+        assert_eq!(entries.len(), 1);
+        assert_eq!((entries[0].name.as_str(), entries[0].registry.as_str()), ("kit", "test-reg"));
+        assert_eq!(warnings.len(), 3, "one warning per bad entry: {warnings:?}");
+        for stem in ["broken", "future", "bare"] {
+            assert!(warnings.iter().any(|w| w.contains(stem)), "no warning names {stem}: {warnings:?}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn search_matches_name_description_and_keywords_case_insensitively() {
+        let e = Entry {
+            registry: "r".into(),
+            name: "postgres".into(),
+            repo: String::new(),
+            description: "drive a database".into(),
+            keywords: vec!["SQL".into()],
+            latest: None,
+            namespaces: vec![],
+            topologies: vec![],
+            shapes: vec![],
+            requires: vec![],
+        };
+        assert!(matches(&e, "POST"));
+        assert!(matches(&e, "database"));
+        assert!(matches(&e, "sql"));
+        assert!(!matches(&e, "redis"));
+    }
+
+    /// The three shapes of the line-based pin edit: replace the declared key in place, insert
+    /// under an existing header, append a fresh section — everything else byte-for-byte.
+    #[test]
+    fn write_pin_replaces_inserts_or_appends_touching_nothing_else() {
+        let dir = tempdir("pin");
+        let manifest = dir.join("prova.toml");
+
+        std::fs::write(&manifest, "[run]\njobs = 2\n").unwrap();
+        write_pin(&manifest, "kit", "https://x/y", "v1").unwrap();
+        let text = std::fs::read_to_string(&manifest).unwrap();
+        assert_eq!(text, "[run]\njobs = 2\n\n[plugins]\nkit = { git = \"https://x/y\", tag = \"v1\" }\n");
+
+        write_pin(&manifest, "other", "https://x/z", "v2").unwrap();
+        write_pin(&manifest, "kit", "https://x/y", "v9").unwrap();
+        let text = std::fs::read_to_string(&manifest).unwrap();
+        assert!(text.contains("kit = { git = \"https://x/y\", tag = \"v9\" }"), "replaced in place: {text}");
+        assert!(text.contains("other = { git = \"https://x/z\", tag = \"v2\" }"), "sibling untouched: {text}");
+        assert_eq!(text.matches("[plugins]").count(), 1);
+        assert!(text.starts_with("[run]\njobs = 2\n"), "unrelated sections byte-for-byte: {text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `add`'s refusals, each with the fix in the message: unknown name (search first), a name
+    /// two registries serve (disambiguate as registry:name), an entry with no recommended pin
+    /// (give an explicit @ref) — and the registry:name / @ref spellings parse on the way.
+    #[test]
+    fn add_refuses_unknown_ambiguous_and_unpinned_by_name() {
+        let entry = |registry: &str, name: &str, latest: Option<&str>| Entry {
+            registry: registry.into(),
+            name: name.into(),
+            repo: "https://x/y".into(),
+            description: String::new(),
+            keywords: vec![],
+            latest: latest.map(String::from),
+            namespaces: vec![],
+            topologies: vec![],
+            shapes: vec![],
+            requires: vec![],
+        };
+        let entries = vec![entry("a", "kit", Some("v1")), entry("b", "kit", Some("v1")), entry("a", "bare", None)];
+
+        assert!(add("ghost", &entries).unwrap_err().contains("search first"));
+        assert!(add("ghost@v2", &entries).unwrap_err().contains("\"ghost\""), "@ref split before lookup");
+        let err = add("kit", &entries).unwrap_err();
+        assert!(err.contains("multiple registries") && err.contains("a:kit"), "{err}");
+        assert!(add("c:kit", &entries).unwrap_err().contains("registry c"), "registry: filter applies");
+        assert!(add("bare", &entries).unwrap_err().contains("@<ref>"), "no pin, no guess");
+    }
+
+    /// Built-ins merged with the user's config.toml: a matching name replaces the built-in
+    /// wholesale, a new name adds, no config file at all serves the built-ins.
+    #[test]
+    fn configured_merges_user_registries_over_builtins() {
+        let dir = tempdir("config");
+        let layout = FakeLayout(dir.clone());
+        let regs = configured(&layout).unwrap();
+        assert_eq!(regs.len(), 1, "no config: builtins only");
+        assert_eq!(regs[0].name, "prova-rs");
+
+        std::fs::create_dir_all(layout.config_dir()).unwrap();
+        std::fs::write(
+            layout.config_dir().join("config.toml"),
+            "[[registries]]\nname = \"prova-rs\"\nsource = \"/srv/mirror\"\n\n\
+             [[registries]]\nname = \"corp\"\nsource = \"https://git.corp/registry\"\n",
+        )
+        .unwrap();
+        let regs = configured(&layout).unwrap();
+        assert_eq!(regs.len(), 2);
+        assert_eq!(regs[0].source, "/srv/mirror", "same name replaces the built-in");
+        assert_eq!(regs[1].name, "corp");
+
+        std::fs::write(layout.config_dir().join("config.toml"), "[[registries]]\nbroken").unwrap();
+        assert!(configured(&layout).unwrap_err().contains("config.toml"), "malformed config names the file");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

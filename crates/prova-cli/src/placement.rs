@@ -162,4 +162,58 @@ mod tests {
         let err = hello("tcp://127.0.0.1:9999").unwrap_err();
         assert!(err.contains("unix://"), "{err}");
     }
+
+    /// A one-connection broker stub: accept, optionally read the request line, answer with
+    /// `reply` (verbatim JSON line, or nothing for a silent close). Returns the addr and the
+    /// join handle carrying the request line the client actually sent.
+    fn stub_broker(tag: &str, reply: Option<&'static str>) -> (String, std::thread::JoinHandle<String>) {
+        let path = std::env::temp_dir().join(format!("prova-pl-{tag}-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            BufReader::new(stream.try_clone().unwrap()).read_line(&mut request).unwrap();
+            if let Some(reply) = reply {
+                let mut w = stream;
+                writeln!(w, "{reply}").unwrap();
+            }
+            request
+        });
+        (format!("unix://{}", path.display()), handle)
+    }
+
+    #[test]
+    fn hello_negotiates_the_opening_turn() {
+        let (addr, broker) = stub_broker(
+            "ok",
+            Some(r#"{"ok":true,"protocol":"1.0","broker":"stub","nodes":3,"features":["exec"]}"#),
+        );
+        let info = hello(&addr).unwrap();
+        assert_eq!((info.broker.as_str(), info.protocol.as_str(), info.nodes), ("stub", "1.0", 3));
+        assert_eq!(info.features, vec!["exec".to_string()]);
+        let request = broker.join().unwrap();
+        for field in [r#""op":"hello""#, r#""protocol":"1.0""#, r#""client":"prova/"#] {
+            assert!(request.contains(field), "request lacks {field}: {request}");
+        }
+    }
+
+    /// Every refusal is loud and names the broker's own words — the spec's rule that a configured
+    /// broker never degrades into a quiet local run.
+    #[test]
+    fn hello_raises_refusals_mismatches_and_silence_by_name() {
+        let (addr, _b) = stub_broker("refuse", Some(r#"{"ok":false,"message":"pool draining"}"#));
+        assert!(hello(&addr).unwrap_err().contains("pool draining"));
+
+        let (addr, _b) = stub_broker("proto", Some(r#"{"ok":true,"protocol":"2.0"}"#));
+        let err = hello(&addr).unwrap_err();
+        assert!(err.contains("protocol \"2.0\""), "{err}");
+
+        let (addr, _b) = stub_broker("mute", None);
+        let err = hello(&addr).unwrap_err();
+        assert!(err.contains("without answering"), "{err}");
+
+        let err = hello("unix:///nonexistent/broker.sock").unwrap_err();
+        assert!(err.contains("cannot reach"), "{err}");
+    }
 }

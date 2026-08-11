@@ -271,3 +271,50 @@ pub(crate) fn introspect_subcommand(args: Vec<String>) -> ExitCode {
     }
     ExitCode::SUCCESS
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ExitCode exposes no accessor; its Debug form is the one honest window for asserting
+    /// which code a verb chose.
+    fn code(c: ExitCode) -> String {
+        format!("{c:?}")
+    }
+
+    fn argv(args: &[&str]) -> Vec<String> {
+        args.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Each verb's argument grammar refuses malformed invocations with exit 2 (usage), before
+    /// any probe or filesystem work — and help/no-match forms exit 0.
+    #[test]
+    fn meta_verbs_refuse_malformed_arguments_with_usage() {
+        let usage = code(ExitCode::from(2));
+        assert_eq!(code(package_subcommand(argv(&[]))), usage, "package with no subcommand");
+        assert_eq!(code(package_subcommand(argv(&["lint"]))), usage, "lint with no files");
+        assert_eq!(code(package_subcommand(argv(&["publish"]))), usage, "unknown subcommand");
+
+        assert_eq!(code(capabilities_subcommand(argv(&["docker"]))), usage, "this verb takes none");
+        assert_eq!(code(capabilities_subcommand(argv(&["--help"]))), code(ExitCode::SUCCESS));
+
+        assert_eq!(code(introspect_subcommand(argv(&["--bogus"]))), usage, "unknown flag");
+        assert_eq!(code(introspect_subcommand(argv(&["a", "b"]))), usage, "one filter at a time");
+        assert_eq!(code(introspect_subcommand(argv(&["--help"]))), code(ExitCode::SUCCESS));
+    }
+
+    /// The introspect surface is real: unfiltered it serves the core API; an impossible filter
+    /// still exits 0 (an empty answer is an answer, not an error).
+    #[test]
+    fn introspect_serves_the_core_surface_and_tolerates_no_match() {
+        assert_eq!(code(introspect_subcommand(argv(&[]))), code(ExitCode::SUCCESS));
+        assert_eq!(
+            code(introspect_subcommand(argv(&["zz-no-such-api-zz"]))),
+            code(ExitCode::SUCCESS)
+        );
+        assert!(
+            !prova_core::help::core_entries().is_empty(),
+            "the embedded LuaCATS stubs parse into a non-empty API surface"
+        );
+    }
+}
