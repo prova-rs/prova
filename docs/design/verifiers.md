@@ -221,3 +221,16 @@ cargo, double wall-clock in `run all`) or read the ut lane's junit artifact with
 guarantee. A suite-scoped named deputy — declared once, provisioned once per run, adoptable
 from any proof file, with ordering semantics — would let cross-file readers bind to one
 conduct's account.
+
+<!-- backlog: exclusive-conduct-resources -->
+**Concurrent conducts sharing an exclusive resource (the cargo target dir) starve each other;
+suites should declare the resource and prova should schedule around it.** A `run all` sweep
+executed three cargo-nextest conducts concurrently (a deputy fixture, the ut lane, a session
+conduct); all sat at 0% CPU contending on the target lock until their `shell.run` timeouts
+fired — two rounds of false timeout diagnoses before the contention was spotted in `ps`. The
+workaround is a global `--jobs 1`, which serializes everything including suites that could
+safely overlap. Better: let a fixture or suite declare `exclusive = "cargo"` (an opaque
+resource token) and have the scheduler serialize only the holders — the same lesson as
+Substrate's "one cargo at a time" rule, made a scheduling fact instead of an operator
+convention. Composes with conduct-heartbeat-not-deadline: liveness supervision would also
+have distinguished "blocked on a lock" from "working" immediately.
