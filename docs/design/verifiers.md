@@ -235,3 +235,12 @@ this item believing the feature missing. Wanted: a `learn` topic (scheduling/res
 a skill section, and a pointer from the `--jobs` help text. Composes with
 conduct-heartbeat-not-deadline: liveness supervision would have named "blocked on a lock"
 immediately.
+
+Second half (User, 2026-08-11): the scheduler is invocation-scoped but the resource is
+machine-scoped — two prova processes each internally serialized still collide on cargo
+(observed: an orphaned run's nextest held the target lock against a fresh invocation). A
+declared resource should materialize as an OS advisory lock: `writes(x)` takes an exclusive
+flock on a well-known path keyed by token + scope root (default per `prova.root`, since
+cargo contends per target dir; opt-in global tokens), `reads(x)` shared. The blocked side
+narrates the holder ("waiting on `cargo`: held by prova pid 1234, 40s") so cross-process
+contention is a report, not a `ps` investigation.
