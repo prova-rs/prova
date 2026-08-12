@@ -137,6 +137,11 @@ form_urlencoded = { version = "1", optional = true }
 # Windows.
 fs2 = "0.4"
 
+[target.'cfg(windows)'.dependencies]
+# GetProcessTimes for the CPU-liveness reader (modules/shell.rs child_cpu_ticks) — the same
+# native-API rule as procfs/libproc: never a `ps` dialect guess.
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
 [features]
 default = ["http", "sqlite", "docker", "grpc", "graphql", "yaml", "mock", "grpc-mock"]
 http = ["dep:reqwest"]

@@ -357,6 +357,87 @@ fn parse_run_opts(opts: &Option<Table>) -> mlua::Result<RunOpts> {
     })
 }
 
+/// Cumulative CPU consumed by `pid`, in opaque monotonic ticks — units are irrelevant, only
+/// increase matters: the question is "did the child do WORK since the last look", never "how
+/// much". Native readers only (procfs, libproc): shelling out to `ps` would trade a guess about
+/// output cadence for a guess about ps dialects — the same disease, one tool over. `None` — the
+/// process is gone, or a platform with no reader — degrades supervision to bytes-only.
+#[cfg(target_os = "linux")]
+fn child_cpu_ticks(pid: u32) -> Option<u64> {
+    // /proc/<pid>/stat, split from the LAST ')' so a comm with spaces or parens cannot shift
+    // the fields: the tokens after it start at state (field 3); utime/stime are fields 14/15.
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let rest = stat.rsplit_once(')')?.1;
+    let mut fields = rest.split_whitespace();
+    let utime: u64 = fields.nth(11)?.parse().ok()?;
+    let stime: u64 = fields.next()?.parse().ok()?;
+    Some(utime.saturating_add(stime))
+}
+
+#[cfg(target_os = "macos")]
+fn child_cpu_ticks(pid: u32) -> Option<u64> {
+    let mut info: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
+    // SAFETY: the V2 flavor fills exactly the rusage_info_v2 layout; the double cast is the
+    // API's own calling convention (rusage_info_t is a void*).
+    let rc = unsafe {
+        libc::proc_pid_rusage(
+            pid as libc::c_int,
+            libc::RUSAGE_INFO_V2,
+            &mut info as *mut libc::rusage_info_v2 as *mut libc::rusage_info_t,
+        )
+    };
+    if rc != 0 {
+        return None;
+    }
+    Some(info.ri_user_time.saturating_add(info.ri_system_time))
+}
+
+#[cfg(windows)]
+fn child_cpu_ticks(pid: u32) -> Option<u64> {
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    // SAFETY: a query-only handle, closed on every path; GetProcessTimes fills four FILETIMEs.
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return None;
+        }
+        let mut creation: FILETIME = std::mem::zeroed();
+        let mut exit: FILETIME = std::mem::zeroed();
+        let mut kernel: FILETIME = std::mem::zeroed();
+        let mut user: FILETIME = std::mem::zeroed();
+        let ok = GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user);
+        CloseHandle(handle);
+        if ok == 0 {
+            return None;
+        }
+        let ticks =
+            |ft: FILETIME| ((ft.dwHighDateTime as u64) << 32) | ft.dwLowDateTime as u64;
+        Some(ticks(kernel).saturating_add(ticks(user)))
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn child_cpu_ticks(_pid: u32) -> Option<u64> {
+    None
+}
+
+/// One idle-window verdict: did the child accrue CPU since the last look? Updates the watermark
+/// on progress. `false` also covers "no reader on this platform" and "process gone" — both
+/// degrade to bytes-only supervision, the stricter posture.
+fn cpu_advanced(pid: Option<u32>, last: &mut Option<u64>) -> bool {
+    let now = pid.and_then(child_cpu_ticks);
+    match (now, *last) {
+        (Some(now), Some(prev)) if now > prev => {
+            *last = Some(now);
+            true
+        }
+        _ => false,
+    }
+}
+
 /// How a supervised conduct ended: ran to completion, or was killed for silence (carrying what
 /// had been captured when the idle clock ran out, so the error can show where it stalled).
 enum Supervised {
@@ -398,6 +479,8 @@ async fn run_supervised(
         .stderr
         .take()
         .ok_or_else(|| std::io::Error::other("child stderr was not captured"))?;
+    let pid = child.id();
+    let mut last_cpu = pid.and_then(child_cpu_ticks);
     let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
     let (mut out_done, mut err_done) = (false, false);
     let (mut buf_o, mut buf_e) = ([0u8; 8192], [0u8; 8192]);
@@ -411,22 +494,36 @@ async fn run_supervised(
                 0 => err_done = true,
                 n => stderr.extend_from_slice(&buf_e[..n]),
             },
-            // Recreated each iteration, so every chunk read above re-arms the clock.
+            // Recreated each iteration, so every chunk read above re-arms the clock. Silence on
+            // the pipes is only HALF the evidence when it fires: a big compile says nothing for
+            // minutes while working flat-out, so a quiet window with CPU progress is life —
+            // kill only when both are absent (bytes OR work is the heartbeat).
             () = tokio::time::sleep(idle) => {
-                child.kill().await.ok();
-                return Ok(Supervised::Idle { stdout, stderr });
+                if !cpu_advanced(pid, &mut last_cpu) {
+                    child.kill().await.ok();
+                    return Ok(Supervised::Idle { stdout, stderr });
+                }
             }
         }
     }
-    match tokio::time::timeout(idle, child.wait()).await {
-        Ok(status) => Ok(Supervised::Finished(std::process::Output {
-            status: status?,
-            stdout,
-            stderr,
-        })),
-        Err(_) => {
-            child.kill().await.ok();
-            Ok(Supervised::Idle { stdout, stderr })
+    // Streams closed, exit pending: the same clock and the same evidence bound the wait — a
+    // child that closed its pipes but still computes is alive; one that lingers doing nothing
+    // is dead.
+    loop {
+        match tokio::time::timeout(idle, child.wait()).await {
+            Ok(status) => {
+                return Ok(Supervised::Finished(std::process::Output {
+                    status: status?,
+                    stdout,
+                    stderr,
+                }))
+            }
+            Err(_) => {
+                if !cpu_advanced(pid, &mut last_cpu) {
+                    child.kill().await.ok();
+                    return Ok(Supervised::Idle { stdout, stderr });
+                }
+            }
         }
     }
 }
@@ -495,7 +592,8 @@ async fn run_command(
             Supervised::Finished(output) => output,
             Supervised::Idle { stdout, stderr } => {
                 return Err(mlua::Error::RuntimeError(format!(
-                    "shell.run: no output for {idle:?} (idle_timeout) — killed as silent: {cmd}\n\
+                    "shell.run: no output and no CPU progress for {idle:?} (idle_timeout) — \
+                     killed as dead: {cmd}\n\
                      --- stderr tail ---\n{}\n--- stdout tail ---\n{}",
                     tail(&String::from_utf8_lossy(&stderr), 4096),
                     tail(&String::from_utf8_lossy(&stdout), 4096),

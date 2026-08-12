@@ -57,7 +57,11 @@ old = "./old"
   local r = run(root)
   t:expect(r.code):never():equals(0)
   t:expect(r.stdout):contains('package "old"')
-  t:expect(r.stdout):contains("requires prova <0.1 but this is " .. prova.version)
+  -- The version in the refusal is the SUBJECT's, so the expectation asks the subject — the
+  -- conductor executing this file may report a different build (a dev-stamped install).
+  local subject_version =
+    shell.run(prova.bin .. " --version", { check = true }).stdout:match("prova%s+(%S+)")
+  t:expect(r.stdout):contains("requires prova <0.1 but this is " .. subject_version)
   t:expect(r.stdout, "the refusal teaches both ways out"):contains("upgrade prova")
   t:expect(r.stdout, "the gate fired before any proof ran"):never():contains("must not run")
 end)

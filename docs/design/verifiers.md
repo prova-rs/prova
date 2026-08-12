@@ -203,13 +203,18 @@ level further out.
 ## Field reports (Substrate gate-integration run, 2026-08-11)
 
 <!-- claim: conduct-heartbeat-not-deadline recorded=2026-08-11 -->
-**A conduct can be supervised by liveness: `shell.run { idle_timeout }` bounds silence, never
-work.** Bound the resource, never the work: a clock is legitimate as a sampling rate,
-illegitimate as a task budget, and conducts run externally-sized work by design while cargo
-and most build tools emit continuous progress. `idle_timeout = "90s"` kills the conduct only
-when NO bytes arrive on either stream for that long — a genuine hang is caught faster than
-any honest deadline, a slow-but-alive conduct is never falsely killed, and the error names
-the silence (not a budget) and carries the output tail so the stall point is in the report.
+**A conduct can be supervised by liveness: `shell.run { idle_timeout }` bounds death, never
+work — and the heartbeat is bytes OR CPU.** Bound the resource, never the work: a clock is
+legitimate as a sampling rate, illegitimate as a task budget, and conducts run
+externally-sized work by design. Silence on the pipes is only half the evidence — a big
+crate's codegen says nothing for minutes while working flat-out (observed live: a 120s
+byte-only bound killed a healthy compile) — so `idle_timeout = "90s"` kills only when a
+window passes with NO bytes on either stream AND no CPU progress: a genuine hang or a
+lock-starved conduct (~0 CPU) dies faster than any honest deadline, a quiet-but-busy one is
+never falsely killed, and the error names both absent evidences and carries the output tail
+so the stall point is in the report. CPU is read natively — procfs on Linux, libproc on
+macOS, `GetProcessTimes` on Windows, degrading to bytes-only where no reader exists — never
+by shelling to `ps`, whose dialects would re-import the guessing this claim exists to kill.
 The wall-clock `timeout` remains the optional outer bound; the two compose. (Field report
 2026-08-11: a cold two-crate nextest conduct was killed at `timeout=600s` while making steady
 progress — the author's guess about build time became a false failure.)

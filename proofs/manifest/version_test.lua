@@ -9,11 +9,12 @@
 --- Lua so a proof can assert what it is running on rather than what it hopes.
 
 prova.test("prova.version is the version the binary reports",
-  { proves = "version: one source of truth — a proof asserting compatibility must see exactly what --version prints, or it is asserting about something else" }, function(t)
+  { proves = "version: one source of truth — a proof asserting compatibility must see exactly what --version prints, or it is asserting about something else. Both sides are asked of the SUBJECT: the conductor executing this file may be any prova (a dev-stamped install conducting a plain-versioned tree), and comparing across that boundary asserts an identity nothing guarantees" }, function(t)
   local reported = shell.run(prova.bin .. " --version", { check = true }).stdout:match("prova%s+(%S+)")
+  local exposed = shell.run({ prova.bin, "eval", "return prova.version" }, { check = true }).stdout:match("%S+")
 
-  t:expect(prova.version, "exposed to Lua"):never():is_nil()
-  t:expect(prova.version, "matches --version"):equals(reported)
+  t:expect(exposed, "exposed to Lua"):never():is_nil()
+  t:expect(exposed, "matches --version"):equals(reported)
 end)
 
 prova.test("the version is a semver the requires gate can compare",

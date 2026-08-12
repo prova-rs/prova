@@ -28,6 +28,22 @@ print(r.stdout)
   t:expect(r.stdout):contains("beat 8")
 end)
 
+prova.test("a silent-but-busy command survives: CPU is the heartbeat when the pipes are quiet", {
+  covers = "docs/design/verifiers.md#conduct-heartbeat-not-deadline",
+  proves = "the false kill that shipped and was caught same-day: a big crate's codegen says nothing for minutes while working flat-out, so silence on the pipes is only half the evidence — and the reader is native (procfs/libproc/GetProcessTimes), never a ps dialect guess, or portability would re-import the same disease one tool over",
+}, function(t)
+  -- ~1.5s of pipe silence, CPU accruing the whole time (the $(date) forks bill the shell),
+  -- against a 500ms idle bound: three windows expire with no bytes and the child must live.
+  local r = subject_eval([[
+local r = shell.run("deadline=$(( $(date +%s) + 2 )); while [ $(date +%s) -lt $deadline ]; do :; done; echo finished",
+  { idle_timeout = "500ms" })
+print("code=" .. r.code)
+print(r.stdout)
+]])
+  t:expect(r.stdout, "busy silence is life"):contains("code=0")
+  t:expect(r.stdout):contains("finished")
+end)
+
 prova.test("a silent hang dies at the idle bound, and the error names the silence", {
   covers = "docs/design/verifiers.md#conduct-heartbeat-not-deadline",
   proves = "a genuine hang is caught FASTER than any honest deadline: the author no longer prices the whole build, only how long silence is believable — and the failure must read as 'went quiet', with the tail, never as a generic timeout",
@@ -43,6 +59,7 @@ print(tostring(err))
 ]])
   t:expect(r.stdout, "the conduct is killed"):contains("killed=true")
   t:expect(r.stdout, "the error names the silence, not a budget"):contains("no output")
+  t:expect(r.stdout, "…and the absent CPU evidence — dead means dead, not busy"):contains("no CPU progress")
   t:expect(r.stdout, "…and the bound that fired"):contains("idle_timeout")
   t:expect(r.stdout, "…and carries the tail, so the stall point is in the report"):contains("started")
 end)
