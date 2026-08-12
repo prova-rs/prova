@@ -1,7 +1,9 @@
 # fixtures — scoped provisioning: setup and teardown are one thing
 
 A fixture is a named, scoped, lazy, cached value with guaranteed LIFO teardown. It is the whole
-setup/teardown model — there are no xunit hooks.
+setup/teardown model — there are no xunit hooks. The factory runs at most once per scope
+instance, whatever the outcome: a failure is memoized too, and later consumers replay the one
+recorded error instead of re-paying the provision.
 
 ```lua
 local db = prova.fixture("db", Scope.File, function(ctx)

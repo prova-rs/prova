@@ -132,6 +132,12 @@ impl UserData for ResourceRef {}
 #[derive(Default)]
 pub(super) struct ScopeState {
     pub(super) cache: HashMap<usize, Value>,
+    /// Fixtures whose factory FAILED in this scope instance, with the recorded error
+    /// (docs/design/lifecycle.md#fixture-failure-memoization). The factory runs at most once per
+    /// scope instance whatever the outcome: later consumers replay this error as a named
+    /// memoized verdict instead of re-paying the provision — nothing changes between attempts
+    /// within one instance except the clock.
+    pub(super) poisoned: HashMap<usize, String>,
     pub(super) teardowns: Vec<Function>,
     pub(super) tempdirs: Vec<PathBuf>,
     /// The topology's ambient managed network (a `docker.network` handle), created lazily on the

@@ -235,14 +235,16 @@ in one line:
 
 ## Field reports (Substrate gate-integration run, 2026-08-11)
 
-<!-- backlog: fixture-failure-memoization recorded=2026-08-11 -->
-**A failed fixture re-provisions per consumer; expensive conducts pay it N times.** A
-`Scope.File` deputy fixture (a `cargo nextest` conduct) hit its `shell.run` timeout; each of
-the five dependent readers re-attempted the provision, burning 5 × 600s of cargo before the
-run ended. A fixture failure should be memoized for its scope — dependents get poisoned with
-the one recorded error — or retry-vs-poison should be an explicit policy on the fixture.
-Re-provisioning an expensive conduct on failure has no upside at file scope: nothing changed
-between attempts except the clock.
+<!-- claim: fixture-failure-memoization recorded=2026-08-11 -->
+**A fixture's factory runs at most once per scope instance, whatever the outcome.** Success
+was always memoized; failure now is too: the first error is recorded on the scope, and every
+later consumer in that scope instance is poisoned with the one recorded error — named as a
+memoized replay, never a fresh attempt. Nothing changes between attempts at file scope except
+the clock, so re-provisioning a failed conduct has no upside and multiplies its cost by the
+reader count. The poison lives exactly as long as a cached success would: a `Scope.Test`
+fixture still provisions per test, because each test is a fresh scope instance. (Field report
+2026-08-11: a `Scope.File` nextest conduct hit its timeout and five dependent readers re-paid
+5 × 600s of cargo before the run ended.)
 
 <!-- backlog: resumable-runs-incremental-verdicts -->
 **A failed sweep re-pays the whole world; runs should resume and verdicts should cache

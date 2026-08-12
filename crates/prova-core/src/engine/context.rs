@@ -133,6 +133,16 @@ pub(super) async fn resolve_use(lua: &Lua, this: &Ctx, target: Value) -> mlua::R
     if let Some(v) = ss.borrow().cache.get(&id) {
         return Ok(v.clone());
     }
+    // Failure memoizes exactly like success (the poison lives and dies with this scope
+    // instance): the recorded error replays to every later consumer, named as a replay so a
+    // memoized verdict can never read as a fresh attempt.
+    if let Some(err) = ss.borrow().poisoned.get(&id) {
+        return Err(mlua::Error::RuntimeError(format!(
+            "fixture {:?} already failed in this {} scope — memoized, not re-provisioned: {err}",
+            def.name,
+            def.scope.label()
+        )));
+    }
 
     // Build lazily: a child context bound to the fixture's own scope.
     let child = Ctx {
@@ -149,7 +159,13 @@ pub(super) async fn resolve_use(lua: &Lua, this: &Ctx, target: Value) -> mlua::R
         topology: def.is_topology,
     };
     let child_ud = lua.create_userdata(child)?;
-    let value: Value = def.factory.call_async(child_ud).await?;
+    let value: Value = match def.factory.call_async(child_ud).await {
+        Ok(v) => v,
+        Err(e) => {
+            ss.borrow_mut().poisoned.insert(id, e.to_string());
+            return Err(e);
+        }
+    };
     ss.borrow_mut().cache.insert(id, value.clone());
     Ok(value)
 }
