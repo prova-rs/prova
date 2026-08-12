@@ -82,20 +82,14 @@ prova's CI, gated by prova's own suite — the positioning argument as a green p
 - `prova learn promises` — the doctrine already tells agents to *suggest* this lane to humans
   when a repo carries a standing open surface; this doc is what they're suggesting.
 
-## Refinement from the Substrate orchestration dogfood (2026-08-12)
+## Host-engine note (from the Substrate orchestration dogfood, 2026-08-12)
 
-<!-- backlog: burndown-mechanical-loop-per-item-acceptance recorded=2026-08-12 -->
-**The loop itself should be mechanical — the agent is a callee, not the driver — with
-per-item acceptance and a sprint-level debt gate.** Host design (Substrate, 2026-08-12): a
-"Burndown" button starts a loop over the owed items. For each item the LOOP (not the agent)
-picks the work, invokes an implementing agent whose brief carries that item's own acceptance
-criteria — the promises it is turning into proofs, i.e. a claim-scoped selection (see
-`claim-scoped-selection` in agent-ergonomics.md Round four) — and runs that selection
-mechanically when the agent returns; whether the agent remembered to verify is irrelevant to
-the verdict. The expensive suites (workspace ut, session/e2e lanes, coverage) are NOT in the
-per-item gate: they run once per sprint boundary as the outer loop's own acceptance, and what
-they find — ratchet regressions, cross-slice breakage — is not a per-item failure but new debt
-fed back into the owed surface for the next pass to pay down. Two tiers, two verdicts: the
-item gate answers "did this slice keep its promises," the sprint gate answers "what did the
-sprint cost the system." The CI sketch above is the degenerate one-tier version; this is the
-shape a host engine (Substrate's loop, ln's UI) actually wants to drive.
+The richer version of this lane — a mechanical loop that walks the owed surface, invokes an
+implementing agent per item, and runs each item's own claim-scoped selection as the verdict,
+with the expensive suites retreating to a sprint-boundary gate — is **host-engine work, not
+prova's**. Prova provides the open-source state machine (owed, selections, verdicts,
+ratchets); an engine's integration is what unlocks driving it mechanically. Substrate
+captures that design in its `docs/plans/PROVA_INTEGRATION.md` Phase 6 ("Burndown"). What the
+lane needs from prova itself is only the selection primitive — see `claim-scoped-selection`
+in `agent-ergonomics.md` Round four. The CI sketch above remains the degenerate one-tier
+version any repo can run without an engine.
