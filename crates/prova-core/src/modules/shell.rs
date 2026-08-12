@@ -458,6 +458,10 @@ async fn run_command(
     // stdin is a non-closing pipe. That was a live 40-minute suite hang under the
     // coverage conduct. Hermetic default: a test's child sees EOF, never the harness's
     // stdin; a proof that means to feed input says `stdin = ...`.
+    // Dead means dead (docs/design/verifiers.md#timeout-reaps-the-conduct): when the wall clock
+    // below cancels this future, dropping the child must kill it — a bound that only abandons
+    // the wait leaks the conduct, still holding the locks the red report implies are free.
+    command.kill_on_drop(true);
     let run = async {
         if let Some(input) = &o.stdin {
             use tokio::io::AsyncWriteExt;

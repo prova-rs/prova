@@ -250,3 +250,9 @@ one case → module → crate → integration → suite, each stage honoring the
 framework-enforced rules *without the operator thinking about them*. Composes with
 resumable-runs-incremental-verdicts (automatic narrowing from the diff) — this item is the
 manual scalpel, that one the automatic planner. (Substrate field report, 2026-08-11.)
+
+<!-- claim: timeout-reaps-the-conduct recorded=2026-08-12 -->
+**A timed-out conduct is dead, not merely reported dead.** Every bound `shell.run` enforces — the wall-clock `timeout`, `idle_timeout`, and their composition — kills the child process when it fires. A bound that only abandons the wait leaks the conduct: the run reports red while the child keeps running, holding exactly the locks the report just claimed were released (the observed shape: an orphaned nextest holding the cargo target lock against the next invocation). Direct child only; process-group reaping is the successor item.
+
+<!-- backlog: conduct-process-group-reaping recorded=2026-08-12 -->
+**Grandchildren survive every kill path; a conduct's kill should reap its process group.** Both the buffered and supervised shell.run paths kill the direct child only: a `sh -c "a | b"` pipeline, a script that spawns workers, or a build tool's own children keep running after prova reaps the shell — orphans holding exactly the locks and ports the run's teardown just promised were free. The honest fix is process-group semantics (setsid/setpgid at spawn, killpg on any bound firing, and `shell.spawn`'s stop() joining the same rule), which carries platform texture worth its own design pass. Composes with timeout-reaps-the-conduct (the direct-child half, already claimed).

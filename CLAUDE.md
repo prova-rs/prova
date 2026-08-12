@@ -55,6 +55,10 @@ cargo xtask check / build / sweep   # cargo check · release build · drop stale
 
 Inside a proof, drive prova recursively through `prova.bin` (the runtime injects its own executable),
 never a bare `prova`. `proofs/hermeticity/binary_identity_test.lua` fails the suite if one reappears.
+The subtler form of the same trap: a proof of RUNTIME behavior (shell.run options, fixtures,
+reporters) must reach the feature through `prova.bin` too — e.g. `shell.run({ prova.bin, "eval",
+… })` — because called directly in the proof body it exercises whichever binary is CONDUCTING the
+suite (often an installed prova), not the subject. Nothing re-execs; only `prova.bin` is the subject.
 Consumer repos are the opposite and correctly so: an archetype or package proves a *released* prova via
 `prova-rs/run-action` at a pinned version, because what they must test is what users get.
 
