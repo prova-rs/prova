@@ -1,0 +1,3 @@
+[package]
+name = "deputies"
+description = "This workspace's shared deputy conducts (Scope.Run): declared once, conducted at most once per run, read from any suite — docs/plans/shared-deputies.md."

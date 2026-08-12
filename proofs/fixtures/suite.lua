@@ -1,0 +1,4 @@
+-- Groups this directory into one suite. scopes_test.lua demonstrates Scope.Suite, and a declared
+-- suite is the honest home for that demonstration — in a singleton file the scope silently
+-- behaves as Scope.File, which is exactly what the engine now warns about
+-- (docs/plans/shared-deputies.md, increment 2).

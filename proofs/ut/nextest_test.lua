@@ -1,7 +1,8 @@
 --- The deputed unit-test leg (docs/design/verifiers.md#conduct-once-read-many): `prova run ut`
---- conducts cargo nextest ONCE for the whole workspace — compilation and execution both live in a
---- file-scoped fixture that emits one junit artifact — then one proof adopts every case into the
---- account, and sibling readers bind claims to named cases at zero additional compilations.
+--- conducts cargo nextest ONCE — compilation and execution both live in the shared `deputies`
+--- package's run-scoped fixture, which emits one junit artifact — then one proof adopts every
+--- case into the account, and readers (here and in other suites) bind claims to named cases at
+--- zero additional compilations.
 ---
 --- HEAVY: conducting compiles the workspace, so this must never fire because a person typed
 --- `prova`. The whole file sits behind the `ut` switch (suite.lua) — off unless thrown, thrown by
@@ -10,20 +11,11 @@
 --- The profile `must_run`s the deputy, so `prova run ut` fails rather than skips when nextest is
 --- missing: a profile is a contract, not a courtesy.
 
--- Conduct the deputy once. The stale artifact is removed FIRST, so a deputy that dies before
--- emitting (a compile error) leaves nothing behind and the adoption fails loudly on "matched
--- nothing" — never a previous run's verdicts wearing this run's face. The deputy's exit code is
--- deliberately not asserted here: the adopting proof reports red with the deputed cases' own
--- names, which a fixture death would hide.
-local deputy = prova.fixture("nextest-junit", Scope.File, function()
-  local artifact = prova.root .. "/target/nextest/prova/junit.xml"
-  fs.remove_all(artifact)
-  shell.run(
-    { "cargo", "nextest", "run", "--workspace", "--profile", "prova" },
-    { cwd = prova.root, merge_stderr = true, timeout = "900s" }
-  )
-  return artifact
-end)
+-- The deputy is the workspace's shared recipe (docs/plans/shared-deputies.md): Scope.Run, so
+-- under `run all` this file's adoption and any other suite's reader (proofs/mcp) share ONE
+-- conduct. Its exit code is deliberately not asserted at conduct time: the adopting proof below
+-- reports red with the deputed cases' own names, which a fixture death would hide.
+local deputy = require("deputies").nextest
 
 prova.test("the workspace's unit-test account holds — every nextest case adopted", {
   locks = { prova.writes("cargo") },

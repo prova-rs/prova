@@ -12,6 +12,11 @@ local scratch = prova.fixture("mcp-surface-scratch", Scope.File, function(ctx)
   return function() return ctx:tempdir() end
 end)
 
+-- The shared deputy RECIPE loads with the file (registration must precede the run's plan; a
+-- require inside a test body would register after the fixture registry is sealed). Registering
+-- is free — on a bare run nothing uses it, so nothing conducts.
+local deputies = require("deputies")
+
 --- Drive `prova mcp` with one batch: handshake + `lines` (raw JSON-RPC strings), stdin EOF,
 --- responses decoded by id. One process per call — ordering across tool calls IS the warmth.
 local function mcp(dir, lines, env)
@@ -80,6 +85,24 @@ prova.test("accumulates in the held instance", function(t)
 end)
 ]])
 end
+
+-- ── the deputed account, read across the suite boundary ─────────────────────────────────────
+
+prova.test("a reader outside the ut suite binds to the deputy's account — one conduct, run-wide", {
+  switch = "ut",
+  requires = { "cargo-nextest" },
+  locks = { prova.writes("cargo") },
+  covers = "docs/design/verifiers.md#suite-scoped-shared-deputies",
+  proves = "the dogfood of Scope.Run on the real workspace: this file is another suite — another Lua state, under -j another worker — and in `run all` it reads the SAME nextest conduct proofs/ut adopts. Before the fifth scope this read either re-paid the workspace compile or parsed an artifact with no ordering guarantee",
+}, function(t)
+  local report = junit.load(t:use(deputies.nextest))
+  local case
+  for _, c in ipairs(report.cases) do
+    if c.name == "tests::mcp_tools_are_real_verbs" then case = c end
+  end
+  t:expect(case, "the CLI↔MCP parity unit gate is in the deputed account"):is_truthy()
+  t:expect(case.outcome):equals("passed")
+end)
 
 -- ── the parity contract ──────────────────────────────────────────────────────────────────────
 
