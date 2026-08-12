@@ -442,6 +442,7 @@ fn resolve_env(cli: &mut Cli, home: &Option<Home>, layout: &XdgSystemLayout) -> 
                 // No manifest, no [placement]; the env var is still honoured at the handshake.
                 placement_broker: None,
                 heed: crate::manifest::Heed::None, // no manifest, nothing promised attention
+                budget: None,                      // no manifest, no lane to price
                 lane_tags: Vec::new(),             // no manifest, no lanes
                 switches: Vec::new(),              // no manifest, nothing thrown
             },
@@ -952,6 +953,7 @@ fn conclude_run(
     mut reporter: FailureRecorder,
     accounts: Accounts,
     env_heed: crate::manifest::Heed,
+    budget: Option<std::time::Duration>,
     from_manifest: bool,
     is_console: bool,
 ) -> ExitCode {
@@ -1032,6 +1034,23 @@ fn conclude_run(
              attention account (heed / --heed); see `prova reminders`"
         );
         return ExitCode::FAILURE;
+    }
+
+    // The lane's time budget (docs/design/manifest.md#lane-time-budgets): the manifest states
+    // the bar this composition promises, so exceeding it is red even all-green — a
+    // conduct-carrying proof in the wrong lane is caught at placement time, not discovered at
+    // usage time. Suite wall time only: the subject provision and collection are not the lane's
+    // composition.
+    if let Some(budget) = budget {
+        if summary.duration > budget {
+            eprintln!(
+                "prova: lane over budget — the suite ran {:.1?} against a {:.1?} budget \
+                 (`budget` in the manifest). A heavy proof in the wrong lane? Switches gate the \
+                 heavy legs (`prova learn switches`), and a conduct belongs behind one.",
+                summary.duration, budget
+            );
+            return ExitCode::FAILURE;
+        }
     }
 
     if summary.is_success() && !(cli.unreferenced == "warn" && orphaned) {
@@ -1238,6 +1257,7 @@ pub(crate) fn run(cli_args: Vec<String>) -> ExitCode {
             reporter,
             accounts,
             env.env.heed.clone(),
+            env.env.budget,
             from_manifest,
             is_console,
         ),

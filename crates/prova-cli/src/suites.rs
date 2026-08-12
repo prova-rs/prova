@@ -71,6 +71,9 @@ pub(crate) struct ManifestRun {
     /// Which DUE reminders fail the run — the resolved `heed` policy (`[run]`/a profile's `heed`,
     /// unioned; CLI `--heed` promotes further — see docs/design/reminders.md).
     pub(crate) heed: crate::manifest::Heed,
+    /// The selected lane's time budget — the run goes red past it (`Resolved::budget`; declared
+    /// where it binds, never inherited).
+    pub(crate) budget: Option<std::time::Duration>,
     /// The lane's baked tag selection (`tags` on `[run]`/the profile) — folded into the run's
     /// Selection as an independent gate the CLI narrows within.
     pub(crate) lane_tags: Vec<String>,
@@ -777,6 +780,7 @@ pub(crate) fn resolve_from_manifest(
         globals_inject: resolved.globals_inject,
         placement_broker: manifest.placement.as_ref().and_then(|p| p.broker.clone()),
         heed: resolved.heed,
+        budget: resolved.budget,
         lane_tags: resolved.lane_tags,
         switches: resolved.switches,
     })

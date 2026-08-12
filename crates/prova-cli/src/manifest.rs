@@ -540,6 +540,13 @@ pub struct Profile {
     /// `proofs/shared/config.lua`) to keep the home clean.
     pub config: Option<String>,
     pub jobs: Option<usize>,
+    /// The lane's time budget (docs/design/manifest.md#lane-time-budgets), e.g. `"30s"`: the run
+    /// goes red when the suite's wall time exceeds it, even all-green — a conduct-carrying proof
+    /// landing in the wrong lane is caught at placement time, not discovered at usage time. A
+    /// budget prices ONE lane's composition, so it never inherits: `[run] budget` binds only the
+    /// bare run, a profile's only that profile (the heavy lanes are exactly the ones a bare-run
+    /// budget must not leak onto).
+    pub budget: Option<String>,
     pub format: Option<String>,
     /// Console color mode: `"auto"` (default) | `"always"` | `"never"`. CLI `--color` wins.
     pub color: Option<String>,
@@ -631,6 +638,9 @@ pub struct Resolved {
     /// The companion config file (relative to home); `None` → the `prova.lua` default. See `Profile`.
     pub config: Option<String>,
     pub jobs: Option<usize>,
+    /// The selected lane's time budget, parsed — the run goes red past it (see `Profile::budget`;
+    /// no inheritance: the bare run reads `[run]`'s, a profile reads exactly its own).
+    pub budget: Option<Duration>,
     pub format: Option<String>,
     pub color: Option<String>,
     pub progress: Option<String>,
@@ -1049,6 +1059,18 @@ impl Manifest {
             .and_then(|p| p.config.clone())
             .or_else(|| base.config.clone());
         let jobs = overlay.and_then(|p| p.jobs).or(base.jobs);
+        // No `.or(base…)`: a budget prices one lane's composition, never a lane it wasn't
+        // written for — the heavy profiles are exactly where a bare-run budget must not leak.
+        let budget = match overlay {
+            Some(p) => p.budget.as_deref(),
+            None => base.budget.as_deref(),
+        }
+        .map(|s| {
+            prova_core::model::parse_duration(s).ok_or_else(|| {
+                format!("budget {s:?} is not a duration (e.g. \"30s\", \"500ms\", \"5m\")")
+            })
+        })
+        .transpose()?;
         let format = overlay
             .and_then(|p| p.format.clone())
             .or_else(|| base.format.clone());
@@ -1082,6 +1104,7 @@ impl Manifest {
             packages_dir,
             config,
             jobs,
+            budget,
             format,
             color,
             progress,
@@ -1145,6 +1168,7 @@ proofs = ["tests/smoke"]
                 packages_dir: None,
                 config: None,
                 jobs: Some(4),
+                budget: None,
                 format: Some("console".into()),
                 color: None,
                 progress: None,

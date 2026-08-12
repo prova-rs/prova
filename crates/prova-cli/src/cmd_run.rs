@@ -76,6 +76,9 @@ pub(crate) fn lane_line(p: &crate::manifest::Profile) -> String {
     if let Some(jobs) = p.jobs {
         chips.push(format!("jobs: {jobs}"));
     }
+    if let Some(budget) = p.budget.as_deref() {
+        chips.push(format!("budget: {budget}"));
+    }
     if !p.must_run.is_empty() {
         chips.push(format!("must_run: {}", p.must_run.join(", ")));
     }

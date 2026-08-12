@@ -237,12 +237,16 @@ warn nothing.
 
 ## Field reports (Substrate gate-integration run, 2026-08-11)
 
-<!-- backlog: lane-time-budgets recorded=2026-08-11 -->
-**"The bare run stays seconds" is a convention nothing enforces; lanes should carry ratcheted
-time budgets.** When five graduated proofs landed switchless in Substrate's default lane, the
-seconds-fast inner loop silently became a 10-minute gate — the exact regression that
-discourages TDD, caught only by a human noticing. The manifest already knows the intent
-(heavy legs sit behind switches); let a profile declare a time budget (`budget = "30s"`) and
-report/ratchet against it, so a conduct-carrying proof in the wrong lane is red at placement
-time, not discovered at usage time. Composes with the graduation moment: the promises→proves
-flip is when a proof acquires its conduct cost and must name its lane.
+<!-- claim: lane-time-budgets recorded=2026-08-11 -->
+**A lane can state its time budget, and the run goes red past it — even all-green.**
+`budget = "30s"` on `[run]` or a profile prices that lane's composition: when the suite's
+wall time exceeds it, the run fails naming the overage and teaching the cure (heavy legs sit
+behind switches), so a conduct-carrying proof landing in the wrong lane is caught at
+placement time, not discovered at usage time. A budget never inherits — `[run]`'s binds only
+the bare run, a profile's only that profile — because the heavy lanes are exactly the ones a
+bare-run budget must not leak onto. Suite wall time only: the subject provision is not the
+lane's composition. `prova run --list` shows each lane's budget as a chip. (Field report
+2026-08-11: five graduated proofs landed switchless in Substrate's default lane and the
+seconds-fast inner loop silently became a 10-minute gate, caught only by a human noticing.
+Composes with the graduation moment: the promises→proves flip is when a proof acquires its
+conduct cost and must name its lane.)
