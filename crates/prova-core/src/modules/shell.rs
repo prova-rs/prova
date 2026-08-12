@@ -324,6 +324,10 @@ struct RunOpts {
     cwd: Option<String>,
     env: Vec<(String, String)>,
     timeout: Option<std::time::Duration>,
+    /// Liveness bound (docs/design/verifiers.md#conduct-heartbeat-not-deadline): kill the command
+    /// only when NO bytes arrive on either stream for this long. Bounds silence, never work —
+    /// the wall-clock `timeout` stays the optional outer bound; the two compose.
+    idle_timeout: Option<std::time::Duration>,
     check: bool,
     merge_stderr: bool,
     stdin: Option<String>,
@@ -334,6 +338,7 @@ fn parse_run_opts(opts: &Option<Table>) -> mlua::Result<RunOpts> {
         cwd: opt_string(opts, "cwd")?,
         env: opt_env(opts)?,
         timeout: opt_string(opts, "timeout")?.and_then(|s| parse_duration(&s)),
+        idle_timeout: opt_string(opts, "idle_timeout")?.and_then(|s| parse_duration(&s)),
         check: opts
             .as_ref()
             .map(|o| o.get::<Option<bool>>("check"))
@@ -350,6 +355,80 @@ fn parse_run_opts(opts: &Option<Table>) -> mlua::Result<RunOpts> {
         // Feed the program's stdin — the portable replacement for a `printf x | cmd` pipe.
         stdin: opt_string(opts, "stdin")?,
     })
+}
+
+/// How a supervised conduct ended: ran to completion, or was killed for silence (carrying what
+/// had been captured when the idle clock ran out, so the error can show where it stalled).
+enum Supervised {
+    Finished(std::process::Output),
+    Idle { stdout: Vec<u8>, stderr: Vec<u8> },
+}
+
+/// Drive a child under liveness supervision (docs/design/verifiers.md#conduct-heartbeat-not-
+/// deadline): any byte on either stream resets the idle clock; silence past `idle` kills the
+/// child. The exit wait after both streams close is bounded by the same clock — a child that
+/// closed its pipes and lingers is silent by definition. `kill_on_drop` covers the composed
+/// wall-clock path: an outer timeout cancelling this future must not leak the process.
+async fn run_supervised(
+    mut command: tokio::process::Command,
+    input: Option<String>,
+    idle: std::time::Duration,
+) -> std::io::Result<Supervised> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .stdin(match &input {
+            Some(_) => std::process::Stdio::piped(),
+            None => std::process::Stdio::null(),
+        })
+        .kill_on_drop(true);
+    let mut child = command.spawn()?;
+    if let Some(input) = input {
+        if let Some(mut si) = child.stdin.take() {
+            si.write_all(input.as_bytes()).await?;
+            si.shutdown().await?; // close so the child sees EOF
+        }
+    }
+    let mut out = child
+        .stdout
+        .take()
+        .ok_or_else(|| std::io::Error::other("child stdout was not captured"))?;
+    let mut err = child
+        .stderr
+        .take()
+        .ok_or_else(|| std::io::Error::other("child stderr was not captured"))?;
+    let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+    let (mut out_done, mut err_done) = (false, false);
+    let (mut buf_o, mut buf_e) = ([0u8; 8192], [0u8; 8192]);
+    while !(out_done && err_done) {
+        tokio::select! {
+            r = out.read(&mut buf_o), if !out_done => match r? {
+                0 => out_done = true,
+                n => stdout.extend_from_slice(&buf_o[..n]),
+            },
+            r = err.read(&mut buf_e), if !err_done => match r? {
+                0 => err_done = true,
+                n => stderr.extend_from_slice(&buf_e[..n]),
+            },
+            // Recreated each iteration, so every chunk read above re-arms the clock.
+            () = tokio::time::sleep(idle) => {
+                child.kill().await.ok();
+                return Ok(Supervised::Idle { stdout, stderr });
+            }
+        }
+    }
+    match tokio::time::timeout(idle, child.wait()).await {
+        Ok(status) => Ok(Supervised::Finished(std::process::Output {
+            status: status?,
+            stdout,
+            stderr,
+        })),
+        Err(_) => {
+            child.kill().await.ok();
+            Ok(Supervised::Idle { stdout, stderr })
+        }
+    }
 }
 
 /// One `shell.run` conduct: build the command, bracket the blocking region with progress, drive
@@ -397,13 +476,37 @@ async fn run_command(
             command.output().await
         }
     };
-    let output = match o.timeout {
-        Some(budget) => tokio::time::timeout(budget, run).await.map_err(|_| {
-            mlua::Error::RuntimeError(format!("shell.run timed out after {budget:?}: {cmd}"))
-        })?,
-        None => run.await,
-    }
-    .map_err(|e| mlua::Error::RuntimeError(format!("shell.run failed to spawn: {e}")))?;
+    let output = if let Some(idle) = o.idle_timeout {
+        // Liveness supervision replaces the buffered wait; the wall clock stays the outer bound.
+        drop(run);
+        let supervised = run_supervised(command, o.stdin.clone(), idle);
+        let supervised = match o.timeout {
+            Some(budget) => tokio::time::timeout(budget, supervised).await.map_err(|_| {
+                mlua::Error::RuntimeError(format!("shell.run timed out after {budget:?}: {cmd}"))
+            })?,
+            None => supervised.await,
+        }
+        .map_err(|e| mlua::Error::RuntimeError(format!("shell.run failed to spawn: {e}")))?;
+        match supervised {
+            Supervised::Finished(output) => output,
+            Supervised::Idle { stdout, stderr } => {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "shell.run: no output for {idle:?} (idle_timeout) — killed as silent: {cmd}\n\
+                     --- stderr tail ---\n{}\n--- stdout tail ---\n{}",
+                    tail(&String::from_utf8_lossy(&stderr), 4096),
+                    tail(&String::from_utf8_lossy(&stdout), 4096),
+                )));
+            }
+        }
+    } else {
+        match o.timeout {
+            Some(budget) => tokio::time::timeout(budget, run).await.map_err(|_| {
+                mlua::Error::RuntimeError(format!("shell.run timed out after {budget:?}: {cmd}"))
+            })?,
+            None => run.await,
+        }
+        .map_err(|e| mlua::Error::RuntimeError(format!("shell.run failed to spawn: {e}")))?
+    };
 
     let mut stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let mut stderr = String::from_utf8_lossy(&output.stderr).into_owned();

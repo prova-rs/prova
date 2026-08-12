@@ -202,16 +202,17 @@ level further out.
 
 ## Field reports (Substrate gate-integration run, 2026-08-11)
 
-<!-- backlog: conduct-heartbeat-not-deadline recorded=2026-08-11 -->
-**`shell.run` timeouts are wall-clock task budgets; conducts should be supervised by
-liveness.** A cold `cargo nextest` conduct of two large crates was killed at `timeout=600s`
-while making steady progress — the suite author's guess about build time became a false
-failure. The Anemnez doctrine (bound the resource, never the work): clocks are legitimate as
-sampling rates, illegitimate as task budgets. Conducts run externally-sized work by design;
-cargo and most build tools emit continuous progress. Supervise by output heartbeat ("no
-bytes for N seconds = dead") with the wall-clock as an optional outer bound, and a genuine
-hang is caught *faster* than any honest deadline while a slow-but-alive conduct is never
-falsely killed.
+<!-- claim: conduct-heartbeat-not-deadline recorded=2026-08-11 -->
+**A conduct can be supervised by liveness: `shell.run { idle_timeout }` bounds silence, never
+work.** Bound the resource, never the work: a clock is legitimate as a sampling rate,
+illegitimate as a task budget, and conducts run externally-sized work by design while cargo
+and most build tools emit continuous progress. `idle_timeout = "90s"` kills the conduct only
+when NO bytes arrive on either stream for that long — a genuine hang is caught faster than
+any honest deadline, a slow-but-alive conduct is never falsely killed, and the error names
+the silence (not a budget) and carries the output tail so the stall point is in the report.
+The wall-clock `timeout` remains the optional outer bound; the two compose. (Field report
+2026-08-11: a cold two-crate nextest conduct was killed at `timeout=600s` while making steady
+progress — the author's guess about build time became a false failure.)
 
 <!-- backlog: suite-scoped-shared-deputies recorded=2026-08-11 -->
 **"Conduct once, read many" stops at file scope; suites need named shared conducts.** The ut

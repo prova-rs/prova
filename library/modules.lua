@@ -105,7 +105,8 @@ function ShellResult:ok() end
 ---@class prova.ShellOpts
 ---@field cwd? string
 ---@field env? table<string, string|number|boolean>   # scalars coerce — ports stay numbers
----@field timeout? string     # e.g. "120s"
+---@field timeout? string     # wall-clock outer bound, e.g. "120s" — prices the whole task
+---@field idle_timeout? string # liveness bound, e.g. "90s": kill only when NO bytes arrive on either stream for this long — bounds silence, never work (composes with `timeout`)
 ---@field check? boolean      # non-zero exit raises, carrying the tail of BOTH stdout and stderr
 ---@field merge_stderr? boolean  # fold stderr into stdout (the portable replacement for `2>&1`); stderr is then empty
 ---@field stdin? string          # feed the program's stdin (the portable replacement for `printf x | cmd`)
