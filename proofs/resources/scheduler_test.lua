@@ -36,7 +36,19 @@ prova.test("full reset (serial)", { serial = true }, function(t)
   t:expect(true):is_true()
 end)
 
--- The pre-rename spelling still schedules (it warns toward `locks`; retires at 1.0).
-prova.test("deprecated `resources` still holds its lock", { resources = { prova.reads("db") } }, function(t)
+-- The pre-rename spelling still schedules and warns toward `locks` (retires at 1.0) — proven
+-- in a SANDBOX child so this repo's own tree stays deprecation-clean: the bridge is behavior
+-- worth a proof, not a warning worth printing on every load of our own suite.
+prova.test("deprecated `resources` still schedules, warning toward `locks`", function(t)
+  local pkg = t:tempdir()
+  fs.mkdir(pkg .. "/proofs")
+  fs.write(pkg .. "/prova.toml", '[run]\nproofs = ["proofs"]\n')
+  fs.write(pkg .. "/proofs/bridge_test.lua", [[
+prova.test("holds via the old spelling", { resources = { prova.reads("db") } }, function(t)
   t:expect(true):is_true()
+end)
+]])
+  local r = shell.run({ prova.bin }, { cwd = pkg, merge_stderr = true, timeout = "60s" })
+  t:expect(r.code, r.stdout):equals(0)
+  t:expect(r.stdout, "the bridge warns once, naming its successor"):contains("the option is `locks`")
 end)
