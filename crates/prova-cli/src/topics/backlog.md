@@ -76,7 +76,10 @@ because they live in the same files.
 
 The intended rhythm: burn down to green, then open the backlog, pick a theme (backlog items in one
 file are one `prova specs --backlog` away from being read together), and `promote` the few you are ready to
-take on. Now the next burndown is staged — and nothing was owed until you chose it.
+take on. Now the next burndown is staged — and nothing was owed until you chose it. A green
+`prova owed` prompts this itself: when nothing is owed and the shelf is non-empty, it appends a
+one-line breadcrumb (a count and the query, never the items) — the shelf announces itself at
+exactly the moment you would go shopping, and stays fully muted the rest of the time.
 
 Backlog is data and a query; it enforces nothing on its own. Enforcement — *draw a backlog item down
 by a deadline*, *don't let this doc's backlog grow past N* — is a **reminder** watching a condition,

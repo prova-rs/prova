@@ -102,6 +102,14 @@ pub(crate) fn owed_subcommand(args: Vec<String>) -> ExitCode {
 
     if owed.is_empty() && due.is_empty() {
         println!("prova: nothing owed — no open promises, every claim is covered, and no reminder is due");
+        // The one moment the cold shelf may speak in this ledger: it stays out of `owed` proper,
+        // but a clear ledger is exactly when the next burndown gets chosen — a count and a
+        // pointer, never the items.
+        let shelved = claims.iter().filter(|c| c.kind == claims::Kind::Backlog).count();
+        if shelved > 0 {
+            let noun = if shelved == 1 { "item" } else { "items" };
+            println!("  ({shelved} backlog {noun} on the cold shelf — `prova specs --backlog`)");
+        }
         return ExitCode::SUCCESS;
     }
     for row in &owed {

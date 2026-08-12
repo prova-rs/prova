@@ -54,6 +54,50 @@ prova.test("`prova specs --backlog` lists exactly what `owed` hides", {
   t:expect(r.code):equals(0)
 end)
 
+prova.test("a green `owed` points at the cold shelf", {
+  proves = "muting must not become a memory hole at the exact moment the shelf matters — a clear ledger is when the next burndown gets chosen, so `owed` leaves a breadcrumb (a count and the query, never the items) instead of a bare all-clear",
+}, function(t)
+  local proj = project(t, TWO_STATES, [[
+prova.test("the lease holds", {
+  covers = "docs/design.md#kept-promise",
+}, function(t)
+  t:expect(1):equals(1)
+end)
+]])
+  local r = shell.run(prova.bin .. " owed", { cwd = proj, merge_stderr = true })
+
+  t:expect(r.stdout, "nothing is owed"):contains("nothing owed")
+  t:expect(r.stdout, "the shelf is announced by count"):contains("1 backlog item on the cold shelf")
+  t:expect(r.stdout, "the breadcrumb navigates"):contains("prova specs --backlog")
+  t:expect(r.stdout, "a count, never the items"):never():contains("flaky-teardown")
+  t:expect(r.code):equals(0)
+end)
+
+prova.test("the breadcrumb earns its silence: no shelf, or nothing green, means no hint", {
+  proves = "the hint fires only on green-with-a-shelf — an empty shelf gets a bare all-clear, and while anything is owed the shelf stays fully muted, or the breadcrumb would be exactly the mid-task distraction the cold state exists to prevent",
+}, function(t)
+  -- An empty shelf: a covered claim, no backlog anchors at all.
+  local bare = project(t, [[
+<!-- claim: kept-promise -->
+A held lease is never revoked out from under its holder.
+]], [[
+prova.test("the lease holds", {
+  covers = "docs/design.md#kept-promise",
+}, function(t)
+  t:expect(1):equals(1)
+end)
+]])
+  local r = shell.run(prova.bin .. " owed", { cwd = bare, merge_stderr = true })
+  t:expect(r.stdout):contains("nothing owed")
+  t:expect(r.stdout, "an empty shelf earns no breadcrumb"):never():contains("cold shelf")
+
+  -- A shelf behind an unproven claim: the ledger is not green, so the shelf stays silent.
+  local red = project(t, TWO_STATES)
+  local o = shell.run(prova.bin .. " owed", { cwd = red, merge_stderr = true })
+  t:expect(o.stdout, "the claim is still owed"):contains("kept-promise")
+  t:expect(o.stdout, "the shelf stays muted while anything is owed"):never():contains("cold shelf")
+end)
+
 prova.test("`promote` thaws a backlog item into a claim, in place", {
   proves = "promotion is a keyword flip, not a move: the id and its prose stay put so the diff reads as exactly 'this became active', and the address a future proof will name is already the one the reader sees",
 }, function(t)
