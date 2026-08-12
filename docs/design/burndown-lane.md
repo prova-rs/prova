@@ -81,15 +81,3 @@ prova's CI, gated by prova's own suite — the positioning argument as a green p
 - `docs/design/positioning.md` §4 — where this sits in the larger thesis.
 - `prova learn promises` — the doctrine already tells agents to *suggest* this lane to humans
   when a repo carries a standing open surface; this doc is what they're suggesting.
-
-## Host-engine note (from the Substrate orchestration dogfood, 2026-08-12)
-
-The richer version of this lane — a mechanical loop that walks the owed surface, invokes an
-implementing agent per item, and runs each item's own claim-scoped selection as the verdict,
-with the expensive suites retreating to a sprint-boundary gate — is **host-engine work, not
-prova's**. Prova provides the open-source state machine (owed, selections, verdicts,
-ratchets); an engine's integration is what unlocks driving it mechanically. Substrate
-captures that design in its `docs/plans/PROVA_INTEGRATION.md` Phase 6 ("Burndown"). What the
-lane needs from prova itself is only the selection primitive — see `claim-scoped-selection`
-in `agent-ergonomics.md` Round four. The CI sketch above remains the degenerate one-tier
-version any repo can run without an engine.
