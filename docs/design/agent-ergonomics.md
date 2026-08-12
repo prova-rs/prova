@@ -355,3 +355,40 @@ Design note: it's a *per-package* binding, not a global, set the same way the pr
 cannot leak to consumers, and a package without private deps now still gets its own env (previously
 only packages *with* private deps did). `plugin.dir` is the minimal primitive: the package's repo root,
 fixtures, or binaries are all `plugin.dir .. "/…"` from there.
+
+---
+
+# Round four — 2026-08-12 (Substrate kernel-extraction dogfood: prova as the orchestration gate)
+
+Substrate now runs prova as the sole quality authority inside a multi-model orchestration loop:
+an orchestrator authors promises, spawns a Coder agent per slice, and gates every result
+mechanically. Full `run all` (ut + quality + session lanes) is ~434s on that workspace; the
+slice-scoped acceptance (the two presence proof files + their crate-scoped deputy conducts) is
+seconds. That gap is the friction: the loop wants per-slice gates, and today there is no
+first-class way to name one.
+
+## 10. No claim-scoped selection — "run the acceptance for THIS slice" needs a selector
+
+<!-- backlog: claim-scoped-selection recorded=2026-08-12 -->
+**A Coder's definition of done should be a selection string, not prose.** The orchestration
+loop wants to say `prova run --covering docs/specs/PRESENCE_KERNEL.md` (or
+`--covering <claim-id>`, or `--promises-of <proof-file>`) and get exactly the proofs whose
+`covers` bind to that claim set — plus their deputies' crate-scoped conducts and nothing else.
+Today the workarounds are `--node "<full test title>"` (brittle prose match, one node at a
+time) or running proof files by path (works, but unnamed in the ledger's own terms — the
+brief can't say "your acceptance is whatever covers this spec"). With the selector, a spawn
+brief names its gate mechanically, the orchestrator executes it after every Coder pass whether
+or not the model remembered any verify step, and the expensive full sweep retreats to the
+sprint boundary where it belongs. Evidence from the presence slice: inner gate ≈ 5s (kernel
+crate) + one two-crate conduct; `run all` 434s — 10-100× too heavy per Coder iteration, and
+its workspace-wide ut conduct also surfaced an unrelated flaky test as a false red against
+the slice.
+
+## 11. Count-threshold structural assertions rot within hours (observation, not an ask)
+
+A structural proof asserted `grep -c "resolve(&PresenceInput"` ≥ 8; a same-day de-clone
+(three inline gatherings → one helper) legitimately dropped the count to 7 and turned the
+proof red against a change that *improved* the property it guards. Authoring practice, not a
+prova feature: bind structural proofs to presence/absence facts (the dependency edge, the
+deleted symbol, ≥1 kernel call) and leave slack on any count. Recorded here so the next
+package author inherits the scar without the burn.
