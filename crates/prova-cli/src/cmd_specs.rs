@@ -412,6 +412,7 @@ mod tests {
     /// runs process-per-test, and every other test in this binary uses absolute paths.
     #[test]
     fn the_specs_lane_walks_a_real_package() {
+        let _cwd = crate::CwdGuard::hold();
         let code = |c: ExitCode| format!("{c:?}");
         let dir = std::env::temp_dir().join(format!("prova-specs-ut-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

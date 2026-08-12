@@ -44,3 +44,42 @@ end)
   t:expect(lines[4]):equals(second .. " end")
   t:expect(second ~= first, "both instances held in turn"):is_true()
 end)
+
+prova.test("`prova lock` joins the house rule from outside — exit code forwarded, hold released", {
+  covers = "docs/design/architecture.md#lock-wrapper-verb",
+  proves = "macOS ships no flock(1), so a Makefile or CI step had no one-line way to join a rule like 'one cargo at a time' — the wrapper is the contract's portable spelling, in the suite's own vocabulary (a bare token writes; --reads is the concurrent hold)",
+}, function(t)
+  local pkg = t:tempdir()
+  fs.mkdir(pkg .. "/proofs")
+  fs.write(pkg .. "/prova.toml", '[run]\nproofs = ["proofs"]\n')
+
+  -- Two wrapped writers race: their critical sections never interleave.
+  local log = pkg .. "/wrapped.log"
+  fs.write(log, "")
+  local mark = 'printf "%s\\n" "$1" >> ' .. log .. ' && sleep 0.3 && printf "%s\\n" "$2" >> ' .. log
+  local r = shell.run({
+    "sh", "-c",
+    '"$0" lock crunch -- sh -c \'' .. mark .. '\' sh a-start a-end & ' ..
+    '"$0" lock crunch -- sh -c \'' .. mark .. '\' sh b-start b-end; wait',
+    prova.bin,
+  }, { cwd = pkg, timeout = "120s", merge_stderr = true })
+  t:expect(r.code, r.stdout):equals(0)
+  local lines = {}
+  for line in fs.read(log):gmatch("[^\n]+") do lines[#lines + 1] = line end
+  t:expect(#lines):equals(4)
+  t:expect(lines[2], "the first hold closed before the second opened")
+    :equals(lines[1]:gsub("start", "end"))
+
+  -- The command's exit code is the wrapper's.
+  local fail = shell.run({ prova.bin, "lock", "crunch", "--", "sh", "-c", "exit 7" },
+    { cwd = pkg, merge_stderr = true })
+  t:expect(fail.code, "exit codes forward"):equals(7)
+
+  -- Grammar refusals: no token, no command, a package token with no package.
+  t:expect(shell.run({ prova.bin, "lock" }, { cwd = pkg, merge_stderr = true }).code):equals(2)
+  t:expect(shell.run({ prova.bin, "lock", "crunch" }, { cwd = pkg, merge_stderr = true }).code):equals(2)
+  local homeless = shell.run({ prova.bin, "lock", "crunch", "--", "true" },
+    { cwd = t:tempdir(), merge_stderr = true })
+  t:expect(homeless.code, "a package lock needs a package"):equals(2)
+  t:expect(homeless.stdout):contains("--machine")
+end)

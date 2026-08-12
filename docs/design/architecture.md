@@ -426,5 +426,12 @@ updated to `require("postgres")` + a `prova.toml` package declaration — the ne
 The remaining gap to the full North Star is the second service + a stream + cross-service assertions,
 which are more of the same composition.
 
-<!-- backlog: prova-lock-wrapper-verb recorded=2026-08-12 -->
-**`prova lock <token> [--reads] [--machine] -- <command…>`: the shell-portable spelling of the lock contract.** A bare token is a write hold (the suite's own rule: `prova.writes(x)`/`prova.reads(x)` name what the caller DOES; `--reads` is the concurrent hold), and shared/exclusive stay the mechanism layer's words. The lock file (`.prova/var/locks/<token>.lock`, flock semantics) is joinable today from Rust (`prova_core::locks::hold_exclusive`) and any language with flock bindings, and from Linux shell via `flock(1)` — but macOS ships no flock command, so a Makefile or CI step on a Mac has no one-liner. The wrapper verb holds the token (blocking, with the same waiting-note the scheduler emits), execs the command, forwards its exit code, and releases on exit — teaching the convention at the point of use. CLI-only (exec semantics don't map to an MCP tool). Update `learn locks` to teach it when it lands.
+<!-- claim: lock-wrapper-verb recorded=2026-08-12 -->
+**`prova lock <token> [--reads] [--machine] -- <command…>` is the lock contract's portable
+spelling.** A bare token is a WRITE hold (the suite's own vocabulary — `prova.writes`/`reads`
+name what the caller DOES; shared/exclusive stay the mechanism layer's words), `--reads` is the
+concurrent hold, `--machine` spans repos. It blocks until held (saying so when it waits),
+forwards the command's exit code, and releases on exit — crashes included, courtesy of flock —
+and it never provisions anything. Exists because macOS ships no flock(1): a Makefile or CI step
+joins a house rule like "one cargo at a time" with one incantation, on any OS. CLI-only by
+design (exec semantics do not map to an MCP tool).

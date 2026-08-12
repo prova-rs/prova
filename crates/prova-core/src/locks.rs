@@ -53,22 +53,32 @@ pub fn try_hold(
     }
 }
 
-/// Block until `token`'s exclusive lock is held, then return the holding handle — dropping it
-/// releases. For participants that ARE the critical section (a subject provision, an external
-/// build wrapper), where waiting is the point.
-pub fn hold_exclusive(
+/// Block until `token`'s lock is held in the given mode, then return the holding handle —
+/// dropping it releases. For participants that ARE the critical section (a subject provision,
+/// an external build wrapper), where waiting is the point.
+pub fn hold(
     token: &str,
+    shared: bool,
+    machine: bool,
     project_dir: Option<&Path>,
 ) -> std::io::Result<std::fs::File> {
-    let Some(path) = lock_path(token, false, project_dir) else {
+    let Some(path) = lock_path(token, machine, project_dir) else {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!("{token:?} is a reserved run-scoped token — it has no cross-instance lock"),
         ));
     };
     let file = open_lock(&path)?;
-    flock(&file, false, true)?;
+    flock(&file, shared, true)?;
     Ok(file)
+}
+
+/// [`hold`], write-mode and package-scoped — the common case, named for its callers.
+pub fn hold_exclusive(
+    token: &str,
+    project_dir: Option<&Path>,
+) -> std::io::Result<std::fs::File> {
+    hold(token, false, false, project_dir)
 }
 
 fn open_lock(path: &Path) -> std::io::Result<std::fs::File> {

@@ -48,13 +48,15 @@ let _hold = prova_core::locks::hold_exclusive("cargo", Some(&home))?;  // blocks
 ```
 
 ```sh
-# Linux shell (macOS ships no flock(1); a portable prova-provided wrapper verb is
-# on the backlog — architecture.md#prova-lock-wrapper-verb):
-flock .prova/var/locks/cargo.lock cargo build
+# Any shell, any OS — the contract's portable spelling (a bare token is a WRITE
+# hold; --reads is the concurrent one; --machine spans repos):
+prova lock cargo -- cargo build
+prova lock db --reads -- ./report.sh
 ```
 
-Any language with flock bindings is ~5 lines: open the path, `LOCK_EX` for a writer,
-`LOCK_SH` for a reader; the kernel releases a crashed holder instantly.
+Any language with flock bindings joins directly (~5 lines: open the path, `LOCK_EX` for a
+writer, `LOCK_SH` for a reader); Linux shell also has `flock(1)`. The kernel releases a
+crashed holder instantly.
 
 ## Vocabulary, precisely
 

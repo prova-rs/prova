@@ -52,6 +52,35 @@ use prova_core::{
     XdgSystemLayout,
 };
 
+/// The cwd-test serializer: tests that `set_current_dir` are safe under nextest
+/// (process-per-test) but RACE each other under plain `cargo test` (threads, one process, one
+/// cwd) — the release gate runs the latter and caught exactly that. Hold this for the whole
+/// body and restore on drop; poisoning recovers (a failed cwd test must not cascade).
+#[cfg(test)]
+pub(crate) struct CwdGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    saved: std::path::PathBuf,
+}
+
+#[cfg(test)]
+impl CwdGuard {
+    pub(crate) fn hold() -> Self {
+        static CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let lock = CWD_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        CwdGuard {
+            _lock: lock,
+            saved: std::env::current_dir().expect("the test process has a cwd"),
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for CwdGuard {
+    fn drop(&mut self) {
+        let _ = std::env::set_current_dir(&self.saved);
+    }
+}
+
 /// One subcommand: its dispatch name, its `--help` lines, and its entry point — ONE row per
 /// verb, so a verb cannot exist undocumented (the field is required) and the help text cannot
 /// name a verb that doesn't dispatch (the same row does both). See docs/plans/autodidact.md §2.8.
@@ -164,6 +193,12 @@ const VERBS: &[Verb] = &[
         name: "up",
         help: "  prova up [<topology>] [<url>]  list/stand up a topology — local, or from a git repo that advertises it",
         run: up_subcommand,
+    },
+    Verb {
+        name: "lock",
+        help: "  prova lock <token> [--reads] [--machine] -- <cmd>  hold a package lock while <cmd> runs — join\n\
+               \x20                           the suite's house rules from any tool (`prova learn locks`)",
+        run: lock_subcommand,
     },
     Verb {
         name: "broker",

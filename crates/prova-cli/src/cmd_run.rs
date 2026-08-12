@@ -298,6 +298,82 @@ pub(crate) fn switches_subcommand(args: Vec<String>) -> ExitCode {
     run(full)
 }
 
+/// `prova lock <token> [--reads] [--machine] -- <command…>` — the shell-portable spelling of
+/// the lock contract (docs/design/architecture.md#lock-wrapper-verb): hold the token, run the
+/// command, forward its exit code, release on exit. The suite's own vocabulary: a bare token
+/// is a WRITE hold (exclusive, like `locks = { "cargo" }`); `--reads` is the concurrent hold;
+/// `--machine` widens past the package. Exists because macOS ships no flock(1) — a Makefile or
+/// CI step joins the house rule with this one incantation, and never provisions anything.
+pub(crate) fn lock_subcommand(args: Vec<String>) -> ExitCode {
+    let usage = || {
+        eprintln!("usage: prova lock <token> [--reads] [--machine] -- <command> [args…]");
+        ExitCode::from(2)
+    };
+    let mut token: Option<String> = None;
+    let mut shared = false;
+    let mut machine = false;
+    let mut it = args.into_iter();
+    let command: Vec<String> = loop {
+        match it.next().as_deref() {
+            Some("-h") | Some("--help") => {
+                println!(
+                    "usage: prova lock <token> [--reads] [--machine] -- <command> [args…]\n\n\
+                     Hold the package lock <token> while <command> runs — the same flock the\n\
+                     suite's `locks = {{ … }}` and the [runner] provision hold, so an external\n\
+                     build joins the house rule (`prova learn locks`). A bare token is a WRITE\n\
+                     hold; --reads is the concurrent hold; --machine spans every repo on the\n\
+                     box. Blocks until held (says so when it waits), forwards the command's\n\
+                     exit code, and the kernel releases on exit — crashes included."
+                );
+                return ExitCode::SUCCESS;
+            }
+            Some("--reads") => shared = true,
+            Some("--writes") => shared = false, // the explicit spelling of the default
+            Some("--machine") => machine = true,
+            Some("--") => break it.collect(),
+            Some(word) if token.is_none() && !word.starts_with('-') => {
+                token = Some(word.to_string());
+            }
+            Some(_) | None => return usage(),
+        }
+    };
+    let (Some(token), false) = (token, command.is_empty()) else {
+        return usage();
+    };
+
+    let home = home::find(std::path::Path::new(".")).ok().flatten();
+    if home.is_none() && !machine {
+        eprintln!(
+            "prova: no prova.toml found walking up — a package lock needs a package \
+             (use --machine for a box-wide token, or run inside a package)"
+        );
+        return ExitCode::from(2);
+    }
+    let project_dir = home.as_ref().map(|h| h.dir.as_path());
+    // Try without blocking first, purely so a wait is SAID — then block for real.
+    let held = match prova_core::locks::try_hold(&token, shared, machine, project_dir) {
+        Ok(Some(f)) => Ok(f),
+        _ => {
+            eprintln!("prova: waiting for lock {token:?} (held elsewhere)…");
+            prova_core::locks::hold(&token, shared, machine, project_dir)
+        }
+    };
+    let _held = match held {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("prova: lock {token:?}: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    match std::process::Command::new(&command[0]).args(&command[1..]).status() {
+        Ok(status) => ExitCode::from(status.code().unwrap_or(1) as u8),
+        Err(e) => {
+            eprintln!("prova: lock: cannot run {:?}: {e}", command[0]);
+            ExitCode::from(2)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

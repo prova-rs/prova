@@ -812,6 +812,7 @@ mod tests {
     /// changes once (nextest is process-per-test; every other test here uses absolute paths).
     #[test]
     fn attest_walks_a_recorded_package() {
+        let _cwd = crate::CwdGuard::hold();
         let code = |c: ExitCode| format!("{c:?}");
         let argv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let dir = scaffold_package(
