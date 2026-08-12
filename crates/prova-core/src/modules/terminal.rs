@@ -685,7 +685,7 @@ fn mock_fn(lua: &Lua) -> mlua::Result<Function> {
         let dir = std::env::temp_dir().join(format!(
             "prova-term-mock-{}-{}",
             std::process::id(),
-            &name
+            name
         ));
         std::fs::create_dir_all(&dir)
             .map_err(|e| err(format!("terminal.mock: mkdir {}: {e}", dir.display())))?;
@@ -861,7 +861,7 @@ fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
         let dir = std::env::temp_dir().join(format!(
             "prova-term-proxy-{}-{}",
             std::process::id(),
-            &name
+            name
         ));
         std::fs::create_dir_all(&dir)
             .map_err(|e| err(format!("terminal.proxy: mkdir {}: {e}", dir.display())))?;

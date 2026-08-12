@@ -330,7 +330,7 @@ pub(crate) fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
         let dir = std::env::temp_dir().join(format!(
             "prova-shell-proxy-{}-{}",
             std::process::id(),
-            &name
+            name
         ));
         let spool = dir.join("journal");
         std::fs::create_dir_all(&spool)
