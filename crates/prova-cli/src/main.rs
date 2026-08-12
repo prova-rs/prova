@@ -145,7 +145,7 @@ const VERBS: &[Verb] = &[
     Verb {
         name: "specs",
         help: "  prova specs               the specs lane: claims + backlog items, state-tagged;\n\
-               \x20                           --claims/--backlog narrow; drivers: `promote <id>`, `backfill`",
+               \x20                           --claims/--backlog narrow; drivers: `capture`, `promote <id>`, `backfill`",
         run: specs_subcommand,
     },
     Verb {
@@ -258,6 +258,20 @@ const RETIRED_VERBS: &[(&str, &str)] = &[
     // `list` was the tests-lane node listing; `prova tests` is its lane-named, state-tagged
     // successor (and the MCP `list` tool renamed to `tests` in step).
     ("list", "prova tests"),
+];
+
+/// MCP tool names whose CLI spelling differs — the parity contract's teaching half
+/// (docs/design/mcp-mode.md#cli-mcp-verb-parity): every tool name typed at the CLI dispatches or
+/// teaches, never falls through to the run path's "no such file". Unlike RETIRED_VERBS these were
+/// never CLI verbs; the message names the CLI twin. `mcp_tools_are_real_verbs` holds this table
+/// and the router's KNOWN_MCP_ONLY set equal, so a new divergence cannot ship untaught.
+const MCP_SPELLINGS: &[(&str, &str)] = &[
+    // The verified write is lane-scoped at the CLI (drivers are `prova <lane> <driver>`; MCP
+    // tools are flat).
+    ("capture", "the MCP `capture` tool's CLI spelling is `prova specs capture <id> \"<prose>\" --file <doc>`"),
+    // `status` is the MCP server's held-topology view (warmth). The CLI's view of detached
+    // topologies is `ps`; increment 7 (docs/plans/query-consolidation.md) unifies the vocabulary.
+    ("status", "the MCP `status` tool lists topologies the server holds; detached topologies list via `prova ps`"),
 ];
 
 /// `prova --help`, assembled from the verb table so the two cannot disagree.
@@ -385,6 +399,10 @@ fn main() -> ExitCode {
         }
         if let Some((old, replacement)) = RETIRED_VERBS.iter().find(|(old, _)| old == first) {
             eprintln!("prova: `prova {old}` was retired — use `{replacement}` (a state is a flag on its lane now)");
+            return ExitCode::from(2);
+        }
+        if let Some((name, teach)) = MCP_SPELLINGS.iter().find(|(name, _)| name == first) {
+            eprintln!("prova: `{name}` is not a CLI verb — {teach}");
             return ExitCode::from(2);
         }
     }
@@ -627,13 +645,13 @@ mod tests {
     /// fails if the router stops exposing one, so the list cannot rot. (docs/plans/query-consolidation.md)
     #[test]
     fn mcp_tools_are_real_verbs() {
-        // MCP tools with no same-named CLI verb, and why. `status` is drift — the CLI spells the same
-        // capability `ps`; increment 7 unifies the topology lifecycle and retires this name.
+        // MCP tools with no same-named TOP-LEVEL CLI verb, and why — every one of these MUST also
+        // sit in MCP_SPELLINGS so the name teaches at the CLI instead of falling through to the
+        // run path's "no such file" (docs/design/mcp-mode.md#cli-mcp-verb-parity).
+        // `capture`'s CLI spelling is the lane driver `prova specs capture` (one verified write,
+        // two spellings; drivers are lane-scoped, tools are flat). `status` is the held-topology
+        // view whose CLI twin is `ps`; increment 7 unifies the topology lifecycle vocabulary.
         // (`introspect` graduated: it now has a `prova introspect` CLI verb — increment 8.)
-        // `capture` exists for the agent boundary specifically: a human's editor writes the anchor
-        // directly (it is one line of markdown in a doc they have open), while an agent needs the
-        // VERIFIED write — refuse-unscanned-path, refuse-duplicate-id, rescan-to-prove-it-landed —
-        // that a hand edit cannot enforce (docs/design/mcp-mode.md#backlog-capture-is-a-taught-procedure).
         const KNOWN_MCP_ONLY: &[&str] = &["status", "capture"];
         let known: std::collections::BTreeSet<&str> = VERBS.iter().map(|v| v.name).collect();
 
@@ -663,6 +681,18 @@ mod tests {
                  row.",
             );
         }
+
+        // The teaching half of the parity contract: the allowlist and the redirect table are the
+        // same set. A divergent tool name that does not teach is exactly the first-try miss the
+        // field report described; a teaching row for a name that dispatches (or is gone) is rot.
+        let taught: std::collections::BTreeSet<&str> =
+            MCP_SPELLINGS.iter().map(|(name, _)| *name).collect();
+        let allowed: std::collections::BTreeSet<&str> = KNOWN_MCP_ONLY.iter().copied().collect();
+        assert_eq!(
+            taught, allowed,
+            "MCP_SPELLINGS (teaches at the CLI) and KNOWN_MCP_ONLY (allowed to diverge) must name \
+             the same tools — a divergence must teach, and only divergences may.",
+        );
     }
 
     /// `prova capabilities` enumerates from `builtin_capability_names()`; that list must not drift

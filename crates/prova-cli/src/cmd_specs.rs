@@ -1,4 +1,4 @@
-//! The spec-lane verbs: burndown, owed, promote, tests, specs.
+//! The spec-lane verbs: burndown, owed, capture, promote, tests, specs.
 
 use super::*;
 
@@ -128,6 +128,180 @@ pub(crate) fn owed_subcommand(args: Vec<String>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// The specs lane's capture write, shared by `prova specs capture` and the MCP `capture` tool —
+/// one verified write, two spellings (docs/design/mcp-mode.md#cli-mcp-verb-parity). WHICH file
+/// fits the item's subject is the caller's judgment; everything checkable is owned here: the
+/// state keyword, the id grammar, that the file sits under a writable `[[specs.source]]` root (a
+/// plausible-but-unscanned path is capture that silently does not capture — refused, naming the
+/// roots), and that the id is not already anchored (a duplicate makes an address ambiguous). The
+/// write is proven by rescanning before the address is returned — a capture verb that cannot lie
+/// about having captured.
+pub(crate) fn capture_anchor(
+    home_dir: &std::path::Path,
+    manifest: &Manifest,
+    state: &str,
+    id: &str,
+    prose: &str,
+    file: &str,
+) -> Result<claims::Claim, String> {
+    let keyword = match state {
+        "backlog" => "backlog",
+        "claim" => "claim",
+        other => {
+            return Err(format!(
+                "unknown capture state {other:?} — expected \"backlog\" or \"claim\" (a promise is \
+                 authored as a proof file, not an anchor — see `prova learn promises`)"
+            ))
+        }
+    };
+    if id.is_empty()
+        || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        return Err(format!(
+            "id {id:?} — an anchor id is one token (ascii letters, digits, -, _, .), it becomes \
+             the address `<file>#<id>`"
+        ));
+    }
+
+    let docs = manifest.specs.as_ref().map(|s| s.scan_roots()).unwrap_or_default();
+    if docs.is_empty() {
+        return Err(
+            "no spec source configured — declare one in prova.toml ([[specs.source]] with \
+             type = \"directory\") so captured items have a home the ledger scans"
+                .to_string(),
+        );
+    }
+    let rel = std::path::Path::new(file);
+    if rel.is_absolute() || rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        return Err(format!("file {file:?} — a capture path is repo-relative, no `..`"));
+    }
+    if !docs.iter().any(|root| rel.starts_with(root)) {
+        return Err(format!(
+            "{file} is not under a writable spec source — the ledger would never scan it, so the \
+             capture would silently not capture. The sources are: {}",
+            docs.join(", ")
+        ));
+    }
+
+    let scanned = claims::scan(home_dir, &docs).map_err(|e| e.to_string())?;
+    if let Some(existing) = claims::matching_id(&scanned, id).first() {
+        return Err(format!(
+            "id {id:?} is already anchored at {} — a duplicate id makes an address ambiguous; \
+             pick another id, or extend the existing item",
+            existing.address
+        ));
+    }
+
+    // The write: append the anchor + prose, stamping `recorded=<today>` as the anchor's blessed
+    // capture property (docs/design/lifecycle.md#anchor-records-when-it-was-captured — the ideal
+    // on every anchor, structural rather than prose). A fresh file gets a heading so the doc
+    // reads as a doc.
+    let path = home_dir.join(rel);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+    }
+    let stamp = humantime::format_rfc3339(std::time::SystemTime::now()).to_string();
+    let today = &stamp[..10];
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut out = if existing.is_empty() {
+        let stem = rel.file_stem().and_then(|s| s.to_str()).unwrap_or("notes");
+        format!("# {stem}\n")
+    } else {
+        existing
+    };
+    while !out.ends_with("\n\n") {
+        out.push('\n');
+    }
+    out.push_str(&format!("<!-- {keyword}: {id} recorded={today} -->\n{}\n", prose.trim()));
+    std::fs::write(&path, out).map_err(|e| format!("write {}: {e}", path.display()))?;
+
+    // Verify: the ledger itself must see the anchor, or the capture did not happen.
+    let rescanned = claims::scan(home_dir, &docs).map_err(|e| {
+        format!("the anchor was written but the rescan failed — inspect {file}: {e}")
+    })?;
+    let landed = claims::matching_id(&rescanned, id);
+    match landed.as_slice() {
+        [one] => Ok((*one).clone()),
+        _ => Err(format!(
+            "the anchor was written to {file} but the ledger scan does not see exactly one \
+             `{id}` — inspect the file"
+        )),
+    }
+}
+
+/// `prova specs capture` — the capture write's CLI spelling: same core, same guardrails, same
+/// rescan-verified answer as the MCP `capture` tool.
+pub(crate) fn capture_subcommand(args: Vec<String>) -> ExitCode {
+    const USAGE: &str = "usage: prova specs capture <id> \"<prose>\" --file <doc> [--claim]\n\
+                         \x20      captures a backlog item (default) or, with --claim, an owed claim\n\
+                         \x20      into a doc under a [[specs.source]] root (`prova learn project`\n\
+                         \x20      names this package's writable sources)";
+    let mut positional: Vec<String> = Vec::new();
+    let mut file: Option<String> = None;
+    let mut state = "backlog";
+    let mut it = args.into_iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "-h" | "--help" => {
+                println!("{USAGE}");
+                return ExitCode::SUCCESS;
+            }
+            "--claim" => state = "claim",
+            "--backlog" => state = "backlog",
+            "--file" => match it.next() {
+                Some(v) => file = Some(v),
+                None => {
+                    eprintln!("prova: specs capture: --file needs a value\n{USAGE}");
+                    return ExitCode::from(2);
+                }
+            },
+            other if other.starts_with('-') => {
+                eprintln!("prova: specs capture: unexpected flag {other:?}\n{USAGE}");
+                return ExitCode::from(2);
+            }
+            _ => positional.push(arg),
+        }
+    }
+    let (Some(file), [id, prose]) = (file, positional.as_slice()) else {
+        eprintln!("prova: specs capture: expected <id>, \"<prose>\" and --file <doc>\n{USAGE}");
+        return ExitCode::from(2);
+    };
+
+    let home = match resolve_home(None) {
+        Ok(h) => h,
+        Err(code) => return code,
+    };
+    let manifest = match read_manifest(&home) {
+        Ok(m) => m,
+        Err(code) => return code,
+    };
+    match capture_anchor(&home.dir, &manifest, state, id, prose, &file) {
+        Ok(landed) => {
+            println!(
+                "prova: captured {} — {} anchor at {}:{}",
+                landed.address,
+                landed.kind.keyword(),
+                landed.file.display(),
+                landed.line
+            );
+            match landed.kind {
+                claims::Kind::Claim => println!(
+                    "  it is now owed; write a proof that `covers = \"{}\"` to discharge it",
+                    landed.address
+                ),
+                claims::Kind::Backlog => println!(
+                    "  on the cold shelf — `prova specs promote {id}` thaws it when its time comes"
+                ),
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("prova: specs capture: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 /// The specs lane's one state-transition write: thaw a backlog item into a claim, in place (a
 /// keyword flip — the id and prose stay put, only the state changes). Shared by `prova specs promote
 /// <id>` (the lane driver) and, transitionally, `prova backlog promote <id>`. Demotion is
@@ -243,6 +417,8 @@ fn parse_specs_args(args: &[String]) -> Result<(Option<claims::Kind>, bool), Exi
                      \x20      prova specs --claims        only the claims (owed obligations)\n\
                      \x20      prova specs --backlog       only the backlog (captured, not yet owed)\n\
                      \x20      prova specs --undated       only items with no recorded= capture stamp (composes)\n\
+                     \x20      prova specs capture <id> \"<prose>\" --file <doc> [--claim]\n\
+                     \x20                                  write an anchor, verified (the MCP `capture` tool's CLI spelling)\n\
                      \x20      prova specs promote <id>    thaw a backlog item into a claim, in place\n\
                      \x20      prova specs backfill        proofs no claim backs — the reverse of `owed`\n\n\
                      Claims and backlog are the two states of one prose obligation, sharing the\n\
@@ -273,6 +449,9 @@ pub(crate) fn specs_subcommand(args: Vec<String>) -> ExitCode {
     if let Some((first, rest)) = args.split_first() {
         if first == "promote" {
             return promote_claim(rest.first().cloned());
+        }
+        if first == "capture" {
+            return capture_subcommand(rest.to_vec());
         }
         if first == "backfill" {
             let mut full = vec!["--backfill".to_string()];

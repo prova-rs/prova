@@ -590,117 +590,33 @@ pub(super) fn specs_blocking(env: &McpEnv, req: SpecsRequest) -> Result<(serde_j
     Ok((json!({ "specs": rows }), false))
 }
 
-/// `capture` tool body — the specs lane's one write, performed as the taught procedure
-/// (docs/design/mcp-mode.md#backlog-capture-is-a-taught-procedure) with the guardrails owned
-/// here: WHICH file fits the item's subject is the caller's judgment; that the file sits under a
-/// writable `[[specs.source]]` root is not (a plausible-but-unscanned path is capture that
-/// silently does not capture — refused, naming the roots). The id must not already be anchored
-/// (a duplicate makes an address ambiguous), and the write is proven by rescanning before the
-/// address is returned — a capture verb that cannot lie about having captured.
+/// `capture` tool body — the specs lane's capture write, performed as the taught procedure
+/// (docs/design/mcp-mode.md#backlog-capture-is-a-taught-procedure). The guardrails and the
+/// rescan-verified write live in `cmd_specs::capture_anchor`, shared verbatim with the CLI's
+/// `prova specs capture` — one verified write, two spellings
+/// (docs/design/mcp-mode.md#cli-mcp-verb-parity).
 pub(super) fn capture_blocking(env: &McpEnv, req: CaptureRequest) -> Result<(serde_json::Value, bool), String> {
     let call = env.resolve_call(None, req.package.as_deref())?;
     let manifest = std::fs::read_to_string(&call.home.manifest)
         .map_err(|e| e.to_string())
         .and_then(|t| crate::manifest::Manifest::parse(&t))?;
-
-    let keyword = match req.state.as_str() {
-        "backlog" => "backlog",
-        "claim" => "claim",
-        other => {
-            return Err(format!(
-                "unknown capture state {other:?} — expected \"backlog\" or \"claim\" (a promise is \
-                 authored as a proof file, not an anchor — see learn {{ topic = \"promises\" }})"
-            ))
-        }
-    };
-    if req.id.is_empty()
-        || !req.id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
-    {
-        return Err(format!(
-            "id {:?} — an anchor id is one token (ascii letters, digits, -, _, .), it becomes the \
-             address `<file>#<id>`",
-            req.id
-        ));
-    }
-
-    let docs = manifest.specs.as_ref().map(|s| s.scan_roots()).unwrap_or_default();
-    if docs.is_empty() {
-        return Err(
-            "no spec source configured — declare one in prova.toml ([[specs.source]] with \
-             type = \"directory\") so captured items have a home the ledger scans"
-                .to_string(),
-        );
-    }
-    let rel = std::path::Path::new(&req.file);
-    if rel.is_absolute() || rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
-        return Err(format!("file {:?} — a capture path is repo-relative, no `..`", req.file));
-    }
-    if !docs.iter().any(|root| rel.starts_with(root)) {
-        return Err(format!(
-            "{} is not under a writable spec source — the ledger would never scan it, so the \
-             capture would silently not capture. The sources are: {}",
-            req.file,
-            docs.join(", ")
-        ));
-    }
-
-    let scanned = crate::claims::scan(&call.home.dir, &docs).map_err(|e| e.to_string())?;
-    if let Some(existing) = crate::claims::matching_id(&scanned, &req.id).first() {
-        return Err(format!(
-            "id {:?} is already anchored at {} — a duplicate id makes an address ambiguous; pick \
-             another id, or extend the existing item",
-            req.id, existing.address
-        ));
-    }
-
-    // The write: append the anchor + prose, stamping `recorded=<today>` as the anchor's blessed
-    // capture property (docs/design/lifecycle.md#anchor-records-when-it-was-captured — the ideal
-    // on every anchor, structural rather than prose). A fresh file gets a heading so the doc
-    // reads as a doc.
-    let path = call.home.dir.join(rel);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
-    }
-    let stamp = humantime::format_rfc3339(std::time::SystemTime::now()).to_string();
-    let today = &stamp[..10];
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
-    let mut out = if existing.is_empty() {
-        let stem = rel.file_stem().and_then(|s| s.to_str()).unwrap_or("notes");
-        format!("# {stem}\n")
-    } else {
-        existing
-    };
-    while !out.ends_with("\n\n") {
-        out.push('\n');
-    }
-    out.push_str(&format!(
-        "<!-- {keyword}: {} recorded={today} -->\n{}\n",
-        req.id,
-        req.prose.trim()
-    ));
-    std::fs::write(&path, out).map_err(|e| format!("write {}: {e}", path.display()))?;
-
-    // Verify: the ledger itself must see the anchor, or the capture did not happen.
-    let rescanned = crate::claims::scan(&call.home.dir, &docs).map_err(|e| {
-        format!("the anchor was written but the rescan failed — inspect {}: {e}", req.file)
-    })?;
-    let landed = crate::claims::matching_id(&rescanned, &req.id);
-    match landed.as_slice() {
-        [one] => Ok((
-            json!({ "captured": {
-                "state": keyword,
-                "address": one.address,
-                "file": one.file.display().to_string(),
-                "line": one.line,
-            }}),
-            false,
-        )),
-        _ => Err(format!(
-            "the anchor was written to {} but the ledger scan does not see exactly one `{}` — \
-             inspect the file",
-            req.file, req.id
-        )),
-    }
+    let landed = crate::cmd_specs::capture_anchor(
+        &call.home.dir,
+        &manifest,
+        &req.state,
+        &req.id,
+        &req.prose,
+        &req.file,
+    )?;
+    Ok((
+        json!({ "captured": {
+            "state": landed.kind.keyword(),
+            "address": landed.address,
+            "file": landed.file.display().to_string(),
+            "line": landed.line,
+        }}),
+        false,
+    ))
 }
 
 /// `reminders` tool body — the attention account as JSON, the twin of `prova reminders`: every

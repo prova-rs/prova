@@ -30,8 +30,10 @@ The loop:
 faster than it discharges them; what you find and do not fix NOW is captured in its lane — never
 scope-crept into the current change, never a mental note:
 
-- "add it to the **backlog**" → write a `<!-- backlog: id -->` anchor in the spec doc whose
-  subject fits — captured in place, deliberately not yet owed. `prova learn backlog`.
+- "add it to the **backlog**" → `prova specs capture <id> "<prose>" --file <doc>` (over MCP: the
+  `capture` tool) — the verified write into the spec doc whose subject fits: it refuses unscanned
+  paths and duplicate ids, stamps the date, and rescans to prove the anchor landed. Captured in
+  place, deliberately not yet owed. `prova learn backlog`.
 - "add a **claim**" / "spec this in prose" → a `<!-- claim: id -->` anchor in the same docs —
   owed the moment it is written; a proof discharges it via `covers`. `prova learn claims`.
 - "add a **promise**" → author the proof now, flagged `promises = "reason"` — the red-by-design

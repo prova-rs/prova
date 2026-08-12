@@ -98,6 +98,41 @@ end)
   t:expect(o.stdout, "the shelf stays muted while anything is owed"):never():contains("cold shelf")
 end)
 
+prova.test("`prova specs capture` is the verified write, CLI-spelled", {
+  covers = "docs/design/mcp-mode.md#cli-mcp-verb-parity",
+  proves = "capture was MCP-only, contradicting the doc's own non-goal (anything the server can do cold, the CLI can do) — the CLI spelling must be the SAME write: refuse-unscanned-path, refuse-duplicate-id, stamp the date, rescan to prove it landed",
+}, function(t)
+  local proj = project(t, TWO_STATES)
+
+  -- A good capture: lands, dated, addressable — and the shelf sees it immediately.
+  local r = shell.run(
+    prova.bin .. ' specs capture lease-renewal "Leases should renew before expiry." --file docs/design.md',
+    { cwd = proj, merge_stderr = true })
+  t:expect(r.code):equals(0)
+  t:expect(r.stdout, "the rescan-verified address is the answer"):contains("docs/design.md#lease-renewal")
+  local doc = fs.read(proj .. "/docs/design.md")
+  t:expect(doc, "the capture stamp is the anchor's blessed property"):contains("<!-- backlog: lease-renewal recorded=20")
+  local shelf = shell.run(prova.bin .. " specs --backlog", { cwd = proj, merge_stderr = true })
+  t:expect(shelf.stdout, "the ledger scans what capture wrote"):contains("lease-renewal")
+
+  -- --claim captures the owed state; the ledger owes it immediately.
+  local c = shell.run(
+    prova.bin .. ' specs capture hot-item "An owed thing." --file docs/design.md --claim',
+    { cwd = proj, merge_stderr = true })
+  t:expect(c.code):equals(0)
+  t:expect(fs.read(proj .. "/docs/design.md")):contains("<!-- claim: hot-item recorded=20")
+
+  -- The guardrails are the MCP tool's, verbatim: unscanned paths and duplicate ids refuse.
+  local lost = shell.run(prova.bin .. ' specs capture lost-item "x" --file README.md',
+    { cwd = proj, merge_stderr = true })
+  t:expect(lost.code, "an unscanned path is refused"):never():equals(0)
+  t:expect(lost.stdout, "the refusal names the sources"):contains("docs")
+  local dup = shell.run(prova.bin .. ' specs capture lease-renewal "x" --file docs/design.md',
+    { cwd = proj, merge_stderr = true })
+  t:expect(dup.code, "a duplicate id is refused"):never():equals(0)
+  t:expect(dup.stdout, "the refusal names the existing address"):contains("docs/design.md#lease-renewal")
+end)
+
 prova.test("`promote` thaws a backlog item into a claim, in place", {
   proves = "promotion is a keyword flip, not a move: the id and its prose stay put so the diff reads as exactly 'this became active', and the address a future proof will name is already the one the reader sees",
 }, function(t)

@@ -174,10 +174,15 @@ before answering with the address. Recorded 2026-08-08; landed in full 2026-08-1
 
 ## Field reports (Substrate gate-integration run, 2026-08-11)
 
-<!-- backlog: cli-mcp-verb-parity recorded=2026-08-11 -->
-**The MCP surface has `status`; the CLI does not — first-try calls miss across frontends.**
-An agent that learned the MCP tool names typed `prova status` at the CLI and got "No such
-file or directory". The skill's own promise is "everything the server can do cold, the CLI
-can do" — verb parity is part of that contract. Either add the missing CLI verbs or rename
-the MCP tools to the CLI vocabulary; an audit of the two surfaces against each other belongs
-in the deprecation/terminology machinery so drift is caught structurally.
+<!-- claim: cli-mcp-verb-parity recorded=2026-08-11 -->
+**Every MCP tool name, typed at the CLI, dispatches or teaches — a first-try call never lands
+on the run path's "No such file or directory".** Most tools share their verb's name and
+dispatch. The two whose CLI spelling differs redirect by name: `capture` teaches its lane
+driver `prova specs capture` (the same verified write — refuse-unscanned-path,
+refuse-duplicate-id, rescan-to-prove-it-landed — on both transports, keeping the "anything
+the server can do cold, the CLI can do" non-goal true); `status` teaches `prova ps` and the
+held-vs-detached distinction (their unification is the topology-lifecycle increment,
+docs/plans/query-consolidation.md §7). Drift is caught structurally: the
+`mcp_tools_are_real_verbs` unit gate reads the live tool router and fails on any tool name
+that neither dispatches nor sits in the teaching table with a reason. (Field report
+2026-08-11: an agent that learned the MCP names typed `prova status` and got a file error.)

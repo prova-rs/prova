@@ -102,6 +102,42 @@ prova.test("the tool surface mirrors the CLI verbs, warm holder included",
   end
 end)
 
+-- ── verb parity: every tool name dispatches or teaches at the CLI ────────────────────────────
+
+prova.test("every MCP tool name, typed at the CLI, dispatches or teaches — never a file error", {
+  covers = "docs/design/mcp-mode.md#cli-mcp-verb-parity",
+  proves = "an agent that learned the MCP names typed `prova status` and the run path read the verb as a filename (\"No such file or directory\") — a first-try miss across frontends; every tool name must answer as a verb or teach its CLI spelling",
+}, function(t)
+  local root = t:use(scratch)()
+  fs.mkdir(root .. "/proofs")
+  fs.write(root .. "/prova.toml", '[run]\nproofs = ["proofs"]\n')
+  fs.write(root .. "/proofs/one_test.lua",
+    'prova.test("one", function(t) t:expect(true):is_true() end)\n')
+
+  -- The LIVE tool surface, never a hand-kept list — a tool added tomorrow is swept tomorrow.
+  local by_id = mcp(root, { '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' })
+  local tools = by_id[2].result.tools
+  t:expect(#tools, "the live surface, not a sample"):gte(15)
+
+  -- Hermetic per-verb arguments where the bare spelling would leave the package: `packages`
+  -- consults the built-in registry, and only --offline keeps the sweep off the network.
+  local args = { packages = " --offline" }
+  for _, tool in ipairs(tools) do
+    local r = shell.run(prova.bin .. " " .. tool.name .. (args[tool.name] or ""),
+      { cwd = root, merge_stderr = true, timeout = "120s" })
+    t:expect(r.stdout, "`prova " .. tool.name .. "` answers as a verb or teaches")
+      :never():contains("No such file or directory")
+  end
+
+  -- The two divergent spellings teach their CLI twin by name, and refuse rather than dispatch.
+  local cap = shell.run(prova.bin .. " capture", { cwd = root, merge_stderr = true })
+  t:expect(cap.code, "a teaching redirect refuses"):equals(2)
+  t:expect(cap.stdout, "capture teaches its lane driver"):contains("specs capture")
+  local st = shell.run(prova.bin .. " status", { cwd = root, merge_stderr = true })
+  t:expect(st.code):equals(2)
+  t:expect(st.stdout, "status teaches the detached-topology view"):contains("prova ps")
+end)
+
 -- ── the held registry: status, never ps ──────────────────────────────────────────────────────
 
 prova.test("a server-held topology reports through status and never writes a running record",
