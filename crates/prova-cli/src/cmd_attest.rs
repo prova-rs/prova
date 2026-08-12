@@ -428,6 +428,8 @@ pub(crate) fn evaluate_run_reminders(
             .iter()
             .map(|m| (m.name.clone(), m.value))
             .collect(),
+        duration_ms: summary.duration.as_millis() as f64,
+        baselines: prova_core::baselines::load_all(&home.dir),
     };
     record::reminder_entries(&prova_core::evaluate_reminders(suites, config, &account))
 }

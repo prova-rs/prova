@@ -968,7 +968,18 @@ fn conclude_run(
     // Drain this run's measurements once, up front: they feed the attention account (a
     // reminder condition can read them — the pre-authorship surface of the same claim a
     // ratchet gates), the record (history), and the guarded baseline writer below.
-    let measurements = drain(&accounts.measurements);
+    let mut measurements = drain(&accounts.measurements);
+    // The run's wall time joins the account as an ordinary measurement
+    // (docs/design/reminders.md#duration-drift-is-attention): a reminder watches its drift, a
+    // ratchet can gate it, and banking it is the same deliberate `--update-baseline` act as any
+    // metric — in its own `timings` set, so the machine-varying number is a visible, separable
+    // file. Recorded, never enforced: slowness is attention, not death.
+    measurements.push(prova_core::Measurement {
+        name: "run.duration_ms".to_string(),
+        value: summary.duration.as_millis() as f64,
+        direction: prova_core::Direction::LowerIsBetter,
+        set: "timings".to_string(),
+    });
 
     let full_run =
         from_manifest && config.selection.is_empty() && !cli.falsify && !cli.promises_only;

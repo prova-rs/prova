@@ -962,6 +962,46 @@ fn specs_view(lua: &Lua, specs: &[crate::model::SpecItem]) -> mlua::Result<Table
 /// with a string return carrying the condition's own "why" (what the world did); an unmet
 /// `requires` or a raise is `Unevaluated` with the reason — never `Watching`, because a watcher
 /// that could not look must stay visibly disarmed.
+/// Build the read-only account view a `when` condition receives — fresh per condition, so a
+/// condition that mutates its copy cannot leak the mutation into a later one, and carrying NO
+/// reminder state (reminders cannot observe reminders). Errors are one string; the caller turns
+/// it into `Unevaluated` exactly once.
+fn build_account_view(lua: &Lua, account: &ReminderAccount) -> Result<Table, String> {
+    let err = |e: mlua::Error| format!("could not build the account view: {e}");
+    let acct = lua.create_table().map_err(err)?;
+    for (key, value) in [
+        ("passed", account.passed),
+        ("failed", account.failed),
+        ("skipped", account.skipped),
+        ("promised", account.promised),
+        ("owed", account.owed),
+    ] {
+        acct.set(key, value).map_err(err)?;
+    }
+    // The timing surface (docs/design/reminders.md#duration-drift-is-attention): this run's wall
+    // time, what it recorded, and what was deliberately banked — so a drift policy is a one-line
+    // condition and slowness stays attention rather than an engine constant.
+    acct.set("duration_ms", account.duration_ms).map_err(err)?;
+    let baselines = lua.create_table().map_err(err)?;
+    for (name, value) in &account.baselines {
+        baselines.set(name.as_str(), *value).map_err(err)?;
+    }
+    acct.set("baselines", baselines).map_err(err)?;
+    // The run's measurements, name -> value, so a condition can read the same scalar a ratchet
+    // gates on ("this file is at 480/500").
+    let measurements = lua.create_table().map_err(err)?;
+    for (name, value) in &account.measurements {
+        measurements.set(name.as_str(), *value).map_err(err)?;
+    }
+    acct.set("measurements", measurements).map_err(err)?;
+    // The run's spec items, so a draw-down condition can compose over their properties --
+    // `date.days_since(o.recorded)` for the sliding window, `date.past(o.due)` for a hard
+    // deadline, `o.props.<key>` for the author's own vocabulary.
+    let specs = specs_view(lua, &account.specs).map_err(err)?;
+    acct.set("specs", specs).map_err(err)?;
+    Ok(acct)
+}
+
 async fn evaluate_reminder(
     lua: &Lua,
     def: &ReminderDef,
@@ -973,70 +1013,10 @@ async fn evaluate_reminder(
             return ReminderState::Unevaluated { reason };
         }
     }
-    // The read-only account view. Built fresh per condition so a condition that mutates its copy
-    // cannot leak the mutation into a later one — and it carries NO reminder state, by design.
-    let acct = match lua.create_table() {
+    let acct = match build_account_view(lua, account) {
         Ok(t) => t,
-        Err(e) => {
-            return ReminderState::Unevaluated {
-                reason: format!("could not build the account view: {e}"),
-            }
-        }
+        Err(reason) => return ReminderState::Unevaluated { reason },
     };
-    for (key, value) in [
-        ("passed", account.passed),
-        ("failed", account.failed),
-        ("skipped", account.skipped),
-        ("promised", account.promised),
-        ("owed", account.owed),
-    ] {
-        if acct.set(key, value).is_err() {
-            return ReminderState::Unevaluated {
-                reason: "could not build the account view".to_string(),
-            };
-        }
-    }
-    // The run's measurements, name → value, so a condition can read the same scalar a ratchet gates
-    // on ("this file is at 480/500"). A fresh sub-table per condition, read-only like the rest.
-    match lua.create_table() {
-        Ok(m) => {
-            for (name, value) in &account.measurements {
-                if m.set(name.as_str(), *value).is_err() {
-                    return ReminderState::Unevaluated {
-                        reason: "could not build the account view".to_string(),
-                    };
-                }
-            }
-            if acct.set("measurements", m).is_err() {
-                return ReminderState::Unevaluated {
-                    reason: "could not build the account view".to_string(),
-                };
-            }
-        }
-        Err(e) => {
-            return ReminderState::Unevaluated {
-                reason: format!("could not build the account view: {e}"),
-            }
-        }
-    }
-    // The run's spec items, so a draw-down condition can compose over their properties —
-    // `date.days_since(o.recorded)` for the sliding window, `date.past(o.due)` for a hard
-    // deadline, `o.props.<key>` for the author's own vocabulary. A fresh array of read-only
-    // rows per condition.
-    match specs_view(lua, &account.specs) {
-        Ok(list) => {
-            if acct.set("specs", list).is_err() {
-                return ReminderState::Unevaluated {
-                    reason: "could not build the account view".to_string(),
-                };
-            }
-        }
-        Err(e) => {
-            return ReminderState::Unevaluated {
-                reason: format!("could not build the account view: {e}"),
-            }
-        }
-    }
     match def.when.call_async::<Value>(acct).await {
         Err(e) => {
             let text = e.to_string();

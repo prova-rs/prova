@@ -79,6 +79,28 @@ pub fn load(root: &Path, set: &str) -> Baselines {
         .unwrap_or_default()
 }
 
+/// Every banked metric across every set, flattened to name → value — the reminder-condition
+/// view (`account.baselines`), where a drift policy compares against what was deliberately
+/// banked (docs/design/reminders.md#duration-drift-is-attention). Set files are read in name
+/// order; metric names are unique by convention, so collisions are theoretical (last wins).
+pub fn load_all(root: &Path) -> Vec<(String, f64)> {
+    let mut out = std::collections::BTreeMap::new();
+    if let Ok(entries) = std::fs::read_dir(dir(root)) {
+        let mut files: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+        files.sort();
+        for file in files {
+            if file.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let Some(set) = file.file_stem().and_then(|s| s.to_str()) else { continue };
+            for (name, metric) in load(root, set).metrics {
+                out.insert(name, metric.value);
+            }
+        }
+    }
+    out.into_iter().collect()
+}
+
 fn store(root: &Path, set: &str, base: &Baselines) -> std::io::Result<()> {
     std::fs::create_dir_all(dir(root))?;
     let text = serde_json::to_string_pretty(base).unwrap_or_default();

@@ -157,6 +157,14 @@ pub struct ReminderAccount {
     /// gates on — the pre-authorship (future) surface of the claim the proof adjudicates in the past
     /// (docs/design/verifiers.md). Exposed to the `when` closure as `account.measurements[name]`.
     pub measurements: Vec<(String, f64)>,
+    /// This run's wall time, in milliseconds — "the build is now taking too long" is a condition
+    /// over this, never a hard-coded engine limit
+    /// (docs/design/reminders.md#duration-drift-is-attention). Exposed as `account.duration_ms`.
+    pub duration_ms: f64,
+    /// The banked baselines (metric name → committed value, every set merged), so a drift policy
+    /// compares against what was deliberately banked — `account.baselines[name]`. Empty when the
+    /// package has banked nothing.
+    pub baselines: Vec<(String, f64)>,
     /// Every claim/backlog anchor, with its properties. Exposed to `when` as `account.specs`
     /// (an array of `{ address, kind, recorded?, due?, props }`), so draw-down policies compose
     /// over the properties: the sliding window is `date.days_since(o.recorded) > 30`, the hard

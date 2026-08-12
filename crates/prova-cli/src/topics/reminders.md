@@ -41,12 +41,12 @@ for `heed = true`.)
 
 ## Conditions over the ledger itself
 
-The condition receives this run's account — evaluated **after** the proofs, so "all proofs
-green" / "nothing owed" are one-liners: `account.passed/failed/skipped/promised`, plus
-`account.owed` (the ledger's remainder, as `prova owed` counts it). It carries **no reminder
-state**: reminders cannot observe reminders. This is what makes an ephemeral checklist's
-terminal item honest — `when = function(a) return a.owed == 0 and a.failed == 0 end`, watching
-while work remains, due exactly once, when deletion is the only thing left.
+The condition receives this run's account — evaluated **after** the proofs: `a.passed/failed/
+skipped/promised`, `a.owed`, `a.duration_ms`, this run's `a.measurements[name]`, and the banked
+`a.baselines[name]` — so "all proofs green", "nothing owed", and "now taking too long vs banked"
+are one-liners. It carries **no reminder state**: reminders cannot observe reminders — which is
+what makes an ephemeral checklist's terminal item honest (`when = function(a) return a.owed == 0
+and a.failed == 0 end`, due exactly once, when deletion is the only thing left).
 
 ## Drawing down the spec lane
 

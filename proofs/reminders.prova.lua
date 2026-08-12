@@ -31,3 +31,25 @@ prova.remind("backlog-drawdown", {
     end
   end,
 }, "promote, remove, or reschedule the overdue backlog items (`prova specs --backlog`)")
+
+--- Duration drift — "the run is now taking too long" as attention, never a hard-coded limit
+--- (docs/design/reminders.md#duration-drift-is-attention). Every run records `run.duration_ms`
+--- into the `timings` measurement set; once a machine deliberately banks it
+--- (`--update-baseline=run.duration_ms`), this watcher trips when a run grows past 1.5× that
+--- banked normal. Unbanked (this repo's committed default — durations are machine facts, not
+--- repo facts), it WATCHES quietly. Passive either way: a context that means it as a gate says
+--- `--heed=timings`.
+prova.remind("run-duration-drift", {
+  tags = { "timings" },
+  when = function(a)
+    local banked = a.baselines["run.duration_ms"]
+    if not banked then
+      return false
+    end
+    if a.duration_ms > banked * 1.5 then
+      return string.format("this run took %.0fms against a banked %.0fms (over 1.5x)",
+        a.duration_ms, banked)
+    end
+    return false
+  end,
+}, "the run outgrew its banked duration — a heavy proof in the wrong lane? Re-bank deliberately with --update-baseline=run.duration_ms if this is the new normal")

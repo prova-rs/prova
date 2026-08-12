@@ -327,5 +327,19 @@ entries answer through one door.
   the first real consumer (items deputing to sibling suites, its terminal item a reminder,
   its upstream watch a reverse item).
 
-<!-- backlog: duration-drift-is-attention recorded=2026-08-12 -->
-**Slowness is attention, not death — "now taking too long" is a reminder, never a hard-coded limit.** Durations should be measurements: a run records what its nodes and conducts took into the same account `measure.ratchet` gates on, giving ONE timing capability assertable everywhere — a proof ratchets a duration against its banked baseline; a reminder watches drift ("the ut conduct grew past 2x baseline", "the bare run is no longer seconds") and reports WATCHING/DUE, passive by default, failing only under `heed`/`--heed` — a driven goal to burn down rather than a constant that rots. The gaps today: a reminder's `account` carries passed/failed/owed/specs but NO durations or measurements, and reminder conditions cannot read baselines the way the ratchet does. Wanted: (a) node/conduct durations flow into the measurement account, (b) `account.measurements` + baseline access in reminder conditions, (c) the worked exemplar in prova's own suite. The lane `budget` (manifest.md#lane-time-budgets) stays the hard-bar form for placement-time red; liveness bounds (verifiers.md#conduct-heartbeat-not-deadline) detect death, never slowness; this item is the drifting middle.
+<!-- claim: duration-drift-is-attention recorded=2026-08-12 -->
+**Slowness is attention, not death — "now taking too long" is a reminder, never a hard-coded
+limit.** Durations are measurements: every run records `run.duration_ms` into the `timings`
+set (recorded, never enforced — banking it is the same deliberate `--update-baseline` act as
+any metric, in its own file because a duration is a machine fact), a conduct's `r.duration`
+is one `measure.record` away, and a ratchet can gate any of them. The condition surface is
+one timing capability assertable everywhere: `account.duration_ms` (this run's wall time),
+`account.measurements[name]` (what this run recorded), and `account.baselines[name]` (what
+was deliberately banked, every set merged) — so a drift policy is a one-line `when`
+("`a.duration_ms > a.baselines["run.duration_ms"] * 1.5`"), WATCHING/DUE, **passive by
+default, failing only under `heed`/`--heed`** — a driven goal to burn down rather than a
+constant that rots. The worked exemplar is prova's own `run-duration-drift` reminder
+(proofs/reminders.prova.lua). The lane `budget` (manifest.md#lane-time-budgets) stays the
+hard-bar form for placement-time red; liveness bounds
+(verifiers.md#conduct-heartbeat-not-deadline) detect death, never slowness; this is the
+drifting middle.
