@@ -644,6 +644,9 @@ pub(super) fn reminders_blocking(env: &McpEnv, req: RemindersRequest) -> Result<
         tags: req.tags.unwrap_or_default(),
         tag_excludes: req.tag_excludes.unwrap_or_default(),
         nodes: req.nodes.unwrap_or_default(),
+        // Reminders cover nothing, so a non-empty covering narrows this lane to nothing — the
+        // same answer the CLI gives; the axis is spoken so the grammar cannot fork.
+        covering: req.covering.unwrap_or_default(),
         lane_tags: Vec::new(),
         lane_tag_excludes: Vec::new(),
     };

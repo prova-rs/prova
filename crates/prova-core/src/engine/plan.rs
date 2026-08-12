@@ -230,7 +230,7 @@ pub(super) fn apply_selection(plan: Plan, sel: &Selection) -> (Plan, usize, Vec<
     }
     let mut keep = vec![false; plan.leaves.len()];
     for (i, leaf) in plan.leaves.iter().enumerate() {
-        if sel.selects(&leaf.unit.leaf_paths(), &leaf.tags) {
+        if sel.selects(&leaf.unit.leaf_paths(), &leaf.tags, &leaf.covers) {
             keep[i] = true;
         }
     }

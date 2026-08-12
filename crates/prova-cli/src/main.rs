@@ -305,6 +305,9 @@ options:
       --tags a,b            select nodes tagged with any listed tag (repeatable; !tag excludes)
       --node PATH           select an exact node path (repeatable) — re-run what a report named
                             (naming a switched test implies its switch)
+      --covering CLAIM      select the proofs whose `covers` discharge CLAIM (repeatable) — a full
+                            address (docs/x.md#id), a bare id, or a whole doc path: the slice's
+                            acceptance gate as a selector, never prose
   -s, --switch a,b          throw opt-in switches: run tests marked `switch = ...`, which are
                             otherwise held back (repeatable; unions with [run]/profile `switches`)
       --last-failed         select only the nodes that failed in the previous run

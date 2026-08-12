@@ -398,6 +398,10 @@ struct SelectionArgs {
     tag_excludes: Option<Vec<String>>,
     /// Select exact node paths (CLI `--node PATH`) — re-run precisely what a report named.
     nodes: Option<Vec<String>>,
+    /// Select the proofs whose `covers` discharge these claims (CLI `--covering`): a full address
+    /// (`docs/x.md#id`), a bare id, or a whole doc path — the slice's acceptance gate as a
+    /// selector. See learn { topic = "claims" }.
+    covering: Option<Vec<String>>,
     /// Also select the nodes that failed in the previous run (CLI `--last-failed`).
     last_failed: Option<bool>,
     /// Throw opt-in switches for this run (CLI `-s a,b`): authorize tests carrying
@@ -565,6 +569,9 @@ struct RemindersRequest {
     tag_excludes: Option<Vec<String>>,
     /// Select by exact reminder name (CLI `--node NAME`) — a reminder's address is its name.
     nodes: Option<Vec<String>>,
+    /// The shared grammar's claim axis (CLI `--covering`). A reminder covers nothing, so a
+    /// non-empty value narrows this lane to nothing — spoken for parity, answered honestly.
+    covering: Option<Vec<String>>,
     /// A directory or manifest path: report THAT package's reminders. Resolves fresh.
     package: Option<String>,
 }
@@ -601,6 +608,7 @@ fn to_selection(args: &SelectionArgs) -> Selection {
         tags: args.tags.clone().unwrap_or_default(),
         tag_excludes: args.tag_excludes.clone().unwrap_or_default(),
         nodes: args.nodes.clone().unwrap_or_default(),
+        covering: args.covering.clone().unwrap_or_default(),
         // Lanes are a manifest/CLI concept; the MCP run tool speaks the raw axes.
         lane_tags: Vec::new(),
         lane_tag_excludes: Vec::new(),
@@ -1192,6 +1200,7 @@ mod tests {
             tags: _,
             tag_excludes: _,
             nodes: _,
+            covering: _,
             lane_tags: _,
             lane_tag_excludes: _,
         } = Selection::default();
@@ -1201,6 +1210,7 @@ mod tests {
             "tags",
             "tag_excludes",
             "nodes",
+            "covering",
             "lane_tags",
             "lane_tag_excludes",
         ];
@@ -1211,6 +1221,7 @@ mod tests {
                 "tags" => sel.tags.clone(),
                 "tag_excludes" => sel.tag_excludes.clone(),
                 "nodes" => sel.nodes.clone(),
+                "covering" => sel.covering.clone(),
                 "lane_tags" => sel.lane_tags.clone(),
                 "lane_tag_excludes" => sel.lane_tag_excludes.clone(),
                 other => panic!("axis_of misses `{other}` — extend it alongside AXES"),
@@ -1243,7 +1254,7 @@ mod tests {
         // selection fields are exactly the spoken axes, and everything else is a classified
         // modifier. A new or renamed field lands in neither set and fails the exact match.
         const MCP_SELECTION_FIELDS: &[&str] =
-            &["keywords", "keyword_excludes", "tags", "tag_excludes", "nodes"];
+            &["keywords", "keyword_excludes", "tags", "tag_excludes", "nodes", "covering"];
         const MCP_MODIFIERS: &[&str] =
             &["last_failed", "promises", "falsify", "profile", "package", "switches"];
         for field in MCP_SELECTION_FIELDS {

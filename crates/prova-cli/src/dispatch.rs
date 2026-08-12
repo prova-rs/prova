@@ -146,6 +146,11 @@ impl Cli {
         // node a report named.
         } else if let Some(v) = value_flag(arg, args, &["--node"]) {
             self.selection.nodes.push(v);
+        // `--covering <claim>` (repeatable): select the proofs whose `covers` discharge the named
+        // claim — a full address, a bare id, or a whole doc path ("run the acceptance for THIS
+        // slice", docs/design/agent-ergonomics.md#claim-scoped-selection).
+        } else if let Some(v) = value_flag(arg, args, &["--covering"]) {
+            self.selection.covering.push(v);
         // `-s class` / `--switch a,b` (repeatable): throw opt-in switches — authorize the named
         // classes for this run (docs/design/manifest.md#switches-not-env-capabilities). Unions
         // with `[run]`/profile `switches`; a throw authorizes, it never widens a profile's scope.

@@ -416,6 +416,7 @@ function prova.remind(name, opts, message) end
 ---@field tags string[]
 ---@field tag_excludes string[]
 ---@field nodes string[]
+---@field covering string[]  # claim addresses whose covering proofs were selected (`--covering`)
 ---@field lane_tags string[]
 ---@field lane_tag_excludes string[]
 ---@field is_empty boolean   # no axis set — an unselected (full) run

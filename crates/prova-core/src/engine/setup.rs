@@ -453,6 +453,7 @@ fn install_run_facts(lua: &Lua, prova: &Table, config: &RunConfig) -> mlua::Resu
         t.set("tags", list(&sel.tags)?)?;
         t.set("tag_excludes", list(&sel.tag_excludes)?)?;
         t.set("nodes", list(&sel.nodes)?)?;
+        t.set("covering", list(&sel.covering)?)?;
         t.set("lane_tags", list(&sel.lane_tags)?)?;
         t.set("lane_tag_excludes", list(&sel.lane_tag_excludes)?)?;
         t.set("is_empty", sel.is_empty())?;

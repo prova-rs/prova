@@ -369,20 +369,20 @@ first-class way to name one.
 
 ## 10. No claim-scoped selection — "run the acceptance for THIS slice" needs a selector
 
-<!-- backlog: claim-scoped-selection recorded=2026-08-12 -->
-**A Coder's definition of done should be a selection string, not prose.** The orchestration
-loop wants to say `prova run --covering docs/specs/PRESENCE_KERNEL.md` (or
-`--covering <claim-id>`, or `--promises-of <proof-file>`) and get exactly the proofs whose
-`covers` bind to that claim set — plus their deputies' crate-scoped conducts and nothing else.
-Today the workarounds are `--node "<full test title>"` (brittle prose match, one node at a
-time) or running proof files by path (works, but unnamed in the ledger's own terms — the
-brief can't say "your acceptance is whatever covers this spec"). With the selector, a spawn
-brief names its gate mechanically, the orchestrator executes it after every Coder pass whether
-or not the model remembered any verify step, and the expensive full sweep retreats to the
-sprint boundary where it belongs. Evidence from the presence slice: inner gate ≈ 5s (kernel
-crate) + one two-crate conduct; `run all` 434s — 10-100× too heavy per Coder iteration, and
-its workspace-wide ut conduct also surfaced an unrelated flaky test as a false red against
-the slice.
+<!-- claim: claim-scoped-selection recorded=2026-08-12 -->
+**A definition of done is a selection string: `--covering <claim>` selects exactly the proofs
+whose `covers` discharge it.** The axis speaks three grains — a full address
+(`docs/x.md#id`), a bare id, and a whole doc path (every claim in that spec) — repeatable,
+composing with every other axis and with `--list`, spoken identically on the CLI and the MCP
+tools (the selection-parity gates hold the surfaces equal), and visible to deputies as
+`prova.selection.covering` so a slice-aware conduct can narrow further. A spawn brief
+therefore names its gate mechanically — `prova --covering docs/specs/PRESENCE_KERNEL.md` —
+the orchestrator executes it after every Coder pass whether or not the model remembered a
+verify step, dependencies of the selected proofs are pulled in as with any selection, and
+the run records a NARROWED deputed account so partial evidence never wears full's face. The
+expensive full sweep retreats to the sprint boundary where it belongs. (Field evidence, the
+presence slice: inner gate ≈ 5s vs `run all` 434s — 10-100× too heavy per Coder iteration,
+with the workspace-wide conduct surfacing unrelated flakes as false reds against the slice.)
 
 ## 11. Count-threshold structural assertions rot within hours (observation, not an ask)
 

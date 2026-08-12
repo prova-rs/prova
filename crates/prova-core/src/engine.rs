@@ -66,6 +66,11 @@ pub struct Selection {
     pub tags: Vec<String>,
     pub tag_excludes: Vec<String>,
     pub nodes: Vec<String>,
+    /// Claim addresses whose covering proofs to select (`--covering`, repeatable): a full
+    /// address (`docs/x.md#id`), a bare id, or a whole doc path — the three grains a brief names
+    /// a gate at (docs/design/agent-ergonomics.md#claim-scoped-selection). A leaf is selected
+    /// when any of its `covers` bindings (pin-stripped) discharges any listed target.
+    pub covering: Vec<String>,
     /// The lane's baked tag selection (`[profiles.<name>] tags`, split on `!` like `--tags`).
     /// An INDEPENDENT gate ANDed with the CLI axes above: the lane defines the set, the CLI
     /// narrows within it — never widens past it.
@@ -80,6 +85,7 @@ impl Selection {
             && self.tags.is_empty()
             && self.tag_excludes.is_empty()
             && self.nodes.is_empty()
+            && self.covering.is_empty()
             && self.lane_tags.is_empty()
             && self.lane_tag_excludes.is_empty()
     }
@@ -95,11 +101,25 @@ impl Selection {
         if let Some(f) = file {
             paths.push(f);
         }
-        self.selects(&paths, tags)
+        // A reminder covers nothing, so a `--covering` selection never matches one — the axis
+        // addresses the proof lane by construction.
+        self.selects(&paths, tags, &[])
     }
 
-    /// Does a leaf with these paths and effective tags survive this selection?
-    fn selects(&self, paths: &[&str], tags: &[String]) -> bool {
+    /// Does a `covers` binding (pin-stripped) discharge one of the `--covering` targets? A
+    /// target matches as the full address, the bare `#id`, or the whole doc path.
+    fn covering_matches(target: &str, covers: &[String]) -> bool {
+        covers.iter().any(|c| {
+            let (addr, _pin) = crate::ledger::split_pin(c);
+            addr == target
+                || addr
+                    .split_once('#')
+                    .is_some_and(|(doc, id)| id == target || doc == target)
+        })
+    }
+
+    /// Does a leaf with these paths, effective tags, and `covers` bindings survive this selection?
+    fn selects(&self, paths: &[&str], tags: &[String], covers: &[String]) -> bool {
         // The lane gate first, independent of the CLI axes: a leaf outside the lane's tag set is
         // out regardless of what -k/--node/--tags would say — the CLI narrows, never escapes.
         if !self.lane_tags.is_empty() && !self.lane_tags.iter().any(|t| tags.contains(t)) {
@@ -110,8 +130,10 @@ impl Selection {
         }
         let lower: Vec<String> = paths.iter().map(|p| p.to_lowercase()).collect();
         // Includes: with no include criteria at all, everything is a candidate.
-        let has_includes =
-            !self.keywords.is_empty() || !self.nodes.is_empty() || !self.tags.is_empty();
+        let has_includes = !self.keywords.is_empty()
+            || !self.nodes.is_empty()
+            || !self.tags.is_empty()
+            || !self.covering.is_empty();
         let mut included = !has_includes;
         if !included && !self.keywords.is_empty() {
             included = self
@@ -124,6 +146,9 @@ impl Selection {
         }
         if !included && !self.tags.is_empty() {
             included = self.tags.iter().any(|t| tags.contains(t));
+        }
+        if !included && !self.covering.is_empty() {
+            included = self.covering.iter().any(|t| Self::covering_matches(t, covers));
         }
         // When multiple include axes are given, any-axis match includes (they compose as OR) —
         // excludes below are what narrow.
@@ -1307,29 +1332,29 @@ mod tests {
     #[test]
     fn selection_selects_lanes_gate_and_axes_compose() {
         let empty = Selection::default();
-        assert!(empty.selects(&["a › b"], &[]));
+        assert!(empty.selects(&["a › b"], &[], &[]));
 
         let mut sel = Selection::default();
         sel.keywords.push("orders".into());
-        assert!(sel.selects(&["Orders › creates"], &[]), "keywords are case-insensitive substrings");
-        assert!(!sel.selects(&["billing › charges"], &[]));
+        assert!(sel.selects(&["Orders › creates"], &[], &[]), "keywords are case-insensitive substrings");
+        assert!(!sel.selects(&["billing › charges"], &[], &[]));
 
         sel.tags.push("slow".into());
-        assert!(sel.selects(&["billing › charges"], &["slow".into()]), "include axes compose as OR");
+        assert!(sel.selects(&["billing › charges"], &["slow".into()], &[]), "include axes compose as OR");
 
         sel.keyword_excludes.push("charges".into());
-        assert!(!sel.selects(&["billing › charges"], &["slow".into()]), "excludes narrow after includes");
+        assert!(!sel.selects(&["billing › charges"], &["slow".into()], &[]), "excludes narrow after includes");
 
         let mut lane = Selection::default();
         lane.lane_tags.push("ut".into());
-        assert!(!lane.selects(&["anything"], &[]), "outside the lane, nothing else matters");
-        assert!(lane.selects(&["anything"], &["ut".into()]));
+        assert!(!lane.selects(&["anything"], &[], &[]), "outside the lane, nothing else matters");
+        assert!(lane.selects(&["anything"], &["ut".into()], &[]));
         lane.keywords.push("orders".into());
-        assert!(!lane.selects(&["billing"], &["ut".into()]), "the CLI narrows WITHIN the lane");
+        assert!(!lane.selects(&["billing"], &["ut".into()], &[]), "the CLI narrows WITHIN the lane");
 
         let mut lane_ex = Selection::default();
         lane_ex.lane_tag_excludes.push("soak".into());
-        assert!(!lane_ex.selects(&["x"], &["soak".into()]));
-        assert!(lane_ex.selects(&["x"], &[]));
+        assert!(!lane_ex.selects(&["x"], &["soak".into()], &[]));
+        assert!(lane_ex.selects(&["x"], &[], &[]));
     }
 }
