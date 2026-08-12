@@ -222,28 +222,18 @@ guarantee. A suite-scoped named deputy — declared once, provisioned once per r
 from any proof file, with ordering semantics — would let cross-file readers bind to one
 conduct's account.
 
-<!-- backlog: exclusive-conduct-resources recorded=2026-08-11 -->
-**The resource scheduler exists (`prova.writes(x)` / `serial = true`) but the learn/skill
-surface never teaches it — an agent that hit exclusive-resource contention could not discover
-the cure.** A `run all` sweep ran three cargo-nextest conducts concurrently; all starved on
-the target lock until their timeouts fired. The fix was already in the product — declare
-`resources = { prova.writes("cargo") }` on the conducting units and the scheduler serializes
-only the holders — but `prova learn` has zero topics mentioning resources, serial, or
-concurrency (`architecture.md`/`api.md` carry it; the progressive-disclosure surface does
-not), so the operator diagnosed via `ps`, worked around with a global `--jobs 1`, and filed
-this item believing the feature missing. Wanted: a `learn` topic (scheduling/resources) +
-a skill section, and a pointer from the `--jobs` help text. Composes with
-conduct-heartbeat-not-deadline: liveness supervision would have named "blocked on a lock"
-immediately.
-
-Second half (User, 2026-08-11): the scheduler is invocation-scoped but the resource is
-machine-scoped — two prova processes each internally serialized still collide on cargo
-(observed: an orphaned run's nextest held the target lock against a fresh invocation). A
-declared resource should materialize as an OS advisory lock: `writes(x)` takes an exclusive
-flock on a well-known path keyed by token + scope root (default per `prova.root`, since
-cargo contends per target dir; opt-in global tokens), `reads(x)` shared. The blocked side
-narrates the holder ("waiting on `cargo`: held by prova pid 1234, 40s") so cross-process
-contention is a report, not a `ps` investigation.
+<!-- claim: exclusive-conduct-resources recorded=2026-08-11 -->
+**The contention cure is discoverable from every door the stuck operator tries.** A capability
+an agent cannot discover does not exist: when concurrent conducts starve on one tool (three
+cargo-nextests on one target lock), the cure — `locks = { prova.writes("cargo") }`, the
+scheduler serializes only the holders — must be named where that operator actually looks. The
+sightlines: the `--jobs` help (the dial they reach for instead) points at locks; the `learn`
+catalog carries a `locks` topic teaching the grammar (`writes`/`reads`/`port`), `serial`'s
+run-scoped distinction, and the cross-instance file lock; the skill's authoring reference
+names the same vocabulary. The mechanics themselves are architecture.md's claims
+(`#locks-cross-instance`, `#lock-wrapper-verb`); this claim owns the teaching surface.
+(Field report 2026-08-11: the operator diagnosed via `ps`, worked around with a global
+`--jobs 1`, and filed this believing the feature missing — it had shipped, untaught.)
 
 <!-- backlog: selection-pushdown-into-conducts -->
 **Selection should push down into deputies: one interface for every test granularity, with

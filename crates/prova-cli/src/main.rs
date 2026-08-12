@@ -297,7 +297,9 @@ options:
                             matching a reminder name/tag. Ad-hoc form of a profile's `heed`
       --junit PATH          also write a JUnit XML report to PATH (for CI; composes with --format)
       --gha auto|on|off     GitHub Actions annotations + step summary (default auto: when in GHA)
-  -j, --jobs N              run up to N units concurrently
+  -j, --jobs N              run up to N units concurrently — tests contending on one tool
+                            (cargo, a port) declare locks instead of dialing this to 1: the
+                            scheduler serializes only the holders (`prova learn locks`)
   -P, --package name=source add an ad-hoc package (repeatable; layers over the manifest)
   -k PATTERN                select nodes whose path contains PATTERN (repeatable; !PAT excludes)
       --tags a,b            select nodes tagged with any listed tag (repeatable; !tag excludes)
