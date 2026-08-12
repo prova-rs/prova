@@ -18,10 +18,21 @@ local M = {}
 M.nextest = prova.fixture("nextest-junit", Scope.Run, function()
   local artifact = prova.root .. "/target/nextest/prova/junit.xml"
   fs.remove_all(artifact)
-  shell.run(
-    { "cargo", "nextest", "run", "--workspace", "--profile", "prova" },
-    { cwd = prova.root, merge_stderr = true, idle_timeout = "600s", timeout = "1800s" }
-  )
+  local cmd = { "cargo", "nextest", "run", "--workspace", "--profile", "prova" }
+  -- Pushdown (verifiers.md#selection-pushdown-into-conducts): the run's `-k` keywords narrow
+  -- the conduct to matching case names — one selection vocabulary across granularities, on the
+  -- convention that the keyword appears in both the reader proof's name and the deputed case's.
+  -- Only clean identifier-shaped keywords ride (anything else could bend nextest's expression
+  -- grammar — conducting FULL is the safe over-approximation); tags and nodes are prova-side
+  -- vocabularies nextest cannot speak, so they never narrow. The adopting run records itself
+  -- as a NARROWED account, so attest never vouches for what the narrowing excluded.
+  for _, k in ipairs(prova.selection.keywords) do
+    if k:match("^[%w_:-]+$") then
+      cmd[#cmd + 1] = "-E"
+      cmd[#cmd + 1] = "test(" .. k .. ")"
+    end
+  end
+  shell.run(cmd, { cwd = prova.root, merge_stderr = true, idle_timeout = "600s", timeout = "1800s" })
   return artifact
 end)
 

@@ -895,6 +895,7 @@ fn store_run_record(
             deselected: summary.deselected_paths.clone(),
             reminders: reminders.clone(),
             deputed: record::deputed_rows(&drain(&accounts.deputed)),
+            deputed_narrowed: !config.selection.is_empty(),
             measurements: record::measurement_rows(measurements),
             attached: accounts
                 .attached

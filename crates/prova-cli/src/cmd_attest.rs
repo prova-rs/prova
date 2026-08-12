@@ -298,10 +298,19 @@ fn attest_deputed(home: &home::Home, address: &str, rest: &str) -> ExitCode {
             ExitCode::FAILURE
         }
         None => {
-            println!(
-                "  ↳ NOT attested — no ingested case matches ({} deputed rows in the record)",
-                recorded.deputed.len()
-            );
+            if recorded.deputed_narrowed {
+                println!(
+                    "  ↳ NOT attested — no ingested case matches ({} deputed rows, and the \
+                     recorded run was NARROWED: the case may simply not have been conducted — \
+                     run unnarrowed to attest the full account)",
+                    recorded.deputed.len()
+                );
+            } else {
+                println!(
+                    "  ↳ NOT attested — no ingested case matches ({} deputed rows in the record)",
+                    recorded.deputed.len()
+                );
+            }
             ExitCode::FAILURE
         }
     }
@@ -609,10 +618,12 @@ fn print_evidence_console(home: &home::Home, account: prova_core::ledger::Accoun
             .filter(|d| d.outcome == "failed" || d.outcome == "error")
             .count();
         println!();
+        let narrowed = record::load(home).map(|r| r.deputed_narrowed).unwrap_or(false);
         println!(
-            "  DEPUTED   {:>4}   cases adopted from other verifiers ({} red)",
+            "  DEPUTED   {:>4}   cases adopted from other verifiers ({} red){}",
             deputed.len(),
-            red
+            red,
+            if narrowed { " — NARROWED run: a partial account" } else { "" }
         );
     }
 
@@ -843,6 +854,7 @@ end)
                 measurements: vec![],
                 attached: vec![],
                 reminders: vec![],
+                deputed_narrowed: false,
                 deputed: vec![record::DeputedRow {
                     verifier: "junit".into(),
                     suite: "SuiteA".into(),

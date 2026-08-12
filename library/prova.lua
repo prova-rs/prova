@@ -307,6 +307,7 @@ function GroupBuilder:describe(label, body) end
 ---@field home string   # where `prova.toml` lives — the root, or its `prova/` / `.prova/` child. Anchor manifest-relative paths here. Nil with no manifest.
 ---@field ports string  # host port mode: "auto" | "fixed"
 ---@field bin string    # the prova binary running this suite. Drive prova recursively through it — `shell.run(prova.bin .. " --version")` — never a bare `prova`, which resolves through PATH and can be a different build than the one running you.
+---@field selection prova.Selection  # the run's resolved selection axes, as data — a deputy's factory translates these to its framework's own filter (a deputy that ignores them conducts in full); every axis present, possibly empty.
 --- Canonical access to every bundled module — always available as `prova.<name>` whether or not the
 --- name is injected as an unqualified global (`[globals] inject`). Use these in shared library code
 --- that cannot assume injection, or wherever the unqualified name is not in scope.
@@ -405,6 +406,19 @@ function prova.topology(name, scope, factory) end
 ---@param opts prova.RemindOpts
 ---@param message string   # the instruction — what to do when this fires
 function prova.remind(name, opts, message) end
+
+--- The run's resolved selection (docs/design/verifiers.md#selection-pushdown-into-conducts):
+--- what `-k`/`--tags`/`--node` and the lane's baked tags resolved to, exposed so a deputy can
+--- narrow its conduct in its framework's own grammar. Plain data; mutating it changes nothing.
+---@class prova.Selection
+---@field keywords string[]
+---@field keyword_excludes string[]
+---@field tags string[]
+---@field tag_excludes string[]
+---@field nodes string[]
+---@field lane_tags string[]
+---@field lane_tag_excludes string[]
+---@field is_empty boolean   # no axis set — an unselected (full) run
 
 --- An opaque fixture-scope value — a member of the `Scope` global.
 ---@class prova.ScopeRef

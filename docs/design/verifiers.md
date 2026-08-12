@@ -247,20 +247,23 @@ names the same vocabulary. The mechanics themselves are architecture.md's claims
 (Field report 2026-08-11: the operator diagnosed via `ps`, worked around with a global
 `--jobs 1`, and filed this believing the feature missing — it had shipped, untaught.)
 
-<!-- backlog: selection-pushdown-into-conducts -->
-**Selection should push down into deputies: one interface for every test granularity, with
-the framework's rules riding along.** Today selection is proof-granular — the ut deputy
-conducts its complete account even when the developer needs one case, so "run exactly this
-test now" drops to raw `cargo nextest -E` incantations outside prova, where resource locks,
-profiles, and the account do not follow (operator briefs end up teaching two vocabularies;
-cross-cutting rules like "one cargo at a time" get re-enforced by convention at every
-bypass). Wanted: a deputy that receives the run's selection and narrows its conduct to the
-matching adopted cases — `prova -k seed_memory` compiles to a filtered conduct under the
-same lock, profile, and junit adoption. The development ladder then lives in one tool:
-one case → module → crate → integration → suite, each stage honoring the same
-framework-enforced rules *without the operator thinking about them*. Composes with
-resumable-runs-incremental-verdicts (automatic narrowing from the diff) — this item is the
-manual scalpel, that one the automatic planner. (Substrate field report, 2026-08-11.)
+<!-- claim: selection-pushdown-into-conducts -->
+**Selection pushes down into deputies: `prova.selection` is the run's resolved axes as plain
+data, the deputy translates, and a narrowed account says so.** The engine's whole
+contribution is one read-only fact — every axis of the resolved selection (keywords,
+excludes, tags, nodes, lane tags, `is_empty`), present in every state — and the *deputy* owns
+the translation to its framework's grammar, in the package where that knowledge lives: the
+workspace's nextest deputy maps `-k` keywords to `-E test(…)` filters, so
+`prova -k seed_memory -s ut` compiles to one filtered conduct under the same cargo lock,
+profile, and junit adoption; a deputy that ignores the table conducts in full, and axes a
+framework cannot speak never narrow. Honesty is the engine's half: a run recorded under a
+non-empty selection marks its deputed account NARROWED — `evidence` says so on the DEPUTED
+line, and `attest junit:…` of an absent case names the narrowing instead of implying the
+case never existed. The development ladder lives in one tool — case → module → crate → suite
+— each stage honoring the same house rules without the operator thinking about them.
+Composes with resumable-runs-incremental-verdicts (this is the manual scalpel, that the
+automatic planner) and agent-ergonomics.md#claim-scoped-selection (the claim-addressed
+spelling of the same narrowing). (Substrate field report, 2026-08-11.)
 
 <!-- claim: timeout-reaps-the-conduct recorded=2026-08-12 -->
 **A timed-out conduct is dead, not merely reported dead.** Every bound `shell.run` enforces — the wall-clock `timeout`, `idle_timeout`, and their composition — kills the child process when it fires. A bound that only abandons the wait leaks the conduct: the run reports red while the child keeps running, holding exactly the locks the report just claimed were released (the observed shape: an orphaned nextest holding the cargo target lock against the next invocation). Direct child only; process-group reaping is the successor item.

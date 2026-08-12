@@ -432,6 +432,33 @@ fn install_run_facts(lua: &Lua, prova: &Table, config: &RunConfig) -> mlua::Resu
     // release it was cut from both claimed 0.11.0 and behaved differently.
     prova.set("version", crate::VERSION)?;
 
+    // `prova.selection` — the run's resolved selection, as plain data
+    // (docs/design/verifiers.md#selection-pushdown-into-conducts). The engine's whole
+    // contribution to pushdown: a deputy's factory reads these axes and translates them to its
+    // framework's own filter grammar (the knowledge belongs in the deputy's package, not in a
+    // callback protocol); a deputy that ignores the table conducts in full. Every axis is
+    // present (possibly empty), so consumers index without nil-guards.
+    {
+        let sel = &config.selection;
+        let t = lua.create_table()?;
+        let list = |v: &[String]| -> mlua::Result<Table> {
+            let out = lua.create_table()?;
+            for (i, s) in v.iter().enumerate() {
+                out.set(i + 1, s.as_str())?;
+            }
+            Ok(out)
+        };
+        t.set("keywords", list(&sel.keywords)?)?;
+        t.set("keyword_excludes", list(&sel.keyword_excludes)?)?;
+        t.set("tags", list(&sel.tags)?)?;
+        t.set("tag_excludes", list(&sel.tag_excludes)?)?;
+        t.set("nodes", list(&sel.nodes)?)?;
+        t.set("lane_tags", list(&sel.lane_tags)?)?;
+        t.set("lane_tag_excludes", list(&sel.lane_tag_excludes)?)?;
+        t.set("is_empty", sel.is_empty())?;
+        prova.set("selection", t)?;
+    }
+
     // `prova.help([filter])` — the API surface, discoverable from inside the environment being
     // driven. Returns DATA (a list of `{name, signature, summary}`), not printed prose, so an agent
     // can filter it and a proof can assert on it. Parsed from the same LuaCATS stubs that ship to

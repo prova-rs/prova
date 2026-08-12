@@ -207,6 +207,7 @@ mod tests {
             attached: vec![],
             reminders: vec![],
             deputed: vec![],
+            deputed_narrowed: false,
         }
     }
 

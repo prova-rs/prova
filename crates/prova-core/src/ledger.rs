@@ -144,6 +144,13 @@ pub struct Record {
     /// The deputed account: every case a verifier facet ingested this run, with provenance.
     #[serde(default)]
     pub deputed: Vec<DeputedRow>,
+    /// True when the run that adopted these cases was SELECTED (`-k`/`--node`/`--tags`): a
+    /// narrowed run may have narrowed its deputies' conducts too
+    /// (docs/design/verifiers.md#selection-pushdown-into-conducts), so this deputed account is
+    /// partial — honest for what it lists, silent about what the narrowing excluded. Attest and
+    /// evidence surface it; the unnarrowed CI run records false here.
+    #[serde(default)]
+    pub deputed_narrowed: bool,
 }
 
 pub mod claims;
@@ -326,6 +333,7 @@ mod tests {
             deselected: desel.iter().map(|d| d.to_string()).collect(),
             reminders: Vec::new(),
             deputed: Vec::new(),
+            deputed_narrowed: false,
             measurements: Vec::new(),
             attached: Vec::new(),
         }
