@@ -147,6 +147,7 @@ pub fn eval_snippet(code: &str, config: &RunConfig) -> mlua::Result<serde_json::
         update_snapshots: false,
         snapshot_registry: None,
         falsify: false,
+        conducts: config.conducts.clone(),
     });
 
     let rt = new_runtime()?;

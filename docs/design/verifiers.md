@@ -214,14 +214,20 @@ The wall-clock `timeout` remains the optional outer bound; the two compose. (Fie
 2026-08-11: a cold two-crate nextest conduct was killed at `timeout=600s` while making steady
 progress — the author's guess about build time became a false failure.)
 
-<!-- backlog: suite-scoped-shared-deputies recorded=2026-08-11 -->
-**"Conduct once, read many" stops at file scope; suites need named shared conducts.** The ut
-lane conducts the whole workspace and adopts every case; a kernel-integration proof file in
-another directory needs those same cases and today must either re-conduct its crates (double
-cargo, double wall-clock in `run all`) or read the ut lane's junit artifact with no ordering
-guarantee. A suite-scoped named deputy — declared once, provisioned once per run, adoptable
-from any proof file, with ordering semantics — would let cross-file readers bind to one
-conduct's account.
+<!-- claim: suite-scoped-shared-deputies recorded=2026-08-11 -->
+**`Scope.Run` — one conduct, every suite: the fifth scope crosses the Lua-state boundary as
+data.** A run-scoped fixture is declared once (a `require`d package is the recipe-sharing
+shape), conducted at most once per run whatever the outcome, and readable from any suite on
+any worker: the run-wide store holds one slot per fixture name, whichever consumer asks first
+conducts, and everyone else waits for the settled slot — lazy single-flight IS the ordering,
+so a deselected reader never triggers the conduct at all. Values are plain data
+(JSON-serializable; each state gets its own copy — a non-serializable return refuses naming
+the constraint), factories have no `ctx:defer` (artifacts live in the tree), and failure
+poisons the run instance with the one recorded error, replayed as a named memoized verdict
+(the run-instance form of lifecycle.md#fixture-failure-memoization). Design and decisions:
+docs/plans/shared-deputies.md. (Field report 2026-08-11: a kernel-integration proof needing
+the ut lane's cases had to re-conduct its crates or read the junit artifact by path, with no
+ordering guarantee.)
 
 <!-- claim: exclusive-conduct-resources recorded=2026-08-11 -->
 **The contention cure is discoverable from every door the stuck operator tries.** A capability

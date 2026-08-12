@@ -342,8 +342,10 @@ prova = {}
 function prova.help(filter) end
 
 ---Declare a fixture: a named factory producing a value, with scoped teardown and dependencies.
----`scope` is a `Scope` value (`Scope.Test`/`Scope.Flow`/`Scope.File`/`Scope.Suite`); omit it for
----`Scope.Test`. Returns a typed handle; pass it to `ctx:use(handle)` so the value type flows through.
+---`scope` is a `Scope` value (`Scope.Test`/`Scope.Flow`/`Scope.File`/`Scope.Suite`/`Scope.Run`);
+---omit it for `Scope.Test`. Returns a typed handle; pass it to `ctx:use(handle)` so the value type
+---flows through. `Scope.Run` values must be plain data (JSON-serializable): the one conduct crosses
+---Lua states, so each reader gets its own copy and `ctx:defer` is unavailable in the factory.
 ---@generic T
 ---@overload fun(name: string, factory: fun(ctx: prova.Context): T): prova.Fixture<T>
 ---@param name string
@@ -406,18 +408,21 @@ function prova.remind(name, opts, message) end
 
 --- An opaque fixture-scope value — a member of the `Scope` global.
 ---@class prova.ScopeRef
----@field scope string   # the scope name ("test"|"flow"|"file"|"suite")
+---@field scope string   # the scope name ("test"|"flow"|"file"|"suite"|"run")
 
 --- Typed fixture-scope constants (the `scope` argument to `prova.fixture`):
 ---  * `Scope.Test`  — rebuilt fresh for each test (the default).
 ---  * `Scope.Flow`  — built once per `prova.flow`, shared across its steps.
 ---  * `Scope.File`  — built once per file, shared across the file's tests.
 ---  * `Scope.Suite` — built once per suite (a group of files sharing one state; see `suite.lua`).
+---  * `Scope.Run`   — conducted once per RUN, shared across every suite and worker; the value is
+---    plain data (each reader gets a copy) — the shared-deputy scope (`prova learn fixtures`).
 ---@class prova.Scope
 ---@field Test prova.ScopeRef
 ---@field Flow prova.ScopeRef
 ---@field File prova.ScopeRef
 ---@field Suite prova.ScopeRef
+---@field Run prova.ScopeRef
 Scope = {}
 
 ---@class prova.SuiteConfig

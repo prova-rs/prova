@@ -25,6 +25,7 @@ end)
 | `Scope.Flow` | flow | ordered steps share one provisioned thing |
 | `Scope.File` | file | the file's tests share an expensive resource |
 | `Scope.Suite` | suite (files sharing one Lua state) | cross-file sharing — see `[suites]` / a dir's `suite.lua` |
+| `Scope.Run` | the whole run, across every suite and worker | a shared deputy conduct (nextest, a build) every suite reads. Value must be plain DATA (it crosses Lua states — each reader gets a copy); no `ctx:defer` |
 
 Lazy: never built if nothing `use`s it (deselected tests provision nothing). Cached: one build
 per scope, everyone gets the same instance. Teardown at scope end, LIFO, guaranteed — even on

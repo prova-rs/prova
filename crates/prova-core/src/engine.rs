@@ -247,6 +247,9 @@ pub struct RunConfig {
     /// resolved in one process don't share a vocabulary. Empty when there is no companion; built-in
     /// capabilities (`docker`, `unix`, tools on PATH) work regardless.
     capabilities: Capabilities,
+    /// The run-wide `Scope.Run` conduct store (docs/plans/shared-deputies.md) — minted once per
+    /// config, cloned into every suite's `RunState`, so one conduct feeds every worker.
+    pub(crate) conducts: ConductRegistry,
     /// `--due` (driver mode): open promises report as real failures — the implementing
     /// agent's loop sees full red. The graduate-on-pass inversion applies in both modes.
     pub due: bool,
@@ -303,6 +306,22 @@ pub struct AttachedTopology {
 /// the deputed/measurement registries.
 pub type AttachedRegistry = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
 
+/// One `Scope.Run` fixture's run-wide slot (docs/plans/shared-deputies.md): claimed before the
+/// factory runs, settled to its outcome after. `Conducting` is what a second worker blocks on;
+/// both settled states memoize for the rest of the run — failure exactly as success
+/// (docs/design/lifecycle.md#fixture-failure-memoization), now across suites.
+pub(crate) enum ConductSlot {
+    Conducting,
+    Ready(serde_json::Value),
+    Poisoned(String),
+}
+
+/// The run-wide conduct store, keyed by fixture NAME (the run-level contract — Lua states have
+/// their own ids). Shared across workers exactly as the snapshot/deputed/measurement registries
+/// are: one `Arc` minted per `RunConfig`, cloned into every suite's `RunState`.
+pub(crate) type ConductRegistry =
+    std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, ConductSlot>>>;
+
 impl Default for RunConfig {
     fn default() -> Self {
         RunConfig {
@@ -326,6 +345,7 @@ impl Default for RunConfig {
             proofs_only: false,
             falsify: false,
             switches: std::collections::BTreeSet::new(),
+            conducts: ConductRegistry::default(),
             progress: std::sync::Arc::new(crate::progress::NullProgress),
             // Default to injecting the full bundled set, so any RunConfig that does not customize
             // injection (eval, up, watch) still exposes the ambient globals — matching the old
@@ -1042,6 +1062,7 @@ fn execute_collected(
             update_snapshots: config.update_snapshots,
             snapshot_registry: config.snapshot_registry.clone(),
             falsify: config.falsify,
+            conducts: config.conducts.clone(),
         });
         (plan, deselected, dropped, switched_off, state)
     };

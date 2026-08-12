@@ -68,6 +68,17 @@ pub(super) struct Ctx {
 impl Ctx {
     pub(super) fn scope_state(&self, kind: ScopeKind) -> mlua::Result<Rc<RefCell<ScopeState>>> {
         Ok(match kind {
+            // A run-scoped fixture crosses Lua states, and a ScopeState (teardowns, tempdirs)
+            // belongs to one: a defer registered here could not run after its state is gone. A
+            // conduct's artifact lives in the tree (e.g. target/), reaped by its next conduct.
+            ScopeKind::Run => {
+                return Err(mlua::Error::RuntimeError(
+                    "a run-scoped fixture has no ctx:defer/ctx:tempdir — its value must be plain \
+                     data and its artifacts live in the tree, because the run outlives every Lua \
+                     state (docs/plans/shared-deputies.md)"
+                        .into(),
+                ))
+            }
             ScopeKind::Suite => self.state.suite.clone(),
             ScopeKind::File => self.file_scope.clone(),
             ScopeKind::Flow => self.flow_scope.clone().ok_or_else(|| {
@@ -129,6 +140,12 @@ pub(super) async fn resolve_use(lua: &Lua, this: &Ctx, target: Value) -> mlua::R
         )));
     }
 
+    // Run scope resolves through the run-wide store, not a state's ScopeState — the instance
+    // must cross Lua states and workers (docs/plans/shared-deputies.md).
+    if def.scope == ScopeKind::Run {
+        return resolve_run_scoped(lua, this, &def).await;
+    }
+
     let ss = this.scope_state(def.scope)?;
     if let Some(v) = ss.borrow().cache.get(&id) {
         return Ok(v.clone());
@@ -168,6 +185,111 @@ pub(super) async fn resolve_use(lua: &Lua, this: &Ctx, target: Value) -> mlua::R
     };
     ss.borrow_mut().cache.insert(id, value.clone());
     Ok(value)
+}
+
+/// Resolve a `Scope.Run` fixture through the run-wide conduct store: lazy, blocking,
+/// single-flight (docs/plans/shared-deputies.md). Whichever consumer asks first conducts;
+/// everyone else — same suite or another worker — waits for the settled slot, and waiting IS the
+/// ordering. Values are data: serialized once by the conducting state, deserialized per reader
+/// (the conductor included, so every consumer holds an identical copy and nothing Lua crosses a
+/// state boundary). Failure settles the slot exactly as success does — the run-instance form of
+/// docs/design/lifecycle.md#fixture-failure-memoization.
+async fn resolve_run_scoped(lua: &Lua, this: &Ctx, def: &FixtureDef) -> mlua::Result<Value> {
+    use crate::engine::ConductSlot;
+    let store = this.state.conducts.clone();
+    loop {
+        {
+            let mut slots = store.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            match slots.get(&def.name) {
+                None => {
+                    slots.insert(def.name.clone(), ConductSlot::Conducting);
+                    break;
+                }
+                Some(ConductSlot::Ready(v)) => {
+                    let v = v.clone();
+                    drop(slots);
+                    return crate::modules::formats::json_value_to_lua(lua, &v);
+                }
+                Some(ConductSlot::Poisoned(err)) => {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "fixture {:?} already failed in this run — memoized, not re-provisioned: {err}",
+                        def.name
+                    )));
+                }
+                Some(ConductSlot::Conducting) => {}
+            }
+        }
+        // Async sleep, never a thread block: a same-state waiter must not wedge the thread that
+        // is driving the very conduct it waits on.
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+
+    // This consumer claimed the slot; it settles whatever happens — a cancelled or panicked
+    // conduct must poison, not strand every waiter on `Conducting` forever.
+    struct Settle {
+        store: crate::engine::ConductRegistry,
+        name: String,
+        done: bool,
+    }
+    impl Drop for Settle {
+        fn drop(&mut self) {
+            if !self.done {
+                self.store
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(
+                        self.name.clone(),
+                        crate::engine::ConductSlot::Poisoned(
+                            "the conduct was abandoned before settling (cancelled or panicked)"
+                                .into(),
+                        ),
+                    );
+            }
+        }
+    }
+    let mut settle = Settle {
+        store: store.clone(),
+        name: def.name.clone(),
+        done: false,
+    };
+
+    let child = Ctx {
+        run: this.run.clone(),
+        state: this.state.clone(),
+        test_scope: this.test_scope.clone(),
+        file_scope: this.file_scope.clone(),
+        flow_scope: this.flow_scope.clone(),
+        own_scope: ScopeKind::Run,
+        case: None,
+        topology: def.is_topology,
+    };
+    let child_ud = lua.create_userdata(child)?;
+    let settled = match def.factory.call_async::<Value>(child_ud).await {
+        Ok(value) => match crate::modules::formats::lua_value_to_json(lua, &value) {
+            Ok(json) => Ok(json),
+            Err(e) => Err(format!(
+                "a run-scoped fixture's value must be plain data (JSON-serializable) — it \
+                 crosses Lua states, so functions and userdata cannot travel: {e}"
+            )),
+        },
+        Err(e) => Err(e.to_string()),
+    };
+    let result = {
+        let mut slots = store.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        match settled {
+            Ok(json) => {
+                let out = crate::modules::formats::json_value_to_lua(lua, &json);
+                slots.insert(def.name.clone(), ConductSlot::Ready(json));
+                out
+            }
+            Err(msg) => {
+                slots.insert(def.name.clone(), ConductSlot::Poisoned(msg.clone()));
+                Err(mlua::Error::RuntimeError(msg))
+            }
+        }
+    };
+    settle.done = true;
+    result
 }
 
 impl UserData for Ctx {

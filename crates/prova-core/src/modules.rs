@@ -227,7 +227,7 @@ pub(crate) fn install(
     Ok(())
 }
 
-mod formats;
+pub(crate) mod formats;
 
 /// A stand-in for a native namespace whose feature was not compiled into this build: any field
 /// access raises a clear, actionable error instead of a bare `attempt to index a nil value`. A test

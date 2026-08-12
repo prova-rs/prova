@@ -215,6 +215,7 @@ pub(super) fn load_topology(
         update_snapshots: false, // snapshots are a test-mode concern, not for inhabited topologies
         snapshot_registry: None,
         falsify: false,
+        conducts: config.conducts.clone(),
     });
     Ok((lua, col, state, id))
 }
@@ -474,6 +475,7 @@ impl HeldTopology {
                 update_snapshots: self.config.update_snapshots,
                 snapshot_registry: self.config.snapshot_registry.clone(),
                 falsify: self.config.falsify,
+                conducts: self.config.conducts.clone(),
             });
 
             // Held-instance injection, keyed by topology NAME (topologies are name-addressable by
@@ -548,6 +550,7 @@ impl HeldTopology {
             update_snapshots: false,
             snapshot_registry: None,
             falsify: false,
+            conducts: self.config.conducts.clone(),
         });
         if let Some(&id) = self.col.borrow().topologies.get(&self.name) {
             state

@@ -13,6 +13,11 @@ pub(super) enum ScopeKind {
     Flow,
     File,
     Suite,
+    /// The whole run — one instance across every suite and worker
+    /// (docs/plans/shared-deputies.md). Values are DATA (JSON-serializable), not shared Lua
+    /// tables: each state deserializes its own copy, so a conduct's artifact path travels and a
+    /// mutable counter does not.
+    Run,
 }
 
 impl ScopeKind {
@@ -22,6 +27,7 @@ impl ScopeKind {
             ScopeKind::Flow => 1,
             ScopeKind::File => 2,
             ScopeKind::Suite => 3,
+            ScopeKind::Run => 4,
         }
     }
     pub(super) fn label(self) -> &'static str {
@@ -30,6 +36,7 @@ impl ScopeKind {
             ScopeKind::Flow => "flow",
             ScopeKind::File => "file",
             ScopeKind::Suite => "suite",
+            ScopeKind::Run => "run",
         }
     }
 }
@@ -74,6 +81,12 @@ pub(super) fn make_scope_global(lua: &Lua) -> mlua::Result<Table> {
             kind: ScopeKind::Suite,
         },
     )?;
+    t.set(
+        "Run",
+        ScopeRef {
+            kind: ScopeKind::Run,
+        },
+    )?;
     Ok(t)
 }
 
@@ -81,12 +94,12 @@ pub(super) fn parse_scope(v: Value) -> mlua::Result<ScopeKind> {
     match v {
         Value::UserData(ud) => ud.borrow::<ScopeRef>().map(|r| r.kind).map_err(|_| {
             mlua::Error::RuntimeError(
-                "fixture scope must be a Scope value: Scope.Test / Scope.Flow / Scope.File / Scope.Suite"
+                "fixture scope must be a Scope value: Scope.Test / Scope.Flow / Scope.File / Scope.Suite / Scope.Run"
                     .into(),
             )
         }),
         _ => Err(mlua::Error::RuntimeError(
-            "fixture scope must be a Scope value: Scope.Test / Scope.Flow / Scope.File / Scope.Suite"
+            "fixture scope must be a Scope value: Scope.Test / Scope.Flow / Scope.File / Scope.Suite / Scope.Run"
                 .into(),
         )),
     }
@@ -164,6 +177,10 @@ pub(super) struct RunState {
     /// The falsification pass is active: apply each leaf's declared mutation before its body and
     /// invert the verdict.
     pub(super) falsify: bool,
+    /// The run-wide conduct store (docs/plans/shared-deputies.md): one slot per `Scope.Run`
+    /// fixture NAME, shared across every suite and worker via the `RunConfig` registry pattern.
+    /// Cloned from the config at state construction, exactly as `snapshot_registry` is.
+    pub(super) conducts: crate::engine::ConductRegistry,
 }
 
 impl RunState {
