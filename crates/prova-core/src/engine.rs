@@ -641,6 +641,7 @@ fn read_and_collect(path: &Path, config: &RunConfig) -> mlua::Result<(Lua, Share
         .to_string();
     let (lua, col) = build_lua(stem, config)?;
     col.borrow_mut().set_file_path(0, path); // singleton file → index 0, for snapshot colocation
+    col.borrow_mut().singleton_suite = true; // one ungrouped file: its own suite, its own state
     lua.load(&code).set_name(file_chunk_name(path)).exec()?;
     Ok((lua, col))
 }

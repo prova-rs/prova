@@ -107,6 +107,27 @@ fn install_fixtures(lua: &Lua, prova: &Table, col: &SharedCollector) -> mlua::Re
                 };
                 let id = {
                     let mut c = col.borrow_mut();
+                    // One name, one contract — exactly the rule topologies already enforce. Two
+                    // same-named declarations silently forked into two instances (two conducts of
+                    // one deputy); for `Scope.Run` the name is a run-wide slot, so an ambiguous
+                    // one is a defect (the duplicate-claim-id precedent). Share one declaration
+                    // via require() instead.
+                    if c.fixtures.iter().any(|f| f.name == name) {
+                        return Err(mlua::Error::RuntimeError(format!(
+                            "fixture {name:?} is already defined — a fixture name is one \
+                             contract (for Scope.Run, one run-wide slot); require() the one \
+                             declaration instead of redeclaring it"
+                        )));
+                    }
+                    if scope == ScopeKind::Suite && c.singleton_suite {
+                        eprintln!(
+                            "prova: {}: fixture {name:?} is Scope.Suite in a file that is its \
+                             own suite — no suite.lua groups this directory, so the scope \
+                             behaves as Scope.File; add a suite.lua to share across the \
+                             directory's files, or say Scope.File",
+                            c.file_paths.first().map(|p| p.display().to_string()).unwrap_or_default()
+                        );
+                    }
                     let id = c.fixtures.len();
                     c.fixtures.push(FixtureDef {
                         name,

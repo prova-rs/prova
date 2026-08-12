@@ -112,6 +112,50 @@ end)
   t:expect(r.stdout):contains("no ctx:defer")
 end)
 
+prova.test("two same-named fixtures refuse at declaration — one name, one contract", {
+  proves = "the copy-paste form of 'sharing' silently forked into two instances — two conducts of one deputy — and for Scope.Run the name is a run-wide slot, so an ambiguous one is a defect (the duplicate-claim-id precedent, and the rule topologies always enforced); the refusal teaches require()",
+}, function(t)
+  local proj = t:tempdir() .. "/pkg"
+  fs.mkdir(proj .. "/proofs")
+  fs.write(proj .. "/prova.toml", '[run]\nproofs = ["proofs"]\n')
+  fs.write(proj .. "/proofs/dup_test.lua", [[
+prova.fixture("twice", Scope.File, function() return 1 end)
+prova.fixture("twice", Scope.File, function() return 2 end)
+prova.test("never reached", function(t) t:expect(true):is_true() end)
+]])
+  local r = shell.run(prova.bin, { cwd = proj, merge_stderr = true })
+
+  t:expect(r.code, "an ambiguous name is a defect, not a quiet fork"):never():equals(0)
+  t:expect(r.stdout):contains('"twice" is already defined')
+  t:expect(r.stdout, "the refusal teaches the sharing shape"):contains("require()")
+end)
+
+prova.test("Scope.Suite in a singleton-suite file warns; a grouped suite stays quiet", {
+  proves = "a file without a suite.lua is its own suite, so Scope.Suite silently behaves as Scope.File — legal, and almost never what the author meant; the diagnostic names both cures, and must NOT fire where grouping made the scope real",
+}, function(t)
+  local lone = t:tempdir() .. "/lone"
+  fs.mkdir(lone .. "/proofs")
+  fs.write(lone .. "/prova.toml", '[run]\nproofs = ["proofs"]\n')
+  local declares = [[
+local f = prova.fixture("shared", Scope.Suite, function() return 1 end)
+prova.test("uses it", function(t) t:expect(t:use(f)):equals(1) end)
+]]
+  fs.write(lone .. "/proofs/only_test.lua", declares)
+  local r = shell.run(prova.bin, { cwd = lone, merge_stderr = true })
+  t:expect(r.code, "a warning, never a gate"):equals(0)
+  t:expect(r.stdout, "the trap is named"):contains("behaves as Scope.File")
+  t:expect(r.stdout, "…and the cure"):contains("suite.lua")
+
+  local grouped = t:tempdir() .. "/grouped"
+  fs.mkdir(grouped .. "/proofs")
+  fs.write(grouped .. "/prova.toml", '[run]\nproofs = ["proofs"]\n')
+  fs.write(grouped .. "/proofs/suite.lua", "-- groups this directory into one suite\n")
+  fs.write(grouped .. "/proofs/only_test.lua", declares)
+  local g = shell.run(prova.bin, { cwd = grouped, merge_stderr = true })
+  t:expect(g.code):equals(0)
+  t:expect(g.stdout, "grouping made the scope real — no lecture"):never():contains("behaves as Scope.File")
+end)
+
 prova.test("a same-state waiter never wedges the thread driving the conduct it waits on", {
   covers = "docs/design/verifiers.md#suite-scoped-shared-deputies",
   proves = "two leaves of ONE suite share one thread: if the second blocked the thread while the first's factory awaited its shell.run, the run would deadlock — the wait must yield to the runtime it shares",

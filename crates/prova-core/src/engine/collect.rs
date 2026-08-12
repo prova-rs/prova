@@ -76,6 +76,10 @@ pub(super) struct Collector {
     /// The index of the file currently being loaded (a suite loads several files into one collector).
     /// Every node added while this is set records it, so `Scope.File` can reset per file.
     pub(super) current_file: usize,
+    /// True when this state loads ONE ungrouped file — a singleton suite. `Scope.Suite` there is
+    /// legal but behaves as `Scope.File`, which is almost never what the author meant; fixture
+    /// registration warns, naming the fix (docs/plans/shared-deputies.md).
+    pub(super) singleton_suite: bool,
     /// Source path per file index (`file_paths[i]` is the file loaded as index `i`), so a snapshot
     /// assertion can colocate its `.snap` beside the test file it ran from. Grown as files load.
     pub(super) file_paths: Vec<PathBuf>,
@@ -102,6 +106,7 @@ impl Collector {
             parent_stack: vec![0],
             builder_depth: 0,
             current_file: 0,
+            singleton_suite: false,
             file_paths: Vec::new(),
         }
     }
