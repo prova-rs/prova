@@ -316,3 +316,6 @@ Contents: write). Remaining: the MCP mirror of the verbs, and item 6 (update erg
 5. Org webhook / reusable release workflow — the zero-touch registration loop.
 6. *(later, if earned)* `prova packages update` re-pinning, per-version revs in entries,
    `registry:name` cross-registry disambiguation ergonomics.
+
+<!-- backlog: update-flag-means-cached-assets recorded=2026-08-12 -->
+One spelling, one meaning: -U updates cached assets on demand, everywhere. Today the flag forces the registry-cache refresh here, ALSO force-rebuilds the runner provision (dispatch.rs update_force -> provision_subject), and the third cache -- archetypes -- has no on-demand refresh at all (prova init -U is deliberately unlanded, waiting on archetect Configuration::with_force_update, post-v3.4.1). Unify: -U refreshes every cached asset the invocation touches -- registry pins, package dependencies, archetype checkouts -- and the provision force-rebuild moves to its own spelling (manifest.md#provision-refresh-respelling): a provision is a build product of the working tree, not a cached remote asset, and the flag that means "distrust your caches" should never also mean "rebuild my subject".

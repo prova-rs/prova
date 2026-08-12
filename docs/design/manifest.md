@@ -250,3 +250,6 @@ lane's composition. `prova run --list` shows each lane's budget as a chip. (Fiel
 seconds-fast inner loop silently became a 10-minute gate, caught only by a human noticing.
 Composes with the graduation moment: the promises→proves flip is when a proof acquires its
 conduct cost and must name its lane.)
+
+<!-- backlog: provision-refresh-respelling recorded=2026-08-12 -->
+The runner provision force-rebuild answers to -U/--update -- the same spelling the registry refresh uses and the archetype-cache refresh will use, three refreshes wearing one flag. When -U unifies on "update cached assets" (registry.md#update-flag-means-cached-assets), the provision rebuild takes its own verb (e.g. --reprovision): the provision stamp already distinguishes a stale subject from a fresh one, so the flag exists only for the distrust case, and that case deserves a name that says which thing is being distrusted.
