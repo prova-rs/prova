@@ -56,6 +56,19 @@ enum Commands {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    // Join the suite's house rule for the commands whose WORK is cargo: install/build/check/
+    // sweep hold the package "cargo" lock (the same flock prova's conducts and the [runner]
+    // provision hold — .prova/var/locks/cargo.lock; the file is the contract, see
+    // prova_core::locks). Scoped per command, deliberately: `xtask run` delegates to PROVA,
+    // which takes its own locks — holding here would deadlock the child against its ancestor.
+    // Known edge, accepted: the `cargo xtask` BOOTSTRAP compile runs before any of this code
+    // can lock; it is tiny, and cargo's own target-dir lock serializes same-dir builds.
+    let _cargo_lock = match cli.command {
+        Commands::Run { .. } => None,
+        _ => hold_cargo_lock(),
+    };
+
+
     match cli.command {
         Commands::Install { openssl_static } => {
             sweep()?;
@@ -144,4 +157,33 @@ fn ensure_cargo_sweep() -> Result<()> {
         anyhow::bail!("cargo install cargo-sweep failed (exit {})", status);
     }
     Ok(())
+}
+
+/// Block until this package's "cargo" lock is held (see prova_core::locks — the flock file is
+/// the cross-tool contract). Failure degrades visibly to unlocked, never silently blocks work.
+fn hold_cargo_lock() -> Option<std::fs::File> {
+    let path = std::path::Path::new(".prova/var/locks/cargo.lock");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let file = match std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("xtask: cargo lock unavailable ({e}) — proceeding without the cross-instance hold");
+            return None;
+        }
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        // LOCK_NB first so a held lock is announced rather than silently waited on.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            println!("==> Waiting for the package cargo lock (held by a prova conduct or another xtask)...");
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+                eprintln!("xtask: flock failed — proceeding without the cross-instance hold");
+                return None;
+            }
+        }
+    }
+    Some(file)
 }

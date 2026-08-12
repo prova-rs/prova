@@ -425,3 +425,6 @@ exposed that the archetype is a scaffold (methods `Unimplemented`, empty migrati
 updated to `require("postgres")` + a `prova.toml` package declaration — the new external-package model.)
 The remaining gap to the full North Star is the second service + a stream + cross-service assertions,
 which are more of the same composition.
+
+<!-- backlog: prova-lock-wrapper-verb recorded=2026-08-12 -->
+**`prova lock <token> [--reads] [--machine] -- <command…>`: the shell-portable spelling of the lock contract.** A bare token is a write hold (the suite's own rule: `prova.writes(x)`/`prova.reads(x)` name what the caller DOES; `--reads` is the concurrent hold), and shared/exclusive stay the mechanism layer's words. The lock file (`.prova/var/locks/<token>.lock`, flock semantics) is joinable today from Rust (`prova_core::locks::hold_exclusive`) and any language with flock bindings, and from Linux shell via `flock(1)` — but macOS ships no flock command, so a Makefile or CI step on a Mac has no one-liner. The wrapper verb holds the token (blocking, with the same waiting-note the scheduler emits), execs the command, forwards its exit code, and releases on exit — teaching the convention at the point of use. CLI-only (exec semantics don't map to an MCP tool). Update `learn locks` to teach it when it lands.

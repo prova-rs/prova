@@ -39,6 +39,7 @@ local function source_files(roots)
 end
 
 prova.test("oversized source files (> " .. LIMIT .. " lines) do not multiply past the baseline", {
+  locks = { prova.reads("cargo") },
   switch = "quality",
   requires = { "cargo" },
 }, function(t)

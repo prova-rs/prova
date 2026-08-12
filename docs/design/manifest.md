@@ -140,6 +140,10 @@ refreshes their own tools deliberately (`cargo xtask install`). Identity holds w
 subject is the tree's build whenever a run conducted it. A `prova.bin` child never re-provisions
 (the depth guard inherits; empty-counts-as-unset re-arms a sandbox), and a declared-but-
 unreadable `bin` is loud — a typo must never put the conductor in the subject's seat. The
+provision is itself a build-tool invocation, so it holds the package locks the manifest
+declares (`locks = ["cargo"]`, blocking-exclusive for the build's duration) — it can never
+race a conduct holding `writes("cargo")` in another instance, and external tools join the
+same rule by flocking the same file (the lock file is the contract — `prova learn locks`). The
 consumer form (`runner = ">= 0.18"`, a version gate with auto-fetch) remains open — it wants
 the registry's release channel.
 

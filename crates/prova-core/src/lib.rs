@@ -15,6 +15,7 @@ mod packages;
 pub mod progress;
 mod suite;
 pub mod lanes;
+pub mod locks;
 pub mod ledger;
 
 /// The reserved-name registry (api-freeze §2): every bundled namespace name, including kernel

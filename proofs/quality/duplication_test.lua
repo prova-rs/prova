@@ -14,6 +14,9 @@ local workspace = require("workspace")
 
 prova.test("token-level clone count does not regress past the baseline", {
   switch = "quality",
+  -- `cargo metadata` READS workspace state (a build can rewrite Cargo.lock): coexists with
+  -- other readers, waits out any build in any instance.
+  locks = { prova.reads("cargo") },
   requires = { "jscpd", "cargo" },
 }, function(t)
   local roots = workspace.src_roots(t:use(workspace.metadata))

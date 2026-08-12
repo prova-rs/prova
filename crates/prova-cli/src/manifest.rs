@@ -137,6 +137,11 @@ pub struct RunnerSection {
     /// `cargo build`. Undeclared means every run builds: correctness needs no configuration,
     /// speed is the opt-in.
     pub sources: Vec<String>,
+    /// Package lock tokens the provision holds (exclusive, blocking) while the build runs —
+    /// the same tokens the suite's `locks = { … }` names, so a provision can never race a
+    /// proof holding `writes("cargo")` in another instance. Declare the build tool's token:
+    /// `locks = ["cargo"]`.
+    pub locks: Vec<String>,
 }
 
 /// `[placement]` — where capability and contention questions are answered (docs/design/placement.md).

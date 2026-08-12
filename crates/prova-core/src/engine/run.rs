@@ -397,53 +397,6 @@ pub(super) struct ResourceTable {
     degraded: std::collections::HashSet<String>,
 }
 
-/// Where a token's lock file lives. Run-scoped tokens (the reserved `__prova_` prefix — `serial`)
-/// have none.
-fn lock_path(r: &ResourceReq, project_dir: Option<&std::path::Path>) -> Option<std::path::PathBuf> {
-    if r.token.starts_with("__prova_") {
-        return None;
-    }
-    let sanitized: String = r
-        .token
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '-' })
-        .collect();
-    let dir = if r.machine {
-        std::env::temp_dir().join("prova-locks")
-    } else {
-        match project_dir {
-            Some(p) => p.join(".prova").join("var").join("locks"),
-            // A bare run (no manifest) still honors the rule machine-wide rather than not at all.
-            None => std::env::temp_dir().join("prova-locks"),
-        }
-    };
-    Some(dir.join(format!("{sanitized}.lock")))
-}
-
-#[cfg(unix)]
-fn try_flock(file: &std::fs::File, shared: bool) -> std::io::Result<bool> {
-    use std::os::unix::io::AsRawFd;
-    let op = if shared { libc::LOCK_SH } else { libc::LOCK_EX } | libc::LOCK_NB;
-    match unsafe { libc::flock(file.as_raw_fd(), op) } {
-        0 => Ok(true),
-        _ => {
-            let err = std::io::Error::last_os_error();
-            if err.kind() == std::io::ErrorKind::WouldBlock {
-                Ok(false)
-            } else {
-                Err(err)
-            }
-        }
-    }
-}
-
-#[cfg(not(unix))]
-fn try_flock(_file: &std::fs::File, _shared: bool) -> std::io::Result<bool> {
-    // The Windows twin (LockFileEx) lands with the Windows runner; until then locks are
-    // run-scoped there, which is exactly the pre-lock behavior.
-    Ok(true)
-}
-
 impl ResourceTable {
     fn can_acquire(&self, reqs: &[ResourceReq]) -> bool {
         reqs.iter().all(|r| {
@@ -469,30 +422,15 @@ impl ResourceTable {
             if self.files.contains_key(&r.token) || self.degraded.contains(&r.token) {
                 continue; // this process already holds the flock (mode arbitration is the table's)
             }
-            let Some(path) = lock_path(r, project_dir) else { continue };
-            let opened = path
-                .parent()
-                .map(std::fs::create_dir_all)
-                .transpose()
-                .and_then(|_| std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path));
-            let file = match opened {
-                Ok(f) => f,
-                Err(e) => {
-                    eprintln!(
-                        "prova: lock {:?}: cannot open {} ({e}) — holding within this run only",
-                        r.token,
-                        path.display()
-                    );
-                    self.degraded.insert(r.token.clone());
-                    continue;
-                }
-            };
-            match try_flock(&file, r.shared) {
-                Ok(true) => {
+            match crate::locks::try_hold(&r.token, r.shared, r.machine, project_dir) {
+                Ok(Some(file)) => {
                     self.files.insert(r.token.clone(), (file, 0));
                     taken.push(r.token.clone());
                 }
-                Ok(false) => {
+                Ok(None) if crate::locks::lock_path(&r.token, r.machine, project_dir).is_none() => {
+                    // A reserved run-scoped token — the in-run table alone arbitrates it.
+                }
+                Ok(None) => {
                     // Held by another prova instance — roll back this attempt entirely.
                     for tok in taken {
                         self.files.remove(&tok);
@@ -501,7 +439,8 @@ impl ResourceTable {
                 }
                 Err(e) => {
                     eprintln!(
-                        "prova: lock {:?}: flock failed ({e}) — holding within this run only",
+                        "prova: lock {:?}: {e} — holding within this run only (visible \
+                         degradation, never silent)",
                         r.token
                     );
                     self.degraded.insert(r.token.clone());

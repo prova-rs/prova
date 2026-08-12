@@ -171,11 +171,26 @@ fn provision_runner(
     if fresh {
         return None;
     }
+    // The build IS a critical section under the package's declared locks (`[runner] locks =
+    // ["cargo"]`): the provision must never race a proof holding `writes("cargo")` in another
+    // prova instance — the exact house rule the suite encodes. Blocking hold: waiting for the
+    // other holder is the point, and dropping the handles releases.
+    let mut held: Vec<std::fs::File> = Vec::new();
+    for token in &runner.locks {
+        match prova_core::locks::hold_exclusive(token, Some(&home.dir)) {
+            Ok(handle) => held.push(handle),
+            Err(e) => eprintln!(
+                "prova: [runner] lock {token:?}: {e} — provisioning without the cross-instance \
+                 hold (visible degradation, never silent)"
+            ),
+        }
+    }
     let status = if cfg!(windows) {
         std::process::Command::new("cmd").args(["/C", build]).current_dir(&home.dir).status()
     } else {
         std::process::Command::new("sh").args(["-c", build]).current_dir(&home.dir).status()
     };
+    drop(held);
     match status {
         Ok(s) if s.success() => {
             if !runner.sources.is_empty() {
@@ -221,6 +236,11 @@ pub(crate) fn declared_subject(home: &Home) -> Option<Result<crate::manifest::Ru
         bin: bin.to_string(),
         sources: table
             .get("sources")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_str()).map(String::from).collect())
+            .unwrap_or_default(),
+        locks: table
+            .get("locks")
             .and_then(|v| v.as_array())
             .map(|a| a.iter().filter_map(|v| v.as_str()).map(String::from).collect())
             .unwrap_or_default(),

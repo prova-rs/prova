@@ -120,3 +120,38 @@ prova.test("a nested prova.bin child never re-provisions under a live suite", {
   t:expect(r.code, r.stdout):equals(0)
   t:expect(provisions(dir), "no provision under the guard"):equals(0)
 end)
+
+prova.test("the provision holds the manifest-declared locks — a build can never race a conduct", {
+  covers = "docs/design/manifest.md#runner-is-the-subject-not-the-conductor",
+  proves = "the provision IS a cargo invocation, so it must join the same house rule the suite's conducts encode — an unlocked provision racing a proof holding writes(\"cargo\") was the loophole's last corner; the lock file is the contract, so xtask and any external tool join by flocking the same path",
+}, function(t)
+  local dir = sandbox(t)
+  fs.write(dir .. "/prova.toml", table.concat({
+    '[run]', 'proofs = ["proofs"]', '',
+    '[runner]',
+    "build   = 'printf \"begin\\n\" >> build.log && sleep 0.4 && printf \"end\\n\" >> build.log && cp \"$PROVA_SRC\" bin/prova'",
+    'bin     = "bin/prova"',
+    'sources = ["src"]',
+    'locks   = ["build-slot"]',
+  }, "\n"))
+
+  -- Two concurrent FORCED provisions (-U): without the lock their begin/end marks interleave;
+  -- under it, each build owns its critical section whole.
+  local r = shell.run({
+    "sh", "-c",
+    '"$0" -U --allow-empty > /dev/null 2>&1 & "$0" -U --allow-empty > /dev/null 2>&1; wait',
+    prova.bin,
+  }, {
+    cwd = dir, timeout = "180s", merge_stderr = true,
+    env = { PROVA_RUN_DEPTH = "", PROVA_SRC = prova.bin },
+  })
+  t:expect(r.code, r.stdout):equals(0)
+
+  local lines = {}
+  for line in fs.read(dir .. "/build.log"):gmatch("[^\n]+") do lines[#lines + 1] = line end
+  t:expect(#lines, "both provisions ran whole"):equals(4)
+  t:expect(lines[1]):equals("begin")
+  t:expect(lines[2], "the first build finished before the second began"):equals("end")
+  t:expect(lines[3]):equals("begin")
+  t:expect(lines[4]):equals("end")
+end)

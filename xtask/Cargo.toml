@@ -11,5 +11,7 @@ publish = false
 
 [dependencies]
 anyhow = "1"
+# flock(2) for the package cargo lock — the same file prova's conducts hold.
+libc = "0.2"
 clap = { version = "4", features = ["derive"] }
 dirs = "6"

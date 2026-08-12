@@ -36,6 +36,26 @@ locks = { prova.writes("cargo") }
 - **Machine**: `prova.writes("gpu", { scope = "machine" })` — the rule spans every repo on the
   box. `prova.port(N)` is machine-scoped by default, because a host port is machine-wide fact.
 
+## The lock file is the contract — joining from outside
+
+A package lock is a `flock` on `<home>/.prova/var/locks/<token>.lock` — prova's process is not
+the boundary. The `[runner]` provision holds its manifest-declared tokens (`locks = ["cargo"]`)
+while it builds, and any external tool joins the same rule by holding the same file:
+
+```rust
+// Rust (what this repo's xtask does):
+let _hold = prova_core::locks::hold_exclusive("cargo", Some(&home))?;  // blocks; drop releases
+```
+
+```sh
+# Linux shell (macOS ships no flock(1); a portable prova-provided wrapper verb is
+# on the backlog — architecture.md#prova-lock-wrapper-verb):
+flock .prova/var/locks/cargo.lock cargo build
+```
+
+Any language with flock bindings is ~5 lines: open the path, `LOCK_EX` for a writer,
+`LOCK_SH` for a reader; the kernel releases a crashed holder instantly.
+
 ## Vocabulary, precisely
 
 - `locks` — this page: tokens the scheduler holds. (`resources = { … }` is the deprecated
