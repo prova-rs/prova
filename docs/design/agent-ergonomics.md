@@ -440,3 +440,6 @@ profile); every `run all` pays that ~100-140s conduct twice back-to-back and pro
 deputy-owned artifact name) is right; the execution behind it could be content-addressed —
 key the conduct on (argv, profile, tool-config) and let the second deputy adopt the first's
 artifact within one run. Saves minutes per sweep at zero isolation cost.
+
+<!-- backlog: reminder-reconcile-ignores-adhoc-packages recorded=2026-08-13 -->
+The post-run reminder reconciliation pass re-executes proof files but does not carry the -P/--package ad-hoc package layering the run itself used: a file calling a function that exists only in the -P-layered package collects and runs green, then 'reminders not evaluated — could not reconcile the ledger: attempt to call a nil value' when reconcile resolves the manifest's declared source instead. One invocation, two resolution answers — reconcile must see the same package set as the run.
