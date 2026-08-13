@@ -392,3 +392,15 @@ proof red against a change that *improved* the property it guards. Authoring pra
 prova feature: bind structural proofs to presence/absence facts (the dependency edge, the
 deleted symbol, ≥1 kernel call) and leave slack on any count. Recorded here so the next
 package author inherits the scar without the burn.
+
+<!-- backlog: checklist-archetype-stale-claims-table recorded=2026-08-12 -->
+The checklist init archetype scaffolds a prova.toml carrying the retired [claims] table (renamed to [specs]); current prova silently ignores it, so every covers anchor reports DANGLING with a misleading 'no anchor exists' message even though PLAN.md carries the anchors. Regenerate the archetype to emit [[specs.source]], and consider warning on an ignored [claims] table the way the deprecated spellings warn.
+
+<!-- backlog: collect-time-shell-panics-raw recorded=2026-08-12 -->
+Calling shell.run at COLLECT time (top-level proof-file code, e.g. to discover parameterization inputs) panics with a raw tokio 'no reactor running' panic from modules/shell.rs instead of a diagnostic. Either support it or fail with a teaching error naming the boundary ('shell is runtime-only; collect-time code has fs/toml') — a panic reads as a prova bug, not an authoring error.
+
+<!-- backlog: buildkit-wedge-hangs-suites-silently recorded=2026-08-13 -->
+A wedged Docker Desktop buildkitd (every buildx build hangs at 0%% CPU before the first progress byte, while docker pull and all other daemon ops stay healthy) hangs any suite that builds an image until its outer timeout — 2h per suite in the workspace sweep, serially. prova's docker.build sees only silence: no liveness bound, no narration, no distinction between 'building slowly' and 'buildkitd will never answer'. Consider a first-byte deadline on docker.build (buildkit emits 'load build definition' within seconds on a healthy builder) so a dead builder fails in seconds with a teaching error naming the fix (restart the builder), instead of burning the suite's whole timeout.
+
+<!-- backlog: unknown-test-opts-silently-ignored recorded=2026-08-13 -->
+An unknown key in a test's opts table is silently ignored — including REMOVED spellings: f5a044f deleted { spec = ... } 'gone, not bridged' (v0.18.0), so every suite still carrying it had its tolerated open specs silently degrade into hard failures (all 8 p6m-run operators, found 2026-08-12 by the workspace sweep). The manifest layer warns on deprecated spellings and the checklist found [claims] rot the same way; the DSL should hold the same line — unknown opts error (or at least warn), and a removed spelling names its successor.
