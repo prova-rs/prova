@@ -269,4 +269,16 @@ spelling of the same narrowing). (Substrate field report, 2026-08-11.)
 **A timed-out conduct is dead, not merely reported dead.** Every bound `shell.run` enforces — the wall-clock `timeout`, `idle_timeout`, and their composition — kills the child process when it fires. A bound that only abandons the wait leaks the conduct: the run reports red while the child keeps running, holding exactly the locks the report just claimed were released (the observed shape: an orphaned nextest holding the cargo target lock against the next invocation). Direct child only; process-group reaping is the successor item.
 
 <!-- backlog: conduct-process-group-reaping recorded=2026-08-12 -->
-**Grandchildren survive every kill path; a conduct's kill should reap its process group.** Both the buffered and supervised shell.run paths kill the direct child only: a `sh -c "a | b"` pipeline, a script that spawns workers, or a build tool's own children keep running after prova reaps the shell — orphans holding exactly the locks and ports the run's teardown just promised were free. The honest fix is process-group semantics (setsid/setpgid at spawn, killpg on any bound firing, and `shell.spawn`'s stop() joining the same rule), which carries platform texture worth its own design pass. Composes with timeout-reaps-the-conduct (the direct-child half, already claimed).
+**Grandchildren survive every kill path; a conduct's kill should reap its process group.** Both
+the buffered and supervised shell.run paths kill the direct child only: a `sh -c "a | b"`
+pipeline, a script that spawns workers, or a build tool's own children keep running after prova
+reaps the shell — orphans holding exactly the locks and ports the run's teardown just promised
+were free. The naive fix (`process_group(0)` at spawn, `killpg` on any bound firing,
+`shell.spawn` stop() joining) has a discovered trap (design pass 2026-08-12): a conduct in its
+own group no longer receives the terminal's Ctrl-C — today children die WITH an interrupted
+prova because they share its foreground group, so detaching them trades orphans-on-timeout for
+orphans-on-interrupt, and process exit does not run Drop, so kill_on_drop cannot cover it. The
+real design: per-conduct groups + a process-wide registry of live conduct pgids + a signal
+handler that group-kills registrants on the way out (and Windows wants job objects, not groups —
+the windows lane's business). Composes with timeout-reaps-the-conduct (the direct-child half,
+already claimed).

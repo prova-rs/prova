@@ -10,15 +10,14 @@
 --- The invariant that keeps the state machine legible: only a claim can be bound. A proof that
 --- `covers` a still-cold item is reported (`BACKLOGGED`), never silently discharged.
 
+local scaffold = require("scaffold")
+
 --- A fresh, isolated project per test — `promote` writes to a doc, so nothing may be shared.
 local function project(t, doc, proof)
-  local proj = t:tempdir() .. "/pkg"
-  fs.mkdir(proj .. "/proofs")
-  fs.mkdir(proj .. "/docs")
-  fs.write(proj .. "/prova.toml", '[run]\nproofs = ["proofs"]\n\n[[specs.source]]\ntype = "directory"\npath = "docs"\n')
-  fs.write(proj .. "/docs/design.md", doc)
-  if proof then fs.write(proj .. "/proofs/contract_test.lua", proof) end
-  return proj
+  return scaffold.package(t, {
+    docs = { ["design.md"] = doc },
+    proofs = proof and { ["contract_test.lua"] = proof } or nil,
+  })
 end
 
 local TWO_STATES = [[

@@ -3,13 +3,10 @@
 --- discharge it, at three grains — full address, bare id, whole doc — composing with the other
 --- axes and `--list`. The MCP twin is held equal by the selection-parity unit gates.
 
+local scaffold = require("scaffold")
+
 local function package(t)
-  local proj = t:tempdir() .. "/pkg"
-  fs.mkdir(proj .. "/proofs")
-  fs.mkdir(proj .. "/docs")
-  fs.write(proj .. "/prova.toml",
-    '[run]\nproofs = ["proofs"]\n\n[[specs.source]]\ntype = "directory"\npath = "docs"\n')
-  fs.write(proj .. "/docs/design.md", [[
+  return scaffold.package(t, { docs = { ["design.md"] = [[
 # design
 
 <!-- claim: alpha-rule -->
@@ -17,8 +14,7 @@ The alpha invariant holds.
 
 <!-- claim: beta-rule -->
 The beta invariant holds.
-]])
-  fs.write(proj .. "/proofs/slice_test.lua", [[
+]] }, proofs = { ["slice_test.lua"] = [[
 prova.test("proves the alpha rule", { covers = "docs/design.md#alpha-rule" }, function(t)
   print("COVERING " .. json.encode(prova.selection.covering))
   t:expect(true):is_true()
@@ -29,8 +25,7 @@ end)
 prova.test("covers nothing", function(t)
   t:expect(true):is_true()
 end)
-]])
-  return proj
+]] } })
 end
 
 prova.test("--covering selects by full address, bare id, and whole doc", {

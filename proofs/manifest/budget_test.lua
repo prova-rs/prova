@@ -7,17 +7,15 @@
 
 --- A package whose one test sleeps ~50ms, under the given manifest — enough duration that a
 --- "1ms" budget always exceeds and a "60s" budget never does, deterministic on any host.
+local scaffold = require("scaffold")
+
 local function package(t, manifest)
-  local proj = t:tempdir() .. "/pkg"
-  fs.mkdir(proj .. "/proofs")
-  fs.write(proj .. "/prova.toml", manifest)
-  fs.write(proj .. "/proofs/paced_test.lua", [[
+  return scaffold.package(t, { manifest = manifest, proofs = { ["paced_test.lua"] = [[
 prova.test("green but not instant", function(t)
   shell.run("sleep 0.05")
   t:expect(true):is_true()
 end)
-]])
-  return proj
+]] } })
 end
 
 prova.test("an all-green run past its budget is red, naming the overage and the cure", {

@@ -3,17 +3,15 @@
 --- `run.duration_ms` measurement, and `account.baselines` — and a drift policy composed over it
 --- is passive until a context heeds it. Slowness is attention; only `--heed` makes it death.
 
+local scaffold = require("scaffold")
+
 local function package(t, reminder)
-  local proj = t:tempdir() .. "/pkg"
-  fs.mkdir(proj .. "/proofs")
-  fs.write(proj .. "/prova.toml", '[run]\nproofs = ["proofs"]\n')
-  fs.write(proj .. "/proofs/paced_test.lua", [[
+  return scaffold.package(t, { proofs = { ["paced_test.lua"] = [[
 prova.test("does a little work", function(t)
   shell.run("sleep 0.05")
   t:expect(true):is_true()
 end)
-]] .. reminder)
-  return proj
+]] .. reminder } })
 end
 
 prova.test("a slow run trips the drift watcher — and stays green until heeded", {

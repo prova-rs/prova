@@ -4,14 +4,10 @@
 --- NARROWED wherever it is read. The live exemplar of the translation is the workspace's own
 --- nextest deputy (.prova/packages/deputies); these proofs pin the engine's half hermetically.
 
+local scaffold = require("scaffold")
+
 local function package(t, files)
-  local proj = t:tempdir() .. "/pkg"
-  fs.mkdir(proj .. "/proofs")
-  fs.write(proj .. "/prova.toml", '[run]\nproofs = ["proofs"]\n')
-  for name, body in pairs(files) do
-    fs.write(proj .. "/proofs/" .. name, body)
-  end
-  return proj
+  return scaffold.package(t, { proofs = files })
 end
 
 prova.test("the run's resolved selection is a readable fact in every state", {

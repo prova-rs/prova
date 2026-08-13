@@ -1,0 +1,3 @@
+[package]
+name = "scaffold"
+description = "The proof-sandbox builder every engine proof used to hand-roll: an isolated package under t:tempdir() with a manifest, docs, and proof files."

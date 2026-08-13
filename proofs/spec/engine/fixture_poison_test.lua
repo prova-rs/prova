@@ -4,12 +4,10 @@
 --- the one recorded error — named as a memoized replay, never re-paid. The field report that
 --- filed it: a file-scoped nextest conduct hit its timeout and five readers re-paid 5 × 600s.
 
+local scaffold = require("scaffold")
+
 local function package(t, proof)
-  local proj = t:tempdir() .. "/pkg"
-  fs.mkdir(proj .. "/proofs")
-  fs.write(proj .. "/prova.toml", '[run]\nproofs = ["proofs"]\n')
-  fs.write(proj .. "/proofs/poison_test.lua", proof)
-  return proj
+  return scaffold.package(t, { proofs = { ["poison_test.lua"] = proof } })
 end
 
 prova.test("a failed file-scoped fixture provisions once; readers replay the recorded error", {
