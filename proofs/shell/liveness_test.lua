@@ -72,8 +72,11 @@ local function leaks_after(bounds, token)
     .. ') end); return "done"'
   shell.run({ prova.bin, "eval", snippet }, { merge_stderr = true, timeout = "20s" })
   shell.run("sleep 0.5") -- let the kill (or the leak) settle past reaping races
-  local alive = shell.run("pgrep -f 'sleep " .. token .. "'").code == 0
-  shell.run("pkill -f 'sleep " .. token .. "' 2>/dev/null; true")
+  -- `38.111` probes as `38[.]111`: Linux pgrep -f sees the wrapping shell's own argv, so a
+  -- literal pattern matches the probe itself (caught live by the release gate).
+  local esc = token:gsub("%.", "[.]")
+  local alive = shell.run("pgrep -f 'sleep " .. esc .. "'").code == 0
+  shell.run("pkill -f 'sleep " .. esc .. "' 2>/dev/null; true")
   return alive
 end
 

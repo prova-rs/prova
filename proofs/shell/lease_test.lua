@@ -7,8 +7,15 @@
 --- prova, or reached via `prova.bin eval`); the outer kills use raw `kill`, never the
 --- conductor's own process machinery, so an old conductor cannot fake or break a verdict.
 
+--- The probe pattern: `87.331` becomes `87[.]331` — matches the process's literal cmdline but
+--- NOT the probe's own (Linux pgrep -f sees the wrapping shell, whose argv carries the pattern;
+--- caught live by the release gate: every sweep assertion read as a survivor on ubuntu).
+local function pattern(token)
+  return (token:gsub("%.", "[.]"))
+end
+
 local function alive(token)
-  return shell.run("pgrep -f 'sleep " .. token .. "'").code == 0
+  return shell.run("pgrep -f 'sleep " .. pattern(token) .. "'").code == 0
 end
 
 local function wait_until(cond, seconds)
@@ -20,7 +27,7 @@ local function wait_until(cond, seconds)
 end
 
 local function reap_stray(token)
-  shell.run("pkill -f 'sleep " .. token .. "' 2>/dev/null; true")
+  shell.run("pkill -f 'sleep " .. pattern(token) .. "' 2>/dev/null; true")
 end
 
 prova.test("a bound's kill reaps the whole tree — a backgrounded grandchild dies with the shell", {
