@@ -338,6 +338,11 @@ struct RunOpts {
     /// only when NO bytes arrive on either stream for this long. Bounds silence, never work —
     /// the wall-clock `timeout` stays the optional outer bound; the two compose.
     idle_timeout: Option<std::time::Duration>,
+    /// Start-up bound (docs/design/agent-ergonomics.md#buildkit-wedge-hangs-suites-silently): kill
+    /// the command if NOTHING arrives on either stream within this long of spawn. The one interval
+    /// a caller can bound tightly without knowing the work — a tool that has not spoken at all has
+    /// not started — and the first byte disarms it for good.
+    first_byte: Option<std::time::Duration>,
     check: bool,
     merge_stderr: bool,
     stdin: Option<String>,
@@ -349,6 +354,9 @@ fn parse_run_opts(opts: &Option<Table>) -> mlua::Result<RunOpts> {
         env: opt_env(opts)?,
         timeout: opt_string(opts, "timeout")?.and_then(|s| parse_duration(&s)),
         idle_timeout: opt_string(opts, "idle_timeout")?.and_then(|s| parse_duration(&s)),
+        first_byte: opt_string(opts, "first_byte")?
+            .and_then(|s| parse_duration(&s))
+            .filter(|d| !d.is_zero()), // `first_byte = "0s"` disables it explicitly
         check: opts
             .as_ref()
             .map(|o| o.get::<Option<bool>>("check"))
@@ -460,12 +468,15 @@ fn isolate_group(command: &mut tokio::process::Command) {
 
 /// How a supervised conduct ended: ran to completion, or was killed for silence (carrying what
 /// had been captured when the idle clock ran out, so the error can show where it stalled).
-enum Supervised {
+pub(super) enum Supervised {
     Finished(std::process::Output),
     Idle { stdout: Vec<u8>, stderr: Vec<u8> },
     /// The wall clock fired — the unconditional outer bound, killed as a GROUP like every
     /// controlled kill (docs/design/verifiers.md#conduct-process-group-reaping).
     Wall { stdout: Vec<u8>, stderr: Vec<u8> },
+    /// The first-byte clock fired: the tool said NOTHING on either stream, so it never started.
+    /// Carries no tails — there are none, and that absence is the whole finding.
+    Mute,
 }
 
 /// Drive a child under supervision — every bounded conduct routes here, so every bound's kill
@@ -476,11 +487,12 @@ enum Supervised {
 /// bounded by the same clocks — a child that closed its pipes and lingers doing nothing is
 /// dead. `kill_on_drop` stays as the last-resort child-only kill if this future is cancelled
 /// some other way; the lease covers prova's own death.
-async fn run_supervised(
+pub(super) async fn run_supervised(
     mut command: tokio::process::Command,
     input: Option<String>,
     idle: Option<std::time::Duration>,
     wall: Option<std::time::Duration>,
+    first_byte: Option<std::time::Duration>,
 ) -> std::io::Result<Supervised> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     command
@@ -511,6 +523,9 @@ async fn run_supervised(
     let pid = child.id();
     let mut last_cpu = pid.and_then(child_cpu_ticks);
     let deadline = wall.map(|w| tokio::time::Instant::now() + w);
+    // Armed at spawn, disarmed by the first byte on either stream — a tool answers once, and after
+    // that the question ("did it ever start?") is settled for the rest of the conduct.
+    let mut mute_until = first_byte.map(|f| tokio::time::Instant::now() + f);
     // With no idle bound, the idle arm still ticks (as a coarse heartbeat interval) but never
     // kills — the check below requires an actual idle bound to act.
     let tick = idle.unwrap_or(std::time::Duration::from_secs(3600));
@@ -521,11 +536,17 @@ async fn run_supervised(
         tokio::select! {
             r = out.read(&mut buf_o), if !out_done => match r? {
                 0 => out_done = true,
-                n => stdout.extend_from_slice(&buf_o[..n]),
+                n => {
+                    mute_until = None;
+                    stdout.extend_from_slice(&buf_o[..n]);
+                }
             },
             r = err.read(&mut buf_e), if !err_done => match r? {
                 0 => err_done = true,
-                n => stderr.extend_from_slice(&buf_e[..n]),
+                n => {
+                    mute_until = None;
+                    stderr.extend_from_slice(&buf_e[..n]);
+                }
             },
             // Recreated each iteration, so every chunk read above re-arms the clock. Silence on
             // the pipes is only HALF the evidence when it fires: a big compile says nothing for
@@ -544,6 +565,14 @@ async fn run_supervised(
                 crate::lease::kill_group(pid);
                 child.kill().await.ok();
                 return Ok(Supervised::Wall { stdout, stderr });
+            }
+            // The first-byte clock: a third question — did it ever START? Unlike the idle clock it
+            // ignores CPU entirely, because a tool wedged on a hung daemon burns none and one that
+            // is merely slow to speak has still said nothing a caller can act on.
+            () = tokio::time::sleep_until(mute_until.unwrap_or_else(tokio::time::Instant::now)), if mute_until.is_some() => {
+                crate::lease::kill_group(pid);
+                child.kill().await.ok();
+                return Ok(Supervised::Mute);
             }
         }
     }
@@ -611,9 +640,10 @@ async fn run_command(
     // group (docs/design/verifiers.md#conduct-process-group-reaping). kill_on_drop stays as the
     // last-resort child-only kill for an externally-cancelled future.
     command.kill_on_drop(true);
-    let output = if o.idle_timeout.is_some() || o.timeout.is_some() {
-        let supervised = run_supervised(command, o.stdin.clone(), o.idle_timeout, o.timeout)
-            .await
+    let output = if o.idle_timeout.is_some() || o.timeout.is_some() || o.first_byte.is_some() {
+        let supervised =
+            run_supervised(command, o.stdin.clone(), o.idle_timeout, o.timeout, o.first_byte)
+                .await
             .map_err(|e| mlua::Error::RuntimeError(format!("shell.run failed to spawn: {e}")))?;
         match supervised {
             Supervised::Finished(output) => output,
@@ -634,6 +664,16 @@ async fn run_command(
                      --- stderr tail ---\n{}\n--- stdout tail ---\n{}",
                     tail(&String::from_utf8_lossy(&stderr), 4096),
                     tail(&String::from_utf8_lossy(&stdout), 4096),
+                )));
+            }
+            // No tails to show, and their absence IS the report: this command never spoke, so it
+            // never started. Said as a different sentence from a timeout on purpose — "slow" and
+            // "never answered" send an operator to different places.
+            Supervised::Mute => {
+                let bound = o.first_byte.unwrap_or_default();
+                return Err(mlua::Error::RuntimeError(format!(
+                    "shell.run: no output at all within {bound:?} (first_byte) — the command never \
+                     answered, so it never started: {cmd}"
                 )));
             }
         }
@@ -703,6 +743,7 @@ pub(crate) fn make_shell(lua: &Lua, progress: &Arc<dyn Progress>) -> mlua::Resul
             lua.create_async_function(move |lua, (cmd, opts): (mlua::Value, Option<Table>)| {
                 let progress = Arc::clone(&progress);
                 async move {
+                    super::runtime_only("shell.run")?;
                     // A string runs through a shell (`"cargo build --release"` verbatim); an argv
                     // table runs the program directly — no shell, no quoting.
                     let cmd = CommandSpec::parse(cmd)?;
@@ -730,6 +771,7 @@ pub(crate) fn make_shell(lua: &Lua, progress: &Arc<dyn Progress>) -> mlua::Resul
     shell.set(
         "spawn",
         lua.create_function(|lua, (cmd, opts): (mlua::Value, Option<Table>)| {
+            super::runtime_only("shell.spawn")?;
             let cmd = CommandSpec::parse(cmd)?;
             let cwd = opt_string(&opts, "cwd")?;
             let env = opt_env(&opts)?;

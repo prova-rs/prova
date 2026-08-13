@@ -22,6 +22,7 @@ pub(crate) fn make(lua: &Lua) -> mlua::Result<Table> {
     grpc.set(
         "client",
         lua.create_async_function(|lua, (addr, opts): (String, Option<Table>)| async move {
+            super::runtime_only("grpc.client")?;
             let timeout = opt_duration(&opts, "timeout")?;
             let channel = connect_channel(&addr).await?;
             let pool = build_pool(&channel).await?;
@@ -37,6 +38,7 @@ pub(crate) fn make(lua: &Lua) -> mlua::Result<Table> {
     grpc.set(
         "wait_for",
         lua.create_async_function(|_, (addr, opts): (String, Option<Table>)| async move {
+            super::runtime_only("grpc.wait_for")?;
             let timeout = opt_duration(&opts, "timeout")?.unwrap_or(Duration::from_secs(30));
             let every = opt_duration(&opts, "every")?.unwrap_or(Duration::from_millis(500));
             let deadline = Instant::now() + timeout;

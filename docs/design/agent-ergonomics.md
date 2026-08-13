@@ -393,17 +393,30 @@ prova feature: bind structural proofs to presence/absence facts (the dependency 
 deleted symbol, ≥1 kernel call) and leave slack on any count. Recorded here so the next
 package author inherits the scar without the burn.
 
-<!-- backlog: checklist-archetype-stale-claims-table recorded=2026-08-12 -->
-The checklist init archetype scaffolds a prova.toml carrying the retired [claims] table (renamed to [specs]); current prova silently ignores it, so every covers anchor reports DANGLING with a misleading 'no anchor exists' message even though PLAN.md carries the anchors. Regenerate the archetype to emit [[specs.source]], and consider warning on an ignored [claims] table the way the deprecated spellings warn.
+<!-- claim: checklist-archetype-stale-claims-table recorded=2026-08-12 -->
+A manifest carrying the pre-rename `[claims]` table is **honored with a warning** naming `[specs]`,
+like every other retired spelling (docs/design/manifest.md#deprecated-spellings-teach) — so its docs
+are scanned and its anchors resolve, instead of every `covers` reporting DANGLING ("no anchor
+exists") while the prose sits right there in the file. Silently ignoring a whole section is the
+manifest layer's version of a dropped option: the author declared the spec source, prova agreed, and
+nothing was read. Found via the checklist init archetype, which still scaffolds `[claims]`; the
+bridge fixes every generated copy at once, and the archetype's own regeneration is cleanup, not the
+fix. Retires at 1.0 with the other pre-1.0 spellings.
 
-<!-- backlog: collect-time-shell-panics-raw recorded=2026-08-12 -->
-Calling shell.run at COLLECT time (top-level proof-file code, e.g. to discover parameterization inputs) panics with a raw tokio 'no reactor running' panic from modules/shell.rs instead of a diagnostic. Either support it or fail with a teaching error naming the boundary ('shell is runtime-only; collect-time code has fs/toml') — a panic reads as a prova bug, not an authoring error.
-
-<!-- backlog: buildkit-wedge-hangs-suites-silently recorded=2026-08-13 -->
-A wedged Docker Desktop buildkitd (every buildx build hangs at 0%% CPU before the first progress byte, while docker pull and all other daemon ops stay healthy) hangs any suite that builds an image until its outer timeout — 2h per suite in the workspace sweep, serially. prova's docker.build sees only silence: no liveness bound, no narration, no distinction between 'building slowly' and 'buildkitd will never answer'. Consider a first-byte deadline on docker.build (buildkit emits 'load build definition' within seconds on a healthy builder) so a dead builder fails in seconds with a teaching error naming the fix (restart the builder), instead of burning the suite's whole timeout.
-
-<!-- backlog: unknown-test-opts-silently-ignored recorded=2026-08-13 -->
-An unknown key in a test's opts table is silently ignored — including REMOVED spellings: f5a044f deleted { spec = ... } 'gone, not bridged' (v0.18.0), so every suite still carrying it had its tolerated open specs silently degrade into hard failures (all 8 p6m-run operators, found 2026-08-12 by the workspace sweep). The manifest layer warns on deprecated spellings and the checklist found [claims] rot the same way; the DSL should hold the same line — unknown opts error (or at least warn), and a removed spelling names its successor.
+<!-- claim: buildkit-wedge-hangs-suites-silently recorded=2026-08-13 -->
+**A tool that never answers at all is a third failure mode, and `first_byte` is its bound.** The
+existing clocks cannot express it: `idle_timeout` asks "is it still alive?" and a build that has
+gone quiet mid-step is legitimately alive, while a wall `timeout` must be sized for the slowest
+honest build and so answers minutes or hours late. Time-to-FIRST-byte is the one interval a caller
+can bound tightly without knowing the work: a healthy builder prints `load build definition` in
+about a second, and a wedged buildkitd prints nothing, ever. So `shell.run { first_byte = "…" }`
+kills a conduct that produced no output on either stream within the window, `docker.build` carries
+a default one, and the error says the tool never answered and names the fix (restart the builder)
+rather than reading as a slow build. Composes with conduct-heartbeat-not-deadline: three clocks,
+three different questions — has it started? / is it alive? / may it keep going? — and the first byte
+disarms this one for good. (Field evidence: a wedged Docker Desktop buildkitd, with `docker pull`
+and every other daemon op healthy, hung each image-building suite until its outer bound — 2h per
+suite, serially, in the workspace sweep.)
 
 ---
 
@@ -441,5 +454,49 @@ deputy-owned artifact name) is right; the execution behind it could be content-a
 key the conduct on (argv, profile, tool-config) and let the second deputy adopt the first's
 artifact within one run. Saves minutes per sweep at zero isolation cost.
 
-<!-- backlog: reminder-reconcile-ignores-adhoc-packages recorded=2026-08-13 -->
-The post-run reminder reconciliation pass re-executes proof files but does not carry the -P/--package ad-hoc package layering the run itself used: a file calling a function that exists only in the -P-layered package collects and runs green, then 'reminders not evaluated — could not reconcile the ledger: attempt to call a nil value' when reconcile resolves the manifest's declared source instead. One invocation, two resolution answers — reconcile must see the same package set as the run.
+## 16. One invocation, one package set — reconciliation included
+
+<!-- claim: reminder-reconcile-ignores-adhoc-packages recorded=2026-08-13 -->
+The post-run reconciliation pass — which re-executes proof files to collect their `covers` for the
+attention account's `owed` — resolves the **same** package set the run resolved, `-P name=source`
+layering included. Two resolution answers inside one invocation is the defect: a file that collected
+and passed against the ad-hoc package died in the reconcile pass on a function only that package has
+("reminders not evaluated — could not reconcile the ledger: attempt to call a nil value"), so the
+run was green and its attention account silently stale. The failure mode is inherent to a pass that
+re-executes rather than reuses, and the rule that contains it is that resolution is a property of the
+invocation, not of the phase. (Field evidence: the archetype-fleet dev-pin work, where `-P` pointing
+at a working copy is the normal way to drive a package under edit.)
+
+## 14. An option prova cannot honor is refused, never dropped
+
+<!-- claim: unknown-test-opts-silently-ignored recorded=2026-08-13 -->
+An unknown key in a unit's `opts` table (`prova.test`/`group`/`flow`/`step`, and `suite.config`)
+is **refused at collect time**, naming the key, the nearest accepted spelling, and the accepted
+set — never silently dropped. A **removed** spelling names its successor instead: `spec = { … }`
+(deleted in v0.18.0, gone-not-bridged) says an open proof is flagged `promises` and its obligation
+is addressed by `covers`. The manifest layer already holds this line (`deny_unknown_fields` plus a
+did-you-mean); the DSL holds the same one, because a dropped option is worse than a rejected one —
+it reads as configured.
+
+The field evidence: every suite still carrying `spec = { … }` had its *tolerated* open specs
+degrade into hard failures the moment the key stopped being read (all 8 p6m-run operators, found
+2026-08-12 by the workspace sweep). A typo has the same shape — `tiemout = "10m"` silently means
+"no timeout", and the suite that thought it was bounded is not.
+
+## 15. The collect/runtime boundary teaches instead of panicking
+
+<!-- claim: collect-time-shell-panics-raw recorded=2026-08-12 -->
+A runtime-only surface reached from **collect-time** code — a proof file's top level, where the plan
+is built — raises a teaching error naming the boundary and what collect time *does* have (`fs`,
+`toml`/`json`/`yaml`, `env`: pure reads), never a raw tokio panic. The panic was worse than ugly:
+unwrapped it aborted the run mid-collect, and inside `pcall` it was *caught*, so a file could print
+a reactor panic and still report green.
+
+The boundary is deliberate, not incidental. Collect answers "what units exist?" for `--list`,
+`tests`, `--covering`, and every MCP query; if a plan could shell out, then listing a suite would
+execute arbitrary commands, and selection would stop being cheap and safe. So process, network, and
+container work belongs in a fixture or a test body — where the runtime, its bounds, and its lease
+all exist.
+
+<!-- backlog: module-opts-silently-ignored recorded=2026-08-13 -->
+A MODULE option table silently ignores unknown keys — the same disease as unit opts, one layer over: docker.build{ first_byte = ... } on a prova without that option built normally and the proof passed while proving nothing (found 2026-08-13 writing the first-byte proof; only the conductor-vs-subject discipline caught it). shell.run's RunOpts, docker.build/docker.run's specs, http, sql and the rest all parse by key lookup, so a typo'd or version-mismatched option reads as configured. The unit-opts gate (agent-ergonomics.md#unknown-test-opts-silently-ignored) is the shape to copy; the wrinkle is version skew — a proof written for a newer prova should fail loudly on the older binary, which is exactly what refusing gives.

@@ -550,6 +550,14 @@ fn install_suite_config(lua: &Lua, col: &SharedCollector) -> mlua::Result<()> {
                         "proves is test-level only — annotate each test, not the suite".into(),
                     ));
                 }
+                // The widest silent drop of all: a key ignored here mis-configures every file in
+                // the suite. `promises`/`proves` are refused above with their own teaching, so by
+                // here the only remaining keys are the accepted three or a mistake.
+                super::collect::reject_unknown_opts(
+                    &opts,
+                    &["name", "requires", "switch"],
+                    "suite.config",
+                )?;
                 Ok(())
             })?,
         )?;
@@ -784,7 +792,7 @@ pub(super) fn register_test(
     case: Option<Value>,
     line: Option<u32>,
 ) -> mlua::Result<NodeIx> {
-    let (opts, body, falsifier) = split_opts_body(a, b)?;
+    let (opts, body, falsifier) = split_opts_body(a, b, "test", &name)?;
     Ok(col.borrow_mut().add(
         parent,
         Node {
@@ -892,7 +900,7 @@ pub(super) fn register_group(
     a: Value,
     b: Value,
 ) -> mlua::Result<NodeIx> {
-    let (opts, body, falsifier) = split_opts_body(a, b)?;
+    let (opts, body, falsifier) = split_opts_body(a, b, "group", &name)?;
     reject_falsifier(falsifier, "group")?;
     let line = caller_line(lua, col);
     let gix = col.borrow_mut().add(
@@ -980,7 +988,7 @@ pub(super) fn register_flow(
     a: Value,
     b: Value,
 ) -> mlua::Result<NodeIx> {
-    let (opts, body, falsifier) = split_opts_body(a, b)?;
+    let (opts, body, falsifier) = split_opts_body(a, b, "flow", &name)?;
     reject_falsifier(falsifier, "flow")?;
     let line = caller_line(lua, col);
     let fix = col.borrow_mut().add(
@@ -1029,7 +1037,7 @@ pub(super) struct FlowBuilder {
 impl UserData for FlowBuilder {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("step", |lua, this, (name, a, b): (String, Value, Value)| {
-            let (opts, body, falsifier) = split_opts_body(a, b)?;
+            let (opts, body, falsifier) = split_opts_body(a, b, "flow(…):step", &name)?;
             let line = caller_line(lua, &this.col);
             this.col.borrow_mut().add(
                 this.ix,

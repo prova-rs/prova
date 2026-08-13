@@ -305,6 +305,7 @@ struct StubHandle {
 /// `http.mock(ctx, opts?)` → a managed mock server.
 pub(crate) fn mock_fn(lua: &Lua) -> mlua::Result<Function> {
     lua.create_function(|lua, (ctx, opts): (Value, Option<Table>)| {
+        super::runtime_only("http.mock")?;
         let server = start(lua, opts.as_ref())?;
         let ud = lua.create_userdata(server)?;
         super::manage("http.mock", &ctx, &ud)?;
@@ -1094,6 +1095,7 @@ impl UserData for HttpFuse {
 ///   auto    — record when the cassette file is absent, replay when present
 pub(crate) fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
     lua.create_function(|lua, (ctx, opts): (Value, Table)| {
+        super::runtime_only("http.proxy")?;
         let upstream = opts.get::<Option<String>>("upstream")?;
         let cassette = opts.get::<Option<String>>("cassette")?;
         let mode = opts

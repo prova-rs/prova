@@ -110,6 +110,7 @@ impl UserData for ClientUd {
 
 fn connect_fn(lua: &Lua) -> mlua::Result<Function> {
     lua.create_async_function(|_, url: String| async move {
+        super::runtime_only("websocket.connect")?;
         if !url.starts_with("ws://") {
             return Err(err(format!(
                 "websocket.connect: url must be ws:// (no TLS in v1), got {url:?}"

@@ -46,7 +46,9 @@ pub(crate) fn owed_subcommand(args: Vec<String>) -> ExitCode {
         Ok(h) => h,
         Err(code) => return code,
     };
-    let (manifest, packages_resolved) = match resolve_for_obligations(&home) {
+    // `&[]`: the query verbs take no `-P` of their own — thread the entries here if they ever do,
+    // because collection EXECUTES the proof files and must resolve what they require.
+    let (manifest, packages_resolved) = match resolve_for_obligations(&home, &[]) {
         Ok(pair) => pair,
         Err(code) => return code,
     };

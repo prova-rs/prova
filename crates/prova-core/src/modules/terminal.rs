@@ -487,6 +487,7 @@ impl UserData for TermUd {
 
 fn spawn_fn(lua: &Lua) -> mlua::Result<Function> {
     lua.create_function(|lua, (ctx, opts): (Value, Table)| {
+        super::runtime_only("terminal.spawn")?;
         let cmd: Vec<String> = opts
             .get::<Option<Vec<String>>>("cmd")?
             .filter(|v| !v.is_empty())

@@ -187,7 +187,9 @@ pub(crate) fn attest_subcommand(args: Vec<String>) -> ExitCode {
         Ok(h) => h,
         Err(code) => return code,
     };
-    let (manifest, packages_resolved) = match resolve_for_obligations(&home) {
+    // `&[]`: the attest/evidence verbs carry no `-P` of their own; the RUN's layering is threaded
+    // through `evaluate_run_reminders` instead, where the invocation actually has it.
+    let (manifest, packages_resolved) = match resolve_for_obligations(&home, &[]) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
@@ -359,6 +361,7 @@ fn resolve_claim_address(
 /// a plugins-only manifest is legitimate here where it would be a config error for a run.
 pub(crate) fn resolve_for_obligations(
     home: &home::Home,
+    cli_packages: &[String],
 ) -> Result<(Manifest, packages::ResolvedPackages), ExitCode> {
     let manifest = read_manifest(home)?;
     let layout = match XdgSystemLayout::new() {
@@ -368,7 +371,14 @@ pub(crate) fn resolve_for_obligations(
             return Err(ExitCode::from(2));
         }
     };
-    let run = resolve_from_manifest(home, None, None, None, None, &layout, false, false, false)?;
+    let mut run =
+        resolve_from_manifest(home, None, None, None, None, &layout, false, false, false)?;
+    // The obligation readers EXECUTE proof files to collect their `covers`, so they must resolve
+    // the same package set the run did — `-P name=source` included
+    // (docs/design/agent-ergonomics.md#reminder-reconcile-ignores-adhoc-packages). Resolving the
+    // manifest's declared source instead makes one invocation give two answers: a file that
+    // collected and passed against the ad-hoc package dies here on a function only that package has.
+    crate::layer_cli_packages(cli_packages, &layout, &run.sources, &mut run.dependencies)?;
     Ok((manifest, run.dependencies))
 }
 
@@ -380,18 +390,21 @@ pub(crate) fn resolve_for_obligations(
 /// never observe reminder state (one pass, no fixpoint). If the ledger cannot be reconciled the
 /// pass is skipped with a note and the previous rows carry forward — a wrong `owed` would fire
 /// ledger conditions falsely, which is worse than firing late.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn evaluate_run_reminders(
     home: &home::Home,
     suites: &[prova_core::Suite],
     config: &prova_core::RunConfig,
     summary: &prova_core::Summary,
     measurements: &[prova_core::Measurement],
+    // The run's own `-P` layering, carried here so reconciliation sees the run's package set.
+    cli_packages: &[String],
 ) -> Vec<record::ReminderEntry> {
     // One scan feeds both the owed count and the spec items a draw-down condition reads — the
     // anchors are already in hand, so exposing their properties costs nothing extra.
     let reconciled = (|| -> Result<(usize, Vec<prova_core::SpecItem>), String> {
-        let (manifest, packages_resolved) =
-            resolve_for_obligations(home).map_err(|_| "could not resolve the package".to_string())?;
+        let (manifest, packages_resolved) = resolve_for_obligations(home, cli_packages)
+            .map_err(|_| "could not resolve the package".to_string())?;
         let docs = spec_scan_roots(&manifest);
         let claims = claims::scan(&home.dir, &docs).map_err(|e| e.to_string())?;
         let proofs = collect_obligations(home, &manifest, &packages_resolved)?;
@@ -697,7 +710,7 @@ pub(crate) fn evidence_subcommand(args: Vec<String>) -> ExitCode {
         Ok(h) => h,
         Err(code) => return code,
     };
-    let (manifest, packages_resolved) = match resolve_for_obligations(&home) {
+    let (manifest, packages_resolved) = match resolve_for_obligations(&home, &[]) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
@@ -936,7 +949,7 @@ end)
 
         let home = home::find(&dir).unwrap().expect("the tempdir package has a manifest");
         let (manifest, packages_resolved) =
-            resolve_for_obligations(&home).map_err(|_| "resolve failed").unwrap();
+            resolve_for_obligations(&home, &[]).map_err(|_| "resolve failed").unwrap();
         let account = evidence_account(&home, &manifest, &packages_resolved).unwrap();
 
         assert_eq!(account.claimed, 1);

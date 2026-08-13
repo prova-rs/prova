@@ -876,7 +876,7 @@ fn store_run_record(
     let reminders: Vec<record::ReminderEntry> = match &home {
         Some(h) if full_run => {
             if summary.reminders_declared > 0 {
-                evaluate_run_reminders(h, suites, config, summary, measurements)
+                evaluate_run_reminders(h, suites, config, summary, measurements, &cli.packages)
             } else {
                 Vec::new()
             }

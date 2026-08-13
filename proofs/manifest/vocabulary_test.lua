@@ -124,3 +124,40 @@ prova.test("the deprecated verbs still dispatch, warning toward the package spel
   local canonical = run(root, "packages")
   t:expect(canonical.stdout, "new verb is quiet"):never():contains("deprecated")
 end)
+
+prova.test("a `[claims]` manifest is honored with a warning — the section is read, not ignored",
+  {
+    covers = {
+      "docs/design/manifest.md#deprecated-spellings-teach",
+      "docs/design/agent-ergonomics.md#checklist-archetype-stale-claims-table",
+    },
+    proves = "ignoring a whole declared section is the manifest's dropped option: the author said where the prose lives, prova agreed, and read nothing — so every `covers` reported DANGLING ('no anchor exists') with the anchor sitting in the very file named. Found in the checklist archetype's generated manifests; the bridge fixes every copy already out there, which regenerating the archetype cannot",
+  }, function(t)
+  local root = t:use(scratch)()
+  fs.mkdir(root .. "/proofs")
+  fs.mkdir(root .. "/docs")
+  fs.write(root .. "/docs/PLAN.md", "# Plan\n\n<!-- claim: the-anchor-is-right-here -->\nThe prose backing the claim.\n")
+  -- `[==[ … ]==]`: the TOML's own `[[claims.source]]` closes a plain `[[ … ]]` literal.
+  fs.write(root .. "/prova.toml", [==[
+[run]
+proofs = ["proofs"]
+
+[[claims.source]]
+type = "directory"
+path = "docs"
+]==])
+  fs.write(root .. "/proofs/a_test.lua",
+    'prova.test("discharges it", { covers = "docs/PLAN.md#the-anchor-is-right-here" }, function(t)\n' ..
+    '  t:expect(1):equals(1)\nend)\n')
+
+  local r = run(root)
+  t:expect(r.code, "the old spelling still runs green"):equals(0)
+  t:expect(r.stdout, "`[claims]` teaches its successor"):contains("[specs]")
+  t:expect(r.stdout):contains("deprecated")
+
+  -- The point of honoring it: the ledger SEES the docs, so the covers binds instead of dangling.
+  local owed = run(root, "owed")
+  t:expect(owed.stdout, "nothing dangles — the anchor was found where the manifest said"):never():contains("DANGLING")
+  local evidence = run(root, "evidence")
+  t:expect(evidence.stdout, "the claim is counted as claimed"):never():contains('"claimed": 0')
+end)

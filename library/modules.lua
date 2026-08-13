@@ -107,6 +107,7 @@ function ShellResult:ok() end
 ---@field env? table<string, string|number|boolean>   # scalars coerce — ports stay numbers
 ---@field timeout? string     # wall-clock outer bound, e.g. "120s" — prices the whole task
 ---@field idle_timeout? string # liveness bound, e.g. "90s": kill only when a window passes with NO bytes on either stream AND no CPU progress (native readers; bytes-only where none exists) — bounds death, never work (composes with `timeout`)
+---@field first_byte? string # start-up bound, e.g. "30s": kill if NOTHING arrives on either stream within this long of spawn — the "it never answered" clock (a wedged daemon), disarmed for good by the first byte; "0s" disables
 ---@field check? boolean      # non-zero exit raises, carrying the tail of BOTH stdout and stderr
 ---@field merge_stderr? boolean  # fold stderr into stdout (the portable replacement for `2>&1`); stderr is then empty
 ---@field stdin? string          # feed the program's stdin (the portable replacement for `printf x | cmd`)
@@ -516,6 +517,7 @@ function Network:stop() end
 ---@field target? string                # multi-stage build target
 ---@field pull? boolean                 # always re-pull the base image (default false)
 ---@field nocache? boolean              # ignore the build cache (default false)
+---@field first_byte? string             # how long the builder may say NOTHING before it is called wedged (default "90s"; "0s" disables) — BuildKit prints `load build definition` within seconds when healthy, so this catches a wedged buildkitd in seconds instead of at the suite's bound
 
 ---@class prova.docker
 docker = {}

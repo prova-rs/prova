@@ -177,8 +177,10 @@ struct Prepared {
 
 fn method_fn(lua: &Lua, method: reqwest::Method) -> mlua::Result<Function> {
     lua.create_async_function(move |lua, (url, opts): (String, Option<Table>)| {
+        let name = format!("http.{}", method.as_str().to_ascii_lowercase());
         let prepared = build_prepared(&lua, method.clone(), url, Vec::new(), None, opts);
         async move {
+            super::runtime_only(&name)?;
             let resp = send(prepared?).await?;
             lua.create_userdata(resp)
         }
@@ -306,6 +308,7 @@ fn wait_for_fn(lua: &Lua) -> mlua::Result<Function> {
     lua.create_async_function(|lua, (url, opts): (String, Option<Table>)| {
         let params = wait_params(&opts);
         async move {
+            super::runtime_only("http.wait_for")?;
             let (expected, timeout, every) = params?;
             let deadline = Instant::now() + timeout;
             loop {

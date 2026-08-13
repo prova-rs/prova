@@ -227,6 +227,7 @@ fn run_fn(
         let progress = super::Arc::clone(&progress);
         let spec = Spec::from_table(&opts);
         async move {
+            super::runtime_only("docker.run")?;
             let container = start(spec?, &progress).await?;
             lua.create_userdata(container)
         }
@@ -245,7 +246,17 @@ struct BuildSpec {
     target: Option<String>,
     pull: bool,
     nocache: bool,
+    /// How long the builder may say NOTHING before it is declared wedged
+    /// (docs/design/agent-ergonomics.md#buildkit-wedge-hangs-suites-silently). A healthy BuildKit
+    /// prints `load build definition` in about a second; a wedged one prints nothing, ever. This
+    /// bounds only the silence BEFORE the first byte, so an hour-long build is never touched.
+    first_byte: Option<std::time::Duration>,
 }
+
+/// How long `docker.build` waits for the builder's first byte before calling it wedged. Generous
+/// against a cold daemon (Docker Desktop can take tens of seconds to answer its socket after a
+/// laptop wakes) and still ~80× tighter than the suite bound the wedge used to consume.
+const DEFAULT_BUILD_FIRST_BYTE: std::time::Duration = std::time::Duration::from_secs(90);
 
 /// Where a BuildKit secret's bytes come from. A production Dockerfile that reads a private
 /// registry token via `RUN --mount=type=secret,id=…` cannot be built without this, and a
@@ -373,6 +384,12 @@ impl BuildSpec {
             target: t.get::<Option<String>>("target")?,
             pull: t.get::<Option<bool>>("pull")?.unwrap_or(false),
             nocache: t.get::<Option<bool>>("nocache")?.unwrap_or(false),
+            // Defaulted, not opt-in: the failure this bound answers cost 2h per suite precisely
+            // because nobody had thought to ask for it. `first_byte = "0s"` disables it.
+            first_byte: match t.get::<Option<String>>("first_byte")? {
+                Some(s) => parse_duration(&s).filter(|d| !d.is_zero()),
+                None => Some(DEFAULT_BUILD_FIRST_BYTE),
+            },
         })
     }
 }
@@ -404,6 +421,7 @@ fn build_fn(
         let progress = super::Arc::clone(&progress);
         let spec = BuildSpec::from_table(&opts);
         async move {
+            super::runtime_only("docker.build")?;
             let spec = spec?;
             let activity =
                 super::progress::start(&progress, super::Kind::Build, spec.tag.clone());
@@ -477,8 +495,31 @@ async fn build(spec: BuildSpec) -> mlua::Result<String> {
     }
     cmd.arg(&spec.context);
 
-    cmd.stdin(std::process::Stdio::null()); // tokio output() inherits stdin; see shell.run
-    let output = cmd.output().await.map_err(derr)?;
+    // Supervised like every other conduct (shell.rs owns the clocks): the first-byte bound turns a
+    // wedged builder into a named failure in seconds, and routing through the supervisor also puts
+    // the build in its own process group under prova's lease — so `kill -9 prova` no longer leaves
+    // a `docker build` running.
+    let output = match super::shell::run_supervised(cmd, None, None, None, spec.first_byte)
+        .await
+        .map_err(derr)?
+    {
+        super::shell::Supervised::Finished(output) => output,
+        super::shell::Supervised::Mute => {
+            let bound = spec.first_byte.unwrap_or(DEFAULT_BUILD_FIRST_BYTE);
+            return Err(derr(format!(
+                "docker.build: the builder produced no output at all within {bound:?} — BuildKit \
+                 prints `load build definition` within seconds on a healthy builder, so this is a \
+                 wedged builder, not a slow build. Restart it (Docker Desktop: restart the app or \
+                 `docker buildx rm`), then re-run. Other daemon ops (`docker pull`, `docker ps`) \
+                 can stay healthy while buildkitd is wedged, so a green capability probe does not \
+                 clear it. Pass `first_byte = \"0s\"` to build unbounded."
+            )));
+        }
+        // No idle or wall bound is set here, so the supervisor cannot answer with either.
+        super::shell::Supervised::Idle { .. } | super::shell::Supervised::Wall { .. } => {
+            return Err(derr("docker.build: unreachable supervision verdict"))
+        }
+    };
     if !output.status.success() {
         // Carry the builder's own log. BuildKit writes progress and errors to stderr, but a
         // failing `RUN` prints the command's own output to stdout, so the diagnosis is usually
@@ -553,6 +594,7 @@ fn network_fn(lua: &Lua) -> mlua::Result<Function> {
             None => Ok(None),
         };
         async move {
+            super::runtime_only("docker.network")?;
             let name = name?.unwrap_or_else(unique_network_name);
             let client = connect().await?;
             client

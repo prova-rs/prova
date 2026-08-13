@@ -169,6 +169,7 @@ fn deserialize_opts() -> DeserializeOptions {
 
 pub(crate) fn mock_fn(lua: &Lua) -> mlua::Result<Function> {
     lua.create_function(|lua, (ctx, opts): (Value, Option<Table>)| {
+        super::runtime_only("grpc.mock")?;
         let opts = opts.ok_or_else(|| {
             err(
                 "grpc.mock(ctx, opts): a mock must be told its schema — pass `proto = \"…\"`. \
@@ -989,6 +990,7 @@ pub(crate) fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
     // Async, unlike grpc.mock: a record proxy must dial the upstream and reflect its schema,
     // which is exactly the async work grpc.client does at construction.
     lua.create_async_function(|lua, (ctx, opts): (Value, Table)| async move {
+        super::runtime_only("grpc.proxy")?;
         let server = start_proxy(&lua, &opts).await?;
         let ud = lua.create_userdata(server)?;
         super::manage("grpc.proxy", &ctx, &ud)?;

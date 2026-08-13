@@ -252,6 +252,31 @@ fn absent_stub(lua: &Lua, name: &'static str) -> mlua::Result<Table> {
     Ok(tbl)
 }
 
+/// The collect/runtime boundary, stated where it is crossed
+/// (docs/design/agent-ergonomics.md#collect-time-shell-panics-raw).
+///
+/// Every async surface needs a reactor, and collect-time code — a proof file's top level, where the
+/// plan is built — runs without one. Absent this check the author got tokio's own panic ("there is
+/// no reactor running"), which reads as a prova bug: unwrapped it aborted the run mid-collect, and
+/// inside `pcall` it was caught, so a file could print a panic and still report green.
+///
+/// The condition is the missing reactor itself rather than a phase flag, so it cannot disagree with
+/// the thing that would have panicked, and a new module inherits the boundary by calling this.
+pub(crate) fn runtime_only(what: &str) -> mlua::Result<()> {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return Ok(());
+    }
+    Err(mlua::Error::RuntimeError(format!(
+        "`{what}` is runtime-only, and this call is at COLLECT time — a proof file's top level, \
+         where the plan is built and no async runtime exists yet. Move process, network, and \
+         container work into a test body or a fixture (`prova.fixture(name, Scope.File, …)`), which \
+         run inside the runtime. Collect time has the pure reads: fs, toml/json/yaml, env — enough \
+         to discover parameterization inputs for `test_each`. (The plan stays cheap on purpose: \
+         `--list`, `tests`, and `--covering` build it, and listing a suite must never execute \
+         anything.)"
+    )))
+}
+
 mod shell;
 
 // ---------------------------------------------------------------------------------------------

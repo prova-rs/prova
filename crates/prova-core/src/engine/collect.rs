@@ -152,10 +152,16 @@ pub(super) fn reject_bare_in_builder(col: &SharedCollector, what: &str) -> mlua:
 
 pub(super) type SharedCollector = Rc<RefCell<Collector>>;
 
-pub(super) fn split_opts_body(a: Value, b: Value) -> mlua::Result<(UnitOpts, Function, Option<Function>)> {
+pub(super) fn split_opts_body(
+    a: Value,
+    b: Value,
+    kind: &str,
+    unit: &str,
+) -> mlua::Result<(UnitOpts, Function, Option<Function>)> {
     match (a, b) {
         (Value::Function(f), Value::Nil) => Ok((UnitOpts::default(), f, None)),
         (Value::Table(t), Value::Function(f)) => {
+            reject_unknown_opts(&t, UNIT_OPTS, &format!("prova.{kind}(\"{unit}\")"))?;
             let falsifier = parse_falsified_by(&t.get::<Value>("falsified_by")?)?;
             Ok((parse_opts(&t)?, f, falsifier))
         }
@@ -163,6 +169,99 @@ pub(super) fn split_opts_body(a: Value, b: Value) -> mlua::Result<(UnitOpts, Fun
             "expected (name, fn) or (name, opts, fn)".into(),
         )),
     }
+}
+
+/// Every option a unit's `opts` table may carry — closed by construction. `resources` is the
+/// deprecated spelling of `locks`: accepted (it warns in `parse_opts`) but deliberately not
+/// advertised, so the message never teaches a spelling on its way out.
+pub(super) const UNIT_OPTS: &[&str] = &[
+    "covers",
+    "depends_on",
+    "falsified_by",
+    "locks",
+    "promises",
+    "proves",
+    "requires",
+    "resources",
+    "serial",
+    "switch",
+    "tags",
+    "timeout",
+];
+
+/// Spellings prova USED to accept, and where the behavior went. A removed key's own name is the
+/// least useful thing to say about it: the author asked for a behavior, and needs its successor.
+const REMOVED_OPTS: &[(&str, &str)] = &[(
+    "spec",
+    "was removed in prova 0.18 (gone, not bridged) — an OPEN proof is flagged \
+     `promises = \"why it is open\"`, and the obligation it discharges is addressed by \
+     `covers = \"docs/design/x.md#claim-id\"`",
+)];
+
+/// Refuse an option prova cannot honor
+/// (docs/design/agent-ergonomics.md#unknown-test-opts-silently-ignored).
+///
+/// A dropped option is worse than a rejected one, because it reads as *configured*:
+/// `tiemout = "10m"` means unbounded, and the suite that believes it is bounded finds out from a
+/// hung CI job. The removed-spelling case is the same failure with a receipt — when `spec = { … }`
+/// stopped being read, every suite still carrying it had its TOLERATED open specs quietly become
+/// hard failures.
+///
+/// Unknown keys are collected and sorted before reporting: Lua table order is unspecified, and a
+/// diagnostic that names a different key on each run is not a diagnostic.
+pub(super) fn reject_unknown_opts(
+    t: &mlua::Table,
+    accepted: &[&str],
+    site: &str,
+) -> mlua::Result<()> {
+    let mut unknown: Vec<String> = Vec::new();
+    let mut positional = 0usize;
+    for pair in t.clone().pairs::<Value, Value>() {
+        let (k, _) = pair?;
+        match k {
+            Value::String(s) => {
+                let key = s.to_string_lossy();
+                if !accepted.contains(&key.as_ref()) {
+                    unknown.push(key.to_string());
+                }
+            }
+            // A positional entry is the same silent drop wearing a different shape:
+            // `{ "slow" }` looks like tags to the author and is nothing to prova.
+            _ => positional += 1,
+        }
+    }
+    if unknown.is_empty() && positional == 0 {
+        return Ok(());
+    }
+    unknown.sort();
+    let advertised: Vec<&str> = accepted
+        .iter()
+        .copied()
+        .filter(|k| !REMOVED_OPTS.iter().any(|(r, _)| r == k) && *k != "resources")
+        .collect();
+    let mut parts: Vec<String> = unknown
+        .iter()
+        .map(|key| match REMOVED_OPTS.iter().find(|(r, _)| r == key) {
+            Some((_, teaching)) => format!("`{key}` {teaching}"),
+            None => match crate::suggest::nearest(key, advertised.iter().copied()) {
+                Some(best) => format!("unknown option `{key}` — did you mean `{best}`?"),
+                None => format!("unknown option `{key}`"),
+            },
+        })
+        .collect();
+    if positional > 0 {
+        parts.push(format!(
+            "{positional} positional entr{} in the opts table — options are named \
+             (`tags = {{ \"slow\" }}`, not `{{ \"slow\" }}`)",
+            if positional == 1 { "y" } else { "ies" }
+        ));
+    }
+    Err(mlua::Error::RuntimeError(format!(
+        "{site}: {} (accepted: {}). An option prova cannot honor is refused, never dropped — a \
+         dropped one reads as configured.",
+        parts.join("; "),
+        advertised.join(", ")
+    )))
 }
 
 /// The `falsified_by` opt: a **function** that mutates the system so the body must go red.

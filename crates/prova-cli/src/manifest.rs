@@ -103,8 +103,11 @@ pub struct Manifest {
     /// `backlog` states). **Absent by default, and absence is the whole point**: a package that
     /// never opts in pays nothing, scans nothing, and is never told about a subsystem it does not
     /// use. Declaring `docs` is the opt-in. (Renamed from `[claims]` — the section declares the
-    /// prose that holds claims AND backlog items, so it was under-named.)
-    #[serde(default)]
+    /// prose that holds claims AND backlog items, so it was under-named. The alias keeps the old
+    /// spelling WORKING, because ignoring a whole declared section is the manifest's version of a
+    /// dropped option: every `covers` then reports DANGLING with the prose sitting right there —
+    /// docs/design/agent-ergonomics.md#checklist-archetype-stale-claims-table.)
+    #[serde(default, alias = "claims")]
     pub specs: Option<SpecsSection>,
     /// `[placement]` — the broker prova dials at run start (docs/design/placement.md §Transport).
     /// A property of the package, not a profile: where capability and contention questions are
@@ -704,34 +707,11 @@ const RETIRED_KEYS: &[(&str, &str, &str)] = &[
     ("paths", "proofs", "0.12"),
 ];
 
-/// Levenshtein distance, iterative two-row. Small enough not to warrant a dependency.
-fn edit_distance(a: &str, b: &str) -> usize {
-    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
-    let mut prev: Vec<usize> = (0..=b.len()).collect();
-    let mut cur = vec![0usize; b.len() + 1];
-    for (i, ca) in a.iter().enumerate() {
-        cur[0] = i + 1;
-        for (j, cb) in b.iter().enumerate() {
-            let sub = prev[j] + usize::from(ca != cb);
-            cur[j + 1] = sub.min(prev[j + 1] + 1).min(cur[j] + 1);
-        }
-        std::mem::swap(&mut prev, &mut cur);
-    }
-    prev[b.len()]
-}
-
-/// The closest known key to `field`, if one is close enough to be worth naming.
-///
-/// No future version adds a key one edit away from an existing one, so proximity is proof of a
-/// typo regardless of what the manifest declares — which is why this needs no version context.
-/// The threshold scales with length so short keys do not match everything.
+/// The closest known key to `field`, if one is close enough to be worth naming — the same
+/// proximity policy the DSL's `opts` gate uses (`prova_core::suggest`), so the two layers that
+/// refuse unknown keys cannot drift on what counts as a typo.
 fn suggest<'a>(field: &str, candidates: impl Iterator<Item = &'a str>) -> Option<&'a str> {
-    let limit = (field.chars().count() / 3).clamp(1, 3);
-    candidates
-        .map(|c| (edit_distance(field, c), c))
-        .filter(|(d, _)| *d <= limit)
-        .min_by_key(|(d, _)| *d)
-        .map(|(_, c)| c)
+    prova_core::suggest::nearest(field, candidates)
 }
 
 /// Turn serde's "unknown field" into something that says what to do about it.
@@ -785,6 +765,13 @@ fn warn_deprecated_spellings(text: &str) {
             "plugins",
             "`[plugins]` is deprecated — rename the table to `[dependencies]` (every dependency \
              is a package; retires at 1.0)",
+        );
+    }
+    if value.get("claims").is_some() {
+        warn_once(
+            "claims",
+            "`[claims]` is deprecated — rename the table to `[specs]` (the section declares the \
+             prose that holds claims AND backlog items; retires at 1.0)",
         );
     }
     if value.get("plugin").is_some() {

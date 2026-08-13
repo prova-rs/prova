@@ -430,6 +430,7 @@ impl UserData for Conn {
 
 fn connect_fn(lua: &Lua) -> mlua::Result<Function> {
     lua.create_async_function(|_, (addr, opts): (String, Option<Table>)| async move {
+        super::runtime_only("socket.connect")?;
         let framing = Framing::parse(match &opts {
             Some(t) => t.get::<Option<Value>>("framing")?,
             None => None,

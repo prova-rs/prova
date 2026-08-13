@@ -13,6 +13,7 @@ pub mod model;
 mod modules;
 mod packages;
 pub mod progress;
+pub mod suggest;
 mod suite;
 pub mod lanes;
 pub mod locks;

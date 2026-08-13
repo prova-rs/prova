@@ -108,6 +108,7 @@ pub(crate) fn make(lua: &Lua, engine: Engine) -> mlua::Result<Table> {
 fn client_fn(lua: &Lua, engine: Engine) -> mlua::Result<Function> {
     lua.create_async_function(move |lua, url: String| async move {
         let name = engine.name();
+        super::runtime_only(&format!("{name}.client"))?;
         if !engine.schemes().iter().any(|s| url.starts_with(s)) {
             return Err(mlua::Error::RuntimeError(format!(
                 "{name}.client: expected a {scheme} URL, got {url:?}",
