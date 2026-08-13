@@ -85,7 +85,7 @@ prova.test("every async module entry carries the boundary guard — the next mod
           if lines[j]:find("runtime_only(", 1, true) then guarded = true; break end
         end
         if not guarded then
-          unguarded[#unguarded + 1] = path.basename(file) .. ":" .. i
+          unguarded[#unguarded + 1] = file:match("([^/\\]+)$") .. ":" .. i
         end
       end
     end

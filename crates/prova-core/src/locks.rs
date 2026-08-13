@@ -11,6 +11,41 @@
 //! provision, an external build wrapper.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
+
+/// Wall time this process spent STALLED on cross-instance locks
+/// (docs/design/agent-ergonomics.md#narrate-lock-waits) — banked at the end of a run as
+/// `run.lock_wait_ms`.
+///
+/// Stalled, not summed: the number answers "how much wall time would come back if the contention
+/// vanished", so a wait overlapped with other work contributes nothing (it cost nothing) and two
+/// leaves blocked on one token cannot double-count past the run's own clock. A metric that can
+/// exceed wall time is worthless exactly when contention is worst.
+///
+/// Process-global because a prova process is one run, which keeps the counter out of every
+/// signature between the flock and the record.
+static STALLED_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Add to the run's stall total. Called by the blocking holds here and by the scheduler for each
+/// poll round it spends with nothing runnable and a lock refused.
+pub fn record_stall(waited: Duration) {
+    STALLED_MS.fetch_add(waited.as_millis() as u64, Ordering::Relaxed);
+}
+
+/// The stall total so far, left in place — for a caller measuring one acquisition.
+pub fn stalled() -> Duration {
+    Duration::from_millis(STALLED_MS.load(Ordering::Relaxed))
+}
+
+/// The stall total, and reset to zero — what a run banks.
+///
+/// The reset is not tidiness: `prova mcp` serves MANY runs from one process (its warm loop takes
+/// `Run` commands until the client goes away), so a counter that only accumulated would bank the
+/// first run's contention again in the second, and again in the third. Per-run means take-and-clear.
+pub fn take_stalled() -> Duration {
+    Duration::from_millis(STALLED_MS.swap(0, Ordering::Relaxed))
+}
 
 /// Where `token`'s lock file lives. Run-scoped tokens (the reserved `__prova_` prefix) have
 /// none. The token is sanitized into a filename; two tokens that sanitize identically share a
@@ -69,8 +104,25 @@ pub fn hold(
         ));
     };
     let file = open_lock(&path)?;
+    // A blocking hold IS a stall: this thread is the critical section's participant, so nothing
+    // else in the process proceeds while the flock waits. Measured here rather than at the call
+    // sites so every caller — the subject provision, the `lock` wrapper — is counted once.
+    let waited_from = Instant::now();
     flock(&file, shared, true)?;
+    record_stall(waited_from.elapsed());
     Ok(file)
+}
+
+/// [`hold`], reporting how long the acquisition blocked — for a caller that narrates its own wait.
+pub fn hold_timed(
+    token: &str,
+    shared: bool,
+    machine: bool,
+    project_dir: Option<&Path>,
+) -> std::io::Result<(std::fs::File, Duration)> {
+    let before = stalled();
+    let file = hold(token, shared, machine, project_dir)?;
+    Ok((file, stalled().saturating_sub(before)))
 }
 
 /// [`hold`], write-mode and package-scoped — the common case, named for its callers.
@@ -145,5 +197,22 @@ mod tests {
         let r2 = try_hold("t", true, false, Some(&dir)).unwrap();
         assert!(r1.is_some() && r2.is_some(), "readers share");
         assert!(try_hold("t", false, false, Some(&dir)).unwrap().is_none(), "writer waits on readers");
+    }
+}
+
+#[cfg(test)]
+mod stall_tests {
+    use super::*;
+
+    // The MCP shape: one process, many runs. A second run must bank its OWN contention, not the
+    // first run's again — the reason `take_stalled` clears rather than reads.
+    #[test]
+    fn taking_the_stall_total_clears_it_for_the_next_run() {
+        take_stalled(); // other tests share the process; start from a known floor
+        record_stall(Duration::from_millis(120));
+        assert_eq!(take_stalled(), Duration::from_millis(120));
+        assert_eq!(take_stalled(), Duration::ZERO);
+        record_stall(Duration::from_millis(5));
+        assert_eq!(take_stalled(), Duration::from_millis(5));
     }
 }

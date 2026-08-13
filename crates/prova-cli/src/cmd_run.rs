@@ -180,8 +180,20 @@ fn provision_runner(
     // other holder is the point, and dropping the handles releases.
     let mut held: Vec<std::fs::File> = Vec::new();
     for token in &runner.locks {
-        match prova_core::locks::hold_exclusive(token, Some(&home.dir)) {
-            Ok(handle) => held.push(handle),
+        // Narrated with its duration (docs/design/agent-ergonomics.md#narrate-lock-waits): the
+        // provision is the first thing a run does, so a silent blocking hold here reads as prova
+        // hanging before it has said anything at all.
+        match prova_core::locks::hold_timed(token, false, false, Some(&home.dir)) {
+            Ok((handle, waited)) => {
+                if waited >= std::time::Duration::from_millis(400) {
+                    eprintln!(
+                        "prova: waited {:.1}s for lock {token:?} (held by another prova instance) \
+                         before provisioning the subject",
+                        waited.as_secs_f64()
+                    );
+                }
+                held.push(handle);
+            }
             Err(e) => eprintln!(
                 "prova: [runner] lock {token:?}: {e} — provisioning without the cross-instance \
                  hold (visible degradation, never silent)"
@@ -354,11 +366,15 @@ pub(crate) fn lock_subcommand(args: Vec<String>) -> ExitCode {
     }
     let project_dir = home.as_ref().map(|h| h.dir.as_path());
     // Try without blocking first, purely so a wait is SAID — then block for real.
+    let mut waited = std::time::Duration::ZERO;
     let held = match prova_core::locks::try_hold(&token, shared, machine, project_dir) {
         Ok(Some(f)) => Ok(f),
         _ => {
             eprintln!("prova: waiting for lock {token:?} (held elsewhere)…");
-            prova_core::locks::hold(&token, shared, machine, project_dir)
+            prova_core::locks::hold_timed(&token, shared, machine, project_dir).map(|(f, w)| {
+                waited = w;
+                f
+            })
         }
     };
     let _held = match held {
@@ -368,8 +384,21 @@ pub(crate) fn lock_subcommand(args: Vec<String>) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    let ran_from = std::time::Instant::now();
     match std::process::Command::new(&command[0]).args(&command[1..]).status() {
-        Ok(status) => ExitCode::from(status.code().unwrap_or(1) as u8),
+        Ok(status) => {
+            // The split is the whole point (docs/design/agent-ergonomics.md#narrate-lock-waits):
+            // this wrapper is where an operator watches a queued build, and "done in 841.8s"
+            // sends them to profile a command that ran for 190s.
+            if !waited.is_zero() {
+                eprintln!(
+                    "prova: waited {:.1}s for lock {token:?}, ran {:.1}s",
+                    waited.as_secs_f64(),
+                    ran_from.elapsed().as_secs_f64()
+                );
+            }
+            ExitCode::from(status.code().unwrap_or(1) as u8)
+        }
         Err(e) => {
             eprintln!("prova: lock: cannot run {:?}: {e}", command[0]);
             ExitCode::from(2)

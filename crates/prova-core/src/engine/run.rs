@@ -480,33 +480,50 @@ impl ResourceTable {
     }
 }
 
-/// The idle-but-blocked tick: with nothing in flight, is some leaf runnable except for a lock
-/// another prova instance holds? True means sleep-and-retry (and the wait announces itself
-/// through the progress channel — Kind::Waiting, the same one a readiness poll uses — because a
-/// wedged holder elsewhere would otherwise look like a hung run with no evidence of why).
-fn start_lock_wait(
-    leaves: &[Leaf],
-    started: &[bool],
-    outcome: &[Option<Outcome>],
-    lock_wait: &mut Option<crate::progress::Activity>,
-    config: &RunConfig,
-) -> bool {
-    let Some(first) = (0..leaves.len()).find(|&i| {
+/// The idle-but-blocked tick: with nothing in flight, is some leaf runnable except for a lock?
+/// True means sleep-and-retry — and with nothing running, no leaf of THIS run can be holding
+/// anything, so the refusal is another prova instance's hold and the round is a genuine stall
+/// (docs/design/agent-ergonomics.md#narrate-lock-waits). The per-leaf `Kind::Waiting` activity
+/// below is what says so on screen; this only decides whether to keep waiting and bill the round.
+fn stalled_on_lock(leaves: &[Leaf], started: &[bool], outcome: &[Option<Outcome>]) -> bool {
+    (0..leaves.len()).any(|i| {
         !started[i]
             && outcome[i].is_none()
             && leaves[i].deps.iter().all(|&d| outcome[d] == Some(Outcome::Passed))
-    }) else {
-        return false;
-    };
-    if lock_wait.is_none() {
-        let tokens: Vec<&str> = leaves[first].reqs.iter().map(|r| r.token.as_str()).collect();
-        *lock_wait = Some(crate::progress::start(
-            config.progress(),
-            crate::progress::Kind::Waiting,
-            format!("lock(s) {} held by another prova instance", tokens.join(", ")),
-        ));
+    })
+}
+
+/// Say that this leaf is queued on a lock, once, and let the activity report the duration when it
+/// finally acquires (docs/design/agent-ergonomics.md#narrate-lock-waits).
+///
+/// Names the holder, because the two refusals have different cures: `can_acquire` failing means
+/// this run's own scheduler is serializing declared holders (the house rule working), while a
+/// refusal that survives it is another prova instance's flock — a sibling invocation, an agent, a
+/// CI step on the same box.
+fn announce_queued(
+    leaf: &Leaf,
+    slot: &mut Option<crate::progress::Activity>,
+    resources: &ResourceTable,
+    config: &RunConfig,
+) {
+    if slot.is_some() {
+        return;
     }
-    true
+    let tokens: Vec<&str> = leaf.reqs.iter().map(|r| r.token.as_str()).collect();
+    let holder = if resources.can_acquire(&leaf.reqs) {
+        "held by another prova instance"
+    } else {
+        "held by this run"
+    };
+    *slot = Some(crate::progress::start(
+        config.progress(),
+        crate::progress::Kind::Waiting,
+        format!(
+            "lock(s) {} ({holder}) — {} is queued",
+            tokens.join(", "),
+            unit_name(leaf)
+        ),
+    ));
 }
 
 /// Dependency- and resource-aware scheduler. A leaf runs once all its dependency leaves have
@@ -525,9 +542,13 @@ pub(super) async fn run_plan(
     let leaves = &plan.leaves;
     let n = leaves.len();
     let concurrency = config.concurrency.max(1);
-    // The visible face of an idle-but-blocked run: set while every runnable leaf is waiting on a
-    // lock another prova instance holds, resolved the moment one acquires.
-    let mut lock_wait: Option<crate::progress::Activity> = None;
+    // One activity per QUEUED leaf, from its first refusal to its acquisition, so the duration it
+    // waited is reported the way every other pause is (docs/design/agent-ergonomics.md#narrate-lock-waits).
+    // Per-leaf rather than per-run on purpose: a wait overlapped with other work used to be narrated
+    // nowhere, and "the run is busy" and "this leaf is blocked" are different facts — the second is
+    // the one that makes a queued conduct read as a slow one. The progress threshold drops the
+    // trivial ones, so ordinary in-run serialization stays quiet.
+    let mut queued: Vec<Option<crate::progress::Activity>> = (0..n).map(|_| None).collect();
     let mut outcome: Vec<Option<Outcome>> = vec![None; n];
     let mut started = vec![false; n];
     let mut resources = ResourceTable::default();
@@ -590,9 +611,11 @@ pub(super) async fn run_plan(
                 continue;
             }
             if !resources.try_acquire(&leaves[i].reqs, config.project_dir.as_deref()) {
+                announce_queued(&leaves[i], &mut queued[i], &resources, config);
                 continue;
             }
-            if let Some(activity) = lock_wait.take() {
+            // Reports how long this leaf sat in the queue: `waiting for lock(s) cargo … — 651.2s`.
+            if let Some(activity) = queued[i].take() {
                 activity.done();
             }
             started[i] = true;
@@ -608,8 +631,12 @@ pub(super) async fn run_plan(
             // on. A lock held by ANOTHER prova instance breaks that implication: a leaf can be
             // runnable-but-refused with this run fully idle, and it must wait for the other
             // instance, not be silently dropped.
-            if start_lock_wait(leaves, &started, &outcome, &mut lock_wait, config) {
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            if stalled_on_lock(leaves, &started, &outcome) {
+                // Nothing of ours is running, so this round is wall time the run LOST to a holder
+                // elsewhere — the only kind of wait worth banking as `run.lock_wait_ms`.
+                let round = std::time::Duration::from_millis(50);
+                tokio::time::sleep(round).await;
+                crate::locks::record_stall(round);
                 continue;
             }
             break; // all leaves resolved (or cascade-skipping on failed deps below)

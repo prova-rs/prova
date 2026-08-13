@@ -181,6 +181,10 @@ pub(super) struct RunState {
     /// fixture NAME, shared across every suite and worker via the `RunConfig` registry pattern.
     /// Cloned from the config at state construction, exactly as `snapshot_registry` is.
     pub(super) conducts: crate::engine::ConductRegistry,
+    /// The run's progress channel, so a fixture that WAITS can say so
+    /// (docs/design/agent-ergonomics.md#narrate-lock-waits) — a `Scope.Run` reader queued behind
+    /// another worker's conduct is the one wait that lands inside the reader's own duration.
+    pub(super) progress: std::sync::Arc<dyn crate::progress::Progress>,
 }
 
 impl RunState {

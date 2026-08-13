@@ -432,30 +432,32 @@ stuck locks); deputy-owned junit copies stayed distinct under the shared-profile
 
 ## 12. Lock waits are invisible — a queued conduct reads as a slow one
 
-<!-- backlog: narrate-lock-waits recorded=2026-08-13 -->
-**The narration should say "waited 651s for cargo, ran 190s" instead of "done in 841.8s".**
-One sweep's workspace conduct showed 848.8s wall for ~190s of work — the rest was correctly
-queued behind a sibling invocation's conducts, but nothing in the output distinguishes lock
-wait from execution. The operator diagnosed it by cross-referencing sibling logs. Since the
-flock acquisition point is already a single seam, stamping acquire-wait duration into the
-existing "running … — done in Xs" line (and into the junit/tally metadata) would make
-contention first-class observable. Matters more as multi-agent harnesses make concurrent
-invocations the norm, and it is also the datum a scheduler would need to decide when the
-cargo lock has become the bottleneck.
+<!-- claim: narrate-lock-waits recorded=2026-08-13 -->
+**A queued conduct says it queued, and the run banks what contention cost it.** Waiting is
+narrated at every seam that can wait — with its duration, in one vocabulary — and the run records
+`run.lock_wait_ms` in the `timings` set, so contention is a metric a reminder can watch drift on
+and a baseline can hold, not a number an operator reconstructs by cross-referencing sibling logs.
 
-Scoping note (2026-08-13, reading the code rather than the log): "the flock acquisition point" is
-not one seam but **three**, and the 848.8s was never traced to a particular one — deciding which to
-measure is most of this item's work. (a) The scheduler's pre-start queue: `run_plan` calls
-`try_acquire` non-blocking and leaves a refused leaf for a later round, so that wait falls OUTSIDE
-the unit's duration and is narrated only by `start_lock_wait` — and only while the run is otherwise
-idle, so a wait overlapped with other work is narrated nowhere. (b) The `Scope.Run` single-flight
-wait inside `t:use`, which IS inside the reader's duration and explains a unit that reads
-848.8s for 190s of work without any flock involved. (c) A blocking `locks::hold`, used where waiting
-is the point (the subject provision, `prova lock`). A fix worth having covers (a) and (b) with one
-vocabulary — "waited X, ran Y" — and probably banks a run-level `run.lock_wait_ms` into the
-`timings` set, where the timing capability can already carry it into reminders and baselines. Note
-the reporter's line format is asserted by proofs, so changing it is a deliberate, proof-carrying
-edit rather than a free addition.
+There are **four** seams, and they are not equivalent (2026-08-13, from the code rather than the
+log — the field report's 848.8s-for-190s-of-work was never attributed to one of them):
+
+- the scheduler's pre-start queue (`run_plan`'s non-blocking `try_acquire`), which falls OUTSIDE
+  the waiting unit's duration — a unit's timer starts only once the scheduler admits it;
+- the `Scope.Run` single-flight wait inside `t:use`, which falls INSIDE the reader's duration and
+  alone explains a unit reading 848.8s for 190s of work, with no flock involved;
+- the blocking `locks::hold` behind a `[runner] locks` provision;
+- the `prova lock <token> -- cmd` wrapper, which said it was waiting but never for how long.
+
+Two rules keep the two channels honest. **Durations keep meaning wall time** — annotate the wait
+beside a duration, never redefine the duration, because baselines and tolerance bands already
+compare against it. And **`run.lock_wait_ms` counts only wall time the process was STALLED** on a
+cross-instance lock: the time that would be given back if the contention vanished. Summing
+per-leaf waits would double-count two leaves blocked on one token and could exceed the run's own
+wall clock, which makes a metric useless exactly when contention is worst; a wait overlapped with
+other work costs nothing and is narrated (so it is diagnosable) without being banked (so the
+number stays comparable). The `Scope.Run` wait is narrated for the same reason and likewise not
+banked: it is intra-run coordination, not contention with another instance — the conducting worker
+is working.
 
 ## 13. Two deputies with identical conduct scope run the same cargo twice
 

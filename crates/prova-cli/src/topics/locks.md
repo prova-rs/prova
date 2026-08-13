@@ -58,6 +58,15 @@ Any language with flock bindings joins directly (~5 lines: open the path, `LOCK_
 writer, `LOCK_SH` for a reader); Linux shell also has `flock(1)`. The kernel releases a
 crashed holder instantly.
 
+## Waiting is visible, not inferred
+
+A queued hold says so, with how long it waited — the leaf (`waiting for lock(s) cargo (held by
+another prova instance) — my test is queued`), the `[runner]` provision, and the wrapper
+(`waited 651.2s for lock "cargo", ran 190.3s`). Short waits stay quiet, so ordinary
+serialization does not chatter. Every run also banks `run.lock_wait_ms` — the wall time it
+spent **stalled** on a lock another instance held — in the `timings` baseline set, so a reminder
+can watch contention become the bottleneck instead of an operator diffing sibling logs.
+
 ## Vocabulary, precisely
 
 - `locks` — this page: tokens the scheduler holds. (`resources = { … }` is the deprecated

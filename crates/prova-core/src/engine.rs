@@ -1069,6 +1069,7 @@ fn execute_collected(
             snapshot_registry: config.snapshot_registry.clone(),
             falsify: config.falsify,
             conducts: config.conducts.clone(),
+            progress: std::sync::Arc::clone(config.progress()),
         });
         (plan, deselected, dropped, switched_off, state)
     };

@@ -987,6 +987,18 @@ fn conclude_run(
         direction: prova_core::Direction::LowerIsBetter,
         set: "timings".to_string(),
     });
+    // What contention cost this run (docs/design/agent-ergonomics.md#narrate-lock-waits): the wall
+    // time it spent STALLED on a cross-instance lock — the amount that would come back if the
+    // holder elsewhere went away. Banked on every run, including as a zero, because a metric that
+    // is absent when nothing happened cannot be told from one that was never measured, and a
+    // baseline cannot hold it. Narration explains a single run; this is what a reminder watches
+    // drift on as concurrent agents make contention the norm.
+    measurements.push(prova_core::Measurement {
+        name: "run.lock_wait_ms".to_string(),
+        value: prova_core::locks::take_stalled().as_millis() as f64,
+        direction: prova_core::Direction::LowerIsBetter,
+        set: "timings".to_string(),
+    });
 
     let full_run =
         from_manifest && config.selection.is_empty() && !cli.falsify && !cli.promises_only;

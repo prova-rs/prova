@@ -197,6 +197,9 @@ pub(super) async fn resolve_use(lua: &Lua, this: &Ctx, target: Value) -> mlua::R
 async fn resolve_run_scoped(lua: &Lua, this: &Ctx, def: &FixtureDef) -> mlua::Result<Value> {
     use crate::engine::ConductSlot;
     let store = this.state.conducts.clone();
+    // Set on the first poll that finds another worker conducting; dropping it reports how long
+    // this reader waited, on every path out of the loop.
+    let mut waiting: Option<crate::progress::Activity> = None;
     loop {
         {
             let mut slots = store.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -218,6 +221,18 @@ async fn resolve_run_scoped(lua: &Lua, this: &Ctx, def: &FixtureDef) -> mlua::Re
                 }
                 Some(ConductSlot::Conducting) => {}
             }
+        }
+        // Say what is being waited FOR (docs/design/agent-ergonomics.md#narrate-lock-waits): this
+        // wait lands inside the READER's own duration, so without a word here a queued reader is
+        // indistinguishable from a slow one — the shape behind a unit that reads 848.8s for 190s
+        // of work. Started on the first poll, so the threshold drops a conduct that settles fast;
+        // dropping it at every exit reports the duration whichever way the wait ends.
+        if waiting.is_none() {
+            waiting = Some(crate::progress::start(
+                &this.state.progress,
+                crate::progress::Kind::Waiting,
+                format!("{:?} — conducted by another worker in this run", def.name),
+            ));
         }
         // Async sleep, never a thread block: a same-state waiter must not wedge the thread that
         // is driving the very conduct it waits on.
