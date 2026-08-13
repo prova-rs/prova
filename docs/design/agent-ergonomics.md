@@ -404,3 +404,39 @@ A wedged Docker Desktop buildkitd (every buildx build hangs at 0%% CPU before th
 
 <!-- backlog: unknown-test-opts-silently-ignored recorded=2026-08-13 -->
 An unknown key in a test's opts table is silently ignored — including REMOVED spellings: f5a044f deleted { spec = ... } 'gone, not bridged' (v0.18.0), so every suite still carrying it had its tolerated open specs silently degrade into hard failures (all 8 p6m-run operators, found 2026-08-12 by the workspace sweep). The manifest layer warns on deprecated spellings and the checklist found [claims] rot the same way; the DSL should hold the same line — unknown opts error (or at least warn), and a removed spelling names its successor.
+
+---
+
+# Round five — 2026-08-13 (concurrency stress: eight run-alls, parallel mid-edit conducts, aborted holders)
+
+A full day of multi-agent orchestration put the flock discipline under real load for the first
+time: eight `run all` sweeps, hand-run `-p` conducts interleaved from a second invocation,
+deputy conducts inside delegated verifications, two agent processes killed mid-work. The core
+held: **zero** cargo artifact-dir backstop hits ("Blocking waiting for file lock") across every
+log — conducts never overlapped; killed holders released instantly (no leaked processes, no
+stuck locks); deputy-owned junit copies stayed distinct under the shared-profile-path pattern
+(each conduct+copy runs inside its lock window). Two frictions:
+
+## 12. Lock waits are invisible — a queued conduct reads as a slow one
+
+<!-- backlog: narrate-lock-waits recorded=2026-08-13 -->
+**The narration should say "waited 651s for cargo, ran 190s" instead of "done in 841.8s".**
+One sweep's workspace conduct showed 848.8s wall for ~190s of work — the rest was correctly
+queued behind a sibling invocation's conducts, but nothing in the output distinguishes lock
+wait from execution. The operator diagnosed it by cross-referencing sibling logs. Since the
+flock acquisition point is already a single seam, stamping acquire-wait duration into the
+existing "running … — done in Xs" line (and into the junit/tally metadata) would make
+contention first-class observable. Matters more as multi-agent harnesses make concurrent
+invocations the norm, and it is also the datum a scheduler would need to decide when the
+cargo lock has become the bottleneck.
+
+## 13. Two deputies with identical conduct scope run the same cargo twice
+
+<!-- backlog: dedupe-identical-deputy-conducts recorded=2026-08-13 -->
+**Same-scope deputy conducts should share one execution.** Two proof files each own a deputy
+fixture conducting `cargo nextest run -p cos-systems-lua -p cos-daemon` (same packages, same
+profile); every `run all` pays that ~100-140s conduct twice back-to-back and produces two
+906-case junit copies that differ only in filename. The deputy pattern's isolation (copy to a
+deputy-owned artifact name) is right; the execution behind it could be content-addressed —
+key the conduct on (argv, profile, tool-config) and let the second deputy adopt the first's
+artifact within one run. Saves minutes per sweep at zero isolation cost.
