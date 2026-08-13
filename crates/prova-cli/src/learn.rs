@@ -100,6 +100,9 @@ impl Topic {
         ("switches", Topic::Running),
         ("switch", Topic::Running),
         ("falsifier", Topic::Falsify),
+        // The conduct janitor (`prova reap`) is taught where conduct supervision is taught.
+        ("reap", Topic::Verifiers),
+        ("reaper", Topic::Verifiers),
         ("falsifiers", Topic::Falsify),
         ("falsified_by", Topic::Falsify),
         ("vacuous", Topic::Falsify),

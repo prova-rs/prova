@@ -268,17 +268,21 @@ spelling of the same narrowing). (Substrate field report, 2026-08-11.)
 <!-- claim: timeout-reaps-the-conduct recorded=2026-08-12 -->
 **A timed-out conduct is dead, not merely reported dead.** Every bound `shell.run` enforces — the wall-clock `timeout`, `idle_timeout`, and their composition — kills the child process when it fires. A bound that only abandons the wait leaks the conduct: the run reports red while the child keeps running, holding exactly the locks the report just claimed were released (the observed shape: an orphaned nextest holding the cargo target lock against the next invocation). Direct child only; process-group reaping is the successor item.
 
-<!-- backlog: conduct-process-group-reaping recorded=2026-08-12 -->
-**Grandchildren survive every kill path; a conduct's kill should reap its process group.** Both
-the buffered and supervised shell.run paths kill the direct child only: a `sh -c "a | b"`
-pipeline, a script that spawns workers, or a build tool's own children keep running after prova
-reaps the shell — orphans holding exactly the locks and ports the run's teardown just promised
-were free. The naive fix (`process_group(0)` at spawn, `killpg` on any bound firing,
-`shell.spawn` stop() joining) has a discovered trap (design pass 2026-08-12): a conduct in its
-own group no longer receives the terminal's Ctrl-C — today children die WITH an interrupted
-prova because they share its foreground group, so detaching them trades orphans-on-timeout for
-orphans-on-interrupt, and process exit does not run Drop, so kill_on_drop cannot cover it. The
-real design: per-conduct groups + a process-wide registry of live conduct pgids + a signal
-handler that group-kills registrants on the way out (and Windows wants job objects, not groups —
-the windows lane's business). Composes with timeout-reaps-the-conduct (the direct-child half,
-already claimed).
+<!-- claim: conduct-process-group-reaping recorded=2026-08-12 -->
+**A conduct dies as a tree: every kill path reaps its process group, never just the shell.**
+Each `shell.run`/`shell.spawn` child spawns into its own process group (unix), and every
+controlled kill — wall clock, idle bound, `Process:stop()` — is a group kill, so a
+`sh -c "a | b"` pipeline, a script's workers, or a build tool's own children can no longer
+outlive the red report that claimed their locks were free. The Ctrl-C trap the naive fix
+carried (children in their own group stop hearing the terminal's SIGINT) is closed by the
+lease (#conduct-lease-survives-prova-death): prova's death, graceful or not, sweeps the
+registered groups — so interrupt behavior gets STRONGER, catching even children that
+re-group themselves, which today's shared-group accident never did. Windows keeps
+direct-child kills until the windows lane lands job objects — stated, not silent. Composes
+with timeout-reaps-the-conduct (the direct-child half).
+
+<!-- claim: conduct-lease-survives-prova-death recorded=2026-08-13 -->
+**A conduct's right to run is a lease enforced by something that survives prova's worst death.** Cleanup code cannot be the mechanism — the deaths that matter (SIGKILL, OOM, a panic, CI's SIGTERM) run no destructors — so the lease is held outside the dying process: on unix a reaper sidecar (`prova reap`, the same static binary) holds the read end of a pipe whose write end lives and dies with prova, keeps the registered conduct process groups, and on pipe EOF — delivered by the kernel for every death, Ctrl-C through kill -9 — sweeps them and exits; on Windows the native spelling is a job object with KILL_ON_JOB_CLOSE (the windows lane's business — until it lands, Windows keeps today's direct-child behavior, stated, not silent). Ctrl-C gets stronger, never broken: the reaper sits in its own group so the terminal's SIGINT cannot kill the janitor before it sweeps.
+
+<!-- claim: detached-topologies-hold-no-lease recorded=2026-08-13 -->
+**`prova start` provisions are deliberately unleased.** The lease's whole premise — conducts die with the run — is exactly wrong for the one verb whose purpose is outliving the invocation: a detached topology's processes register nothing, keep their `running/` record + `prova down` lifecycle, and survive prova's exit on purpose. The carve-out is the verb's, not the author's: the same factory leases under a run and detaches under `start`.

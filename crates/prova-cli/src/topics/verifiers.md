@@ -49,3 +49,13 @@ fails) — a facet proven only on green fixtures is a rubber stamp.
 
 Formal verifiers (TLA+/TLC over a pinned image) are the planned next deputy, as a package
 following the same `verify` facet. See docs/design/verifiers.md for the contract.
+
+## Conducts die as trees — and the janitor in your `ps`
+
+Every conduct runs in its own process group (unix): a bound firing, or `proc:stop()`, kills
+the whole tree — a pipeline's grandchildren cannot outlive the red report that freed their
+locks. The `prova reap` process you may see is the run's **janitor**: it holds a pipe the
+kernel closes when the spawning prova dies (Ctrl-C through `kill -9`), and on that signal it
+sweeps every still-leased conduct group and exits. It is spawned once per run that conducts,
+holds nothing else, and idles at zero cost. `prova start` provisions are deliberately
+unleased — outliving the invocation is that verb's purpose (`prova down` reaps those).

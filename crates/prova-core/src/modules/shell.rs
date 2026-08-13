@@ -232,6 +232,9 @@ struct Process {
     // Combined stdout+stderr, captured by reader tasks into a bounded buffer (oldest dropped),
     // so a failed boot is never blind: `proc:output()` returns what the app said.
     output: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    // Held while the process runs; dropped when it is stopped or reaped, so prova's own death
+    // sweeps a still-live spawn (docs/design/verifiers.md#conduct-lease-survives-prova-death).
+    lease: Option<crate::lease::Lease>,
 }
 
 /// Cap for a spawned process's captured output. Old bytes drop first.
@@ -288,7 +291,12 @@ impl UserData for Process {
                         .args(["/F", "/T", "/PID", &pid.to_string()])
                         .output();
                 }
+                // On unix the spawn is its own process GROUP: stop the whole tree, exactly as
+                // every bounded conduct's kill does — a booted app's workers must not outlive
+                // the app (docs/design/verifiers.md#conduct-process-group-reaping).
+                crate::lease::kill_group(this.pid);
                 let _ = child.kill().await;
+                this.lease.take();
             }
             Ok(())
         });
@@ -299,6 +307,7 @@ impl UserData for Process {
                     let status = child.wait().await.map_err(|e| {
                         mlua::Error::RuntimeError(format!("process wait failed: {e}"))
                     })?;
+                    this.lease.take(); // exited on its own — nothing left to sweep
                     Ok(status.code())
                 }
                 None => Ok(None),
@@ -312,6 +321,7 @@ impl UserData for Process {
             };
             if !running {
                 this.child = None;
+                this.lease.take(); // reaped — nothing left to sweep
             }
             Ok(running)
         });
@@ -438,22 +448,39 @@ fn cpu_advanced(pid: Option<u32>, last: &mut Option<u64>) -> bool {
     }
 }
 
+/// Put the child in its own process group (unix), so a kill can be a GROUP kill
+/// (docs/design/verifiers.md#conduct-process-group-reaping) and the lease's sweep has one
+/// address for the whole tree. Non-unix: no-op (job objects are the windows lane's business).
+fn isolate_group(command: &mut tokio::process::Command) {
+    #[cfg(unix)]
+    command.process_group(0);
+    #[cfg(not(unix))]
+    let _ = command;
+}
+
 /// How a supervised conduct ended: ran to completion, or was killed for silence (carrying what
 /// had been captured when the idle clock ran out, so the error can show where it stalled).
 enum Supervised {
     Finished(std::process::Output),
     Idle { stdout: Vec<u8>, stderr: Vec<u8> },
+    /// The wall clock fired — the unconditional outer bound, killed as a GROUP like every
+    /// controlled kill (docs/design/verifiers.md#conduct-process-group-reaping).
+    Wall { stdout: Vec<u8>, stderr: Vec<u8> },
 }
 
-/// Drive a child under liveness supervision (docs/design/verifiers.md#conduct-heartbeat-not-
-/// deadline): any byte on either stream resets the idle clock; silence past `idle` kills the
-/// child. The exit wait after both streams close is bounded by the same clock — a child that
-/// closed its pipes and lingers is silent by definition. `kill_on_drop` covers the composed
-/// wall-clock path: an outer timeout cancelling this future must not leak the process.
+/// Drive a child under supervision — every bounded conduct routes here, so every bound's kill
+/// is explicit code that can reap the whole GROUP (never a dropped future's child-only kill).
+/// The idle clock (docs/design/verifiers.md#conduct-heartbeat-not-deadline) re-arms on any byte
+/// and kills only when a window passes with no bytes AND no CPU progress; the wall clock is the
+/// unconditional outer bound. Either may be absent. The exit wait after both streams close is
+/// bounded by the same clocks — a child that closed its pipes and lingers doing nothing is
+/// dead. `kill_on_drop` stays as the last-resort child-only kill if this future is cancelled
+/// some other way; the lease covers prova's own death.
 async fn run_supervised(
     mut command: tokio::process::Command,
     input: Option<String>,
-    idle: std::time::Duration,
+    idle: Option<std::time::Duration>,
+    wall: Option<std::time::Duration>,
 ) -> std::io::Result<Supervised> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     command
@@ -464,7 +491,9 @@ async fn run_supervised(
             None => std::process::Stdio::null(),
         })
         .kill_on_drop(true);
+    isolate_group(&mut command);
     let mut child = command.spawn()?;
+    let _lease = crate::lease::Lease::register(child.id());
     if let Some(input) = input {
         if let Some(mut si) = child.stdin.take() {
             si.write_all(input.as_bytes()).await?;
@@ -481,6 +510,10 @@ async fn run_supervised(
         .ok_or_else(|| std::io::Error::other("child stderr was not captured"))?;
     let pid = child.id();
     let mut last_cpu = pid.and_then(child_cpu_ticks);
+    let deadline = wall.map(|w| tokio::time::Instant::now() + w);
+    // With no idle bound, the idle arm still ticks (as a coarse heartbeat interval) but never
+    // kills — the check below requires an actual idle bound to act.
+    let tick = idle.unwrap_or(std::time::Duration::from_secs(3600));
     let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
     let (mut out_done, mut err_done) = (false, false);
     let (mut buf_o, mut buf_e) = ([0u8; 8192], [0u8; 8192]);
@@ -498,19 +531,30 @@ async fn run_supervised(
             // the pipes is only HALF the evidence when it fires: a big compile says nothing for
             // minutes while working flat-out, so a quiet window with CPU progress is life —
             // kill only when both are absent (bytes OR work is the heartbeat).
-            () = tokio::time::sleep(idle) => {
-                if !cpu_advanced(pid, &mut last_cpu) {
+            () = tokio::time::sleep(tick) => {
+                if idle.is_some() && !cpu_advanced(pid, &mut last_cpu) {
+                    crate::lease::kill_group(pid);
                     child.kill().await.ok();
                     return Ok(Supervised::Idle { stdout, stderr });
                 }
             }
+            // The wall clock: fires regardless of how healthy the heartbeat is — the two bounds
+            // answer different questions (is it dead? / may it keep going?).
+            () = tokio::time::sleep_until(deadline.unwrap_or_else(tokio::time::Instant::now)), if deadline.is_some() => {
+                crate::lease::kill_group(pid);
+                child.kill().await.ok();
+                return Ok(Supervised::Wall { stdout, stderr });
+            }
         }
     }
-    // Streams closed, exit pending: the same clock and the same evidence bound the wait — a
+    // Streams closed, exit pending: the same clocks and the same evidence bound the wait — a
     // child that closed its pipes but still computes is alive; one that lingers doing nothing
     // is dead.
     loop {
-        match tokio::time::timeout(idle, child.wait()).await {
+        let wait_slice = deadline
+            .map(|d| d.saturating_duration_since(tokio::time::Instant::now()).min(tick))
+            .unwrap_or(tick);
+        match tokio::time::timeout(wait_slice, child.wait()).await {
             Ok(status) => {
                 return Ok(Supervised::Finished(std::process::Output {
                     status: status?,
@@ -519,7 +563,14 @@ async fn run_supervised(
                 }))
             }
             Err(_) => {
-                if !cpu_advanced(pid, &mut last_cpu) {
+                let wall_fired = deadline.is_some_and(|d| tokio::time::Instant::now() >= d);
+                if wall_fired {
+                    crate::lease::kill_group(pid);
+                    child.kill().await.ok();
+                    return Ok(Supervised::Wall { stdout, stderr });
+                }
+                if idle.is_some() && !cpu_advanced(pid, &mut last_cpu) {
+                    crate::lease::kill_group(pid);
                     child.kill().await.ok();
                     return Ok(Supervised::Idle { stdout, stderr });
                 }
@@ -555,42 +606,19 @@ async fn run_command(
     // stdin is a non-closing pipe. That was a live 40-minute suite hang under the
     // coverage conduct. Hermetic default: a test's child sees EOF, never the harness's
     // stdin; a proof that means to feed input says `stdin = ...`.
-    // Dead means dead (docs/design/verifiers.md#timeout-reaps-the-conduct): when the wall clock
-    // below cancels this future, dropping the child must kill it — a bound that only abandons
-    // the wait leaks the conduct, still holding the locks the red report implies are free.
+    // Dead means dead (docs/design/verifiers.md#timeout-reaps-the-conduct): every BOUNDED run
+    // routes through the supervisor, so every bound's kill is explicit code that reaps the whole
+    // group (docs/design/verifiers.md#conduct-process-group-reaping). kill_on_drop stays as the
+    // last-resort child-only kill for an externally-cancelled future.
     command.kill_on_drop(true);
-    let run = async {
-        if let Some(input) = &o.stdin {
-            use tokio::io::AsyncWriteExt;
-            command
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped());
-            let mut child = command.spawn()?;
-            if let Some(mut si) = child.stdin.take() {
-                si.write_all(input.as_bytes()).await?;
-                si.shutdown().await?; // close so the child sees EOF
-            }
-            child.wait_with_output().await
-        } else {
-            command.stdin(std::process::Stdio::null());
-            command.output().await
-        }
-    };
-    let output = if let Some(idle) = o.idle_timeout {
-        // Liveness supervision replaces the buffered wait; the wall clock stays the outer bound.
-        drop(run);
-        let supervised = run_supervised(command, o.stdin.clone(), idle);
-        let supervised = match o.timeout {
-            Some(budget) => tokio::time::timeout(budget, supervised).await.map_err(|_| {
-                mlua::Error::RuntimeError(format!("shell.run timed out after {budget:?}: {cmd}"))
-            })?,
-            None => supervised.await,
-        }
-        .map_err(|e| mlua::Error::RuntimeError(format!("shell.run failed to spawn: {e}")))?;
+    let output = if o.idle_timeout.is_some() || o.timeout.is_some() {
+        let supervised = run_supervised(command, o.stdin.clone(), o.idle_timeout, o.timeout)
+            .await
+            .map_err(|e| mlua::Error::RuntimeError(format!("shell.run failed to spawn: {e}")))?;
         match supervised {
             Supervised::Finished(output) => output,
             Supervised::Idle { stdout, stderr } => {
+                let idle = o.idle_timeout.unwrap_or_default();
                 return Err(mlua::Error::RuntimeError(format!(
                     "shell.run: no output and no CPU progress for {idle:?} (idle_timeout) — \
                      killed as dead: {cmd}\n\
@@ -599,15 +627,46 @@ async fn run_command(
                     tail(&String::from_utf8_lossy(&stdout), 4096),
                 )));
             }
+            Supervised::Wall { stdout, stderr } => {
+                let budget = o.timeout.unwrap_or_default();
+                return Err(mlua::Error::RuntimeError(format!(
+                    "shell.run timed out after {budget:?}: {cmd}\n\
+                     --- stderr tail ---\n{}\n--- stdout tail ---\n{}",
+                    tail(&String::from_utf8_lossy(&stderr), 4096),
+                    tail(&String::from_utf8_lossy(&stdout), 4096),
+                )));
+            }
         }
     } else {
-        match o.timeout {
-            Some(budget) => tokio::time::timeout(budget, run).await.map_err(|_| {
-                mlua::Error::RuntimeError(format!("shell.run timed out after {budget:?}: {cmd}"))
-            })?,
-            None => run.await,
-        }
-        .map_err(|e| mlua::Error::RuntimeError(format!("shell.run failed to spawn: {e}")))?
+        // Unbounded: the buffered wait, isolated and leased like every conduct, so prova's own
+        // death still sweeps the group even though no bound will ever fire here.
+        isolate_group(&mut command);
+        let run = async {
+            if let Some(input) = &o.stdin {
+                use tokio::io::AsyncWriteExt;
+                command
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped());
+                let mut child = command.spawn()?;
+                let _lease = crate::lease::Lease::register(child.id());
+                if let Some(mut si) = child.stdin.take() {
+                    si.write_all(input.as_bytes()).await?;
+                    si.shutdown().await?; // close so the child sees EOF
+                }
+                child.wait_with_output().await
+            } else {
+                command.stdin(std::process::Stdio::null());
+                command
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped());
+                let child = command.spawn()?;
+                let _lease = crate::lease::Lease::register(child.id());
+                child.wait_with_output().await
+            }
+        };
+        run.await
+            .map_err(|e| mlua::Error::RuntimeError(format!("shell.run failed to spawn: {e}")))?
     };
 
     let mut stdout = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -688,10 +747,12 @@ pub(crate) fn make_shell(lua: &Lua, progress: &Arc<dyn Progress>) -> mlua::Resul
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .kill_on_drop(true);
+            isolate_group(&mut command);
             let mut child = command
                 .spawn()
                 .map_err(|e| mlua::Error::RuntimeError(format!("shell.spawn failed: {e}")))?;
             let pid = child.id();
+            let lease = Some(crate::lease::Lease::register(pid));
             let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
             if let Some(out) = child.stdout.take() {
                 spawn_output_reader(out, output.clone());
@@ -703,6 +764,7 @@ pub(crate) fn make_shell(lua: &Lua, progress: &Arc<dyn Progress>) -> mlua::Resul
                 child: Some(child),
                 pid,
                 output,
+                lease,
             })
         })?,
     )?;

@@ -116,7 +116,8 @@ function ShellResult:ok() end
 ---@class prova.Process
 ---@field pid integer|nil       # OS process id (nil if it could not be determined)
 local Process = {}
---- Kill the process (SIGKILL) and reap it. Idempotent.
+--- Kill the process — and on unix its whole process group, so a booted app's workers die with
+--- it (docs/design/verifiers.md#conduct-process-group-reaping) — then reap it. Idempotent.
 function Process:stop() end
 --- Wait for the process to exit; returns its exit code (or nil if signalled / already reaped).
 ---@return integer|nil

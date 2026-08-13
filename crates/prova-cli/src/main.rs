@@ -217,6 +217,16 @@ const VERBS: &[Verb] = &[
         run: start_subcommand,
     },
     Verb {
+        name: "reap",
+        help: "  prova reap                (internal) the conduct janitor a run spawns: sweeps leased process\n\
+               \x20                           groups when the spawning prova dies (`prova learn reap`)",
+        run: |_args| {
+            // Read registrations on stdin until the spawning prova dies (pipe EOF, delivered by
+            // the kernel for every death), then sweep. Never invoked by hand; harmless if it is.
+            std::process::ExitCode::from(prova_core::lease::reaper_main() as u8)
+        },
+    },
+    Verb {
         name: "down",
         help: "  prova down <topology>     tear down a detached topology",
         run: down_subcommand,

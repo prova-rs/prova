@@ -565,6 +565,9 @@ pub(crate) fn print_endpoints(name: &str, endpoints: &[prova_core::Endpoint]) {
 /// process group (stdio → a log file), wait for it to self-register (confirming it's up), print the
 /// endpoints, and return, leaving it running. `prova down` stops it.
 pub(crate) fn start_subcommand(args: Vec<String>) -> ExitCode {
+    // Detached provisions hold no lease (verifiers.md#detached-topologies-hold-no-lease):
+    // everything this invocation spawns is MEANT to outlive it — `prova down` is its reaper.
+    prova_core::lease::set_detached();
     let (name, manifest_path, profile, fixed) = match parse_topology_args("start", args) {
         Ok(v) => v,
         Err(code) => return code,
