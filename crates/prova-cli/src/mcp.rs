@@ -94,21 +94,19 @@ fn resolve_mcp_env(
     let (mut packages_resolved, sources, proofs, declared, jobs, capabilities, topologies, switches) =
         match &home {
             Some(home) => {
-                match crate::resolve_from_manifest(
+                let r = crate::resolve_from_manifest(
                     home, profile, None, None, None, &layout, false, false, true,
-                ) {
-                    Ok(r) => (
-                        r.dependencies,
-                        r.sources,
-                        r.proofs,
-                        r.suites,
-                        r.jobs,
-                        r.capabilities,
-                        r.topologies,
-                        r.switches,
-                    ),
-                    Err(code) => return Err(code),
-                }
+                )?;
+                (
+                    r.dependencies,
+                    r.sources,
+                    r.proofs,
+                    r.suites,
+                    r.jobs,
+                    r.capabilities,
+                    r.topologies,
+                    r.switches,
+                )
             }
             None => (
                 packages::ResolvedPackages::default(),
