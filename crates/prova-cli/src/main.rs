@@ -324,7 +324,11 @@ options:
       --update-baseline     move ratchet baselines toward this run's measurements (tightens only;
                             refuses to loosen) — .prova/baselines/ (measure.ratchet)
       --unreferenced M      snapshots no test used: ignore (default) | warn | delete (full runs only)
-  -U, --update              force-refresh git plugin sources (skip the freshness cache)
+  -U, --update              refresh cached assets this invocation touches: git package sources
+                            here (and the registry cache / archetype checkouts on their verbs) —
+                            never the [runner] provision, which has its own flag below
+      --reprovision         distrust the [runner] provision: rebuild the subject even when fresh
+                            (a provision is a build product of the tree, not a cached asset)
       --offline             never fetch git plugin sources; use only what is already cached
       --list                discover tests without running them (respects selection)
       --record PATH         also write the run record here (always written to .prova/var/) — what

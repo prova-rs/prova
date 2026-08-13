@@ -251,5 +251,10 @@ seconds-fast inner loop silently became a 10-minute gate, caught only by a human
 Composes with the graduation moment: the promises→proves flip is when a proof acquires its
 conduct cost and must name its lane.)
 
-<!-- backlog: provision-refresh-respelling recorded=2026-08-12 -->
-The runner provision force-rebuild answers to -U/--update -- the same spelling the registry refresh uses and the archetype-cache refresh will use, three refreshes wearing one flag. When -U unifies on "update cached assets" (registry.md#update-flag-means-cached-assets), the provision rebuild takes its own verb (e.g. --reprovision): the provision stamp already distinguishes a stale subject from a fresh one, so the flag exists only for the distrust case, and that case deserves a name that says which thing is being distrusted.
+<!-- claim: provision-refresh-respelling recorded=2026-08-12 -->
+**The provision's distrust flag is `--reprovision`, never -U.** The provision stamp already
+distinguishes a stale subject from a fresh one, so the flag exists only for the distrust case —
+and that case names which thing is distrusted: `--reprovision` rebuilds the subject even when
+fresh, while -U (now "refresh cached assets", registry.md#update-flag-means-cached-assets)
+leaves a fresh provision untouched. A run under -U that also rebuilt the subject was paying a
+build for a flag about caches.

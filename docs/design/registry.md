@@ -317,5 +317,12 @@ Contents: write). Remaining: the MCP mirror of the verbs, and item 6 (update erg
 6. *(later, if earned)* `prova packages update` re-pinning, per-version revs in entries,
    `registry:name` cross-registry disambiguation ergonomics.
 
-<!-- backlog: update-flag-means-cached-assets recorded=2026-08-12 -->
-One spelling, one meaning: -U updates cached assets on demand, everywhere. Today the flag forces the registry-cache refresh here, ALSO force-rebuilds the runner provision (dispatch.rs update_force -> provision_subject), and the third cache -- archetypes -- has no on-demand refresh at all (prova init -U is deliberately unlanded; its blocker, archetect Configuration::with_force_update, SHIPPED in v3.4.3 -- verified 2026-08-12, main == v3.4.3 -- so this is now purely a pin bump from v3.4.1 plus the wiring). Unify: -U refreshes every cached asset the invocation touches -- registry pins, package dependencies, archetype checkouts -- and the provision force-rebuild moves to its own spelling (manifest.md#provision-refresh-respelling): a provision is a build product of the working tree, not a cached remote asset, and the flag that means "distrust your caches" should never also mean "rebuild my subject".
+<!-- claim: update-flag-means-cached-assets recorded=2026-08-12 -->
+One spelling, one meaning: **-U refreshes the cached assets the invocation touches, everywhere,
+and nothing else.** On a run it forces the git package sources past their freshness gates; on
+the registry verbs it re-fetches the registry cache; on `prova init` it distrusts the archetype
+checkout and re-probes the source (archetect `Configuration::with_force_update`, pinned at
+v3.4.3 where it shipped). The [runner] provision force-rebuild moved OFF -U to its own spelling
+(manifest.md#provision-refresh-respelling): a provision is a build product of the working tree,
+not a cached remote asset, and the flag that means "distrust your caches" never also means
+"rebuild my subject".

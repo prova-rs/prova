@@ -85,13 +85,11 @@ struct InitCli {
     list: bool,
     headless: bool,
     defaults: bool,
-    // Freshness knob, matching `prova` (run) and `archetect`.
-    //
-    // `-U`/`--update` is deliberately NOT here yet. It needs `Configuration::with_force_update`,
-    // which archetect only grows in the release after the pinned v3.4.1 — shipping the flag now
-    // would make it a silent no-op, which is worse than its absence for a knob whose whole job is
-    // "I do not trust the cache".
+    // Freshness knobs, matching `prova` (run) and `archetect`: `--offline` forbids the network,
+    // `-U` distrusts the archetype cache and re-probes the source (one -U meaning everywhere:
+    // refresh cached assets — registry.md#update-flag-means-cached-assets).
     offline: bool,
+    update: bool,
     key: Option<String>,
     answers: Vec<(String, String)>,
     switches: Vec<String>,
@@ -105,6 +103,7 @@ fn parse_args(args: Vec<String>) -> Result<InitCli, ExitCode> {
         headless: false,
         defaults: false,
         offline: false,
+        update: false,
         key: None,
         answers: Vec::new(),
         switches: Vec::new(),
@@ -117,6 +116,7 @@ fn parse_args(args: Vec<String>) -> Result<InitCli, ExitCode> {
             "--headless" => cli.headless = true,
             "--defaults" => cli.defaults = true,
             "--offline" => cli.offline = true,
+            "-U" | "--update" => cli.update = true,
             "--answer" | "-a" => {
                 let Some(pair) = it.next() else {
                     eprintln!("prova init: --answer expects key=value");
@@ -140,7 +140,7 @@ fn parse_args(args: Vec<String>) -> Result<InitCli, ExitCode> {
             "-h" | "--help" => {
                 println!(
                     "usage: prova init [<key>] [--list] [--answer k=v]... [--switch name]... \
-                     [--defaults] [--headless] [--no-ide] [--offline]\n\
+                     [--defaults] [--headless] [--no-ide] [--offline] [-U]\n\
                      \n\
                      render a catalog archetype into the current directory, then wire LuaLS IDE\n\
                      support. <key> names a catalog entry (see `prova init --list`); omit it to\n\
@@ -148,12 +148,9 @@ fn parse_args(args: Vec<String>) -> Result<InitCli, ExitCode> {
                      prompt is an error); --defaults takes each prompt's default; --no-ide skips\n\
                      IDE wiring.\n\
                      \n\
-                     --offline uses only what is already cached, never the network.\n\
-                     \n\
-                     NOTE: a moved tag (the floating-major `v1` convention) stays cached until\n\
-                     archetect's update interval lapses — a day by default — so a freshly\n\
-                     published archetype can render stale. Until `prova init -U` lands, lower\n\
-                     `updates.interval` in archetect's config, or run `archetect -U` once."
+                     --offline uses only what is already cached, never the network;\n\
+                     -U/--update distrusts the archetype cache and re-probes the source — the\n\
+                     cure when a moved tag (the floating-major `v1` convention) renders stale."
                 );
                 return Err(ExitCode::SUCCESS);
             }
@@ -269,7 +266,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
         Ok(cli) => cli,
         Err(code) => return code,
     };
-    let InitCli { luals, headless, defaults, offline, .. } = &cli;
+    let InitCli { luals, headless, defaults, offline, update, .. } = &cli;
     let (luals, headless, defaults, offline) = (*luals, *headless, *defaults, *offline);
 
     let sys_layout = match prova_core::XdgSystemLayout::new() {
@@ -304,9 +301,12 @@ pub fn run(args: Vec<String>) -> ExitCode {
         &destination,
         answers,
         switches,
-        use_defaults,
-        headless,
-        offline,
+        prova_archetect::RenderMode {
+            defaults: use_defaults,
+            headless,
+            offline,
+            update: *update,
+        },
     ) {
         eprintln!("prova init: render failed: {err}");
         return ExitCode::from(2);
@@ -461,6 +461,7 @@ mod tests {
             headless: false,
             defaults: false,
             offline: false,
+            update: false,
             key: None,
             answers: vec![("org".into(), "cli-org".into())],
             switches: vec!["ci".into(), "docker".into()],

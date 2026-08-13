@@ -58,15 +58,26 @@ prova.test("a run provisions the subject and injects it as prova.bin — the con
   t:expect(again.code):equals(0)
   t:expect(provisions(dir), "fresh subject, no rebuild"):equals(1)
 
-  -- -U is the freshness-knob family's force: rebuild even when fresh.
-  invoke(dir, { "-U" })
-  t:expect(provisions(dir), "-U forces the provision"):equals(2)
-
   -- Sources move on; the next run re-provisions on its own.
   prova.sleep(1100) -- mtime granularity
   fs.write(dir .. "/src/marker.txt", "v2\n")
   invoke(dir, {})
-  t:expect(provisions(dir), "a stale subject rebuilds for a run"):equals(3)
+  t:expect(provisions(dir), "a stale subject rebuilds for a run"):equals(2)
+end)
+
+prova.test("-U leaves a fresh provision untouched; --reprovision is the provision's own distrust", {
+  covers = "docs/design/manifest.md#provision-refresh-respelling",
+  proves = "a provision is a build product of the working tree, not a cached remote asset — a run under -U that also rebuilt the subject was paying a build for a flag about caches, and the flag that names the distrust must name which thing is distrusted",
+}, function(t)
+  local dir = sandbox(t)
+  invoke(dir, {})
+  t:expect(provisions(dir)):equals(1)
+
+  invoke(dir, { "-U" })
+  t:expect(provisions(dir), "-U does not touch a fresh provision"):equals(1)
+
+  invoke(dir, { "--reprovision" })
+  t:expect(provisions(dir), "--reprovision rebuilds even when fresh"):equals(2)
 end)
 
 prova.test("queries and `prova mcp` never provision — the tool in your hand answers as itself", {
@@ -135,11 +146,11 @@ prova.test("the provision holds the manifest-declared locks — a build can neve
     'locks   = ["build-slot"]',
   }, "\n"))
 
-  -- Two concurrent FORCED provisions (-U): without the lock their begin/end marks interleave;
+  -- Two concurrent FORCED provisions (--reprovision): without the lock their begin/end marks interleave;
   -- under it, each build owns its critical section whole.
   local r = shell.run({
     "sh", "-c",
-    '"$0" -U --allow-empty > /dev/null 2>&1 & "$0" -U --allow-empty > /dev/null 2>&1; wait',
+    '"$0" --reprovision --allow-empty > /dev/null 2>&1 & "$0" --reprovision --allow-empty > /dev/null 2>&1; wait',
     prova.bin,
   }, {
     cwd = dir, timeout = "180s", merge_stderr = true,

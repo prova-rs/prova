@@ -312,14 +312,27 @@ pub fn string_answers(pairs: impl IntoIterator<Item = (String, String)>) -> Cont
 /// interactive for prompts that have no default, unless `headless`). Returns the paths written in the
 /// headless case; interactive rendering returns an empty list (the terminal driver owns its own
 /// progress output).
+/// How a render engages the terminal and the network — the four knobs `prova init` forwards,
+/// named as one thing so a call site reads as policy rather than a row of bools.
+#[derive(Clone, Copy, Default)]
+pub struct RenderMode {
+    /// Take each prompt's default instead of asking.
+    pub defaults: bool,
+    /// Never prompt: an unanswered, undefaulted prompt is an error, not a hang.
+    pub headless: bool,
+    /// Cached sources only; the network is forbidden.
+    pub offline: bool,
+    /// Distrust the archetype cache and re-probe the source (`prova init -U` — one -U meaning
+    /// everywhere: refresh cached assets, registry.md#update-flag-means-cached-assets).
+    pub update: bool,
+}
+
 pub fn render_interactive(
     source: &str,
     destination: &Path,
     answers: ContextMap,
     switches: Vec<String>,
-    defaults: bool,
-    headless: bool,
-    offline: bool,
+    mode: RenderMode,
 ) -> Result<Vec<String>, ArchetectError> {
     let dest = Utf8PathBuf::from_path_buf(destination.to_path_buf())
         .map_err(|_| ArchetectError::GeneralError("non-UTF-8 destination".into()))?;
@@ -330,18 +343,19 @@ pub fn render_interactive(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-    // `offline` forbids the network entirely: cached sources only. The complementary knob — force a
-    // re-probe — needs `Configuration::with_force_update`, which lands in the archetect release after
-    // the pinned v3.4.1, so `prova init -U` waits for that bump rather than shipping a no-op.
+    // `offline` forbids the network entirely: cached sources only; `update` is the complementary
+    // knob — distrust the archetype cache and re-probe the source (`prova init -U`, one meaning
+    // of -U everywhere: refresh cached assets — registry.md#update-flag-means-cached-assets).
     let configuration = Configuration::default()
-        .with_headless(headless)
-        .with_offline(offline);
+        .with_headless(mode.headless)
+        .with_offline(mode.offline)
+        .with_force_update(mode.update);
     let layout = XdgSystemLayout::new()
         .map_err(|e| ArchetectError::GeneralError(format!("archetect system layout: {e}")))?;
 
     // The two drivers are different types, so the build+render is inlined per branch rather than
     // routed through one generic helper.
-    if headless {
+    if mode.headless {
         let writes = Arc::new(Mutex::new(Vec::new()));
         let diag = Arc::new(Mutex::new(None));
         let handle = CapturingIoHandle {
@@ -360,7 +374,7 @@ pub fn render_interactive(
         for switch in switches {
             ctx = ctx.with_switch(switch);
         }
-        if defaults {
+        if mode.defaults {
             ctx = ctx.with_use_defaults_all(true);
         }
         fold_diag(archetype.render(ctx), &diag)?;
@@ -379,7 +393,7 @@ pub fn render_interactive(
         for switch in switches {
             ctx = ctx.with_switch(switch);
         }
-        if defaults {
+        if mode.defaults {
             ctx = ctx.with_use_defaults_all(true);
         }
         archetype.render(ctx)?;

@@ -58,6 +58,11 @@ struct Cli {
     // TTL + remote-hash gates); `--offline` forbids any network, using only what's already cached.
     update_force: bool,
     offline: bool,
+    // `--reprovision`: distrust the [runner] provision and rebuild the subject even when fresh.
+    // Deliberately NOT -U (docs/design/manifest.md#provision-refresh-respelling): a provision is
+    // a build product of the working tree, not a cached remote asset, and the flag that means
+    // "refresh my caches" must never also mean "rebuild my subject".
+    reprovision: bool,
 }
 
 impl Default for Cli {
@@ -98,6 +103,7 @@ impl Default for Cli {
             allow_empty: false,
             update_force: false,
             offline: false,
+            reprovision: false,
         }
     }
 }
@@ -320,6 +326,7 @@ impl Cli {
                 self.update_baseline = Some(prova_core::baselines::BankSelection::GoalCarrying)
             }
             "--update" | "-U" => self.update_force = true,
+            "--reprovision" => self.reprovision = true,
             "--offline" => self.offline = true,
             "--json" => self.format = Some(Format::Json),
             "--version" | "-V" => {
@@ -1177,7 +1184,7 @@ pub(crate) fn run(cli_args: Vec<String>) -> ExitCode {
     // discoveries (`--list`, the switches census) execute nothing and skip it.
     if let Some(h) = home.as_ref() {
         if !cli.list && !cli.switches_list {
-            if let Some(code) = crate::cmd_run::provision_subject(h, cli.update_force) {
+            if let Some(code) = crate::cmd_run::provision_subject(h, cli.reprovision) {
                 return code;
             }
         }

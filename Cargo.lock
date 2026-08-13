@@ -134,10 +134,10 @@ dependencies = [
 
 [[package]]
 name = "archetect-aml"
-version = "3.4.1"
-source = "git+https://github.com/archetect/archetect.git?tag=v3.4.1#891217e729409e56510456f54e9f81514e5101de"
+version = "3.4.3"
+source = "git+https://github.com/archetect/archetect.git?tag=v3.4.3#25d162adde1942cb25fdf93fad9e518ebbf63b4e"
 dependencies = [
- "archetect-inflections",
+ "archetect-inflections 3.4.3",
  "serde",
  "serde_yaml",
  "thiserror 2.0.18",
@@ -145,8 +145,8 @@ dependencies = [
 
 [[package]]
 name = "archetect-api"
-version = "3.4.1"
-source = "git+https://github.com/archetect/archetect.git?tag=v3.4.1#891217e729409e56510456f54e9f81514e5101de"
+version = "3.4.3"
+source = "git+https://github.com/archetect/archetect.git?tag=v3.4.3#25d162adde1942cb25fdf93fad9e518ebbf63b4e"
 dependencies = [
  "serde",
  "serde_json",
@@ -155,14 +155,14 @@ dependencies = [
 
 [[package]]
 name = "archetect-core"
-version = "3.4.1"
-source = "git+https://github.com/archetect/archetect.git?tag=v3.4.1#891217e729409e56510456f54e9f81514e5101de"
+version = "3.4.3"
+source = "git+https://github.com/archetect/archetect.git?tag=v3.4.3#25d162adde1942cb25fdf93fad9e518ebbf63b4e"
 dependencies = [
  "anyhow",
  "archetect-aml",
  "archetect-api",
- "archetect-git-cache",
- "archetect-inflections",
+ "archetect-git-cache 3.4.3",
+ "archetect-inflections 3.4.3",
  "archetect-terminal-io",
  "archetect-validations",
  "camino",
@@ -225,6 +225,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "archetect-git-cache"
+version = "3.4.3"
+source = "git+https://github.com/archetect/archetect.git?tag=v3.4.3#25d162adde1942cb25fdf93fad9e518ebbf63b4e"
+dependencies = [
+ "camino",
+ "chrono",
+ "farmhash",
+ "fs4",
+ "git2",
+ "log",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "archetect-inflections"
 version = "3.4.1"
 source = "git+https://github.com/archetect/archetect.git?tag=v3.4.1#891217e729409e56510456f54e9f81514e5101de"
@@ -233,9 +247,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "archetect-inflections"
+version = "3.4.3"
+source = "git+https://github.com/archetect/archetect.git?tag=v3.4.3#25d162adde1942cb25fdf93fad9e518ebbf63b4e"
+dependencies = [
+ "regex",
+]
+
+[[package]]
 name = "archetect-terminal-io"
-version = "3.4.1"
-source = "git+https://github.com/archetect/archetect.git?tag=v3.4.1#891217e729409e56510456f54e9f81514e5101de"
+version = "3.4.3"
+source = "git+https://github.com/archetect/archetect.git?tag=v3.4.3#25d162adde1942cb25fdf93fad9e518ebbf63b4e"
 dependencies = [
  "archetect-api",
  "archetect-validations",
@@ -249,8 +271,8 @@ dependencies = [
 
 [[package]]
 name = "archetect-validations"
-version = "3.4.1"
-source = "git+https://github.com/archetect/archetect.git?tag=v3.4.1#891217e729409e56510456f54e9f81514e5101de"
+version = "3.4.3"
+source = "git+https://github.com/archetect/archetect.git?tag=v3.4.3#25d162adde1942cb25fdf93fad9e518ebbf63b4e"
 
 [[package]]
 name = "arrayvec"
@@ -2913,7 +2935,7 @@ version = "0.20.2"
 dependencies = [
  "anstream 0.6.21",
  "anstyle",
- "archetect-git-cache",
+ "archetect-git-cache 3.4.1",
  "camino",
  "dirs 5.0.1",
  "fs2",
@@ -2938,7 +2960,7 @@ dependencies = [
 name = "prova-core"
 version = "0.20.2"
 dependencies = [
- "archetect-inflections",
+ "archetect-inflections 3.4.1",
  "base64",
  "bollard",
  "bytes",
