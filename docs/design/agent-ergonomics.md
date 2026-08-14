@@ -524,7 +524,7 @@ container work belongs in a fixture or a test body — where the runtime, its bo
 all exist.
 
 <!-- backlog: module-opts-silently-ignored recorded=2026-08-13 -->
-A MODULE option table silently ignores unknown keys — the same disease as unit opts, one layer over: docker.build{ first_byte = ... } on a prova without that option built normally and the proof passed while proving nothing (found 2026-08-13 writing the first-byte proof; only the conductor-vs-subject discipline caught it). shell.run's RunOpts, docker.build/docker.run's specs, http, sql and the rest all parse by key lookup, so a typo'd or version-mismatched option reads as configured. The unit-opts gate (agent-ergonomics.md#unknown-test-opts-silently-ignored) is the shape to copy; the wrinkle is version skew — a proof written for a newer prova should fail loudly on the older binary, which is exactly what refusing gives.
+A MODULE option table silently ignores unknown keys — the same disease as unit opts, one layer over: docker.build{ first_byte = ... } on a prova without that option built normally and the proof passed while proving nothing (found 2026-08-13 writing the first-byte proof; only the conductor-vs-subject discipline caught it). shell.run's RunOpts, docker.build/docker.run's specs, http, sql and the rest all parse by key lookup, so a typo'd or version-mismatched option reads as configured. The unit-opts gate (agent-ergonomics.md#unknown-test-opts-silently-ignored) is the shape to copy; the wrinkle is version skew — a proof written for a newer prova should fail loudly on the older binary, which is exactly what refusing gives. Field evidence, 2026-08-14 (prova 0.22.0, ybor-studio topology): `shell.spawn("kubectl", { args = {...} })` ran kubectl with NO arguments. `spawn` reads `cwd` and `env` only (crates/prova-core/src/modules/shell.rs:772), so `args` was dropped — and `spawn` is the worst host for this, because the process still STARTS. A no-op option leaves a proof proving nothing; a dropped `args` leaves a bare `kubectl` printing usage to a discarded stdout, so the failure arrives later and somewhere else, as a timeout waiting for an effect that was never requested. The argv form (agent-ergonomics.md#1) is the right call and shipped; what remains is that the WRONG call is silent.
 
 <!-- backlog: windows-ut-relink-denied recorded=2026-08-13 -->
 On windows-latest CI, 'prova run ut' fails with 'failed to remove file target\\debug\\prova.exe — Access is denied (os error 5)': the conductor IS the file the deputy's cargo build wants to relink, and Windows refuses to replace a running executable. Long-standing (every Build run on main for at least a day). The unix runners are unaffected because a running binary can be unlinked. Candidate fixes: have CI conduct the ut lane through a COPY of the binary (copy target/debug/prova.exe to a scratch path and invoke that), or teach the deputy recipe to exclude the conducting binary's own target on Windows. Notably the RELEASE gate passes on Windows because it builds rather than conducting a rebuild under itself.
@@ -625,3 +625,25 @@ string — `res:save(path)` (or `http.download(url, path)`) for the common case 
 the artifact on disk', and/or `res.bytes` as an explicit byte-array accessor. Until one
 exists, `body` should at minimum be documented as text-only, and it would be better still
 for it to REFUSE a non-text content type rather than hand back mojibake.
+
+## 23. `t:tempdir()` is a factory wearing an accessor's name
+
+<!-- backlog: context-tempdir-not-idempotent recorded=2026-08-14 -->
+**`t:tempdir()` hands back a DIFFERENT directory every call, and the second one is
+silently empty.** The binding calls `make_tempdir()` per invocation and pushes each result
+onto the scope's teardown list (crates/prova-core/src/engine/context.rs:413), so
+`fs.write(t:tempdir() .. "/cookies.txt", …)` followed by `fs.read(t:tempdir() ..
+"/cookies.txt")` writes one directory and reads another. Nothing errors: the read of a
+nonexistent path in a fresh directory just yields nothing, and the proof fails much later
+on whatever consumed it — in the case at hand, a curl cookie jar, so a login flow appeared
+to be rejected by the identity provider when in fact the session cookie had been written
+somewhere the next step never looked. Cost about an hour of chasing an auth bug that did
+not exist. The name is what misleads: `t:tempdir()` reads as an accessor for THIS test's
+temp directory (the way `t:use`, `t:defer` and `t:log` all address the scope), not as a
+factory. And prova already HAS the factory — `fs.tempdir()`
+(crates/prova-core/src/modules.rs:335) returns a fresh one — so the two spellings could
+carry the two meanings with nothing lost: memoize `t:tempdir()` per scope so repeated
+calls are the same directory, and leave `fs.tempdir()` as the way to ask for another. If
+per-call really is the intended contract, then the summary in the API surface should say
+'a NEW temporary directory' outright, since the current wording sends an author the other
+way.
