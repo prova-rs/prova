@@ -47,5 +47,8 @@ and **proof** (a demonstration that it is). A proof crosses back to a claim with
 `covers = "doc.md#id"` — the binding `prova attest` and `prova evidence` reconcile. Prose states it;
 a proof proves it; the run attests it.
 
-See also: `prova learn project` (this package's writable sources + house rules) ·
-`prova learn backlog` · `prova learn claims` · `prova learn promises`
+See also:
+- `prova learn claims` (an obligation you owe a proof)
+- `prova learn backlog` (captured, deliberately not yet owed)
+- `prova learn promises` (a proof written before its implementation)
+- `prova learn project` (which sources are writable here)

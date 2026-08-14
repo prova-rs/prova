@@ -55,3 +55,8 @@ discovery vocabulary — a package advertises `keywords` for `prova packages <qu
 ("kafka", "messaging"), pure catalog metadata unrelated to whether *your* host can do a thing. What
 a package needs from the host still lives in its `requires` (the same words as here). So the word
 has one job: `prova capabilities` and `requires`/`must_run` probe the host; `keywords` find a package.
+
+See also:
+- `prova learn topologies` (the environments a capability gates)
+- `prova learn running` (switches: opt-in classes, which capabilities are not)
+- `prova learn drivers` (the tools a driver requires of the host)

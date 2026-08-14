@@ -58,4 +58,8 @@ anchor repo paths on them, never on cwd.
 - **A shared fixture/topology**: `prova.topology(name, factory)` in a proof file, or `[topologies]`
   in the manifest when a package provides the factory.
 
-Go deeper: `prova learn init` (scaffolding) · `prova learn pdd` (the loop).
+See also:
+- `prova learn init` (scaffolding a new package)
+- `prova learn packages` (declaring capabilities this package depends on)
+- `prova learn spec` (the writable prose sources declared here)
+- `prova learn running` (the profiles and switches declared here)

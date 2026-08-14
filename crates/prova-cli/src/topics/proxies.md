@@ -32,3 +32,7 @@ Three postures on one stream: a **driver** originates traffic (`prova learn driv
 **double** terminates it (`prova learn doubles`), a **proxy** interposes on it. The proxy
 posture will compose with the topology network vantage (aliases are where a shim would sit).
 When this ships, this topic will carry the surface; until then, its absence here is the truth.
+
+See also:
+- `prova learn doubles` (the shipped surface; most of this topic is not yet built)
+- `prova learn drivers` (originating traffic, the direction proxies do not cover)

@@ -79,4 +79,8 @@ Wiring a container to a resource's host `url` is the classic mistake: inside a c
 A held environment accumulates state — that's the point; `down` then `up` when isolation
 matters.
 
-Go deeper: `prova learn fixtures` (scopes underneath) · `prova learn doubles` (what goes in it).
+See also:
+- `prova learn fixtures` (a topology IS a fixture, with a name and its own verbs)
+- `prova learn doubles` (the containers and mocks it stands up)
+- `prova learn running` (how a topology is selected, held, and torn down)
+- `prova learn capabilities` (what the host must provide for it to come up)

@@ -87,4 +87,8 @@ The mirror of `owed` (claim → proof) runs proof → claim: `prova specs backfi
 claim backs (empty `covers`) and gates — a red→green worklist for full spec-coverage. It names the
 proof; you anchor the claim that means something (never auto-stubbed — that would be vacuous prose).
 
-See also: `prova learn project` — WHERE to write one (this package's writable sources + house rules).
+See also:
+- `prova learn spec` (the prose layer a claim lives in)
+- `prova learn evidence` (the account claims roll up into)
+- `prova learn record` (attesting a claim against what actually ran)
+- `prova learn backlog` (the cold shelf a claim is promoted from)

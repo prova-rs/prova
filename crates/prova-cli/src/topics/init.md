@@ -60,4 +60,7 @@ proof_dir = "proofs"
 This file is also where a team bakes ITS preferences into `project` — when a human says "use my
 init defaults", this is where those live.
 
-Go deeper: `prova learn project` (what the scaffold gave you) · `prova learn pdd` (what to do next).
+See also:
+- `prova learn project` (what the scaffold writes, and where)
+- `prova learn packages` (adding a capability after scaffolding)
+- `prova learn package-authoring` (scaffolding a package for others instead)

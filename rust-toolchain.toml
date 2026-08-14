@@ -1,0 +1,19 @@
+# The toolchain this repo lints and builds with, everywhere
+# (docs/design/agent-ergonomics.md#local-clippy-weaker-than-ci).
+#
+# Without this file the local tree used whatever rustup had defaulted to — a nightly from January —
+# while CI used the GitHub runner's preinstalled *current* stable. The two disagreed about lints,
+# and they disagreed in the worst possible direction: `prova run quality` is the gate an agent
+# trusts before pushing, and it UNDER-reported. A `question_mark` finding that stable flags as an
+# error under `-D warnings` drew silence locally and turned main red.
+#
+# An exact version rather than `stable`: `stable` re-introduces the same failure on a six-week
+# timer, since a newly-released clippy can fail a tree that passed yesterday with nothing in the
+# diff to explain it. Bumping this file is how a lint change enters — deliberately, in a commit
+# that can be reviewed and reverted.
+#
+# rustup reads this automatically for every `cargo`/`rustc` invocation under this directory, and
+# GitHub's runners ship rustup, so CI honors it with no workflow change.
+[toolchain]
+channel = "1.94.1"
+components = ["clippy", "rustfmt"]

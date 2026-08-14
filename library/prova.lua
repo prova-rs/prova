@@ -40,10 +40,15 @@ function Context:defer(fn) end
 ---@return T
 function Context:manage(resource) end
 
----Create a scratch directory that is removed automatically when the current scope ends. The
----returned path is absolute and `/`-normalized on every OS (no `\`, no `\\?\` prefix).
+---This scope's scratch directory, addressed by name. `ctx:tempdir()` is the unnamed one;
+---`ctx:tempdir("plugin")` is a second, `ctx:tempdir("consumer")` a third. Same name, same
+---directory, every time — so a write and a later read always meet. All of them are removed when
+---the scope ends, and the name appears in the directory's own path, so a failed run's scratch tree
+---says which is which. The returned path is absolute and `/`-normalized on every OS (no `\`, no
+---`\\?\` prefix).
+---@param name? string  # which directory; omitted is this scope's default one
 ---@return string path
-function Context:tempdir() end
+function Context:tempdir(name) end
 
 ---Attach a structured log line to the current test/fixture in the report.
 ---@param msg string

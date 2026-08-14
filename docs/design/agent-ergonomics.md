@@ -523,14 +523,77 @@ execute arbitrary commands, and selection would stop being cheap and safe. So pr
 container work belongs in a fixture or a test body — where the runtime, its bounds, and its lease
 all exist.
 
-<!-- backlog: module-opts-silently-ignored recorded=2026-08-13 -->
-A MODULE option table silently ignores unknown keys — the same disease as unit opts, one layer over: docker.build{ first_byte = ... } on a prova without that option built normally and the proof passed while proving nothing (found 2026-08-13 writing the first-byte proof; only the conductor-vs-subject discipline caught it). shell.run's RunOpts, docker.build/docker.run's specs, http, sql and the rest all parse by key lookup, so a typo'd or version-mismatched option reads as configured. The unit-opts gate (agent-ergonomics.md#unknown-test-opts-silently-ignored) is the shape to copy; the wrinkle is version skew — a proof written for a newer prova should fail loudly on the older binary, which is exactly what refusing gives. Field evidence, 2026-08-14 (prova 0.22.0, ybor-studio topology): `shell.spawn("kubectl", { args = {...} })` ran kubectl with NO arguments. `spawn` reads `cwd` and `env` only (crates/prova-core/src/modules/shell.rs:772), so `args` was dropped — and `spawn` is the worst host for this, because the process still STARTS. A no-op option leaves a proof proving nothing; a dropped `args` leaves a bare `kubectl` printing usage to a discarded stdout, so the failure arrives later and somewhere else, as a timeout waiting for an effect that was never requested. The argv form (agent-ergonomics.md#1) is the right call and shipped; what remains is that the WRONG call is silent.
+<!-- claim: module-opts-silently-ignored recorded=2026-08-13 -->
+**The same rule holds one layer over: a MODULE option prova cannot honor is refused, never
+dropped.** `shell.run`/`shell.spawn`, `docker.build`, `docker.run` and its nested `wait`, the
+`http` request/client/`wait_for` options and `graphql.client` all parse by key lookup, so every one
+of them used to read a typo as *configured*. They now share the unit surface's gate
+(`crate::opts::Closed`, one implementation for both layers), naming the key, the nearest accepted
+spelling where one is close enough to name, and the accepted set.
+
+**Version skew is why this matters more here than at the unit layer.** A proof written against a
+newer prova — `docker.build{ first_byte = "90s" }` — ran on an older binary that had never heard of
+the option, dropped it, and passed while proving nothing about the bound it named (found 2026-08-13
+writing the first-byte proof; only the conductor-vs-subject discipline caught it). Refusing turns
+that into the loud, accurate "this proof needs a newer prova" it always was.
+
+**Some wrong calls deserve more than a denial.** `shell.spawn("kubectl", { args = {…} })` ran
+kubectl with NO arguments (field evidence 2026-08-14, prova 0.22.0, ybor-studio topology): `spawn`
+reads `cwd` and `env` only, so `args` was dropped, and `spawn` is the worst possible host because
+the process still STARTS — a bare `kubectl` printed usage into a discarded stdout and the run
+failed minutes later waiting for an effect nobody had requested. `args` is what every other process
+API in the world takes and nothing in `{cwd, env}` is near it, so nearest-spelling has nothing to
+offer; the refusal therefore teaches the argv form (§1) outright. The same mechanism carries
+removed spellings, which is the identical failure from the other end.
+
+<!-- backlog: http-wait-for-cannot-authenticate recorded=2026-08-14 -->
+**`http.wait_for` can send no headers, so an authenticated health endpoint cannot be waited on.**
+Found by the closed-set audit rather than in the field, which is the point: the LuaLS stub declared
+`WaitOpts : HttpOpts`, so it *advertised* `headers`, `json` and the rest on the polling verbs —
+and [[module-opts-silently-ignored]] turned that documented-but-unimplemented surface from a silent
+no-op into a hard refusal for anyone who followed the stub. The stub now tells the truth
+(`{status, timeout, every}`), which leaves the real gap visible: readiness against a service behind
+auth has to be hand-rolled as a `http.get` retry loop, or reached through `http.client{ headers }`,
+whose `client:wait_for` DOES carry the client's default headers. That asymmetry between the free
+function and the client method is the smell. Suggested shape: `headers` on `WaitOpts`, which costs
+nothing — `Prepared` already carries them and the client path already passes them.
+
+<!-- backlog: module-opts-gate-remaining-namespaces recorded=2026-08-14 -->
+**The opts gate closed the high-traffic namespaces; the rest of the module surface is still open.**
+`crate::opts::Closed` now gates `shell.run`/`shell.spawn`, `docker.build`, `docker.run` and its
+nested `wait`, the `http` request/client/`wait_for` options, and `graphql.client` — the surfaces
+[[module-opts-silently-ignored]] names and the two its field cases were found on. Untouched, each
+still parsing by bare key lookup: `mock` and `grpc_mock` (the widest remaining — `route`, `on`,
+`respond` and the cassette options), `socket`, `websocket`, `terminal`, `shellproxy`, `wiretap`,
+`measure`, and the reader options on `formats`/`junit`/`sarif`. Nothing about the gate resists
+being applied — each is a `Closed::of(KEYS).check(t, site)` next to the parse plus a row in
+`proofs/spec/modules/opts_refusal_test.lua` — so this is enumeration work, not design work, and it
+was left out to keep one change reviewable rather than because it is harder. `sql` needs nothing:
+`sql.client(url)` takes a string, so there is no table to close. The mock namespaces deserve care
+in the doing, since some of their tables legitimately carry positional entries and the gate counts
+those as a drop.
 
 <!-- backlog: windows-ut-relink-denied recorded=2026-08-13 -->
 On windows-latest CI, 'prova run ut' fails with 'failed to remove file target\\debug\\prova.exe — Access is denied (os error 5)': the conductor IS the file the deputy's cargo build wants to relink, and Windows refuses to replace a running executable. Long-standing (every Build run on main for at least a day). The unix runners are unaffected because a running binary can be unlinked. Candidate fixes: have CI conduct the ut lane through a COPY of the binary (copy target/debug/prova.exe to a scratch path and invoke that), or teach the deputy recipe to exclude the conducting binary's own target on Windows. Notably the RELEASE gate passes on Windows because it builds rather than conducting a rebuild under itself.
 
-<!-- backlog: local-clippy-weaker-than-ci recorded=2026-08-13 -->
-The local quality lane can pass while CI's fails, because they run different clippy versions: this tree's toolchain is nightly-1.95 (2026-01-28) and CI installs current stable, whose question_mark lint flagged crates/prova-cli/src/mcp.rs:97 as an error under -D warnings while the local run said nothing. The consequence is the worst kind: 'prova run quality' is the gate an agent trusts before pushing, and it under-reports. Consider pinning the toolchain (rust-toolchain.toml) so local and CI lint identically, or having the quality lane report the clippy version it ran so a divergence is visible in the output rather than discovered on main.
+<!-- claim: local-clippy-weaker-than-ci recorded=2026-08-13 -->
+**One toolchain lints this tree, everywhere.** `rust-toolchain.toml` pins an exact version with
+`clippy` and `rustfmt`; rustup honors it for every `cargo` invocation under the root, and GitHub's
+runners ship rustup, so CI obeys it with no workflow change. The quality lane also logs the clippy
+version it ran, so a future divergence shows up in the output rather than on main.
+
+An exact version rather than `stable`, deliberately: `stable` reintroduces the same failure on a
+six-week timer, since a newly-released clippy can fail a tree that passed yesterday with nothing in
+the diff to explain it. Bumping the pin is how a lint change enters — in a commit that can be
+reviewed and reverted.
+
+The divergence this closes: the tree defaulted to whatever rustup had (a nightly-1.95 from January)
+while CI used the runner's *current* stable, whose `question_mark` lint failed
+`crates/prova-cli/src/mcp.rs:97` under `-D warnings` while the local run said nothing. That is the
+worst direction for a gate to be wrong in — `prova run quality` is what an agent trusts before
+pushing, and it UNDER-reported. (The offending code has since been rewritten as a `match`, so the
+original finding is no longer reproducible; what is verified here is the mechanism — the pin is
+honored, the tree builds on it, and the gate is clean under it.)
 
 ## 17. A topology that takes minutes cannot be inhabited — `prova start`'s budget is fixed
 
@@ -559,25 +622,35 @@ previous failure's residue wearing an unrelated diagnosis. This is
 and the cure must never be `docker ps -q | xargs docker rm -f` typed by a user who should not
 need to know it.
 
-## 18. `http` cannot send a form-encoded body, so auth proofs shell out
+## 18. A request body is named exactly once, in whichever shape the endpoint wants
 
-<!-- backlog: http-form-and-raw-bodies recorded=2026-08-13 -->
-**`http` should be able to post a form or a raw body.** `HttpOpts` is `{headers, json, timeout}`,
-but OAuth 2.0 token endpoints require `application/x-www-form-urlencoded` — so the two proofs
-that obtain a real token (docker and kubernetes topologies alike) call `curl` through
-`shell.run`, adding a host-tool `requires` to a proof whose subject is HTTP. Suggested shape:
-`form = { grant_type = "password", … }` alongside the existing `json`, and/or
-`body = "…", content_type = "…"` for everything else.
+<!-- claim: http-form-and-raw-bodies recorded=2026-08-13 -->
+**`json`, `form` and `body` are three spellings of one thing, and a call may use exactly one.**
+`form = { grant_type = "password", … }` sends `application/x-www-form-urlencoded`;
+`body = "…"` sends bytes verbatim; `content_type = "…"` names the media type for either, and wins
+over the type the shape implies. Passing two is refused rather than ranked: an `if json … else if
+body` chain sends a request the author did not write and then reports the endpoint's honest answer
+to it, so the debugging starts at the server.
 
-## 19. `http` always follows redirects, so a redirect cannot be asserted
+Before this, `HttpOpts` was `{headers, json, timeout}` and OAuth 2.0 token endpoints require
+form encoding — so the two proofs that obtain a real token (docker and kubernetes topologies alike)
+called `curl` through `shell.run`, putting a host-tool `requires` on a proof whose subject is HTTP.
+The encoding is `form_urlencoded`'s rather than hand-rolled, because a body that mis-escapes `+`,
+`&` or UTF-8 fails at the far end of an exchange whose error names none of that.
 
-<!-- backlog: http-redirect-control recorded=2026-08-13 -->
-**A proof should be able to observe a 3xx.** `http.get` follows redirects unconditionally, so
-"an unauthenticated visitor is redirected to `/auth/login`" is unprovable: the client has already
-followed the 307 and returns whatever the destination said (a 500, in the case at hand, because
-the identity provider was deliberately absent). Auth flows are redirects — login, callback,
-logout — and a suite that cannot see the hop cannot prove the gate. Suggested shape:
-`redirects = false` (or `max_redirects = N`), leaving `status` and `headers.location` intact.
+## 19. A redirect can be observed instead of followed
+
+<!-- claim: http-redirect-control recorded=2026-08-13 -->
+**`redirects = false` returns the 3xx itself; `redirects = N` caps the chain; the default still
+follows.** `status` and `headers.location` are intact either way, which is the whole assertion:
+"an unauthenticated visitor is redirected to `/auth/login`" is a statement about the hop, not about
+its destination.
+
+One key rather than a `redirects`/`max_redirects` pair — they would be two spellings of one
+question, and a table carrying both would need a precedence rule nobody could guess. Unconditional
+following made auth flows unprovable: the client had already taken the 307 and returned whatever
+lay beyond it (a 500, in the case at hand, because the identity provider was deliberately absent),
+so a working gate read as a broken app.
 
 ## 20. Kubernetes topologies are hand-rolled kubectl
 
@@ -605,45 +678,62 @@ one-line config change cost an image build, and it pushed one topology into buil
 purpose-built images that exist only to carry a file. If the immutability is deliberate, saying so
 in `prova learn doubles` would settle the question for the next author who goes looking.
 
-## 22. A binary response body is corrupted in transit through `body`
+## 22. A response body crosses into Lua as bytes
 
-<!-- backlog: http-binary-response-corrupted recorded=2026-08-14 -->
-**A binary response body is silently corrupted, and the corruption survives every cheap
-check.** `http.get` on a zip served by MinIO returns a body 34220 bytes long where curl
-writes 22181 for the same URL — inflated, not truncated, which is what lossy UTF-8
-conversion does when it replaces each invalid byte with U+FFFD (3 bytes). The bytes are
-unusable: python's zipfile opens the file written from that body and reports 'corrupt
-member', while the same URL fetched with curl -o opens clean. What makes this worth fixing
-rather than documenting is how well it hides. `status` is 200, `#body` is plausibly large,
-and `body:sub(1,2)` is still 'PK', because ASCII bytes pass through untouched — so a proof
-that sniffs a magic number passes while asserting nothing about the payload, and a suite
-can carry that false confidence indefinitely. Found while proving that a rendered
-project's archive downloads: the download proof had to shell out to curl, so a proof about
-HTTP once again requires a host tool (see [[http-form-and-raw-bodies]] — same surface,
-opposite direction). Suggested shape: bytes-preserving access that never crosses a Lua
-string — `res:save(path)` (or `http.download(url, path)`) for the common case of 'I need
-the artifact on disk', and/or `res.bytes` as an explicit byte-array accessor. Until one
-exists, `body` should at minimum be documented as text-only, and it would be better still
-for it to REFUSE a non-text content type rather than hand back mojibake.
+<!-- claim: http-binary-response-corrupted recorded=2026-08-14 -->
+**`res.body` is byte-exact for any payload, and `res:save(path)` puts it on disk without it ever
+becoming a Lua value.** The response is held as bytes end to end — `reqwest`'s `bytes()`, never
+`text()` — so a zip arrives the length its server declared and opens in a foreign reader.
 
-## 23. `t:tempdir()` is a factory wearing an accessor's name
+The fix needed no new accessor to be *correct*, which is worth stating because the obvious API was
+the wrong one: **a Lua string is a byte string**, so handing Lua the raw bytes makes `res.body`
+exact for binary and identical to before for text. A separate `res.bytes` would have been a second
+spelling of a now-correct thing. `save` earns its place for a different reason — `fs.write` takes a
+UTF-8 `String` and would reject those very bytes — so "I need the artifact on disk" should never
+round-trip through Lua at all. Refusing non-text content types, the other candidate shape, would
+have been a breaking answer to a problem that no longer exists.
 
-<!-- backlog: context-tempdir-not-idempotent recorded=2026-08-14 -->
-**`t:tempdir()` hands back a DIFFERENT directory every call, and the second one is
-silently empty.** The binding calls `make_tempdir()` per invocation and pushes each result
-onto the scope's teardown list (crates/prova-core/src/engine/context.rs:413), so
-`fs.write(t:tempdir() .. "/cookies.txt", …)` followed by `fs.read(t:tempdir() ..
-"/cookies.txt")` writes one directory and reads another. Nothing errors: the read of a
-nonexistent path in a fresh directory just yields nothing, and the proof fails much later
-on whatever consumed it — in the case at hand, a curl cookie jar, so a login flow appeared
-to be rejected by the identity provider when in fact the session cookie had been written
-somewhere the next step never looked. Cost about an hour of chasing an auth bug that did
-not exist. The name is what misleads: `t:tempdir()` reads as an accessor for THIS test's
-temp directory (the way `t:use`, `t:defer` and `t:log` all address the scope), not as a
-factory. And prova already HAS the factory — `fs.tempdir()`
-(crates/prova-core/src/modules.rs:335) returns a fresh one — so the two spellings could
-carry the two meanings with nothing lost: memoize `t:tempdir()` per scope so repeated
-calls are the same directory, and leave `fs.tempdir()` as the way to ask for another. If
-per-call really is the intended contract, then the summary in the API surface should say
-'a NEW temporary directory' outright, since the current wording sends an author the other
-way.
+What made this worth a proof rather than a note is how well it hid. `text()` is a LOSSY UTF-8
+conversion: each invalid byte becomes U+FFFD, three bytes out for one byte in, so a 22181-byte zip
+came back as 34220 unusable ones — inflated, not truncated. Every cheap check still passed. Status
+200, `#body` plausibly large, `body:sub(1, 2)` still `"PK"` because ASCII survives untouched. A
+proof that sniffed the magic number asserted nothing about the payload and reported green, and a
+suite can carry that false confidence indefinitely. Found while proving that a rendered project's
+archive downloads — the download proof had to shell out to `curl`, so a proof about HTTP once again
+required a host tool (see [[http-form-and-raw-bodies]]: same surface, opposite direction).
+
+## 23. A scratch directory is addressed, never manufactured
+
+<!-- claim: context-tempdir-not-idempotent recorded=2026-08-14 -->
+**`ctx:tempdir(name?)` answers with a directory belonging to this scope instance — the same one
+for the same name, forever.** `ctx:tempdir()` is the unnamed one; `ctx:tempdir("plugin")` and
+`ctx:tempdir("consumer")` are two more. All are removed when the scope ends, and the name is
+embedded in the directory's own path. There is no arity at which the verb manufactures something
+new, so no call can surprise its second caller.
+
+It used to be a FACTORY, handing back a fresh directory per invocation, so `fs.write(t:tempdir() ..
+"/cookies.txt", …)` followed by `fs.read(t:tempdir() .. "/cookies.txt")` wrote one directory and
+read another. Nothing errored — reading a missing path in a fresh directory simply yields nothing —
+and the proof failed much later on whatever consumed the result. In the case at hand that was a
+curl cookie jar, so a login flow appeared to be rejected by the identity provider when the session
+cookie had merely been written somewhere the next step never looked. About an hour, chasing an auth
+bug that did not exist.
+
+**The name was the defect; the missing primitive was the reason it survived.** `ctx:tempdir()`
+addresses the scope, the way `ctx:use`, `ctx:defer` and `ctx:log` all do, so it reads as an
+accessor and behaved as a factory. But plain memoization is only half an answer: fifteen call sites
+in this repo genuinely needed SEVERAL scratch directories, and the only verb that gave them was
+`fs.tempdir()`, which is unmanaged — so each of them hand-rolled a counter and a subdirectory. That
+repetition is what a missing primitive looks like. Keying the accessor serves both needs with one
+verb and keeps idempotence at every arity; the fifteen counters are gone.
+
+**The name on disk is not decoration.** The hour this cost was spent asking which directory the run
+had actually written to. Three sandboxes under indistinguishable hex names leave that question to
+be re-derived from the proof; `…-plugin` and `…-consumer` answer it with `ls`. Names are sanitized
+to `[A-Za-z0-9._-]` — they arrive from Lua and land in a path, where a `/` would silently nest the
+directory somewhere else.
+
+Memoization is per scope INSTANCE, not per run — a fixture and the test using it are different
+instances and must not share, or a file-scoped directory would leak one test's scratch files into
+the next. `fs.tempdir()` remains only as the unmanaged escape hatch for code with no context to
+ask.

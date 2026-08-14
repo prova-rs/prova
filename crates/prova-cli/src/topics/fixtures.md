@@ -36,7 +36,11 @@ failure.
 - `ctx:use(handle_or_name)` — dependency-inject another fixture (fixtures can use fixtures).
 - `ctx:manage(resource)` — anything with `:stop()`/`:close()` is torn down at scope end.
 - `ctx:defer(fn)` — arbitrary teardown, LIFO with the rest.
-- `ctx:tempdir()` — a scope-owned scratch dir. Bigger shape: `require("prova.workspace")`.
+- `ctx:tempdir(name?)` — a scope-owned scratch dir, ADDRESSED not created: the same name answers
+  with the same directory every call, so a write and a later read always meet. Name it when one
+  scope needs several (`ctx:tempdir("plugin")`, `ctx:tempdir("consumer")`); the name lands in the
+  path, so a failed run's scratch tree says which is which. Bigger shape:
+  `require("prova.workspace")`. `fs.tempdir()` is the unmanaged escape hatch — nothing cleans it up.
 - In tests the context is `t` (same object: `t:use`, `t:expect`, `t:skip`).
 
 ## Rules that bite
@@ -47,4 +51,8 @@ failure.
   fixture that owns the resource it acts on.
 - Suite = one Lua state = the parallelism unit; `--jobs` can never change what a run means.
 
-Go deeper: `prova learn topologies` (the fixture that outlives a run) · `prova learn doubles`.
+See also:
+- `prova learn doubles` (when a fixture provisions a stand-in instead of the real thing)
+- `prova learn topologies` (the same factory, addressable as a whole environment)
+- `prova learn locks` (when two fixtures contend on one tool)
+- `prova learn authoring` (the units a fixture serves)

@@ -88,3 +88,8 @@ plain, merge-friendly, promotable list.
 the writable spec sources and any house rules its context carries — write the anchor in the doc
 whose subject owns the item, never where the ledger does not scan. See also: `prova learn claims`
 (the owed state), `prova learn promises` (the executable spec, committed but not yet proven).
+
+See also:
+- `prova learn spec` (the prose layer anchors live in)
+- `prova learn claims` (what a backlog item becomes when promoted)
+- `prova learn reminders` (the other capture lane: obligations the world creates)

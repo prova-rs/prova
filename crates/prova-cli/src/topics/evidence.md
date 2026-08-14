@@ -59,3 +59,9 @@ and neither is a proof that never executed. A package with no claims exits 0 and
 
 Note: prova's attestation is deliberately **unsigned** — the threat model is a careless agent,
 not a malicious one (unlike in-toto/sigstore attestations, which are signed statements).
+
+See also:
+- `prova learn claims` (the owed half of the account)
+- `prova learn promises` (the open half)
+- `prova learn record` (what did NOT run, and why that is not the same as green)
+- `prova learn reminders` (due obligations the account also carries)

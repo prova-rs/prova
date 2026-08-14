@@ -7,7 +7,7 @@ filesystem. Green must mean "a real caller would succeed."
 
 | Contract under proof | Driver | Core moves |
 |---|---|---|
-| HTTP/REST | `http` | `http.get/post(url, { headers, json, timeout })` → `.status`, `.body`, `:json()` · `http.client{ base_url }` · `http.wait_for(url, { status, timeout })` |
+| HTTP/REST | `http` | `http.get/post(url, { headers, json\|form\|body, content_type, timeout, redirects })` → `.status`, `.body` (bytes-exact), `:json()`, `:save(path)` · `http.client{ base_url }` · `http.wait_for(url, { status, timeout })` |
 | gRPC | `grpc` | `grpc.client(addr)` → `:call(method, req)`, `:call_status` (needs server reflection) · `grpc.wait_for` |
 | GraphQL | `graphql` | `graphql.client{ url }` → `:query`, `:execute` |
 | CLI / processes | `shell` | `shell.run(cmd_or_argv, { cwd, env, timeout, check })` → `{ code, stdout, stderr }` · `shell.spawn` for long-running |
@@ -31,5 +31,16 @@ filesystem. Green must mean "a real caller would succeed."
   doubles`); **proxies** (interpose) are not yet a shipped surface (`prova learn proxies`).
 - `http`/`grpc` responses are userdata, not tables — use `:json()` and fields, don't iterate.
   When a shape surprises you: `prova.help("HttpResponse")` or probe with `eval`.
+- A binary payload needs no special verb: `.body` is byte-exact (a Lua string is bytes), and
+  `res:save(path)` writes it to disk without it crossing Lua — `fs.write` takes UTF-8 and would
+  reject those very bytes.
+- An option a driver cannot honor is **refused**, never dropped — including `args` on `shell`,
+  where the arguments belong in the argv itself. A refusal on an option you know exists means the
+  binary under test is older than the proof.
 - A protocol prova doesn't speak natively: drive the official CLI via `shell.run` argv, or
   wrap the SDK in a package (`prova learn package-authoring`).
+
+See also:
+- `prova learn doubles` (what the SUT calls OUT to, when you cannot run it for real)
+- `prova learn authoring` (the assertions a driver's result feeds)
+- `prova learn capabilities` (what a driver needs the host to have)

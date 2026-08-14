@@ -64,3 +64,9 @@ fully-skipped suite from exiting 0. `prova learn project` shows this package's p
 
 CI is the same binary and the same suite: `uses: prova-rs/run-action@v1` — byte-identical to
 your local run; that is the point.
+
+See also:
+- `prova learn pdd` (the loop selection exists to serve)
+- `prova learn locks` (what --jobs may never change)
+- `prova learn verifiers` (conducting a specialist and adopting its verdict)
+- `prova learn mcp` (the same selection grammar, over a tool call)

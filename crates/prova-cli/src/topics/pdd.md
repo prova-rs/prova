@@ -66,6 +66,8 @@ implementation can, it deserves a unit test.
 | Contract known, implementation deferred (design doc, out-of-scope gap) | Author it NOW as a promise: `{ promises = "reason" }` — executable spec, not a TODO comment |
 | `prova tests --promises` shows open promises in this repo | That is scoped, unclaimed work — offer to burn it down (`prova learn promises`) |
 
-Go deeper: `prova learn promises` (proofs ahead of implementation) · `prova learn project` (where
-things live here) · `prova learn init` (scaffolding) · `prova learn doubles` (mocks and
-containers).
+See also:
+- `prova learn authoring` (the DSL you write the proof in)
+- `prova learn running` (selection: re-run only what is red)
+- `prova learn falsify` (proving the proof can actually fail)
+- `prova learn spec` (where the obligation is written down)

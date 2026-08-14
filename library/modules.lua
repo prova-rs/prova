@@ -53,7 +53,9 @@ function net.free_port() end
 
 ---@class prova.fs
 fs = {}
----Create a temp dir. Not auto-cleaned; pair with `ctx:defer` or use `ctx:tempdir()`. The returned
+---Create a temp dir with NO scope to clean it up — the escape hatch for code that has no context
+---to ask. Inside a test or fixture prefer `ctx:tempdir(name)`, which is reaped with the scope and
+---gives you as many directories as you have names. Not auto-cleaned; pair with `ctx:defer`. The returned
 ---path is absolute and `/`-normalized on every OS (no `\`, no `\\?\` prefix — safe to embed in
 ---TOML, shell strings, and patterns).
 ---@return string path
@@ -153,8 +155,11 @@ shell = {}
 ---@return prova.ShellResult
 function shell.run(command, opts) end
 --- Start a long-running command in the background (a booted app, a mock server) and return a
---- handle. stdout/stderr are discarded. Pair with `ctx:defer(function() proc:stop() end)`.
---- Takes a shell string or an **argv table** (no shell, no quoting), exactly like `shell.run`.
+--- handle. stdout and stderr are captured — read the last 64KB of them with `proc:output()`,
+--- which is how you diagnose a service that booted and then died. Pair with
+--- `ctx:manage(proc)` (or `ctx:defer(function() proc:stop() end)`) so it stops at scope end.
+--- Takes a shell string or an **argv table** (no shell, no quoting), exactly like `shell.run` —
+--- there is no `args` option, because the arguments are part of the command.
 ---@param command string|string[]
 ---@param opts? prova.SpawnOpts
 ---@return prova.Process
@@ -166,20 +171,36 @@ function shell.spawn(command, opts) end
 
 ---@class prova.HttpResponse
 ---@field status integer
----@field body string
+---@field body string            # the raw bytes; a Lua string is not UTF-8 constrained, so this is exact for binary
 ---@field headers table<string,string>
 local HttpResponse = {}
 ---Decode the body as JSON (raises on non-JSON).
 ---@return table
 function HttpResponse:json() end
+---Write the body to `path` byte-for-byte, creating parent directories, and return the path. The
+---way to land a binary artifact on disk: `fs.write` takes a UTF-8 string and would reject those
+---bytes.
+---@param path string
+---@return string path
+function HttpResponse:save(path) end
 
 ---@class prova.HttpOpts
 ---@field headers? table<string,string>
 ---@field json? table            # request body, JSON-encoded
+---@field form? table            # request body, application/x-www-form-urlencoded (scalar fields)
+---@field body? string           # request body, sent verbatim (bytes)
+---@field content_type? string   # media type; overrides the one `json`/`form` imply
 ---@field timeout? string
+---@field redirects? boolean|integer  # false = return the 3xx; N = follow at most N; default follows
 
----@class prova.WaitOpts : prova.HttpOpts
+--- Deliberately NOT an extension of `prova.HttpOpts`: the polling verbs honor these three keys and
+--- nothing else, and since an option prova cannot honor is now refused rather than dropped
+--- (docs/design/agent-ergonomics.md#module-opts-silently-ignored), advertising `headers` or `json`
+--- here would hand an author a call that fails. `http.client{ headers }` carries default headers
+--- into `client:wait_for`; the free function sends none.
+---@class prova.WaitOpts
 ---@field status? integer        # expected status (default 200)
+---@field timeout? string        # give up after this long, e.g. "30s"
 ---@field every? string          # poll interval, e.g. "500ms"
 
 ---@class prova.http
@@ -189,7 +210,7 @@ http = {}
 ---@param opts? prova.HttpOpts
 ---@return prova.HttpResponse
 function http.get(url, opts) end
---- Issue a POST. Set a body with `opts.body`/`opts.json`. Does **not** raise on 4xx/5xx — assert on `res.status`.
+--- Issue a POST. Name the body with exactly one of `opts.json`/`opts.form`/`opts.body` — two is an error, not a precedence. Does **not** raise on 4xx/5xx — assert on `res.status`.
 ---@param url string
 ---@param opts? prova.HttpOpts
 ---@return prova.HttpResponse

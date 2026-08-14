@@ -151,10 +151,15 @@ end)
   proof authored ahead of its implementation — `prova learn promises`). `--jobs` is throughput
   only — it can never change what a run means.
 - Context: `ctx:use(handle)`, `ctx:manage(resource)` (auto stop/close at scope end),
-  `ctx:defer(fn)`, `ctx:tempdir()`, `t:expect(v, label?)`, `t:expect_all(fn)` (soft), `t:skip(why)`.
+  `ctx:defer(fn)`, `ctx:tempdir(name?)` (this scope's scratch dir — the SAME one for the same
+  name, every call; name it when you need several, and the name lands in the path so a failed run
+  is readable on disk), `t:expect(v, label?)`, `t:expect_all(fn)` (soft), `t:skip(why)`.
 - Matchers, by what the SUBJECT is (a flat list hides which ask the filesystem) — negate with
   `:never()`:
-  - any value: `equals is is_true is_falsy is_nil contains matches has_length is_one_of exists`
+  - any value: `equals is is_nil contains matches has_length is_one_of exists`
+  - booleans, and the pair matters: `is_true`/`is_false` are STRICT (the boolean itself — `nil`
+    fails), `is_truthy`/`is_falsy` are Lua truthiness (`0` and `""` are TRUTHY). Reaching for the
+    loose one to assert a strict fact is how an assertion passes on `nil`.
   - numbers: `gt gte lt lte` · paths: `is_file is_dir is_fully_rendered` · trees: `matches_snapshot`
   - `exists`/`is_empty` are polymorphic — present/empty *for whatever the subject is* — but a
     **string is resolved as a path** (asserting a file is there is the load-bearing use). For a
@@ -188,17 +193,28 @@ Official packages: postgres, mysql, redis, kafka, pulsar, rabbitmq, s3. Built-in
 
 ## Built-ins, one line each
 
-`shell.run(cmd, {cwd, env, timeout, check}) → { code, stdout, stderr } + :ok()`;
-`shell.spawn(cmd_string, {cwd, env}) → proc` (`proc.pid`, `:stop()`, `:running()`, `:output()` —
-last 64KB of combined output; command is a string, not argv). `fs`: `read write exists glob
-tempdir remove_all` (relative paths resolve against the invocation cwd). `net.free_port()`.
-`http.get/post/...(url, {headers, json, timeout}) → response` (`.status`, `.body`, `:json()`;
-userdata — not table-iterable), `http.client{ base_url }`, `http.wait_for(url, {status, timeout,
+`shell.run(cmd, {cwd, env, timeout, idle_timeout, first_byte, check, merge_stderr, stdin}) →
+{ code, stdout, stderr } + :ok()`; `shell.spawn(cmd, {cwd, env}) → proc` (`proc.pid`, `:stop()`,
+`:running()`, `:output()` — last 64KB of combined output). **Both take a shell string OR an argv
+table** (`{"kubectl","get","pods"}` — no shell, no quoting); there is no `args` option, because the
+arguments are part of the command. `fs`: `read write exists glob tempdir remove_all` (relative
+paths resolve against the invocation cwd). `net.free_port()`.
+`http.get/post/...(url, {headers, json|form|body, content_type, timeout, redirects}) → response`
+(`.status`, `.body` — raw bytes, exact for binary — `:json()`, `:save(path)`; userdata, not
+table-iterable), `http.client{ base_url, headers, timeout }`, `http.wait_for(url, {status, timeout,
 every})`. `grpc.client(addr)` (`:call`, `:call_status`), `grpc.wait_for`. `graphql.client{ url }`
 (`:query`, `:execute`). `yaml.decode/decode_all`. `sqlite.client(url)`. `docker.run{...} →
 container` (`:host_port`, `:run(argv)`, `:exec`, `:logs`, `:stop`), `docker.build{...} → image`,
 `docker.network{...} → network`. `archetect.render{...}` /
 `archetect.verify(...)`. When unsure of a shape: probe it with `eval` — that is what it is for.
+
+**Option tables are closed.** Every one of these refuses a key it cannot honor, naming the key, the
+nearest accepted spelling, and the accepted set — it is never silently dropped, because a dropped
+option reads as *configured* (`tiemout = "10m"` means unbounded). Two consequences worth knowing:
+a refusal is a **fast, exact answer about the API**, so guessing a key and reading the error beats
+searching for the right one; and a refusal naming an option you are sure exists means the binary
+under test is OLDER than the proof — which is the loud version of a proof that used to pass while
+proving nothing.
 
 ## Boot-then-probe: the quiet idiom
 

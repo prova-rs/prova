@@ -59,3 +59,8 @@ kernel closes when the spawning prova dies (Ctrl-C through `kill -9`), and on th
 sweeps every still-leased conduct group and exits. It is spawned once per run that conducts,
 holds nothing else, and idles at zero cost. `prova start` provisions are deliberately
 unleased — outliving the invocation is that verb's purpose (`prova down` reaps those).
+
+See also:
+- `prova learn locks` (the house rule a conduct almost always needs)
+- `prova learn running` (selection pushdown into the deputy)
+- `prova learn record` (attesting that the deputed evidence actually ran)

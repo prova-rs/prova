@@ -87,3 +87,8 @@ carries the counts. Cadence is run cadence: prova is a runner, not a daemon — 
 world moves" means *at every evaluation*, so give CI a scheduled run if you want the wall
 clock. Filtered runs (`-k`, `--promises`, `--falsify`) do not re-evaluate — a partial account
 would fire ledger conditions early — and carry the previous rows forward.
+
+See also:
+- `prova learn backlog` (the other capture lane: work you found and deferred)
+- `prova learn evidence` (where a due reminder surfaces)
+- `prova learn claims` (obligations you owe, rather than ones the world creates)
