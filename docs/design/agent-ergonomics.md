@@ -565,30 +565,43 @@ declared `WaitOpts : HttpOpts` and so *advertised* `headers` on the polling verb
 no-op into a hard refusal, which is exactly how a gate is supposed to earn its keep — the drift
 surfaced in the docs instead of in someone's proof.
 
-<!-- backlog: eval-snippet-starting-with-a-comment recorded=2026-08-14 -->
-**`prova eval` refuses a snippet whose first line is a comment.** The code arrives as one argv
-element, so `--` at position 0 is parsed as a flag and the run exits 2 with a usage error naming no
-Lua at all. `prova eval 'return 1\n-- trailing'` is fine; only the leading position bites. It bites
-precisely where snippets are longest and most likely to open with a note about what they are doing
-— found writing a proof whose `[==[ … ]==]` block began with one, and the exit-2-with-no-message
-sends the author looking at their Lua rather than at the argument boundary. Candidate fixes: accept
-`--` as an explicit end-of-flags separator (the conventional spelling), or treat the first
-non-flag-looking argument after `eval` as the snippet and everything after it as verbatim.
+<!-- claim: eval-snippet-starting-with-a-comment recorded=2026-08-14 -->
+**A snippet that begins with a Lua comment can be evaluated.** `prova eval -- '<code>'` ends flag
+parsing and takes what follows verbatim — the conventional spelling, and the one this CLI already
+uses for `prova lock <token> -- <cmd>`. `-` (read from stdin) remains the other door.
+
+**The refusal teaches the separator, which matters as much as having one.** The code arrives as a
+single argv element, so `--` at position 0 parses as a flag; reporting `unknown flag --` is true
+and useless, because the author is holding valid Lua and has just been told about flags. An
+argument beginning with `--` that contains whitespace is source, not a flag — one word is what a
+flag looks like — and that is enough to tell them apart and say the right thing. A typo'd `--bogus`
+is still reported as a flag, which is the control that keeps the heuristic from becoming the worse
+error.
+
+It bit precisely where snippets are longest: a `[==[ … ]==]` block opening with a note about what
+it does. Only the leading position ever mattered — a trailing comment was always fine.
 
 <!-- backlog: module-opts-gate-remaining-namespaces recorded=2026-08-14 -->
-**The opts gate closed the high-traffic namespaces; the rest of the module surface is still open.**
-`crate::opts::Closed` now gates `shell.run`/`shell.spawn`, `docker.build`, `docker.run` and its
-nested `wait`, the `http` request/client/`wait_for` options, and `graphql.client` — the surfaces
-[[module-opts-silently-ignored]] names and the two its field cases were found on. Untouched, each
-still parsing by bare key lookup: `mock` and `grpc_mock` (the widest remaining — `route`, `on`,
-`respond` and the cassette options), `socket`, `websocket`, `terminal`, `shellproxy`, `wiretap`,
-`measure`, and the reader options on `formats`/`junit`/`sarif`. Nothing about the gate resists
-being applied — each is a `Closed::of(KEYS).check(t, site)` next to the parse plus a row in
-`proofs/spec/modules/opts_refusal_test.lua` — so this is enumeration work, not design work, and it
-was left out to keep one change reviewable rather than because it is harder. `sql` needs nothing:
-`sql.client(url)` takes a string, so there is no table to close. The mock namespaces deserve care
-in the doing, since some of their tables legitimately carry positional entries and the gate counts
-those as a drop.
+**Every CONSTRUCTOR is closed; the builder and filter surfaces are not.** `crate::opts::Closed` now
+gates nineteen entry points: `shell.run`/`spawn`, `docker.build`/`run` and its nested `wait`, the
+`http` request/client/`wait_for` options, `graphql.client`, `http.mock`/`proxy`,
+`grpc.mock`/`proxy`, `socket.mock`/`listen`/`proxy`, `websocket.mock`/`proxy`,
+`terminal.mock`/`proxy`, and `shell.proxy`. Those are the tables an author writes by hand, where a
+typo silently mis-provisions.
+
+Still open, and deliberately: the **stub builders** (`:on{…}:reply{…}`, `route`, `respond`) and the
+**journal filters** (`received{…}`). Those are a different kind of table — a filter is a structural
+subset match over arbitrary recorded fields, so its key set is the SUT's vocabulary rather than
+prova's, and closing it would refuse legitimate matches. Any gate there has to distinguish prova's
+own keys from the payload's, which is design work, not enumeration. `wiretap`, `measure` and the
+`formats`/`junit`/`sarif` readers remain unexamined.
+
+Two things the sweep turned up worth keeping: `websocket.mock` read its opts argument NOT AT ALL,
+so every key ever passed to it was dropped whole — its accepted set is empty, which is now said out
+loud. And several constructors read part of their set through a helper (`socket.proxy` takes four
+keys via `proxy_config`), so a closed set derived from one function's own `get` calls would have
+refused options that work — worth remembering when the remaining surfaces are done. `sql` needs
+nothing: `sql.client(url)` takes a string, so there is no table to close.
 
 <!-- backlog: windows-ut-relink-denied recorded=2026-08-13 -->
 On windows-latest CI, 'prova run ut' fails with 'failed to remove file target\\debug\\prova.exe — Access is denied (os error 5)': the conductor IS the file the deputy's cargo build wants to relink, and Windows refuses to replace a running executable. Long-standing (every Build run on main for at least a day). The unix runners are unaffected because a running binary can be unlinked. Candidate fixes: have CI conduct the ut lane through a COPY of the binary (copy target/debug/prova.exe to a scratch path and invoke that), or teach the deputy recipe to exclude the conducting binary's own target on Windows. Notably the RELEASE gate passes on Windows because it builds rather than conducting a rebuild under itself.

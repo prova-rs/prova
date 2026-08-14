@@ -29,6 +29,30 @@ struct EvalCli {
     force_json: bool,
 }
 
+/// `prova eval --help`. Its own function because the text is longer than the parser around
+/// it, and a usage string is the one part of an argument loop that never shares its logic.
+fn print_eval_help() {
+    println!(
+        "usage: prova eval '<lua code>' [--format json] [--profile NAME] [--manifest PATH] [-P name=source]\n\
+         \n\
+         run a one-shot Lua snippet in the full prova environment — built-in modules\n\
+         (fs, shell, docker, http, …), manifest-declared plugins via require(), and a\n\
+         real transient `ctx` (anything it provisions is torn down afterwards) — then\n\
+         print the returned value and exit.\n\
+         \n\
+         the snippet may be a bare expression (`1 + 1`) or statements with an explicit\n\
+         `return`. pass `-` to read the snippet from stdin.\n\
+         \n\
+         a snippet whose FIRST line is a Lua comment starts with `--`, which is parsed\n\
+         as a flag — pass it after `--` (`prova eval -- '-- a note\\nreturn 1'`).\n\
+         \n\
+         examples:\n\
+         \x20 prova eval 'return 1 + 1'\n\
+         \x20 prova eval 'return fs.exists(\"Cargo.toml\")'\n\
+         \x20 prova eval 'local db = require(\"postgres\").container(ctx); return db.url'"
+    );
+}
+
 /// Parse `prova eval`'s arguments; `--help` prints usage and exits successfully, and `-` reads
 /// the snippet from stdin.
 fn parse_eval_args(args: Vec<String>) -> Result<EvalCli, ExitCode> {
@@ -58,8 +82,8 @@ fn parse_eval_args(args: Vec<String>) -> Result<EvalCli, ExitCode> {
                 "json" => force_json = true,
                 "console" => {}
                 other => {
-                    eprintln!("prova eval: unknown format {other:?} (expected console|json)");
-                    return Err(ExitCode::from(2));
+        eprintln!("prova eval: unknown format {other:?} (expected console|json)");
+        return Err(ExitCode::from(2));
                 }
             }
             continue;
@@ -67,32 +91,42 @@ fn parse_eval_args(args: Vec<String>) -> Result<EvalCli, ExitCode> {
         match arg.as_str() {
             "--json" => force_json = true,
             "-h" | "--help" => {
-                println!(
-                    "usage: prova eval '<lua code>' [--format json] [--profile NAME] [--manifest PATH] [-P name=source]\n\
-                     \n\
-                     run a one-shot Lua snippet in the full prova environment — built-in modules\n\
-                     (fs, shell, docker, http, …), manifest-declared plugins via require(), and a\n\
-                     real transient `ctx` (anything it provisions is torn down afterwards) — then\n\
-                     print the returned value and exit.\n\
-                     \n\
-                     the snippet may be a bare expression (`1 + 1`) or statements with an explicit\n\
-                     `return`. pass `-` to read the snippet from stdin.\n\
-                     \n\
-                     examples:\n\
-                     \x20 prova eval 'return 1 + 1'\n\
-                     \x20 prova eval 'return fs.exists(\"Cargo.toml\")'\n\
-                     \x20 prova eval 'local db = require(\"postgres\").container(ctx); return db.url'"
-                );
+                print_eval_help();
                 return Err(ExitCode::SUCCESS);
             }
             "-" if code.is_none() => {
                 use std::io::Read;
                 let mut buf = String::new();
                 if let Err(e) = std::io::stdin().read_to_string(&mut buf) {
-                    eprintln!("prova eval: cannot read snippet from stdin: {e}");
-                    return Err(ExitCode::from(2));
+        eprintln!("prova eval: cannot read snippet from stdin: {e}");
+        return Err(ExitCode::from(2));
                 }
                 code = Some(buf);
+            }
+            // `--` ends flag parsing, exactly as `prova lock <token> -- <cmd>` already spells it.
+            // The snippet after it is taken verbatim, which is the only reliable way to pass code
+            // that opens with a Lua comment.
+            "--" if code.is_none() => match it.next() {
+                Some(snippet) => code = Some(snippet),
+                None => {
+        eprintln!("prova eval: `--` with no snippet after it");
+        return Err(ExitCode::from(2));
+                }
+            },
+            // A leading `--` on something that is plainly CODE, not a flag. This is the whole
+            // reason `--` above exists: a snippet whose first line is a comment arrives as one
+            // argv element starting with `--`, and reporting it as an unknown flag names no Lua
+            // at all — so the author goes looking at their script instead of at the argument
+            // boundary (docs/design/agent-ergonomics.md#eval-snippet-starting-with-a-comment).
+            // A real flag is one word; whitespace or a newline means we are holding source.
+            other if other.starts_with("--") && other.chars().any(char::is_whitespace) => {
+                eprintln!(
+        "prova eval: this looks like Lua beginning with a comment, not a flag — an \
+         argument starting with `--` is parsed as one. Pass the snippet after a `--` \
+         separator (`prova eval -- '<code>'`), read it from stdin (`-`), or put a \
+         statement on the first line."
+                );
+                return Err(ExitCode::from(2));
             }
             other if other.starts_with('-') && other.len() > 1 => {
                 eprintln!("prova eval: unknown flag {other}");

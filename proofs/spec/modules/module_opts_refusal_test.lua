@@ -43,6 +43,39 @@ local SURFACES = {
     code = 'http.client{ base_url = "http://127.0.0.1:1", timeuot = "5s" }' },
   { site = "http.wait_for", key = "stauts", meant = "status",
     code = 'http.wait_for("http://127.0.0.1:1/", { stauts = 204 })' },
+  -- The double/proxy constructors. `ctx` is deliberately nil: the gate runs BEFORE the context
+  -- check, so these need no runtime and no daemon, and a row that started failing on `ctx`
+  -- instead would be telling us the gate had moved behind it.
+  { site = "http.mock", key = "netwrok", meant = "network",
+    code = 'http.mock(nil, { netwrok = true })' },
+  { site = "http.proxy", key = "upstram", meant = "upstream",
+    code = 'http.proxy(nil, { upstram = "http://127.0.0.1:1" })' },
+  { site = "grpc.mock", key = "protos", meant = "proto",
+    code = 'grpc.mock(nil, { protos = "x.proto" })' },
+  { site = "grpc.proxy", key = "casette", meant = "cassette",
+    code = 'grpc.proxy(nil, { upstream = "http://127.0.0.1:1", casette = "c" })' },
+  { site = "socket.mock", key = "adr", meant = "addr",
+    code = 'socket.mock(nil, { framing = "line", adr = "tcp://127.0.0.1:0" })' },
+  { site = "socket.listen", key = "adr", meant = "addr",
+    code = 'socket.listen(nil, { framing = "line", adr = "tcp://127.0.0.1:0" })' },
+  { site = "socket.proxy", key = "framng", meant = "framing",
+    code = 'socket.proxy(nil, { upstream = "tcp://127.0.0.1:1", framng = "line" })' },
+  { site = "websocket.proxy", key = "upstrem", meant = "upstream",
+    code = 'websocket.proxy(nil, { upstrem = "ws://127.0.0.1:1" })' },
+  { site = "terminal.mock", key = "az", meant = "as",
+    code = 'terminal.mock(nil, { az = "git" })' },
+  { site = "terminal.proxy", key = "mods", meant = "mode",
+    code = 'terminal.proxy(nil, { as = "git", mods = "record" })' },
+  { site = "shell.proxy", key = "redct", meant = "redact",
+    code = 'shell.proxy(nil, { as = "git", redct = {} })' },
+}
+
+--- `websocket.mock` reads NO options at all, so its closed set is empty — anything passed was
+--- dropped whole before this. Its own row, because "accepted: " with nothing after it is a
+--- different shape of message and worth seeing rendered.
+local HONORS_NOTHING = {
+  { site = "websocket.mock", key = "anything",
+    code = 'websocket.mock(nil, { anything = 1 })' },
 }
 
 prova.test("a typo'd module option is refused at every surface that takes one", {
@@ -115,7 +148,21 @@ http.get("http://127.0.0.1:1/", {
   { site = "http.client", code =
     'http.client{ base_url = "http://127.0.0.1:1", headers = { ["x-a"] = "1" }, timeout = "1s" }' },
   { site = "http.wait_for", code =
-    'http.wait_for("http://127.0.0.1:1/", { status = 204, timeout = "10ms", every = "5ms" })' },
+    'http.wait_for("http://127.0.0.1:1/", { status = 204, headers = { ["x-a"] = "1" }, timeout = "10ms", every = "5ms" })' },
+  -- The doubles' accepted sets. Each fails on the missing `ctx`, which is a DIFFERENT and
+  -- perfectly good failure — the assertion below is only that it never fails at the gate.
+  { site = "http.mock", code =
+    'http.mock(nil, { network = true, passthrough = "http://x", record = "c.yaml", allow_handler_errors = true, redact = { "authorization" } })' },
+  { site = "http.proxy", code =
+    'http.proxy(nil, { mode = "record", upstream = "http://x", cassette = "c.yaml", redact = {} })' },
+  { site = "grpc.proxy", code =
+    'grpc.proxy(nil, { mode = "replay", upstream = "http://x", cassette = "c.yaml", network = true, redact = {} })' },
+  { site = "socket.proxy", code =
+    'socket.proxy(nil, { addr = "tcp://127.0.0.1:0", upstream = "tcp://127.0.0.1:1", framing = "line", mode = "passthrough", cassette = "c", redact = {} })' },
+  { site = "terminal.proxy", code =
+    'terminal.proxy(nil, { as = "git", upstream = "/bin/git", mode = "record", cassette = "c" })' },
+  { site = "shell.proxy", code =
+    'shell.proxy(nil, { as = "git", upstream = "/bin/git", mode = "record", cassette = "c", redact = {} })' },
 }
 
 prova.test("every accepted module option still parses — the gate refuses typos, not the API", {
@@ -140,4 +187,15 @@ prova.test("the three ways to name a body are mutually exclusive, not silently r
   t:expect(r.code, "naming the body twice is refused"):never():equals(0)
   t:expect(r.stdout, "both spellings are named"):contains("json")
   t:expect(r.stdout, "…so the author knows which two collided"):contains("form")
+end)
+
+prova.test("a namespace that honors NO options says so, rather than accepting a table it ignores", {
+  covers = "docs/design/agent-ergonomics.md#module-opts-silently-ignored",
+  proves = "`websocket.mock` never read its opts argument at all, so every key an author passed was dropped whole — the widest possible silent drop, and the one least likely to be suspected, because the call looks configured",
+}, function(t)
+  for _, case in ipairs(HONORS_NOTHING) do
+    local r = evaluated(case.code)
+    t:expect(r.code, case.site .. " refuses"):never():equals(0)
+    t:expect(r.stdout, case.site .. " names the key it cannot honor"):contains(case.key)
+  end
 end)

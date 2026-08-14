@@ -186,7 +186,15 @@ pub(crate) fn mock_fn(lua: &Lua) -> mlua::Result<Function> {
 /// Compile the schema, stand up reflection, bind, and spawn the accept loop. Everything that can
 /// fail does so here, synchronously — a bad `.proto` is an error at the `grpc.mock(…)` call site
 /// with the compiler's own diagnostic, not a mystery `Unimplemented` at the first call.
+/// Every option `grpc.mock` honors — closed by construction
+/// (docs/design/agent-ergonomics.md#module-opts-silently-ignored).
+const MOCK_OPTS: &[&str] = &["allow_handler_errors", "includes", "network", "proto"];
+
+/// Every option `grpc.proxy` honors.
+const PROXY_OPTS: &[&str] = &["cassette", "mode", "network", "redact", "upstream"];
+
 fn start(lua: &Lua, opts: &Table) -> mlua::Result<GrpcMock> {
+    crate::opts::reject_unknown(opts, MOCK_OPTS, "grpc.mock")?;
     let (pool, fds_bytes) = compile_schema(opts)?;
     let allow_handler_errors = opts
         .get::<Option<bool>>("allow_handler_errors")?
@@ -1001,21 +1009,18 @@ pub(crate) fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
 /// Build a proxy: record fetches the upstream schema by reflection and captures pairs; replay
 /// serves the cassette's stored schema and answers from its turns. `auto` picks by the
 /// cassette's presence, exactly as http.proxy does.
-async fn start_proxy(lua: &Lua, opts: &Table) -> mlua::Result<GrpcMock> {
-    let upstream = opts.get::<Option<String>>("upstream")?;
-    let cassette = opts.get::<Option<String>>("cassette")?;
-    let mode_str = opts
-        .get::<Option<String>>("mode")?
-        .unwrap_or_else(|| "passthrough".to_string());
-    let network_host = parse_network(opts)?;
-
-    let mode = match mode_str.as_str() {
+/// Which way a proxy runs, from the declared `mode` and whether a cassette is already on disk.
+///
+/// `auto` is the whole reason this is a function rather than an inline match: it decides by
+/// LOOKING, so the same proof records on its first run and replays forever after, and the decision
+/// has to be made before either path is set up.
+fn resolve_proxy_mode(mode_str: &str, cassette: Option<&str>) -> mlua::Result<&'static str> {
+    Ok(match mode_str {
         "passthrough" | "record" => "record", // passthrough forwards; it just doesn't flush
         "replay" => "replay",
         "auto" => {
-            let cas = cassette
-                .as_ref()
-                .ok_or_else(|| err("grpc.proxy: mode \"auto\" needs a `cassette`"))?;
+            let cas =
+                cassette.ok_or_else(|| err("grpc.proxy: mode \"auto\" needs a `cassette`"))?;
             if std::path::Path::new(cas).exists() {
                 "replay"
             } else {
@@ -1027,7 +1032,19 @@ async fn start_proxy(lua: &Lua, opts: &Table) -> mlua::Result<GrpcMock> {
                 "grpc.proxy: mode must be passthrough|record|replay|auto, got {other:?}"
             )))
         }
-    };
+    })
+}
+
+async fn start_proxy(lua: &Lua, opts: &Table) -> mlua::Result<GrpcMock> {
+    crate::opts::reject_unknown(opts, PROXY_OPTS, "grpc.proxy")?;
+    let upstream = opts.get::<Option<String>>("upstream")?;
+    let cassette = opts.get::<Option<String>>("cassette")?;
+    let mode_str = opts
+        .get::<Option<String>>("mode")?
+        .unwrap_or_else(|| "passthrough".to_string());
+    let network_host = parse_network(opts)?;
+
+    let mode = resolve_proxy_mode(&mode_str, cassette.as_deref())?;
     let recording = mode == "record" && mode_str != "passthrough";
     if recording && cassette.is_none() {
         return Err(err(format!("grpc.proxy: mode {mode_str:?} needs a `cassette`")));

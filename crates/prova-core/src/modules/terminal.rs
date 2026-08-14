@@ -674,8 +674,13 @@ impl UserData for MockCliUd {
     }
 }
 
+/// Every option `terminal.mock` honors — closed by construction
+/// (docs/design/agent-ergonomics.md#module-opts-silently-ignored).
+const MOCK_OPTS: &[&str] = &["as"];
+
 fn mock_fn(lua: &Lua) -> mlua::Result<Function> {
     lua.create_function(|lua, (ctx, opts): (Value, Table)| {
+        crate::opts::reject_unknown(&opts, MOCK_OPTS, "terminal.mock")?;
         let name = opts
             .get::<Option<String>>("as")?
             .ok_or_else(|| err("terminal.mock(ctx, { as = \"name\" }): `as` is required"))?;
@@ -820,8 +825,13 @@ fn term_proxy_stop(this: &TermProxyUd) -> mlua::Result<()> {
     Ok(())
 }
 
+/// Every option `terminal.proxy` honors — closed by construction
+/// (docs/design/agent-ergonomics.md#module-opts-silently-ignored).
+const PROXY_OPTS: &[&str] = &["as", "cassette", "mode", "upstream"];
+
 fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
     lua.create_function(|lua, (ctx, opts): (Value, Table)| {
+        crate::opts::reject_unknown(&opts, PROXY_OPTS, "terminal.proxy")?;
         let name = opts
             .get::<Option<String>>("as")?
             .ok_or_else(|| err("terminal.proxy(ctx, { as = \"name\" }): `as` is required"))?;

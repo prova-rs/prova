@@ -208,8 +208,19 @@ impl UserData for MockUd {
 super::wiretap::impl_journal!(MockUd);
 super::wiretap::impl_shutdown!(MockUd);
 
+/// `websocket.mock` honors NO options — the constructor reads none at all, so every key an author
+/// passed was dropped whole (docs/design/agent-ergonomics.md#module-opts-silently-ignored). An
+/// empty accepted set says that out loud instead of accepting a table and ignoring it.
+const MOCK_OPTS: &[&str] = &[];
+
+/// Every option `websocket.proxy` honors.
+const PROXY_OPTS: &[&str] = &["upstream"];
+
 fn mock_fn(lua: &Lua) -> mlua::Result<Function> {
-    lua.create_function(|lua, (ctx, _opts): (Value, Option<Table>)| {
+    lua.create_function(|lua, (ctx, opts): (Value, Option<Table>)| {
+        if let Some(o) = &opts {
+            crate::opts::reject_unknown(o, MOCK_OPTS, "websocket.mock")?;
+        }
         let std_listener = std::net::TcpListener::bind(("127.0.0.1", 0))
             .map_err(|e| err(format!("websocket.mock: bind: {e}")))?;
         std_listener
@@ -381,6 +392,7 @@ type DynSink = Rc<RefCell<Option<BoxSink>>>;
 
 fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
     lua.create_function(|lua, (ctx, opts): (Value, Table)| {
+        crate::opts::reject_unknown(&opts, PROXY_OPTS, "websocket.proxy")?;
         let upstream = opts
             .get::<Option<String>>("upstream")?
             .ok_or_else(|| err("websocket.proxy(ctx, { upstream = … }): upstream is required"))?;

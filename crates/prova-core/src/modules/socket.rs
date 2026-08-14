@@ -484,6 +484,7 @@ fn listen_fn(lua: &Lua) -> mlua::Result<Function> {
         let addr_s = opts
             .get::<Option<String>>("addr")?
             .unwrap_or_else(|| "tcp://127.0.0.1:0".to_string());
+        crate::opts::reject_unknown(&opts, LISTEN_OPTS, "socket.listen")?;
         let framing = Framing::parse(opts.get::<Option<Value>>("framing")?)?;
         let (acceptor, addr) = Acceptor::bind(&parse_addr(&addr_s)?)?;
         let ud = lua.create_userdata(ListenerUd {
@@ -550,11 +551,24 @@ impl UserData for MockUd {
 super::wiretap::impl_journal!(MockUd);
 super::wiretap::impl_shutdown!(MockUd);
 
+/// Every option `socket.mock` honors — closed by construction
+/// (docs/design/agent-ergonomics.md#module-opts-silently-ignored).
+const MOCK_OPTS: &[&str] = &["addr", "framing"];
+
+/// Every option `socket.listen` honors — the raw acceptor, not the mock.
+const LISTEN_OPTS: &[&str] = &["addr", "framing"];
+
+/// Every option `socket.proxy` honors. `upstream`/`framing`/`mode`/`cassette` are read through
+/// `proxy_config`, so the closed set spans both readers — a gate that only knew this function's
+/// own `get` calls would refuse four options that work.
+const PROXY_OPTS: &[&str] = &["addr", "cassette", "framing", "mode", "redact", "upstream"];
+
 fn mock_fn(lua: &Lua) -> mlua::Result<Function> {
     lua.create_function(|lua, (ctx, opts): (Value, Option<Table>)| {
         let opts = opts.ok_or_else(|| {
             err("socket.mock(ctx, { framing = … }): framing is required — matching needs turns")
         })?;
+        crate::opts::reject_unknown(&opts, MOCK_OPTS, "socket.mock")?;
         let framing = Framing::parse(opts.get::<Option<Value>>("framing")?)?;
         if framing.is_raw() {
             return Err(err(
@@ -1053,6 +1067,7 @@ fn proxy_config(opts: &Table) -> mlua::Result<(Option<String>, Framing, Mode, Op
 
 fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
     lua.create_function(|lua, (ctx, opts): (Value, Table)| {
+        crate::opts::reject_unknown(&opts, PROXY_OPTS, "socket.proxy")?;
         let (upstream, framing, mode, cassette) = proxy_config(&opts)?;
 
         let addr_s = opts

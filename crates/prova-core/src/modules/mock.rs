@@ -315,6 +315,22 @@ pub(crate) fn mock_fn(lua: &Lua) -> mlua::Result<Function> {
 
 /// Bind synchronously (so the port is known and the socket is accepting before we return), then
 /// `spawn_local` the accept loop onto the engine's `LocalSet`.
+/// Every option `http.mock` honors — closed by construction
+/// (docs/design/agent-ergonomics.md#module-opts-silently-ignored).
+const MOCK_OPTS: &[&str] = &[
+    "allow_handler_errors",
+    "network",
+    "passthrough",
+    "record",
+    "redact",
+    "replay",
+];
+
+/// Every option `http.proxy` honors. `mode` is the dial the rest hang off, so a typo there is the
+/// costly one: an unrecognized mode is already refused by name, but a dropped `cassette` would
+/// have left a recording proxy quietly recording nowhere.
+const PROXY_OPTS: &[&str] = &["cassette", "mode", "redact", "upstream"];
+
 fn start(lua: &Lua, opts: Option<&Table>) -> mlua::Result<MockServer> {
     let mut init = MockState::default();
     // A mock is a *host* process; a container reaches it not by a DNS alias (it is not on the
@@ -323,6 +339,7 @@ fn start(lua: &Lua, opts: Option<&Table>) -> mlua::Result<MockServer> {
     // in. `true` → `host.docker.internal`; a string overrides the host name for another substrate.
     let mut network_host: Option<String> = None;
     if let Some(o) = opts {
+        crate::opts::reject_unknown(o, MOCK_OPTS, "http.mock")?;
         match o.get::<Option<Value>>("network")? {
             Some(Value::Boolean(true)) => {
                 network_host = Some("host.docker.internal".to_string())
@@ -1096,6 +1113,7 @@ impl UserData for HttpFuse {
 pub(crate) fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
     lua.create_function(|lua, (ctx, opts): (Value, Table)| {
         super::runtime_only("http.proxy")?;
+        crate::opts::reject_unknown(&opts, PROXY_OPTS, "http.proxy")?;
         let upstream = opts.get::<Option<String>>("upstream")?;
         let cassette = opts.get::<Option<String>>("cassette")?;
         let mode = opts
