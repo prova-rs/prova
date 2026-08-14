@@ -522,3 +522,70 @@ On windows-latest CI, 'prova run ut' fails with 'failed to remove file target\\d
 
 <!-- backlog: local-clippy-weaker-than-ci recorded=2026-08-13 -->
 The local quality lane can pass while CI's fails, because they run different clippy versions: this tree's toolchain is nightly-1.95 (2026-01-28) and CI installs current stable, whose question_mark lint flagged crates/prova-cli/src/mcp.rs:97 as an error under -D warnings while the local run said nothing. The consequence is the worst kind: 'prova run quality' is the gate an agent trusts before pushing, and it under-reports. Consider pinning the toolchain (rust-toolchain.toml) so local and CI lint identically, or having the quality lane report the clippy version it ran so a divergence is visible in the output rather than discovered on main.
+
+## 17. A topology that takes minutes cannot be inhabited — `prova start`'s budget is fixed
+
+<!-- backlog: start-timeout-is-unconfigurable recorded=2026-08-13 -->
+**A topology should be able to declare how long it needs to come up.** `prova start` gives every
+topology 300 seconds and offers no override — no flag, no manifest key. A Kubernetes topology
+(kind cluster, ingress controller, CoreDNS rewrite, six image side-loads, eight rollouts) takes
+five to eight minutes honestly, so `prova start ybor-studio-k8s` can never succeed: the same
+factory that a suite fixture builds happily cannot be inhabited, which costs exactly the verb the
+inhabited/fixture pair exists to provide. It bites smaller stacks too — a docker topology that
+rebuilds a Next.js image blew the budget the first time a source file changed. Suggested shape:
+`startup = "15m"` on `[[package.topologies]]` (the definition knows its own cost), with
+`--timeout` as the ad-hoc override.
+
+<!-- backlog: start-timeout-orphans-containers recorded=2026-08-13 -->
+**A timed-out `start` should reap what it created.** When the budget above is exceeded, `prova
+start` reports "did not come up within 300s; stopping it" — but the containers it had already
+created keep running. The next attempt then fails on a fixed host port that the orphans still
+hold, which reads as a port conflict rather than as the previous failure's residue. Observed
+repeatedly while bringing up an eleven-resource topology; the cure each time was
+`docker ps -q | xargs docker rm -f`, which a user should never need to know.
+
+## 18. `http` cannot send a form-encoded body, so auth proofs shell out
+
+<!-- backlog: http-form-and-raw-bodies recorded=2026-08-13 -->
+**`http` should be able to post a form or a raw body.** `HttpOpts` is `{headers, json, timeout}`,
+but OAuth 2.0 token endpoints require `application/x-www-form-urlencoded` — so the two proofs
+that obtain a real token (docker and kubernetes topologies alike) call `curl` through
+`shell.run`, adding a host-tool `requires` to a proof whose subject is HTTP. Suggested shape:
+`form = { grant_type = "password", … }` alongside the existing `json`, and/or
+`body = "…", content_type = "…"` for everything else.
+
+## 19. `http` always follows redirects, so a redirect cannot be asserted
+
+<!-- backlog: http-redirect-control recorded=2026-08-13 -->
+**A proof should be able to observe a 3xx.** `http.get` follows redirects unconditionally, so
+"an unauthenticated visitor is redirected to `/auth/login`" is unprovable: the client has already
+followed the 307 and returns whatever the destination said (a 500, in the case at hand, because
+the identity provider was deliberately absent). Auth flows are redirects — login, callback,
+logout — and a suite that cannot see the hop cannot prove the gate. Suggested shape:
+`redirects = false` (or `max_redirects = N`), leaving `status` and `headers.location` intact.
+
+## 20. Kubernetes topologies are hand-rolled kubectl
+
+<!-- backlog: kubernetes-topology-support recorded=2026-08-13 -->
+**Cluster-shaped topologies deserve the same first-class treatment containers have.** Standing a
+stack up in kind is roughly two hundred lines of `shell.run{"kubectl", …}` in a factory: apply,
+`rollout status`, `wait --for=condition`, image side-load, port-forward. Three sharp edges recur
+and every author will meet them: `kubectl wait` refuses outright when no pod matches yet, so
+readiness must be sequenced rollout-then-ready; `kind load docker-image` fails on multi-arch
+images in Docker's containerd store ("content digest not found"), so images must travel as
+single-platform archives; and a port-forward is a long-lived process whose readiness races the
+first client, which the author must retry by hand. A `k8s` namespace could own all three, with
+**port-forward as a managed resource** (`k8s.port_forward(ctx, {service = …, port = …})`
+returning the usual `{url, host, port}` and tying teardown to the scope) as the highest-value
+piece — it is the seam every host-side proof needs against an in-cluster service.
+
+## 21. A containerized recipe cannot mount a file
+
+<!-- backlog: containerized-mounts recorded=2026-08-13 -->
+**Consider a `mounts` option on container recipes.** `docker.run` takes ports, env, network and
+extra_hosts, but no bind mounts, so configuration that a container reads from disk must be baked
+into an image: a Keycloak realm, a router's config and composed supergraph, an archetype catalog.
+That is defensible — an immutable image is reproducible, and the bake is cached — but it makes a
+one-line config change cost an image build, and it pushed one topology into building three
+purpose-built images that exist only to carry a file. If the immutability is deliberate, saying so
+in `prova learn doubles` would settle the question for the next author who goes looking.
