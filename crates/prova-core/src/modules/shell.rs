@@ -348,7 +348,57 @@ struct RunOpts {
     stdin: Option<String>,
 }
 
+/// Every option `shell.run` honors — closed by construction
+/// (docs/design/agent-ergonomics.md#module-opts-silently-ignored).
+const RUN_OPTS: &[&str] = &[
+    "check",
+    "cwd",
+    "env",
+    "first_byte",
+    "idle_timeout",
+    "merge_stderr",
+    "stdin",
+    "timeout",
+];
+
+/// Every option `shell.spawn` honors. Deliberately NOT `RUN_OPTS`: a spawned process is a handle
+/// the caller supervises, so `timeout`/`check`/`stdin` have nothing to act on here. They were
+/// silently dropped before this gate — which is the worst possible answer to
+/// `shell.spawn(cmd, { timeout = "30s" })`, since the author is asking for a bound and getting
+/// none.
+const SPAWN_OPTS: &[&str] = &["cwd", "env"];
+
+/// `args` is the option every other process API in the world takes, and prova takes none — the
+/// arguments belong in the command itself, as an argv table. Field evidence, 2026-08-14:
+/// `shell.spawn("kubectl", { args = {…} })` started a bare `kubectl` that printed usage into a
+/// discarded stdout, and the run failed minutes later waiting for an effect nobody had asked for.
+///
+/// `spawn` is the worst possible host for a dropped option precisely because the process still
+/// STARTS: a no-op option leaves a proof proving nothing, but a dropped `args` leaves a *different
+/// command* running, so the failure arrives somewhere else wearing an unrelated diagnosis.
+const ARGV_TEACHING: &[crate::opts::Teaching] = &[(
+    "args",
+    "is not an option — the arguments are part of the command: pass an argv table \
+     (`{ \"kubectl\", \"get\", \"pods\" }`), which runs the program directly with no shell and no \
+     quoting, or a single string (`\"kubectl get pods\"`), which goes through a shell",
+)];
+
+/// Both shell verbs' gate, carrying the `args` teaching — the mistake is identical on either, and
+/// on `run` it is just as silent (a bare `kubectl` exits non-zero with usage on stdout, which
+/// without `check = true` is a result the proof happily reads).
+fn reject_shell_opts(opts: &Option<Table>, accepted: &[&str], site: &str) -> mlua::Result<()> {
+    let Some(t) = opts else { return Ok(()) };
+    crate::opts::Closed {
+        accepted,
+        hidden: &[],
+        teachings: ARGV_TEACHING,
+        example: None,
+    }
+    .check(t, site)
+}
+
 fn parse_run_opts(opts: &Option<Table>) -> mlua::Result<RunOpts> {
+    reject_shell_opts(opts, RUN_OPTS, "shell.run")?;
     Ok(RunOpts {
         cwd: opt_string(opts, "cwd")?,
         env: opt_env(opts)?,
@@ -773,6 +823,7 @@ pub(crate) fn make_shell(lua: &Lua, progress: &Arc<dyn Progress>) -> mlua::Resul
         lua.create_function(|lua, (cmd, opts): (mlua::Value, Option<Table>)| {
             super::runtime_only("shell.spawn")?;
             let cmd = CommandSpec::parse(cmd)?;
+            reject_shell_opts(&opts, SPAWN_OPTS, "shell.spawn")?;
             let cwd = opt_string(&opts, "cwd")?;
             let env = opt_env(&opts)?;
             let mut command = cmd.build();

@@ -6,17 +6,32 @@ use mlua::{
 
 use crate::model::parse_duration;
 
-/// A response from the `http` module: `res.status`, `res.body`, `res.headers`, `res:json()`.
+/// A response from the `http` module: `res.status`, `res.body`, `res.headers`, `res:json()`,
+/// `res:save(path)`.
+///
+/// The body is held as **bytes**, never a Rust `String`
+/// (docs/design/agent-ergonomics.md#http-binary-response-corrupted). `reqwest`'s `text()` does a
+/// LOSSY UTF-8 conversion, replacing each invalid byte with U+FFFD — three bytes out for one byte
+/// in — so a zip came back inflated and unopenable while every cheap check still passed: status
+/// 200, a plausible `#body`, and `body:sub(1, 2) == "PK"`, because ASCII survives. A proof that
+/// sniffed the magic number asserted nothing and said so in green.
+///
+/// Nothing about the fix needs a new accessor to be correct: a **Lua string is a byte string**, so
+/// handing Lua the raw bytes makes `res.body` exact for binary and unchanged for text. `save` is
+/// here for the case that should never round-trip through Lua at all — "I need the artifact on
+/// disk" — because `fs.write` takes a UTF-8 `String` and would reject those very bytes.
 struct HttpResponse {
     status: u16,
-    body: String,
+    body: Vec<u8>,
     headers: Vec<(String, String)>,
 }
 
 impl UserData for HttpResponse {
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
         fields.add_field_method_get("status", |_, this| Ok(this.status));
-        fields.add_field_method_get("body", |_, this| Ok(this.body.clone()));
+        // Bytes in, bytes out: `create_string` takes `&[u8]` and Lua strings are not UTF-8
+        // constrained, so this is exact for a zip and identical to before for JSON.
+        fields.add_field_method_get("body", |lua, this| lua.create_string(&this.body));
         fields.add_field_method_get("headers", |lua, this| {
             let table = lua.create_table()?;
             for (k, v) in &this.headers {
@@ -29,13 +44,26 @@ impl UserData for HttpResponse {
         // Decode the body as JSON into a Lua value; raises on non-JSON. JSON nulls become
         // Lua nil (not mlua's null sentinel) so `t:expect(body.field):is_nil()` holds.
         methods.add_method("json", |lua, this, ()| {
-            let value: serde_json::Value = serde_json::from_str(&this.body).map_err(|e| {
+            let value: serde_json::Value = serde_json::from_slice(&this.body).map_err(|e| {
                 mlua::Error::RuntimeError(format!("response body is not JSON: {e}"))
             })?;
             let opts = mlua::SerializeOptions::new()
                 .serialize_none_to_null(false)
                 .serialize_unit_to_null(false);
             lua.to_value_with(&value, opts)
+        });
+        // `res:save(path)` — write the body to disk byte-for-byte, creating parent directories.
+        // Returns the path, so `local zip = http.get(url):save(dir .. "/app.zip")` reads as one
+        // move. This is the verb that ends "a proof about HTTP requires curl".
+        methods.add_method("save", |_, this, path: String| {
+            if let Some(parent) = std::path::Path::new(&path).parent() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    mlua::Error::RuntimeError(format!("res:save {path:?}: {e}"))
+                })?;
+            }
+            std::fs::write(&path, &this.body)
+                .map_err(|e| mlua::Error::RuntimeError(format!("res:save {path:?}: {e}")))?;
+            Ok(path)
         });
     }
 }
@@ -96,6 +124,7 @@ impl UserData for HttpClient {
                             headers: base_headers.clone(),
                             body: None,
                             timeout: Some(every),
+                            redirects: None,
                         };
                         if let Ok(resp) = send(prepared).await {
                             if resp.status == expected {
@@ -173,6 +202,9 @@ struct Prepared {
     headers: Vec<(String, String)>,
     body: Option<Vec<u8>>,
     timeout: Option<Duration>,
+    /// How many redirects to follow. `None` is reqwest's default policy; `Some(0)` returns the
+    /// 3xx itself (docs/design/agent-ergonomics.md#http-redirect-control).
+    redirects: Option<usize>,
 }
 
 fn method_fn(lua: &Lua, method: reqwest::Method) -> mlua::Result<Function> {
@@ -187,9 +219,33 @@ fn method_fn(lua: &Lua, method: reqwest::Method) -> mlua::Result<Function> {
     })
 }
 
+/// Every per-call request option — closed by construction
+/// (docs/design/agent-ergonomics.md#module-opts-silently-ignored). A dropped key here is
+/// especially quiet: `http.post(url, { jsno = payload })` sends an empty body to a live endpoint
+/// and reports whatever it says back, so the proof fails somewhere far from the typo — or worse,
+/// passes.
+const REQUEST_OPTS: &[&str] = &[
+    "body",
+    "content_type",
+    "form",
+    "headers",
+    "json",
+    "redirects",
+    "timeout",
+];
+
+/// The three ways to say "the body". They are mutually exclusive by construction: silently
+/// preferring one (as an `if json … else if body` chain does) means the request sent is not the
+/// request written, and the author debugs the endpoint instead of the call.
+const BODY_OPTS: &[&str] = &["json", "form", "body"];
+
+/// Every option the polling verbs (`http.wait_for`, `client:wait_for`) honor.
+const WAIT_OPTS: &[&str] = &["every", "status", "timeout"];
+
 /// Build an owned request spec from `opts`, layered over optional defaults (a client's base
-/// headers/timeout). Per-call `headers` override defaults by name; `json`/`body`/`timeout` in
-/// `opts` win. Synchronous, so nothing borrows Lua across the await.
+/// headers/timeout). Per-call `headers` override defaults by name; the body (exactly one of
+/// `json`/`form`/`body`), `content_type`, `timeout` and `redirects` in `opts` win. Synchronous, so
+/// nothing borrows Lua across the await.
 fn build_prepared(
     lua: &Lua,
     method: reqwest::Method,
@@ -199,12 +255,28 @@ fn build_prepared(
     opts: Option<Table>,
 ) -> mlua::Result<Prepared> {
     let mut body = None;
+    let mut redirects = None;
     if let Some(opts) = opts {
+        crate::opts::reject_unknown(&opts, REQUEST_OPTS, "http request options")?;
         if let Some(hdrs) = opts.get::<Option<Table>>("headers")? {
             for pair in hdrs.pairs::<String, String>() {
                 let (k, v) = pair?;
                 upsert_header(&mut headers, k, v);
             }
+        }
+        let mut given: Vec<&str> = Vec::new();
+        for key in BODY_OPTS {
+            if !matches!(opts.get::<Value>(*key)?, Value::Nil) {
+                given.push(key);
+            }
+        }
+        if given.len() > 1 {
+            return Err(mlua::Error::RuntimeError(format!(
+                "http: `{}` name the body more than once — pass exactly one of `json` (a table, \
+                 sent as application/json), `form` (a table, sent as \
+                 application/x-www-form-urlencoded), or `body` (a string, sent verbatim)",
+                given.join("` and `")
+            )));
         }
         if let Some(json) = opts.get::<Option<Value>>("json")? {
             let value: serde_json::Value = lua.from_value(json)?;
@@ -217,8 +289,40 @@ fn build_prepared(
                 "application/json".into(),
             );
             body = Some(encoded);
-        } else if let Some(raw) = opts.get::<Option<String>>("body")? {
-            body = Some(raw.into_bytes());
+        } else if let Some(form) = opts.get::<Option<Table>>("form")? {
+            // The shape OAuth 2.0 token endpoints require, and the reason two proofs shelled out
+            // to curl (docs/design/agent-ergonomics.md#http-form-and-raw-bodies).
+            let mut ser = form_urlencoded::Serializer::new(String::new());
+            for pair in form.pairs::<String, Value>() {
+                let (k, v) = pair?;
+                let v = match v {
+                    Value::String(s) => s.to_str()?.to_string(),
+                    Value::Integer(i) => i.to_string(),
+                    Value::Number(n) => n.to_string(),
+                    Value::Boolean(b) => b.to_string(),
+                    other => {
+                        return Err(mlua::Error::RuntimeError(format!(
+                            "http: form field `{k}` must be a scalar, got {}",
+                            other.type_name()
+                        )))
+                    }
+                };
+                ser.append_pair(&k, &v);
+            }
+            upsert_header(
+                &mut headers,
+                "content-type".into(),
+                "application/x-www-form-urlencoded".into(),
+            );
+            body = Some(ser.finish().into_bytes());
+        } else if let Some(raw) = opts.get::<Option<mlua::String>>("body")? {
+            // A Lua string is bytes, so a raw body is sent byte-for-byte — the request-side twin
+            // of the response-side fix, and what makes uploading a binary artifact possible.
+            body = Some(raw.as_bytes().to_vec());
+        }
+        // Set last so it wins over the type `json`/`form` implied — the point of naming it.
+        if let Some(ct) = opts.get::<Option<String>>("content_type")? {
+            upsert_header(&mut headers, "content-type".into(), ct);
         }
         if let Some(t) = opts
             .get::<Option<String>>("timeout")?
@@ -226,6 +330,7 @@ fn build_prepared(
         {
             timeout = Some(t);
         }
+        redirects = parse_redirects(&opts)?;
     }
     Ok(Prepared {
         method,
@@ -233,7 +338,28 @@ fn build_prepared(
         headers,
         body,
         timeout,
+        redirects,
     })
+}
+
+/// `redirects = false` (or `0`) returns the 3xx itself; `redirects = N` caps the chain; absent is
+/// reqwest's default policy (docs/design/agent-ergonomics.md#http-redirect-control).
+///
+/// One key rather than a `redirects` / `max_redirects` pair: they would be two spellings of one
+/// question, and a table carrying both would have to invent a precedence rule nobody could guess.
+fn parse_redirects(opts: &Table) -> mlua::Result<Option<usize>> {
+    match opts.get::<Value>("redirects")? {
+        Value::Nil => Ok(None),
+        // `true` is "the default policy", stated rather than assumed.
+        Value::Boolean(true) => Ok(None),
+        Value::Boolean(false) => Ok(Some(0)),
+        Value::Integer(n) if n >= 0 => Ok(Some(n as usize)),
+        other => Err(mlua::Error::RuntimeError(format!(
+            "http: `redirects` must be false (return the 3xx), true (follow, the default), or a \
+             non-negative count, got {}",
+            other.type_name()
+        ))),
+    }
 }
 
 /// Insert or replace a header by case-insensitive name (so a per-call header overrides a client
@@ -270,7 +396,20 @@ fn why(e: &(dyn std::error::Error + 'static)) -> String {
 }
 
 async fn send(prepared: Prepared) -> mlua::Result<HttpResponse> {
-    let client = reqwest::Client::new();
+    // The redirect policy is a CLIENT property in reqwest, not a per-request one, so a bounded
+    // request builds its own client. The default path keeps the shared-nothing client it always
+    // had — this adds a branch, not a cost.
+    let client = match prepared.redirects {
+        None => reqwest::Client::new(),
+        Some(0) => reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|e| mlua::Error::RuntimeError(format!("http: building client: {e}")))?,
+        Some(n) => reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::limited(n))
+            .build()
+            .map_err(|e| mlua::Error::RuntimeError(format!("http: building client: {e}")))?,
+    };
     let mut req = client.request(prepared.method, &prepared.url);
     for (k, v) in prepared.headers {
         req = req.header(k, v);
@@ -291,10 +430,13 @@ async fn send(prepared: Prepared) -> mlua::Result<HttpResponse> {
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or_default().to_string()))
         .collect();
+    // `bytes()`, never `text()`: `text()` is a LOSSY UTF-8 conversion that silently rewrites every
+    // invalid byte to U+FFFD (docs/design/agent-ergonomics.md#http-binary-response-corrupted).
     let body = resp
-        .text()
+        .bytes()
         .await
-        .map_err(|e| mlua::Error::RuntimeError(format!("reading http response body: {e}")))?;
+        .map_err(|e| mlua::Error::RuntimeError(format!("reading http response body: {e}")))?
+        .to_vec();
     Ok(HttpResponse {
         status,
         body,
@@ -318,6 +460,7 @@ fn wait_for_fn(lua: &Lua) -> mlua::Result<Function> {
                     headers: Vec::new(),
                     body: None,
                     timeout: Some(every),
+                    redirects: None,
                 };
                 if let Ok(resp) = send(prepared).await {
                     if resp.status == expected {
@@ -340,6 +483,7 @@ fn wait_params(opts: &Option<Table>) -> mlua::Result<(u16, Duration, Duration)> 
     let mut timeout = Duration::from_secs(30);
     let mut every = Duration::from_millis(500);
     if let Some(opts) = opts {
+        crate::opts::reject_unknown(opts, WAIT_OPTS, "http.wait_for")?;
         if let Some(s) = opts.get::<Option<u16>>("status")? {
             status = s;
         }

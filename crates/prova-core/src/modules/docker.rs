@@ -285,8 +285,43 @@ fn default_build_tag(context: &str) -> String {
     format!("prova-build-{hash:x}:latest")
 }
 
+/// Every option `docker.build` honors — closed by construction
+/// (docs/design/agent-ergonomics.md#module-opts-silently-ignored). This is the surface the
+/// backlog item was found on: `docker.build{ first_byte = … }` against a prova built without the
+/// option parsed clean and proved nothing about the bound it named.
+const BUILD_OPTS: &[&str] = &[
+    "buildargs",
+    "context",
+    "dockerfile",
+    "first_byte",
+    "nocache",
+    "pull",
+    "secrets",
+    "tag",
+    "target",
+];
+
+/// Every option `docker.run` honors.
+const RUN_OPTS: &[&str] = &[
+    "alias",
+    "command",
+    "env",
+    "extra_hosts",
+    "image",
+    "network",
+    "ports",
+    "wait",
+];
+
+/// Every key `docker.run`'s nested `wait` table honors. Gated separately because a typo *inside*
+/// `wait` is the more dangerous of the two: `wait = { prot = 5432 }` is a readiness contract that
+/// waits for nothing, so the container is handed over unready and the failure lands somewhere else
+/// entirely.
+const WAIT_OPTS: &[&str] = &["cmd", "every", "log", "port", "timeout"];
+
 impl BuildSpec {
     fn from_table(t: &Table) -> mlua::Result<Self> {
+        crate::opts::reject_unknown(t, BUILD_OPTS, "docker.build")?;
         let context: String = t.get::<Option<String>>("context")?.ok_or_else(|| {
             mlua::Error::RuntimeError(
                 "docker.build: `context` (a directory) is required".into(),
@@ -727,6 +762,7 @@ impl Spec {
         let Some(w) = opts.get::<Option<Table>>("wait")? else {
             return Ok(None);
         };
+        crate::opts::reject_unknown(&w, WAIT_OPTS, "docker.run `wait`")?;
         let port = w.get::<Option<u16>>("port")?;
         let log = w.get::<Option<String>>("log")?;
         // `cmd` is a command vector (argv), run directly in the container with no shell —
@@ -760,6 +796,7 @@ impl Spec {
     }
 
     fn from_table(opts: &Table) -> mlua::Result<Spec> {
+        crate::opts::reject_unknown(opts, RUN_OPTS, "docker.run")?;
         let image = opts.get::<Option<String>>("image")?.ok_or_else(|| {
             mlua::Error::RuntimeError("docker.run requires an `image`".into())
         })?;

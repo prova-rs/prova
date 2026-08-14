@@ -123,9 +123,11 @@ hyper-util = { version = "0.1", default-features = false, features = [
 ], optional = true }
 http-body-util = { version = "0.1", optional = true }
 bytes = { version = "1", optional = true }
-# Query-string parsing for a recorded request's `query` table. Already compiled (reqwest → url →
-# form_urlencoded); declared rather than hand-rolled because percent-decoding is a well-known place
-# to introduce a quiet bug for no benefit.
+# Query-string parsing for a recorded request's `query` table, and the encoder behind `http`'s
+# `form = { … }` body. Already compiled (reqwest → url → form_urlencoded); declared rather than
+# hand-rolled because percent-encoding is a well-known place to introduce a quiet bug for no
+# benefit — and a form body that encodes `+`/`&`/UTF-8 wrong fails at the far end of an OAuth
+# exchange, where the error names none of that.
 form_urlencoded = { version = "1", optional = true }
 
 [dev-dependencies]
@@ -144,7 +146,7 @@ windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_
 
 [features]
 default = ["http", "sqlite", "docker", "grpc", "graphql", "yaml", "mock", "grpc-mock"]
-http = ["dep:reqwest"]
+http = ["dep:reqwest", "dep:form_urlencoded"]
 # The `mock` facet on protocol namespaces — `http.mock` today; `grpc.mock`/`net.mock` later. Implies
 # `http`: a mock is asserted on through the same journal the `http` client's types already describe,
 # and there is no coherent build with a mock server but no client to drive it.

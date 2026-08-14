@@ -11,6 +11,7 @@ pub mod help;
 pub mod layout;
 pub mod model;
 mod modules;
+mod opts;
 mod packages;
 pub mod progress;
 pub mod suggest;

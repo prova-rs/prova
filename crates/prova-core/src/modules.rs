@@ -71,6 +71,8 @@ type ClientOpts = (String, Vec<(String, String)>, Option<std::time::Duration>);
 /// `headers`, optional `timeout`. `who` names the verb in the teaching error.
 #[cfg(any(feature = "http", feature = "graphql"))]
 pub(super) fn client_opts(opts: &Table, who: &str, url_key: &str) -> mlua::Result<ClientOpts> {
+    // The URL key differs per constructor, so the closed set is built rather than declared.
+    crate::opts::reject_unknown(opts, &[url_key, "headers", "timeout"], who)?;
     let url = opts
         .get::<Option<String>>(url_key)?
         .ok_or_else(|| mlua::Error::RuntimeError(format!("{who} requires a `{url_key}`")))?;
