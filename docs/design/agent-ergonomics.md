@@ -604,3 +604,24 @@ That is defensible — an immutable image is reproducible, and the bake is cache
 one-line config change cost an image build, and it pushed one topology into building three
 purpose-built images that exist only to carry a file. If the immutability is deliberate, saying so
 in `prova learn doubles` would settle the question for the next author who goes looking.
+
+## 22. A binary response body is corrupted in transit through `body`
+
+<!-- backlog: http-binary-response-corrupted recorded=2026-08-14 -->
+**A binary response body is silently corrupted, and the corruption survives every cheap
+check.** `http.get` on a zip served by MinIO returns a body 34220 bytes long where curl
+writes 22181 for the same URL — inflated, not truncated, which is what lossy UTF-8
+conversion does when it replaces each invalid byte with U+FFFD (3 bytes). The bytes are
+unusable: python's zipfile opens the file written from that body and reports 'corrupt
+member', while the same URL fetched with curl -o opens clean. What makes this worth fixing
+rather than documenting is how well it hides. `status` is 200, `#body` is plausibly large,
+and `body:sub(1,2)` is still 'PK', because ASCII bytes pass through untouched — so a proof
+that sniffs a magic number passes while asserting nothing about the payload, and a suite
+can carry that false confidence indefinitely. Found while proving that a rendered
+project's archive downloads: the download proof had to shell out to curl, so a proof about
+HTTP once again requires a host tool (see [[http-form-and-raw-bodies]] — same surface,
+opposite direction). Suggested shape: bytes-preserving access that never crosses a Lua
+string — `res:save(path)` (or `http.download(url, path)`) for the common case of 'I need
+the artifact on disk', and/or `res.bytes` as an explicit byte-array accessor. Until one
+exists, `body` should at minimum be documented as text-only, and it would be better still
+for it to REFUSE a non-text content type rather than hand back mojibake.
