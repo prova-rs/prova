@@ -26,8 +26,11 @@
 --- Builds a throwaway package with a given manifest. Returns the package root; each call gets
 --- its own directory, and all of them are torn down with the file scope.
 local package_with = prova.fixture("manifest-sandbox", Scope.File, function(ctx)
+  local nth = 0
   return function(manifest)
-    local dir = ctx:tempdir()
+    -- Named per call, so each sandbox is its own directory AND says so on disk.
+    nth = nth + 1
+    local dir = ctx:tempdir(tostring(nth))
     fs.mkdir(dir .. "/proofs")
     fs.write(dir .. "/proofs/a_test.lua",
       'prova.test("the sandbox proof runs", function(t) t:expect(1):equals(1) end)\n')

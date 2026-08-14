@@ -14,7 +14,13 @@ local function C(claim)
 end
 
 local scratch = prova.fixture("placement-transport-scratch", Scope.File, function(ctx)
-	return function() return ctx:tempdir() end
+	-- Each call names its own directory, so asking twice for "1" is the same place and
+	-- the scratch tree on disk says which sandbox is which.
+	local nth = 0
+	return function()
+	  nth = nth + 1
+	  return ctx:tempdir(tostring(nth))
+	end
 end)
 
 --- A child package whose single proof writes a marker when it RUNS. `broker` lands in

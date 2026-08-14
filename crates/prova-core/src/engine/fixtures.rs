@@ -169,6 +169,25 @@ pub(super) struct ScopeState {
     pub(super) poisoned: HashMap<usize, String>,
     pub(super) teardowns: Vec<Function>,
     pub(super) tempdirs: Vec<PathBuf>,
+    /// This scope instance's temporary directories, one per key
+    /// (docs/design/agent-ergonomics.md#context-tempdir-not-idempotent). `ctx:tempdir()` is the
+    /// unnamed one; `ctx:tempdir("plugin")` is a second, `ctx:tempdir("consumer")` a third. Same
+    /// key, same directory, forever — which is the property the defect violated.
+    ///
+    /// `ctx:tempdir()` reads as an accessor: it addresses the scope, the way `ctx:use`,
+    /// `ctx:defer` and `ctx:log` do. It used to be a FACTORY, handing back a fresh empty directory
+    /// per call, so `fs.write(t:tempdir() .. "/cookies.txt", …)` then `fs.read(t:tempdir() ..
+    /// "/cookies.txt")` wrote one directory and read another. Nothing errored — a missing path in
+    /// a fresh directory just yields nothing — and the proof failed much later on whatever
+    /// consumed the result (a curl cookie jar, so a login flow looked like the identity provider
+    /// was rejecting it).
+    ///
+    /// The key is what carries the "I need several" case that made the old factory useful, and it
+    /// carries it WITHOUT giving up idempotence: there is no spelling of `tempdir` that answers
+    /// differently to two identical calls. Callers previously hand-rolled the difference with a
+    /// counter and a subdirectory — fifteen copies of the same six lines, which is the shape of a
+    /// missing primitive.
+    pub(super) tempdirs_by_key: HashMap<String, String>,
     /// The topology's ambient managed network (a `docker.network` handle), created lazily on the
     /// first `ctx.network` access inside a topology factory and cached here on the topology's own
     /// scope instance so repeated reads return the same handle. Its teardown is registered on this
@@ -328,14 +347,49 @@ pub(super) fn teardown_results(
 }
 
 pub(crate) fn make_tempdir() -> std::io::Result<PathBuf> {
+    make_labeled_tempdir("")
+}
+
+/// The same, with a caller's label in the directory name.
+///
+/// The label is what makes a failed run's scratch tree readable: a proof holding three sandboxes
+/// leaves `prova-…-plugin`, `prova-…-consumer` and `prova-…-registry` rather than three
+/// indistinguishable hex names, so "which one did it read?" is answered by `ls` instead of by
+/// re-deriving the proof. That question is precisely what
+/// docs/design/agent-ergonomics.md#context-tempdir-not-idempotent cost an hour to.
+///
+/// The label is sanitized to `[A-Za-z0-9_]`, with every other run of characters collapsed to a
+/// single `-` and the ends trimmed. It arrives from Lua and lands in a filesystem path, so a `/`
+/// would silently nest the directory somewhere else — but rejecting only the dangerous characters
+/// is not enough. `"../escape hatch"` sanitized character-by-character yields `..-escape-hatch`,
+/// which is *safe* (one component, not a traversal) and unreadable: nobody scanning a temp root
+/// can tell at a glance that it did not escape. A name whose safety needs explaining is a bad
+/// name, so the collapse produces `escape-hatch` and the guarantee is visible.
+///
+/// Empty after sanitizing is fine — it degrades to the unlabeled name.
+pub(crate) fn make_labeled_tempdir(label: &str) -> std::io::Result<PathBuf> {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
+    let mut safe = String::new();
+    for c in label.chars().take(64) {
+        if c.is_ascii_alphanumeric() || c == '_' {
+            safe.push(c);
+        } else if !safe.ends_with('-') {
+            safe.push('-');
+        }
+    }
+    let safe = safe.trim_matches('-');
     let mut path = std::env::temp_dir();
-    path.push(format!("prova-{}-{}-{}", std::process::id(), nanos, n));
+    let base = format!("prova-{}-{}-{}", std::process::id(), nanos, n);
+    path.push(if safe.is_empty() {
+        base
+    } else {
+        format!("{base}-{safe}")
+    });
     std::fs::create_dir_all(&path)?;
     Ok(path)
 }

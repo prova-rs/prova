@@ -5,7 +5,13 @@
 --- about any internal map.
 
 local scratch = prova.fixture("resolution-scratch", Scope.File, function(ctx)
-  return function() return ctx:tempdir() end
+  -- Each call names its own directory, so asking twice for "1" is the same place and
+  -- the scratch tree on disk says which sandbox is which.
+  local nth = 0
+  return function()
+    nth = nth + 1
+    return ctx:tempdir(tostring(nth))
+  end
 end)
 
 local function run(root, env)

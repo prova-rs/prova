@@ -410,11 +410,24 @@ impl UserData for Ctx {
             Ok(resource)
         });
 
-        methods.add_method("tempdir", |_, this, ()| {
-            let path = make_tempdir()
+        // This scope's temporary directory, addressed by key
+        // (docs/design/agent-ergonomics.md#context-tempdir-not-idempotent). `ctx:tempdir()` is the
+        // unnamed one; `ctx:tempdir("plugin")` is a second, and asking again by the same name
+        // returns the same directory. An accessor at every arity — never a factory — so no call
+        // can surprise its second caller. The key also lands in the directory NAME, so a failed
+        // run's scratch tree says which sandbox is which.
+        methods.add_method("tempdir", |_, this, key: Option<String>| {
+            let key = key.unwrap_or_default();
+            let state = this.own_scope_state()?;
+            if let Some(cached) = state.borrow().tempdirs_by_key.get(&key) {
+                return Ok(cached.clone());
+            }
+            let path = crate::engine::make_labeled_tempdir(&key)
                 .map_err(|e| mlua::Error::RuntimeError(format!("tempdir failed: {e}")))?;
             let s = crate::modules::emit_path(&path);
-            this.own_scope_state()?.borrow_mut().tempdirs.push(path);
+            let mut state = state.borrow_mut();
+            state.tempdirs.push(path);
+            state.tempdirs_by_key.insert(key, s.clone());
             Ok(s)
         });
 

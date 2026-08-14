@@ -78,8 +78,11 @@ prova.test("`prova lock` joins the house rule from outside — exit code forward
   -- Grammar refusals: no token, no command, a package token with no package.
   t:expect(shell.run({ prova.bin, "lock" }, { cwd = pkg, merge_stderr = true }).code):equals(2)
   t:expect(shell.run({ prova.bin, "lock", "crunch" }, { cwd = pkg, merge_stderr = true }).code):equals(2)
+  -- A NAMED directory: this one must have no package in it, and the scope's default directory is
+  -- where `pkg` above wrote a prova.toml. The name says why it exists, and it is still reaped with
+  -- the scope (agent-ergonomics.md#context-tempdir-not-idempotent).
   local homeless = shell.run({ prova.bin, "lock", "crunch", "--", "true" },
-    { cwd = t:tempdir(), merge_stderr = true })
+    { cwd = t:tempdir("homeless"), merge_stderr = true })
   t:expect(homeless.code, "a package lock needs a package"):equals(2)
   t:expect(homeless.stdout):contains("--machine")
 end)

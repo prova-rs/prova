@@ -23,8 +23,13 @@ local function holder(tok, seconds)
   return proc
 end
 
-local function pkg_with(t, manifest, proofs)
-  local dir = t:tempdir() .. "/pkg"
+-- Named, because the test below builds TWO sandboxes — a contended run and a quiet one — and
+-- then reads each one's ledger. `t:tempdir(name)` keeps them apart and labels them on disk, so a
+-- failure here is diagnosable by `ls`. Sharing a directory would not fail loudly: the second
+-- package overwrites the first, both reads answer from the quiet run, the contended stall reads
+-- as 0ms, and the proof accuses the feature.
+local function pkg_with(t, name, manifest, proofs)
+  local dir = t:tempdir(name)
   fs.mkdir(dir .. "/proofs")
   fs.write(dir .. "/prova.toml", manifest)
   for name, body in pairs(proofs) do
@@ -47,7 +52,7 @@ prova.test("a queued leaf narrates its wait, naming the token and how long", {
 }, function(t)
   local tok = token(t, "idle")
   local hold = holder(tok, 2)
-  local dir = pkg_with(t, '[run]\nproofs = ["proofs"]\n', {
+  local dir = pkg_with(t, "idle", '[run]\nproofs = ["proofs"]\n', {
     ["needs_test.lua"] = 'prova.test("needs the token", { locks = { prova.writes("' .. tok
       .. '", { scope = "machine" }) } }, function(t) t:expect(true):is_true() end)\n',
   })
@@ -66,7 +71,7 @@ prova.test("a wait overlapped with other work is narrated too — busy is not th
 }, function(t)
   local tok = token(t, "busy")
   local hold = holder(tok, 2)
-  local dir = pkg_with(t, '[run]\nproofs = ["proofs"]\n', {
+  local dir = pkg_with(t, "busy", '[run]\nproofs = ["proofs"]\n', {
     -- The busy leaf OUTLASTS the hold, so the run is never idle while the other leaf queues —
     -- which is precisely the case the old idle-only narration could not see. (A shorter busy leaf
     -- passes for the wrong reason: the run goes idle before the hold ends and the old line fires.)
@@ -88,14 +93,14 @@ prova.test("the run banks run.lock_wait_ms — stalled wall time, and a zero whe
 }, function(t)
   local tok = token(t, "banked")
   local hold = holder(tok, 2)
-  local contended = pkg_with(t, '[run]\nproofs = ["proofs"]\n', {
+  local contended = pkg_with(t, "contended", '[run]\nproofs = ["proofs"]\n', {
     ["needs_test.lua"] = 'prova.test("needs the token", { locks = { prova.writes("' .. tok
       .. '", { scope = "machine" }) } }, function(t) t:expect(true):is_true() end)\n',
   })
   shell.run({ prova.bin }, { cwd = contended, merge_stderr = true, timeout = "120s" })
   hold:wait()
 
-  local quiet = pkg_with(t, '[run]\nproofs = ["proofs"]\n', {
+  local quiet = pkg_with(t, "quiet", '[run]\nproofs = ["proofs"]\n', {
     ["quiet_test.lua"] = 'prova.test("a token nobody wants", { locks = { prova.writes("' .. token(t, "quiet")
       .. '", { scope = "machine" }) } }, function(t) t:expect(true):is_true() end)\n',
   })
@@ -127,7 +132,7 @@ prova.test("a Scope.Run reader narrates its single-flight wait — the seam insi
   covers = "docs/design/agent-ergonomics.md#narrate-lock-waits",
   proves = "this is the only seam that lands INSIDE the waiting unit's own duration, which is what makes a reader read 848.8s for 190s of work with no flock involved. It is not banked as lock wait (nothing is contended — the conducting worker is working), so narration is the only thing that can explain the number",
 }, function(t)
-  local dir = pkg_with(t, '[run]\nproofs = ["proofs"]\n\n[suites.a]\npaths = ["proofs/a"]\n\n[suites.b]\npaths = ["proofs/b"]\n', {})
+  local dir = pkg_with(t, "suites", '[run]\nproofs = ["proofs"]\n\n[suites.a]\npaths = ["proofs/a"]\n\n[suites.b]\npaths = ["proofs/b"]\n', {})
   fs.mkdir(dir .. "/proofs/a")
   fs.mkdir(dir .. "/proofs/b")
   local shared = [[

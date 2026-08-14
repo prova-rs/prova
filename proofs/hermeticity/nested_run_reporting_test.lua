@@ -30,8 +30,11 @@ local DEPTH = "PROVA_RUN_DEPTH"
 --- A one-test package whose single proof FAILS — the shape a suite drives on purpose. Each call
 --- gets its own directory; all of them go with the file scope.
 local red_package = prova.fixture("nested-reporting-sandbox", Scope.File, function(ctx)
+  local nth = 0
   return function(body)
-    local dir = ctx:tempdir()
+    -- Named per call, so each sandbox is its own directory AND says so on disk.
+    nth = nth + 1
+    local dir = ctx:tempdir(tostring(nth))
     fs.write(dir .. "/prova.toml", '[package]\nname = "red"\n\n[run]\nproofs = ["."]\n')
     fs.write(dir .. "/red.prova.lua",
       body or 'prova.test("red", function(t) t:expect(1):equals(2) end)\n')
