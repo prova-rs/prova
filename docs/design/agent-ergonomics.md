@@ -534,24 +534,30 @@ The local quality lane can pass while CI's fails, because they run different cli
 
 ## 17. A topology that takes minutes cannot be inhabited — `prova start`'s budget is fixed
 
-<!-- backlog: start-timeout-is-unconfigurable recorded=2026-08-13 -->
-**A topology should be able to declare how long it needs to come up.** `prova start` gives every
-topology 300 seconds and offers no override — no flag, no manifest key. A Kubernetes topology
-(kind cluster, ingress controller, CoreDNS rewrite, six image side-loads, eight rollouts) takes
-five to eight minutes honestly, so `prova start ybor-studio-k8s` can never succeed: the same
-factory that a suite fixture builds happily cannot be inhabited, which costs exactly the verb the
-inhabited/fixture pair exists to provide. It bites smaller stacks too — a docker topology that
-rebuilds a Next.js image blew the budget the first time a source file changed. Suggested shape:
-`startup = "15m"` on `[[package.topologies]]` (the definition knows its own cost), with
-`--timeout` as the ad-hoc override.
+<!-- claim: start-timeout-is-unconfigurable recorded=2026-08-13 -->
+**A topology declares how long it needs to come up; the invocation may override it.** `startup =
+"15m"` on a `[topologies.<name>]` entry is the definition's own statement of its cost — the same
+principle the manifest already applies to everything else it declares — and `prova start
+--timeout 20m` is the ad-hoc override for the machine having a bad day. Precedence is flag,
+then declaration, then a 300s default; the error names the budget that fired and both ways to
+change it, because a fixed limit whose only symptom is "did not come up" teaches nothing.
 
-<!-- backlog: start-timeout-orphans-containers recorded=2026-08-13 -->
-**A timed-out `start` should reap what it created.** When the budget above is exceeded, `prova
-start` reports "did not come up within 300s; stopping it" — but the containers it had already
-created keep running. The next attempt then fails on a fixed host port that the orphans still
-hold, which reads as a port conflict rather than as the previous failure's residue. Observed
-repeatedly while bringing up an eleven-resource topology; the cure each time was
-`docker ps -q | xargs docker rm -f`, which a user should never need to know.
+Without it, a topology whose honest startup exceeds five minutes — a kind cluster with an ingress
+controller, six image side-loads and eight rollouts — cannot be *inhabited* at all: the same
+factory a suite fixture builds happily can never be `prova start`ed. That costs exactly the verb
+the inhabited/fixture pair exists to provide, and it bites smaller stacks the first time a source
+edit makes an image rebuild.
+
+<!-- claim: start-timeout-orphans-containers recorded=2026-08-13 -->
+**A `start` that gives up tears down what it began.** The budget's expiry signals the holder
+(SIGTERM — the same signal `prova down` sends, which runs the identical in-process teardown) and
+waits for it to release, escalating only if it will not; it never SIGKILLs a holder that is
+holding containers. A killed holder runs no teardown, so its containers survive, and the *next*
+attempt fails on a host port the orphans still hold — reported as a port conflict, which is the
+previous failure's residue wearing an unrelated diagnosis. This is
+`verifiers.md#timeout-reaps-the-conduct` at the topology's scale: dead means the tree is dead,
+and the cure must never be `docker ps -q | xargs docker rm -f` typed by a user who should not
+need to know it.
 
 ## 18. `http` cannot send a form-encoded body, so auth proofs shell out
 

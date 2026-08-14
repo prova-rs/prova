@@ -564,10 +564,78 @@ pub(crate) fn print_endpoints(name: &str, endpoints: &[prova_core::Endpoint]) {
 /// `prova start <topology>` — stand up a topology **detached**: spawn `prova up <topology>` in its own
 /// process group (stdio → a log file), wait for it to self-register (confirming it's up), print the
 /// endpoints, and return, leaving it running. `prova down` stops it.
+/// Pull `--timeout <duration>` out of `start`'s arguments, leaving the rest for the shared parser.
+fn extract_timeout(args: Vec<String>) -> Result<(Vec<String>, Option<Duration>), ExitCode> {
+    let mut rest = Vec::with_capacity(args.len());
+    let mut timeout = None;
+    let mut it = args.into_iter();
+    while let Some(arg) = it.next() {
+        match value_flag(&arg, &mut it, &["--timeout"]) {
+            Some(v) => match prova_core::model::parse_duration(&v) {
+                Some(d) => timeout = Some(d),
+                None => {
+                    eprintln!("prova start: --timeout wants a duration like \"15m\", got {v:?}");
+                    return Err(ExitCode::from(2));
+                }
+            },
+            None => rest.push(arg),
+        }
+    }
+    Ok((rest, timeout))
+}
+
+/// The `startup` this topology declares, or the default. A manifest that cannot be read at all is
+/// not this function's error to report — the spawned `prova up` will say so far better — so it
+/// falls back rather than failing here.
+fn declared_startup(home: &home::Home, name: &str, manifest_path: Option<&str>) -> Duration {
+    const DEFAULT: Duration = Duration::from_secs(300);
+    let _ = manifest_path; // `home` already resolved against it
+    let Ok(text) = std::fs::read_to_string(&home.manifest) else {
+        return DEFAULT;
+    };
+    let Ok(manifest) = toml::from_str::<crate::manifest::Manifest>(&text) else {
+        return DEFAULT;
+    };
+    manifest
+        .topologies
+        .get(name)
+        .and_then(|d| d.startup.as_deref())
+        .and_then(prova_core::model::parse_duration)
+        .unwrap_or(DEFAULT)
+}
+
+/// Stop the detached holder the way `prova down` does — SIGTERM, so its in-process teardown runs
+/// and releases what it created (docs/design/agent-ergonomics.md#start-timeout-orphans-containers).
+/// A SIGKILL here is why a timed-out start used to leave its containers behind, and why the NEXT
+/// attempt failed on a host port the orphans still held. Escalates only if the holder will not go.
+fn stop_holder(child: &mut std::process::Child, name: &str) {
+    runstate::terminate(child.id());
+    let grace = Instant::now() + Duration::from_secs(60);
+    while Instant::now() < grace {
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    eprintln!(
+        "prova start: {name:?} did not release within 60s of the stop signal; killing the holder \
+         (resources it created may survive — check `docker ps`)"
+    );
+    let _ = child.kill();
+}
+
 pub(crate) fn start_subcommand(args: Vec<String>) -> ExitCode {
     // Detached provisions hold no lease (verifiers.md#detached-topologies-hold-no-lease):
     // everything this invocation spawns is MEANT to outlive it — `prova down` is its reaper.
     prova_core::lease::set_detached();
+    // `--timeout` is start's alone (docs/design/agent-ergonomics.md#start-timeout-is-unconfigurable):
+    // it bounds the wait for the holder to register, which no other topology verb does. Extracted
+    // here rather than in the shared flag parser so `prova down --timeout` still refuses it instead
+    // of silently accepting a flag it would ignore.
+    let (args, cli_timeout) = match extract_timeout(args) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
     let (name, manifest_path, profile, fixed) = match parse_topology_args("start", args) {
         Ok(v) => v,
         Err(code) => return code,
@@ -625,11 +693,29 @@ pub(crate) fn start_subcommand(args: Vec<String>) -> ExitCode {
     };
 
     eprintln!("prova: starting topology {name:?} (detached)…");
-    // Poll until the child self-registers (up) or exits (failed). Provisioning can be slow (image
-    // pulls, first-boot restarts), so allow a generous window.
-    let deadline = Instant::now() + Duration::from_secs(300);
+    // How long the holder may take to register is the TOPOLOGY's fact, not prova's: a kind cluster
+    // with eight rollouts is honestly minutes, and a fixed window made the inhabited half of the
+    // inhabited/fixture pair unavailable to it
+    // (docs/design/agent-ergonomics.md#start-timeout-is-unconfigurable). Flag, then declaration,
+    // then the default.
+    let budget =
+        cli_timeout.unwrap_or_else(|| declared_startup(&home, &name, manifest_path.as_deref()));
+    await_registration(&mut child, &home, &name, budget)
+}
+
+/// Wait for the detached holder to self-register (up), exit (failed), or exhaust its budget.
+///
+/// Split out so `start_subcommand` stays within the function-length ratchet, and because the wait
+/// is a coherent thing on its own: it owns the budget, the three verdicts, and the graceful stop.
+fn await_registration(
+    child: &mut std::process::Child,
+    home: &home::Home,
+    name: &str,
+    budget: Duration,
+) -> ExitCode {
+    let deadline = Instant::now() + budget;
     loop {
-        if let Some(rec) = runstate::read(&home, &name) {
+        if let Some(rec) = runstate::read(home, name) {
             let eps: Vec<prova_core::Endpoint> = rec
                 .endpoints
                 .iter()
@@ -638,7 +724,7 @@ pub(crate) fn start_subcommand(args: Vec<String>) -> ExitCode {
                     url: e.url.clone(),
                 })
                 .collect();
-            print_endpoints(&name, &eps);
+            print_endpoints(name, &eps);
             println!(
                 "\n  started (pid {}) — `prova down {name}` to stop, `prova ps` to list",
                 rec.pid
@@ -650,11 +736,11 @@ pub(crate) fn start_subcommand(args: Vec<String>) -> ExitCode {
                 eprintln!(
                     "prova start: topology {name:?} failed to come up (child exited: {status})"
                 );
-                let tail = runstate::log_tail(&home, &name, 20);
+                let tail = runstate::log_tail(home, name, 20);
                 if !tail.trim().is_empty() {
                     eprintln!("--- {name} log (tail) ---\n{tail}");
                 }
-                runstate::remove(&home, &name);
+                runstate::remove(home, name);
                 return ExitCode::from(2);
             }
             Ok(None) => {}
@@ -664,9 +750,13 @@ pub(crate) fn start_subcommand(args: Vec<String>) -> ExitCode {
             }
         }
         if Instant::now() >= deadline {
-            eprintln!("prova start: topology {name:?} did not come up within 300s; stopping it");
-            let _ = child.kill();
-            runstate::remove(&home, &name);
+            eprintln!(
+                "prova start: topology {name:?} did not come up within {budget:?} — stopping it. \
+                 Declare what it needs (`startup = \"15m\"` on the [topologies] entry — the \
+                 definition knows its own cost), or override this invocation with --timeout."
+            );
+            stop_holder(child, name);
+            runstate::remove(home, name);
             return ExitCode::from(2);
         }
         std::thread::sleep(Duration::from_millis(200));

@@ -44,6 +44,12 @@ One definition, addressed twice — they cannot drift, and registering does not 
 declaring. `options` is passed as the factory's second argument. A topology registered this way
 also inherits the `requires` its package advertises, so it gates on the environment it needs.
 
+**`startup = "15m"`** declares how long this topology needs to come up: `prova start` waits that
+long for it to register (default 300s, `--timeout` overrides for one invocation). The definition
+knows its own cost — a kind cluster with eight rollouts is honestly minutes — and a budget that
+expires stops the holder gracefully, so whatever it already created is torn down rather than
+orphaned.
+
 ## The verbs over the same definition
 
 | Verb | Holds it |

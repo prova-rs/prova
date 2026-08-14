@@ -498,6 +498,12 @@ pub struct TopologyDecl {
     /// registered bare (`(ctx)`), unchanged.
     #[serde(default)]
     pub options: toml::Table,
+    /// How long this topology needs to come up, as a duration
+    /// (docs/design/agent-ergonomics.md#start-timeout-is-unconfigurable). The DEFINITION knows its
+    /// own cost — a kind cluster with eight rollouts is honestly minutes — and without a way to say
+    /// so, `prova start` could only ever inhabit topologies faster than its fixed default. Absent
+    /// → 300s; `prova start --timeout` overrides either.
+    pub startup: Option<String>,
 }
 
 /// An explicitly-declared suite: its `paths` are discovered into one suite (sharing an optional

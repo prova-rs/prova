@@ -30,8 +30,19 @@ pub fn up(
 
     let rt = new_runtime()?;
     block_on_local(&rt, async {
-        let result = provision_and_hold(&lua, &state, id, name, on_ready).await;
-        // Always tear down whatever got provisioned — a clean signal, or a mid-provision failure.
+        // The signal is raced against provisioning, not awaited after it
+        // (docs/design/agent-ergonomics.md#start-timeout-orphans-containers). A stack slow enough to
+        // be interrupted is interrupted DURING provisioning — that is when a budget expires — and
+        // until this select existed, SIGTERM then found no handler installed yet, so the holder died
+        // by default disposition and every resource it had already created outlived it. Cancelling
+        // the provision future drops it mid-flight; whatever it registered is already held by the
+        // File scope below, which is what teardown reaps.
+        let result = tokio::select! {
+            r = provision_and_hold(&lua, &state, id, name, on_ready) => r,
+            () = wait_for_shutdown() => Ok(()),
+        };
+        // Always tear down whatever got provisioned — a clean signal, a mid-provision failure, or
+        // an interrupt part-way through.
         teardown_all_and_warn(&state).await;
         result
     })
