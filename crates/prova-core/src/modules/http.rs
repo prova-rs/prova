@@ -115,13 +115,21 @@ impl UserData for HttpClient {
                 let base_headers = this.headers.clone();
                 let params = wait_params(&opts);
                 async move {
-                    let (expected, timeout, every) = params?;
+                    let p = params?;
+                    // Per-call headers layer OVER the client's defaults by name — the same
+                    // precedence `build_prepared` gives an ordinary request, so `client:get` and
+                    // `client:wait_for` cannot disagree about whose Authorization wins.
+                    let mut headers = base_headers.clone();
+                    for (k, v) in p.headers {
+                        upsert_header(&mut headers, k, v);
+                    }
+                    let (expected, timeout, every) = (p.status, p.timeout, p.every);
                     let deadline = Instant::now() + timeout;
                     loop {
                         let prepared = Prepared {
                             method: reqwest::Method::GET,
                             url: url.clone(),
-                            headers: base_headers.clone(),
+                            headers: headers.clone(),
                             body: None,
                             timeout: Some(every),
                             redirects: None,
@@ -240,7 +248,14 @@ const REQUEST_OPTS: &[&str] = &[
 const BODY_OPTS: &[&str] = &["json", "form", "body"];
 
 /// Every option the polling verbs (`http.wait_for`, `client:wait_for`) honor.
-const WAIT_OPTS: &[&str] = &["every", "status", "timeout"];
+///
+/// `headers` is here because readiness against a service behind auth was otherwise unprovable:
+/// the free function sent none, so a health endpoint requiring a bearer token had to be waited on
+/// with a hand-rolled `http.get` retry loop — the exact "reach for a host tool" pressure the http
+/// module exists to remove (docs/design/agent-ergonomics.md#http-wait-for-cannot-authenticate).
+/// `client:wait_for` always carried the CLIENT's defaults, so the two verbs disagreed about
+/// whether polling could authenticate at all.
+const WAIT_OPTS: &[&str] = &["every", "headers", "status", "timeout"];
 
 /// Build an owned request spec from `opts`, layered over optional defaults (a client's base
 /// headers/timeout). Per-call `headers` override defaults by name; the body (exactly one of
@@ -444,20 +459,22 @@ async fn send(prepared: Prepared) -> mlua::Result<HttpResponse> {
     })
 }
 
-/// `http.wait_for(url, { status = 200, timeout = "30s", every = "500ms" })` — poll GET until the
-/// endpoint returns the expected status or the deadline elapses. The boot-then-probe primitive.
+/// `http.wait_for(url, { status = 200, headers = {…}, timeout = "30s", every = "500ms" })` — poll
+/// GET until the endpoint returns the expected status or the deadline elapses. The boot-then-probe
+/// primitive, and `headers` is what lets it be pointed at a health endpoint behind auth.
 fn wait_for_fn(lua: &Lua) -> mlua::Result<Function> {
     lua.create_async_function(|lua, (url, opts): (String, Option<Table>)| {
         let params = wait_params(&opts);
         async move {
             super::runtime_only("http.wait_for")?;
-            let (expected, timeout, every) = params?;
+            let p = params?;
+            let (expected, timeout, every) = (p.status, p.timeout, p.every);
             let deadline = Instant::now() + timeout;
             loop {
                 let prepared = Prepared {
                     method: reqwest::Method::GET,
                     url: url.clone(),
-                    headers: Vec::new(),
+                    headers: p.headers.clone(),
                     body: None,
                     timeout: Some(every),
                     redirects: None,
@@ -478,27 +495,47 @@ fn wait_for_fn(lua: &Lua) -> mlua::Result<Function> {
     })
 }
 
-fn wait_params(opts: &Option<Table>) -> mlua::Result<(u16, Duration, Duration)> {
-    let mut status = 200;
-    let mut timeout = Duration::from_secs(30);
-    let mut every = Duration::from_millis(500);
+/// What the polling verbs need, owned — parsed synchronously so nothing borrows Lua across the
+/// await. A struct rather than a tuple since `headers` made it four fields, and a bare
+/// `(u16, Duration, Duration, Vec<..>)` at two call sites is a positional puzzle.
+struct WaitParams {
+    status: u16,
+    timeout: Duration,
+    every: Duration,
+    /// Layered OVER a client's defaults by name, exactly as a per-call request's headers are.
+    headers: Vec<(String, String)>,
+}
+
+fn wait_params(opts: &Option<Table>) -> mlua::Result<WaitParams> {
+    let mut p = WaitParams {
+        status: 200,
+        timeout: Duration::from_secs(30),
+        every: Duration::from_millis(500),
+        headers: Vec::new(),
+    };
     if let Some(opts) = opts {
         crate::opts::reject_unknown(opts, WAIT_OPTS, "http.wait_for")?;
         if let Some(s) = opts.get::<Option<u16>>("status")? {
-            status = s;
+            p.status = s;
         }
         if let Some(t) = opts
             .get::<Option<String>>("timeout")?
             .and_then(|s| parse_duration(&s))
         {
-            timeout = t;
+            p.timeout = t;
         }
         if let Some(e) = opts
             .get::<Option<String>>("every")?
             .and_then(|s| parse_duration(&s))
         {
-            every = e;
+            p.every = e;
+        }
+        if let Some(hdrs) = opts.get::<Option<Table>>("headers")? {
+            for pair in hdrs.pairs::<String, String>() {
+                let (k, v) = pair?;
+                upsert_header(&mut p.headers, k, v);
+            }
         }
     }
-    Ok((status, timeout, every))
+    Ok(p)
 }

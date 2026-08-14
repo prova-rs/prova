@@ -193,13 +193,13 @@ function HttpResponse:save(path) end
 ---@field timeout? string
 ---@field redirects? boolean|integer  # false = return the 3xx; N = follow at most N; default follows
 
---- Deliberately NOT an extension of `prova.HttpOpts`: the polling verbs honor these three keys and
---- nothing else, and since an option prova cannot honor is now refused rather than dropped
---- (docs/design/agent-ergonomics.md#module-opts-silently-ignored), advertising `headers` or `json`
---- here would hand an author a call that fails. `http.client{ headers }` carries default headers
---- into `client:wait_for`; the free function sends none.
+--- Deliberately NOT an extension of `prova.HttpOpts`: the polling verbs honor these four keys and
+--- nothing else, and since an option prova cannot honor is refused rather than dropped
+--- (docs/design/agent-ergonomics.md#module-opts-silently-ignored), advertising `json` or
+--- `redirects` here would hand an author a call that fails.
 ---@class prova.WaitOpts
 ---@field status? integer        # expected status (default 200)
+---@field headers? table<string,string>  # sent on every poll — how a health endpoint behind auth is waited on; on `client:wait_for` these layer OVER the client's defaults by name
 ---@field timeout? string        # give up after this long, e.g. "30s"
 ---@field every? string          # poll interval, e.g. "500ms"
 

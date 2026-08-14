@@ -43,6 +43,14 @@ class H(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(ZIP)))
             self.end_headers()
             self.wfile.write(ZIP)
+        # A health endpoint behind auth: 401 without the bearer, 200 with it. The point is that a
+        # poll which sends no header can NEVER reach the expected status, so a wait_for that
+        # cannot authenticate fails by timing out rather than by asserting anything.
+        elif self.path == "/private/health":
+            if self.headers.get("Authorization") == "Bearer s3cr3t":
+                self.send_response(200); self.end_headers(); self.wfile.write(b"ready")
+            else:
+                self.send_response(401); self.end_headers()
         elif self.path == "/gated":
             self.send_response(307)
             self.send_header("Location", "/auth/login")
@@ -206,4 +214,56 @@ return seen.status .. " " .. seen.headers.location .. " || " .. followed.status 
   -- notice if `redirects = false` had quietly become the only behavior.
   t:expect(code, "the default still follows"):equals("200")
   t:expect(body, "…and lands on the destination"):equals("login page")
+end)
+
+prova.test("a readiness poll can authenticate, on the free verb and the client alike", {
+  covers = "docs/design/agent-ergonomics.md#http-wait-for-cannot-authenticate",
+  proves = "readiness against a service behind auth was unprovable: the free verb sent no headers, so a health endpoint requiring a bearer could only ever answer 401 and the wait timed out — which reads as 'the service never came up', the most misleading possible diagnosis. `client:wait_for` carried the client's defaults all along, so the two verbs disagreed about whether polling could authenticate at all",
+  requires = { "python3" },
+}, function(t)
+  local svc = t:use(service)
+  -- NOTE: the snippet must not START with a Lua comment — `prova eval` receives it as one argv
+  -- element, and an argument beginning with `--` is parsed as a flag (exit 2). See
+  -- agent-ergonomics.md#eval-snippet-starting-with-a-comment.
+  local r = eval(string.format([==[
+local direct = http.wait_for(%q, {   -- the free verb, with a per-call header
+  status = 200, headers = { Authorization = "Bearer s3cr3t" }, timeout = "10s", every = "100ms",
+})
+-- The client, whose default header must reach the poll without being restated.
+local c = http.client{ base_url = %q, headers = { Authorization = "Bearer s3cr3t" } }
+local viaclient = c:wait_for("/private/health", { status = 200, timeout = "10s", every = "100ms" })
+-- And a per-call header must OVERRIDE a client default by name, the same precedence an ordinary
+-- request gets — otherwise the two verbs disagree about whose Authorization wins.
+local wrong = http.client{ base_url = %q, headers = { Authorization = "Bearer nope" } }
+local overridden = wrong:wait_for("/private/health", {
+  status = 200, headers = { Authorization = "Bearer s3cr3t" }, timeout = "10s", every = "100ms",
+})
+return direct.status .. " " .. direct.body .. " | " .. viaclient.status .. " | " .. overridden.status
+]==], svc.url .. "/private/health", svc.url, svc.url))
+
+  t:expect(r.code, "the subject ran: " .. r.stdout):equals(0)
+  local status, body, client_status, override_status =
+    r.stdout:match("(%d+) (%S+) | (%d+) | (%d+)")
+  t:expect(status, "the free verb reached the guarded endpoint"):equals("200")
+  t:expect(body, "…and it is really the guarded body, not a redirect to one"):equals("ready")
+  t:expect(client_status, "the client's default header reaches its poll"):equals("200")
+  t:expect(override_status, "a per-call header overrides the client's by name"):equals("200")
+end)
+
+prova.test("a poll that cannot authenticate fails as a timeout, which is why this needed fixing", {
+  covers = "docs/design/agent-ergonomics.md#http-wait-for-cannot-authenticate",
+  proves = "the negative control, and the reason the gap was expensive rather than merely missing: without headers the poll never reaches the expected status, so the failure arrives as 'did not come up in 2s' — a diagnosis pointing at the service instead of at the request",
+  requires = { "python3" },
+}, function(t)
+  local svc = t:use(service)
+  local r = eval(string.format([==[
+local ok, err = pcall(function()
+  return http.wait_for(%q, { status = 200, timeout = "2s", every = "100ms" })
+end)
+return tostring(ok) .. " | " .. tostring(err)
+]==], svc.url .. "/private/health"))
+
+  t:expect(r.code, "the subject ran"):equals(0)
+  t:expect(r.stdout, "an unauthenticated poll never reaches 200"):contains("false")
+  t:expect(r.stdout, "…and says so as a timeout, naming the status it wanted"):contains("timed out")
 end)

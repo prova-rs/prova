@@ -201,7 +201,7 @@ arguments are part of the command. `fs`: `read write exists glob tempdir remove_
 paths resolve against the invocation cwd). `net.free_port()`.
 `http.get/post/...(url, {headers, json|form|body, content_type, timeout, redirects}) → response`
 (`.status`, `.body` — raw bytes, exact for binary — `:json()`, `:save(path)`; userdata, not
-table-iterable), `http.client{ base_url, headers, timeout }`, `http.wait_for(url, {status, timeout,
+table-iterable), `http.client{ base_url, headers, timeout }`, `http.wait_for(url, {status, headers, timeout,
 every})`. `grpc.client(addr)` (`:call`, `:call_status`), `grpc.wait_for`. `graphql.client{ url }`
 (`:query`, `:execute`). `yaml.decode/decode_all`. `sqlite.client(url)`. `docker.run{...} →
 container` (`:host_port`, `:run(argv)`, `:exec`, `:logs`, `:stop`), `docker.build{...} → image`,

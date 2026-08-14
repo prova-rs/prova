@@ -7,7 +7,7 @@ filesystem. Green must mean "a real caller would succeed."
 
 | Contract under proof | Driver | Core moves |
 |---|---|---|
-| HTTP/REST | `http` | `http.get/post(url, { headers, json\|form\|body, content_type, timeout, redirects })` → `.status`, `.body` (bytes-exact), `:json()`, `:save(path)` · `http.client{ base_url }` · `http.wait_for(url, { status, timeout })` |
+| HTTP/REST | `http` | `http.get/post(url, { headers, json\|form\|body, content_type, timeout, redirects })` → `.status`, `.body` (bytes-exact), `:json()`, `:save(path)` · `http.client{ base_url }` · `http.wait_for(url, { status, headers, timeout })` |
 | gRPC | `grpc` | `grpc.client(addr)` → `:call(method, req)`, `:call_status` (needs server reflection) · `grpc.wait_for` |
 | GraphQL | `graphql` | `graphql.client{ url }` → `:query`, `:execute` |
 | CLI / processes | `shell` | `shell.run(cmd_or_argv, { cwd, env, timeout, check })` → `{ code, stdout, stderr }` · `shell.spawn` for long-running |

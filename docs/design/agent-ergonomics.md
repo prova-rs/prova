@@ -546,17 +546,34 @@ API in the world takes and nothing in `{cwd, env}` is near it, so nearest-spelli
 offer; the refusal therefore teaches the argv form (§1) outright. The same mechanism carries
 removed spellings, which is the identical failure from the other end.
 
-<!-- backlog: http-wait-for-cannot-authenticate recorded=2026-08-14 -->
-**`http.wait_for` can send no headers, so an authenticated health endpoint cannot be waited on.**
-Found by the closed-set audit rather than in the field, which is the point: the LuaLS stub declared
-`WaitOpts : HttpOpts`, so it *advertised* `headers`, `json` and the rest on the polling verbs —
-and [[module-opts-silently-ignored]] turned that documented-but-unimplemented surface from a silent
-no-op into a hard refusal for anyone who followed the stub. The stub now tells the truth
-(`{status, timeout, every}`), which leaves the real gap visible: readiness against a service behind
-auth has to be hand-rolled as a `http.get` retry loop, or reached through `http.client{ headers }`,
-whose `client:wait_for` DOES carry the client's default headers. That asymmetry between the free
-function and the client method is the smell. Suggested shape: `headers` on `WaitOpts`, which costs
-nothing — `Prepared` already carries them and the client path already passes them.
+<!-- claim: http-wait-for-cannot-authenticate recorded=2026-08-14 -->
+**A readiness poll can authenticate.** `headers` is a `WaitOpts` key, so `http.wait_for(url, {
+status = 200, headers = { Authorization = … } })` waits on a health endpoint behind auth, and on
+`client:wait_for` a per-call header layers OVER the client's defaults by name — the same precedence
+an ordinary request gets, so the two verbs cannot disagree about whose `Authorization` wins.
+
+Without it the free verb sent no headers at all, so a guarded endpoint could only ever answer 401
+and the wait died on its deadline. That is the expensive part: the failure arrives as "did not come
+up in 30s", a diagnosis pointing at the service rather than at the request, and the way out was a
+hand-rolled `http.get` retry loop — the reach-for-another-tool pressure this module exists to
+remove. `client:wait_for` carried the client's defaults all along, so the two verbs disagreed about
+whether polling could authenticate at all.
+
+Found by the closed-set audit rather than in the field, which is worth recording: the LuaLS stub
+declared `WaitOpts : HttpOpts` and so *advertised* `headers` on the polling verbs.
+[[module-opts-silently-ignored]] turned that documented-but-unimplemented surface from a silent
+no-op into a hard refusal, which is exactly how a gate is supposed to earn its keep — the drift
+surfaced in the docs instead of in someone's proof.
+
+<!-- backlog: eval-snippet-starting-with-a-comment recorded=2026-08-14 -->
+**`prova eval` refuses a snippet whose first line is a comment.** The code arrives as one argv
+element, so `--` at position 0 is parsed as a flag and the run exits 2 with a usage error naming no
+Lua at all. `prova eval 'return 1\n-- trailing'` is fine; only the leading position bites. It bites
+precisely where snippets are longest and most likely to open with a note about what they are doing
+— found writing a proof whose `[==[ … ]==]` block began with one, and the exit-2-with-no-message
+sends the author looking at their Lua rather than at the argument boundary. Candidate fixes: accept
+`--` as an explicit end-of-flags separator (the conventional spelling), or treat the first
+non-flag-looking argument after `eval` as the snippet and everything after it as verbatim.
 
 <!-- backlog: module-opts-gate-remaining-namespaces recorded=2026-08-14 -->
 **The opts gate closed the high-traffic namespaces; the rest of the module surface is still open.**
