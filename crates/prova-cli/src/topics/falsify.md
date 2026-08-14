@@ -48,7 +48,5 @@ broken falsifier would masquerade as a body that correctly went red.
 `falsified_by` is test-level, like `spec` and `proves`: a group or flow has no assertion of its own
 for a mutation to invalidate.
 
-See also:
-- `prova learn promises` (the proofs most in need of a falsifier)
-- `prova learn authoring` (where falsified_by is declared)
-- `prova learn pdd` (why green alone is not evidence)
+See also: `prova learn promises` (the proofs most needing it) · `prova learn authoring` (where
+falsified_by lives) · `prova learn pdd` (why green is not evidence)

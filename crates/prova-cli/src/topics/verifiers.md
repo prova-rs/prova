@@ -60,7 +60,5 @@ sweeps every still-leased conduct group and exits. It is spawned once per run th
 holds nothing else, and idles at zero cost. `prova start` provisions are deliberately
 unleased — outliving the invocation is that verb's purpose (`prova down` reaps those).
 
-See also:
-- `prova learn locks` (the house rule a conduct almost always needs)
-- `prova learn running` (selection pushdown into the deputy)
-- `prova learn record` (attesting that the deputed evidence actually ran)
+See also: `prova learn locks` (the rule a conduct needs) · `prova learn running` (selection
+pushdown) · `prova learn record` (proving it actually ran)

@@ -65,7 +65,5 @@ jq '.summary, (.skipped[] | .path)' .prova/var/last-run.json
 - **Not a coverage metric.** It says what executed, not what was worth executing. Pair it with
   `prova learn falsify` — a proof that ran and cannot fail is its own kind of nothing.
 
-See also:
-- `prova learn claims` (the obligation being attested)
-- `prova learn evidence` (the account attestation feeds)
-- `prova learn verifiers` (deputed runs, where 'did it run' is hardest to see)
+See also: `prova learn claims` (the obligation attested) · `prova learn evidence` (the account it
+feeds) · `prova learn verifiers` (where 'did it run' hides)

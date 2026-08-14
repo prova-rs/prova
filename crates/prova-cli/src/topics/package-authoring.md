@@ -60,7 +60,5 @@ prova = ">=0.4"                   # compat-gated against the running prova
 Self-test it like any package: `prova` inside the package repo runs its proofs against its own
 namespace. Consumers' `[requires] prova` gate protects them from your future breakage.
 
-See also:
-- `prova learn packages` (the consumer's half of the contract)
-- `prova learn project` (the manifest a package carries)
-- `prova learn init` (the archetype that scaffolds one)
+See also: `prova learn packages` (the consumer's half) · `prova learn project` (the manifest one
+carries) · `prova learn init` (the archetype for it)

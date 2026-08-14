@@ -76,7 +76,5 @@ can watch contention become the bottleneck instead of an operator diffing siblin
   rule that must bind other instances is spelled as a lock.
 - Re-moding composes: `prova.reads(prova.port(5432))` widens a port to a concurrent hold.
 
-See also:
-- `prova learn running` (--jobs is throughput; locks are meaning)
-- `prova learn verifiers` (a conduct is the classic exclusive resource)
-- `prova learn fixtures` (where a shared tool is usually provisioned)
+See also: `prova learn running` (--jobs is throughput only) · `prova learn verifiers` (the classic
+exclusive resource) · `prova learn fixtures` (where shared tools live)

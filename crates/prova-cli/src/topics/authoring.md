@@ -72,8 +72,6 @@ http.wait_for("http://127.0.0.1:" .. port .. "/health", { timeout = "60s" })
 
 Assert effects where they land: probe the API AND cross-check the database.
 
-See also:
-- `prova learn fixtures` (setup and teardown as one thing)
-- `prova learn drivers` (how to originate traffic at the SUT)
-- `prova learn falsify` (the proof that your proof is not vacuous)
-- `prova learn running` (how the units you declare get selected)
+See also: `prova learn fixtures` (setup+teardown as one) · `prova learn drivers` (originating
+traffic) · `prova learn falsify` (non-vacuous proofs) · `prova learn running` (how units get
+selected)

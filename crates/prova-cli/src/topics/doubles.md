@@ -48,8 +48,6 @@ fake one. Plugins declared in this package add their facets to the vocabulary:
 Not yet shipped (do not reach for them): standalone interposing proxies as a facet of their own,
 `net.mock` (raw TCP/unix), `graphql.mock`. `prova.help("mock")` lists what exists in this build.
 
-See also:
-- `prova learn drivers` (the other half: originating traffic vs standing in for it)
-- `prova learn proxies` (interposing on real traffic rather than replacing it)
-- `prova learn fixtures` (how a double is provisioned and torn down)
-- `prova learn topologies` (in-network vantage, so a containerized SUT can reach a host mock)
+See also: `prova learn drivers` (the other direction) · `prova learn proxies` (interposing
+instead) · `prova learn fixtures` (how one is provisioned) · `prova learn topologies` (in-network
+vantage)

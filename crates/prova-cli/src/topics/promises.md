@@ -84,8 +84,6 @@ catch; `prova tests falsify` applies it and INVERTS the verdict, so a body that 
 Obligations also arrive from outside: `<!-- claim: id -->` in prose is one, `covers = "path#id"`
 discharges it, and `prova owed` reconciles every origin into one list: `prova learn claims`.
 
-See also:
-- `prova learn pdd` (why a proof comes before the implementation)
-- `prova learn claims` (the obligation a promise is usually discharging)
-- `prova learn falsify` (a green promise that cannot fail is not evidence)
-- `prova learn evidence` (where open promises are counted)
+See also: `prova learn pdd` (why the proof comes first) · `prova learn claims` (what it usually
+discharges) · `prova learn falsify` (green alone is not evidence) · `prova learn evidence` (where
+open ones are counted)

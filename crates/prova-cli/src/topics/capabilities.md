@@ -56,7 +56,5 @@ discovery vocabulary — a package advertises `keywords` for `prova packages <qu
 a package needs from the host still lives in its `requires` (the same words as here). So the word
 has one job: `prova capabilities` and `requires`/`must_run` probe the host; `keywords` find a package.
 
-See also:
-- `prova learn topologies` (the environments a capability gates)
-- `prova learn running` (switches: opt-in classes, which capabilities are not)
-- `prova learn drivers` (the tools a driver requires of the host)
+See also: `prova learn topologies` (what a capability gates) · `prova learn running` (switches,
+which these are not) · `prova learn drivers` (tools a driver needs)

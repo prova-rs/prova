@@ -40,7 +40,5 @@ filesystem. Green must mean "a real caller would succeed."
 - A protocol prova doesn't speak natively: drive the official CLI via `shell.run` argv, or
   wrap the SDK in a package (`prova learn package-authoring`).
 
-See also:
-- `prova learn doubles` (what the SUT calls OUT to, when you cannot run it for real)
-- `prova learn authoring` (the assertions a driver's result feeds)
-- `prova learn capabilities` (what a driver needs the host to have)
+See also: `prova learn doubles` (what the SUT calls out to) · `prova learn authoring` (the
+assertions it feeds) · `prova learn capabilities` (what the host must have)

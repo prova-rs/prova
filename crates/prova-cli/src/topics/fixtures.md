@@ -51,8 +51,5 @@ failure.
   fixture that owns the resource it acts on.
 - Suite = one Lua state = the parallelism unit; `--jobs` can never change what a run means.
 
-See also:
-- `prova learn doubles` (when a fixture provisions a stand-in instead of the real thing)
-- `prova learn topologies` (the same factory, addressable as a whole environment)
-- `prova learn locks` (when two fixtures contend on one tool)
-- `prova learn authoring` (the units a fixture serves)
+See also: `prova learn doubles` (stand-ins) · `prova learn topologies` (the whole environment) ·
+`prova learn locks` (contending on one tool) · `prova learn authoring` (the units it serves)

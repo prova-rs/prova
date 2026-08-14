@@ -41,7 +41,5 @@ down { name = "orders" }                -- the ONE place teardown happens
 Topics are also protocol-native resources: `prova://learn/<topic>` and `prova://skill`, same
 content as the `learn` tool.
 
-See also:
-- `prova learn running` (the selection axes the tools mirror)
-- `prova learn project` (what the server answers about this package)
-- `prova learn evidence` (the account an agent reads before deciding what to do)
+See also: `prova learn running` (the selection axes) · `prova learn project` (what it answers
+about here) · `prova learn evidence` (the account agents read)

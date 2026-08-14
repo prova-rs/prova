@@ -55,7 +55,5 @@ No package for your dependency (registries searched)? Compose primitives:
 `docker.run{ image, env, ports, wait }` + `container:run(argv)` + `prova.retry`. When the
 boilerplate recurs, promote it: `prova learn package-authoring`.
 
-See also:
-- `prova learn package-authoring` (publishing one instead of consuming one)
-- `prova learn project` (where dependencies are declared)
-- `prova learn doubles` (the containerized resources most packages provide)
+See also: `prova learn package-authoring` (publishing one) · `prova learn project` (where deps are
+declared) · `prova learn doubles` (the resources they provide)
