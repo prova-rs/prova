@@ -354,6 +354,33 @@ fn make_fs(lua: &Lua) -> mlua::Result<Table> {
 
     // fs.glob(root, "**/*.rs") → sorted list of matching paths (as strings).
     fs.set(
+        // `fs.digest(paths)` — a stable hex digest over the CONTENTS and relative paths of the
+        // files matching `paths` (a path or glob, or a list of them). The battery behind conduct
+        // identity (docs/plans/incremental-prova.md): shipped rather than shelled out, because
+        // `git hash-object` and `sha256sum` are absent on a bare Windows runner and a package that
+        // computes identities by shelling out is a package that works on its author's box.
+        //
+        // Sorted, `/`-separated, content-addressed: the same tree answers identically on every OS
+        // and whatever order the caller listed. A path that matches nothing contributes its own
+        // absence — absence changes a build, so it must change the digest, and raising instead
+        // would make identity unusable for the generated input that is not there yet.
+        "digest",
+        lua.create_function(|_, paths: Value| {
+            let patterns: Vec<String> = match paths {
+                Value::String(s) => vec![s.to_string_lossy().to_string()],
+                Value::Table(t) => t.sequence_values::<String>().collect::<mlua::Result<_>>()?,
+                other => {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "fs.digest(paths): a path/glob or a list of them, got {}",
+                        other.type_name()
+                    )))
+                }
+            };
+            Ok(digest_paths(&patterns, None))
+        })?,
+    )?;
+
+    fs.set(
         "glob",
         lua.create_function(|lua, (root, pattern): (String, String)| {
             let joined = Path::new(&root).join(&pattern);
@@ -587,6 +614,64 @@ fn add_path_component_fns(lua: &Lua, path: &Table) -> mlua::Result<()> {
     )?;
 
     Ok(())
+}
+
+/// The digest behind `fs.digest` and conduct identity (docs/plans/incremental-prova.md).
+///
+/// Content-addressed over the files matching `patterns`, each contributing its `/`-separated path
+/// and its bytes, in sorted order — so the same tree answers identically on every OS and whatever
+/// order the caller listed. A pattern matching nothing contributes its own ABSENCE rather than an
+/// error: absence changes a build, so it must change the digest, and raising would make identity
+/// unusable for the generated input that is not there yet.
+pub(crate) fn digest_paths(patterns: &[String], root: Option<&Path>) -> String {
+    use sha2::Digest as _;
+    let mut entries: Vec<(String, Option<Vec<u8>>)> = Vec::new();
+    for pattern in patterns {
+        let resolved = match root {
+            Some(r) if !path_is_absolute(pattern) => r.join(pattern).to_string_lossy().into_owned(),
+            _ => pattern.clone(),
+        };
+        let mut matched = false;
+        if let Ok(paths) = glob::glob(&resolved) {
+            for p in paths.filter_map(Result::ok) {
+                if p.is_file() {
+                    matched = true;
+                    let bytes = std::fs::read(&p).unwrap_or_default();
+                    entries.push((emit_path(&p), Some(bytes)));
+                }
+            }
+        }
+        if !matched {
+            entries.push((path_norm_seps(&resolved), None));
+        }
+    }
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    entries.dedup_by(|a, b| a.0 == b.0);
+    let mut hasher = sha2::Sha256::new();
+    for (path, bytes) in &entries {
+        hasher.update(path.as_bytes());
+        match bytes {
+            Some(b) => {
+                hasher.update([1u8]);
+                hasher.update((b.len() as u64).to_le_bytes());
+                hasher.update(b);
+            }
+            None => hasher.update([0u8]),
+        }
+    }
+    hex::encode(hasher.finalize())
+}
+
+/// A digest over already-computed parts (a command, a nested digest) — the outer half of a conduct
+/// identity. Length-prefixed so `("ab", "c")` and `("a", "bc")` cannot collide.
+pub(crate) fn digest_of_parts(parts: &[&str]) -> String {
+    use sha2::Digest as _;
+    let mut hasher = sha2::Sha256::new();
+    for part in parts {
+        hasher.update((part.len() as u64).to_le_bytes());
+        hasher.update(part.as_bytes());
+    }
+    hex::encode(hasher.finalize())
 }
 
 fn make_path(lua: &Lua) -> mlua::Result<Table> {

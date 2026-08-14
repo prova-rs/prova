@@ -1070,6 +1070,7 @@ fn execute_collected(
             falsify: config.falsify,
             conducts: config.conducts.clone(),
             progress: std::sync::Arc::clone(config.progress()),
+            project_dir: config.project_dir.clone(),
         });
         (plan, deselected, dropped, switched_off, state)
     };

@@ -94,6 +94,26 @@ impl Ctx {
     }
 }
 
+/// The run-wide store slot a `Scope.Run` fixture occupies.
+///
+/// A declared identity makes the key a fact about the QUESTION — the command, plus the contents of
+/// the inputs it depends on — so two differently-named fixtures asking it share one execution
+/// (docs/design/agent-ergonomics.md#dedupe-identical-deputy-conducts). Undeclared, the key is the
+/// fixture's name exactly as before: silence means the old semantics, and every fixture already in
+/// the wild is silent.
+fn conduct_slot_key(def: &FixtureDef, project_dir: Option<&std::path::Path>) -> String {
+    match &def.identity {
+        Some(spec) => {
+            let inputs = crate::modules::digest_paths(&spec.inputs, project_dir);
+            format!(
+                "identity:{}",
+                crate::modules::digest_of_parts(&[&spec.command, &inputs])
+            )
+        }
+        None => def.name.clone(),
+    }
+}
+
 /// Resolve `ctx:use(handle|name)` to a fixture value, building it lazily if not cached. Async so a
 /// factory can `await` (e.g. `shell.run`, `http.wait_for`). Recursion (a factory that itself calls
 /// `ctx:use`) reenters through Lua, not Rust, so no boxing is needed. No `RefCell` borrow is held
@@ -197,15 +217,21 @@ pub(super) async fn resolve_use(lua: &Lua, this: &Ctx, target: Value) -> mlua::R
 async fn resolve_run_scoped(lua: &Lua, this: &Ctx, def: &FixtureDef) -> mlua::Result<Value> {
     use crate::engine::ConductSlot;
     let store = this.state.conducts.clone();
+    // The slot this conduct occupies. A declared identity makes the KEY a fact about the question
+    // — the command, plus the contents of the inputs it depends on — so two differently-named
+    // fixtures asking it share one execution
+    // (docs/design/agent-ergonomics.md#dedupe-identical-deputy-conducts). Undeclared keys by name,
+    // exactly as before: silence means the old semantics.
+    let key = conduct_slot_key(def, this.state.project_dir.as_deref());
     // Set on the first poll that finds another worker conducting; dropping it reports how long
     // this reader waited, on every path out of the loop.
     let mut waiting: Option<crate::progress::Activity> = None;
     loop {
         {
             let mut slots = store.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            match slots.get(&def.name) {
+            match slots.get(&key) {
                 None => {
-                    slots.insert(def.name.clone(), ConductSlot::Conducting);
+                    slots.insert(key.clone(), ConductSlot::Conducting);
                     break;
                 }
                 Some(ConductSlot::Ready(v)) => {
@@ -264,7 +290,7 @@ async fn resolve_run_scoped(lua: &Lua, this: &Ctx, def: &FixtureDef) -> mlua::Re
     }
     let mut settle = Settle {
         store: store.clone(),
-        name: def.name.clone(),
+        name: key.clone(),
         done: false,
     };
 
@@ -294,11 +320,11 @@ async fn resolve_run_scoped(lua: &Lua, this: &Ctx, def: &FixtureDef) -> mlua::Re
         match settled {
             Ok(json) => {
                 let out = crate::modules::formats::json_value_to_lua(lua, &json);
-                slots.insert(def.name.clone(), ConductSlot::Ready(json));
+                slots.insert(key.clone(), ConductSlot::Ready(json));
                 out
             }
             Err(msg) => {
-                slots.insert(def.name.clone(), ConductSlot::Poisoned(msg.clone()));
+                slots.insert(key.clone(), ConductSlot::Poisoned(msg.clone()));
                 Err(mlua::Error::RuntimeError(msg))
             }
         }

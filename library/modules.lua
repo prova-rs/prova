@@ -82,6 +82,14 @@ function fs.exists(path) end
 ---@param pattern string   # e.g. "**/*.rs"
 ---@return string[] absolute paths
 function fs.glob(root, pattern) end
+--- A stable lowercase-hex digest over the CONTENTS and paths of the files matching `paths` (a path
+--- or glob, or a list of them) — the primitive behind conduct identity
+--- (`prova learn fixtures`). Sorted and `/`-separated, so the same tree answers identically on
+--- every OS and in whatever order you list it. A path matching nothing contributes its ABSENCE
+--- rather than raising: absence changes a build, so it changes the digest.
+---@param paths string|string[]
+---@return string digest            # lowercase hex
+function fs.digest(paths) end
 --- Create a directory and every missing parent (like `mkdir -p`); idempotent (no error if it already
 --- exists). The platform-agnostic replacement for `shell.run("mkdir -p ...")`.
 ---@param path string

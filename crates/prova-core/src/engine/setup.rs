@@ -95,16 +95,17 @@ fn install_fixtures(lua: &Lua, prova: &Table, col: &SharedCollector) -> mlua::Re
         let col = col.clone();
         prova.set(
             "fixture",
-            lua.create_function(move |lua, (name, a, b): (String, Value, Value)| {
+            lua.create_function(move |lua, (name, a, b, opts): (String, Value, Value, Value)| {
                 let (scope, factory) = match (a, b) {
                     (Value::Function(f), Value::Nil) => (ScopeKind::Test, f),
                     (scope_val, Value::Function(f)) => (parse_scope(scope_val)?, f),
                     _ => {
                         return Err(mlua::Error::RuntimeError(
-                            "fixture(name, scope, factory)".into(),
+                            "fixture(name, scope, factory, opts?)".into(),
                         ))
                     }
                 };
+                let identity = parse_identity(&name, scope, &opts)?;
                 let id = {
                     let mut c = col.borrow_mut();
                     // One name, one contract — exactly the rule topologies already enforce. Two
@@ -134,6 +135,7 @@ fn install_fixtures(lua: &Lua, prova: &Table, col: &SharedCollector) -> mlua::Re
                         scope,
                         factory,
                         is_topology: false,
+                        identity,
                     });
                     id
                 };
@@ -173,6 +175,7 @@ fn install_fixtures(lua: &Lua, prova: &Table, col: &SharedCollector) -> mlua::Re
                         scope,
                         factory,
                         is_topology: true,
+                        identity: None,
                     });
                     c.topologies.insert(name, id);
                     id
@@ -563,6 +566,62 @@ fn install_suite_config(lua: &Lua, col: &SharedCollector) -> mlua::Result<()> {
         )?;
         lua.globals().set("suite", suite)?;
     Ok(())
+}
+
+/// `prova.fixture(name, scope, factory, { identity = { command = …, inputs = { … } } })` — the
+/// author's assertion that two conducts are the same question
+/// (docs/design/agent-ergonomics.md#dedupe-identical-deputy-conducts).
+///
+/// Both halves are required, and the requirement is the safety property: a command with no inputs
+/// cannot notice the tree changing, and inputs with no command would collapse two DIFFERENT tools
+/// over one tree — handing one tool's verdict to the other's readers, which is a far worse failure
+/// than paying for the conduct twice. Unknown keys are refused for the reason the DSL refuses them
+/// anywhere (agent-ergonomics.md#unknown-test-opts-silently-ignored): a dropped option reads as
+/// configured, and here it would silently mean "no sharing at all".
+fn parse_identity(
+    name: &str,
+    scope: ScopeKind,
+    opts: &Value,
+) -> mlua::Result<Option<crate::engine::fixtures::IdentitySpec>> {
+    let table = match opts {
+        Value::Nil => return Ok(None),
+        Value::Table(t) => t,
+        other => {
+            return Err(mlua::Error::RuntimeError(format!(
+                "fixture {name:?}: the 4th argument is an options table, got {}",
+                other.type_name()
+            )))
+        }
+    };
+    crate::engine::collect::reject_unknown_opts(table, &["identity"], &format!("fixture {name:?}"))?;
+    let Some(spec) = table.get::<Option<mlua::Table>>("identity")? else {
+        return Ok(None);
+    };
+    crate::engine::collect::reject_unknown_opts(
+        &spec,
+        &["command", "inputs"],
+        &format!("fixture {name:?} identity"),
+    )?;
+    if scope != ScopeKind::Run {
+        return Err(mlua::Error::RuntimeError(format!(
+            "fixture {name:?}: `identity` is Scope.Run's — it shares one EXECUTION across the run, \
+             and a narrower scope already re-conducts per test/file/suite by definition"
+        )));
+    }
+    let command: String = spec.get::<Option<String>>("command")?.ok_or_else(|| {
+        mlua::Error::RuntimeError(format!(
+            "fixture {name:?} identity: `command` is required — it is what makes two identities the \
+             SAME QUESTION rather than merely two conducts over one tree"
+        ))
+    })?;
+    let inputs: Vec<String> = spec.get::<Option<Vec<String>>>("inputs")?.unwrap_or_default();
+    if inputs.is_empty() {
+        return Err(mlua::Error::RuntimeError(format!(
+            "fixture {name:?} identity: `inputs` is required — without the files whose contents \
+             change the answer, an identity cannot notice the tree changing"
+        )));
+    }
+    Ok(Some(crate::engine::fixtures::IdentitySpec { command, inputs }))
 }
 
 /// The injection contract, installed LAST so none of prova's own setup writes pass through the

@@ -149,6 +149,7 @@ pub fn eval_snippet(code: &str, config: &RunConfig) -> mlua::Result<serde_json::
         falsify: false,
         conducts: config.conducts.clone(),
         progress: std::sync::Arc::clone(config.progress()),
+        project_dir: config.project_dir.clone(),
     });
 
     let rt = new_runtime()?;

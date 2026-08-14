@@ -217,6 +217,7 @@ pub(super) fn load_topology(
         falsify: false,
         conducts: config.conducts.clone(),
         progress: std::sync::Arc::clone(config.progress()),
+        project_dir: config.project_dir.clone(),
     });
     Ok((lua, col, state, id))
 }
@@ -478,6 +479,7 @@ impl HeldTopology {
                 falsify: self.config.falsify,
                 conducts: self.config.conducts.clone(),
                 progress: std::sync::Arc::clone(self.config.progress()),
+                project_dir: self.config.project_dir.clone(),
             });
 
             // Held-instance injection, keyed by topology NAME (topologies are name-addressable by
@@ -554,6 +556,7 @@ impl HeldTopology {
             falsify: false,
             conducts: self.config.conducts.clone(),
             progress: std::sync::Arc::clone(self.config.progress()),
+            project_dir: self.config.project_dir.clone(),
         });
         if let Some(&id) = self.col.borrow().topologies.get(&self.name) {
             state

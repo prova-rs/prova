@@ -114,6 +114,22 @@ pub(super) struct FixtureDef {
     /// topology's factory context is "topology-capable": it exposes an ambient managed network on
     /// `ctx.network`. Ordinary fixtures leave it `false`, so `ctx.network` is nil for them.
     pub(super) is_topology: bool,
+    /// What this fixture's conduct DEPENDS on, when the author declared it
+    /// (docs/design/agent-ergonomics.md#dedupe-identical-deputy-conducts). Two `Scope.Run`
+    /// fixtures with the same identity are the same question, so the run-wide store keys on the
+    /// digest instead of the name and the second adopts the first's value. `None` — the default
+    /// and every fixture already in the wild — keys by name, exactly as before.
+    pub(super) identity: Option<IdentitySpec>,
+}
+
+/// An author's assertion that two conducts are the same question: the command they run, and the
+/// files whose contents change the answer. Both are required — a command without inputs cannot
+/// detect change, and inputs without a command would collapse two different tools over one tree,
+/// handing one tool's verdict to the other's readers.
+#[derive(Debug, Clone)]
+pub(super) struct IdentitySpec {
+    pub(super) command: String,
+    pub(super) inputs: Vec<String>,
 }
 
 /// Opaque handle returned by `prova.fixture`; carries the registry id `ctx:use` resolves.
@@ -181,6 +197,8 @@ pub(super) struct RunState {
     /// fixture NAME, shared across every suite and worker via the `RunConfig` registry pattern.
     /// Cloned from the config at state construction, exactly as `snapshot_registry` is.
     pub(super) conducts: crate::engine::ConductRegistry,
+    /// The package root, for resolving a declared identity's relative input globs.
+    pub(super) project_dir: Option<PathBuf>,
     /// The run's progress channel, so a fixture that WAITS can say so
     /// (docs/design/agent-ergonomics.md#narrate-lock-waits) — a `Scope.Run` reader queued behind
     /// another worker's conduct is the one wait that lands inside the reader's own duration.

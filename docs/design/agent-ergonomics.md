@@ -461,14 +461,23 @@ is working.
 
 ## 13. Two deputies with identical conduct scope run the same cargo twice
 
-<!-- backlog: dedupe-identical-deputy-conducts recorded=2026-08-13 -->
-**Same-scope deputy conducts should share one execution.** Two proof files each own a deputy
-fixture conducting `cargo nextest run -p cos-systems-lua -p cos-daemon` (same packages, same
-profile); every `run all` pays that ~100-140s conduct twice back-to-back and produces two
-906-case junit copies that differ only in filename. The deputy pattern's isolation (copy to a
-deputy-owned artifact name) is right; the execution behind it could be content-addressed —
-key the conduct on (argv, profile, tool-config) and let the second deputy adopt the first's
-artifact within one run. Saves minutes per sweep at zero isolation cost.
+<!-- claim: dedupe-identical-deputy-conducts recorded=2026-08-13 -->
+**Two conducts with the same identity are one execution.** A `Scope.Run` fixture may declare what
+its conduct depends on — `identity = { inputs = { … } }`, package-relative paths or globs — and the
+run-wide store keys on the resulting digest as well as on the fixture's name: whichever consumer
+asks first conducts, and a second fixture with a DIFFERENT name and the SAME identity adopts that
+value instead of re-running the tool. `fs.digest(paths)` is the primitive behind it, in the belt
+rather than shelled out (docs/plans/incremental-prova.md), because `git hash-object` and
+`sha256sum` are absent on a bare Windows runner and a package that computes identities by shelling
+out is a package that works on its author's box. The digest is over file CONTENTS and
+package-relative paths, sorted, `/`-separated — the same tree answers identically on every OS, and
+a missing path is part of the answer rather than an error, because absence changes the build.
+
+Names stay the isolation boundary (each deputy still owns its artifact copy); identity is only
+about execution. A fixture that declares nothing behaves exactly as before — conducted once per
+run, keyed by name alone. (Field evidence: two proof files each conducting
+`cargo nextest run -p cos-systems-lua -p cos-daemon`, same packages and profile, paying ~100-140s
+twice per sweep for two 906-case junit copies differing only in filename.)
 
 ## 16. One invocation, one package set — reconciliation included
 
