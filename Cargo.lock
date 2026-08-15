@@ -2992,6 +2992,7 @@ dependencies = [
  "serde_yaml_ng",
  "sha2 0.10.9",
  "sqlx",
+ "tar",
  "tokio",
  "tokio-tungstenite",
  "toml 0.8.23",

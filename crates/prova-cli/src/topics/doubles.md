@@ -45,6 +45,13 @@ fake one. Plugins declared in this package add their facets to the vocabulary:
 
 {{packages}}
 
+**Configuration goes IN, not into an image.** `docker.run{ files = { ["/etc/app.yaml"] =
+{ text = … } } }` (also `file =` / `dir =`) lands content between create and start, so a one-line
+config change costs nothing. It is deliberately not a bind mount — a bind names a path on the
+DAEMON's filesystem, which a remote or rootless daemon does not share, and Docker answers a missing
+source with an empty directory rather than an error. Bake with `build` only when the content is
+large or expensive to produce; a cached layer beats an upload there, and nowhere else.
+
 Not yet shipped (do not reach for them): standalone interposing proxies as a facet of their own,
 `net.mock` (raw TCP/unix), `graphql.mock`. `prova.help("mock")` lists what exists in this build.
 

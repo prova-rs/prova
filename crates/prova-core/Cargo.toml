@@ -129,6 +129,11 @@ bytes = { version = "1", optional = true }
 # benefit — and a form body that encodes `+`/`&`/UTF-8 wrong fails at the far end of an OAuth
 # exchange, where the error names none of that.
 form_urlencoded = { version = "1", optional = true }
+# The archive `docker.run`'s `files` streams into a created container (PUT /containers/{id}/archive
+# takes a tar). Already compiled — bollard's own image-build path pulls it — and declared rather
+# than hand-rolled because a tar header written by hand gets modes, parent entries and long paths
+# subtly wrong, and the symptom is a container that boots with the wrong bytes.
+tar = { version = "0.4", optional = true }
 
 [dev-dependencies]
 # A cross-process file lock, for serializing the docker-heavy integration tests (tests/common/mod.rs).
@@ -180,7 +185,7 @@ graphql = ["dep:reqwest"]
 # SQL databases — one namespace per engine (feature = namespace = global), all returning the same
 # generic Connection over sqlx's `Any` driver.
 sqlite = ["dep:sqlx", "sqlx/sqlite"]
-docker = ["dep:bollard"]
+docker = ["dep:bollard", "dep:tar"]
 grpc = [
     "dep:tonic",
     "dep:tonic-reflection",

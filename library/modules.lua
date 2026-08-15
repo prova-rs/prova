@@ -528,6 +528,13 @@ function Network:stop() end
 ---@field network? prova.Network|string # a user-defined network to join at create time (handle or name)
 ---@field alias? string                 # DNS alias to answer to on `network` (requires `network`)
 ---@field extra_hosts? string[]        # `"name:ip"` entries added to the container's /etc/hosts, e.g. "host.docker.internal:host-gateway" (Linux) to reach a host-bound mock
+---@field files? table<string, prova.DockerFile>  # content carried INTO the container between create and start, keyed by ABSOLUTE container path — config needs no image build. Not a bind mount: the bytes travel the daemon API, so it works against a remote or rootless daemon
+
+---@class prova.DockerFile
+---@field text? string                  # a literal, written verbatim
+---@field file? string                  # a file already on disk, copied (keeps its own mode)
+---@field dir? string                   # a directory, copied recursively
+---@field mode? string                  # octal, e.g. "0755" — for something the container executes
 
 ---@class prova.DockerNetworkOpts
 ---@field name? string                  # override the generated unique "prova-net-<...>" name

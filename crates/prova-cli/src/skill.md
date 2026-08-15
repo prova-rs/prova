@@ -205,7 +205,9 @@ table-iterable), `http.client{ base_url, headers, timeout }`, `http.wait_for(url
 every})`. `grpc.client(addr)` (`:call`, `:call_status`), `grpc.wait_for`. `graphql.client{ url }`
 (`:query`, `:execute`). `yaml.decode/decode_all`. `sqlite.client(url)`. `docker.run{...} →
 container` (`:host_port`, `:run(argv)`, `:exec`, `:logs`, `:stop`), `docker.build{...} → image`,
-`docker.network{...} → network`. `archetect.render{...}` /
+`docker.network{...} → network`. `docker.run{ files = { ["/abs/path"] = { text|file|dir = … } } }`
+carries configuration INTO a container between create and start — no image build, and not a bind
+(the bytes travel the daemon API, so a remote daemon works). `archetect.render{...}` /
 `archetect.verify(...)`. When unsure of a shape: probe it with `eval` — that is what it is for.
 
 **Option tables are closed.** Every one of these refuses a key it cannot honor, naming the key, the

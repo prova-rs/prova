@@ -307,6 +307,7 @@ const RUN_OPTS: &[&str] = &[
     "command",
     "env",
     "extra_hosts",
+    "files",
     "image",
     "network",
     "ports",
@@ -711,6 +712,10 @@ struct Spec {
     /// host-bound mock. Docker Desktop provides the name anyway, so setting it always is a no-op
     /// there and keeps one code path across platforms.
     extra_hosts: Vec<String>,
+    /// Content carried INTO the container between create and start
+    /// (docs/design/agent-ergonomics.md#containerized-mounts) — never a bind, so it works against
+    /// a daemon that does not share this filesystem.
+    files: Vec<files::FileEntry>,
     /// How many start attempts to spoil, pretending the runtime exposed the ports and bound
     /// nothing to them. **Crate-internal test hook — never parsed from Lua.**
     ///
@@ -857,6 +862,7 @@ impl Spec {
             network,
             alias,
             extra_hosts,
+            files: files::parse(opts)?,
             // Never read from Lua: the fault hook is reachable only by a test building a `Spec`.
             fault_empty_binding: 0,
         })
@@ -1023,6 +1029,22 @@ async fn start(
             .await
             .map_err(derr)?;
         id = created.id;
+        // BETWEEN create and start: the container must see its files at boot, and a started
+        // container has already read them (docs/design/agent-ergonomics.md#containerized-mounts).
+        if !spec.files.is_empty() {
+            let archive = files::tar_bytes(&spec.files)?;
+            client
+                .upload_to_container(
+                    &id,
+                    Some(bollard::container::UploadToContainerOptions {
+                        path: "/",
+                        ..Default::default()
+                    }),
+                    archive.into(),
+                )
+                .await
+                .map_err(derr)?;
+        }
         client
             .start_container(&id, None::<StartContainerOptions<String>>)
             .await
@@ -1103,6 +1125,7 @@ async fn start(
     Ok(container)
 }
 
+mod files;
 mod readiness;
 use readiness::*;
 
@@ -1341,6 +1364,7 @@ mod tests {
             network: None,
             alias: None,
             extra_hosts: Vec::new(),
+            files: Vec::new(),
             fault_empty_binding: fault,
         }
     }

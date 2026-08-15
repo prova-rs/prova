@@ -699,14 +699,35 @@ piece — it is the seam every host-side proof needs against an in-cluster servi
 
 ## 21. A containerized recipe cannot mount a file
 
-<!-- backlog: containerized-mounts recorded=2026-08-13 -->
-**Consider a `mounts` option on container recipes.** `docker.run` takes ports, env, network and
-extra_hosts, but no bind mounts, so configuration that a container reads from disk must be baked
-into an image: a Keycloak realm, a router's config and composed supergraph, an archetype catalog.
-That is defensible — an immutable image is reproducible, and the bake is cached — but it makes a
-one-line config change cost an image build, and it pushed one topology into building three
-purpose-built images that exist only to carry a file. If the immutability is deliberate, saying so
-in `prova learn doubles` would settle the question for the next author who goes looking.
+<!-- claim: containerized-mounts recorded=2026-08-13 -->
+**A container's configuration is carried in, not baked.** `docker.run{ files = { ["/abs/path"] =
+{ text|file|dir = …, mode? = "0755" } } }` streams content into a CREATED but not-yet-started
+container, so the process sees it at boot and a one-line config change costs nothing. Recipes take
+the same key, and a caller's entries win over the recipe's by path — which is what ends "fork the
+Dockerfile to change one line".
+
+**Not a bind mount, deliberately, and this is the whole design.** `binds` is one defaulted field
+away in bollard's `HostConfig`, and it names a path on the DAEMON's filesystem. `docker.run` talks
+to whatever `DOCKER_HOST` resolves to, so against a remote or rootless daemon a scope tempdir is
+simply not there — and Docker's classic answer to a missing bind source is to create an EMPTY
+DIRECTORY. The container boots, finds no realm, and fails later as an auth error naming nothing
+about mounts: a silent wrong wearing a configured face, which is the failure class
+[[module-opts-silently-ignored]] and [[context-tempdir-not-idempotent]] were each paid to remove.
+Content injection travels the same API as every other call, so it works wherever the daemon does.
+
+**The entry shape is `docker.build`'s `secrets`, on purpose.** One of `text`/`file`/`dir`, and a
+bare string refused — ambiguous between a literal and a path, where guessing wrong either writes
+the path as content or reads a file nobody named. Everything checkable is checked before the daemon
+is touched: absolute container paths, exactly one source, a source that exists.
+
+**The immutability was never deliberate — it was the only channel available.** What is worth
+keeping is REPRODUCIBILITY, and that survives intact: the bytes come from the proof, deterministically,
+every run. The remaining reason to bake is cost, not principle — a cached layer beats a per-container
+upload for content that is large or expensive to produce, and `prova learn doubles` says so.
+
+A real bind (live host coupling for a `prova up --watch` dev loop) is a different feature with
+different honest caveats and is deliberately NOT shipped here; adding it alongside would make
+`files` read as the cautious option rather than the correct one.
 
 ## 22. A response body crosses into Lua as bytes
 

@@ -135,9 +135,21 @@ function prova.containerized(spec)
       for _, h in ipairs(opts.extra_hosts) do table.insert(extra_hosts, h) end
     end
 
+    -- `files` carries configuration IN rather than baking it into an image
+    -- (agent-ergonomics.md#containerized-mounts). A caller's entries win over the recipe's by
+    -- path, so a topology can override one config file without forking the recipe.
+    local files = spec.files
+    if type(files) == "function" then files = files(opts) end
+    if opts.files then
+      local merged = {}
+      for k, v in pairs(files or {}) do merged[k] = v end
+      for k, v in pairs(opts.files) do merged[k] = v end
+      files = merged
+    end
+
     local container = ctx:manage(docker.run{
       image = image, ports = ports, env = env, command = spec.command, wait = wait,
-      network = network, alias = alias, extra_hosts = extra_hosts,
+      network = network, alias = alias, extra_hosts = extra_hosts, files = files,
     })
 
     local hp = container:host_port(primary)
