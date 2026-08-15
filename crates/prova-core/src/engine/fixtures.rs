@@ -393,3 +393,52 @@ pub(crate) fn make_labeled_tempdir(label: &str) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(&path)?;
     Ok(path)
 }
+
+#[cfg(test)]
+mod tempdir_label_tests {
+    use super::*;
+
+    fn name_of(label: &str) -> String {
+        let p = make_labeled_tempdir(label).unwrap();
+        let n = p.file_name().unwrap().to_string_lossy().to_string();
+        let _ = std::fs::remove_dir_all(&p);
+        n
+    }
+
+    /// The label is what makes a failed run's scratch tree readable — three sandboxes under three
+    /// hex names leave "which one did it write to?" to be re-derived from the proof.
+    #[test]
+    fn a_label_reaches_the_directory_name() {
+        assert!(name_of("plugin").ends_with("-plugin"), "{}", name_of("plugin"));
+        assert!(name_of("consumer").ends_with("-consumer"));
+    }
+
+    /// A label arrives from Lua and lands in a path. Rejecting only the dangerous characters is not
+    /// enough: character-by-character sanitizing turns `../escape hatch` into `..-escape-hatch`,
+    /// which is SAFE (one component, not a traversal) and unreadable — nobody scanning a temp root
+    /// can tell at a glance that it did not escape. A name whose safety needs explaining is a bad
+    /// name, so runs collapse and the ends are trimmed.
+    #[test]
+    fn a_hostile_label_is_made_readable_not_merely_safe() {
+        let n = name_of("../escape hatch");
+        assert!(!n.contains(".."), "no traversal-looking text survives: {n}");
+        assert!(!n.contains('/'), "and nothing that would nest it elsewhere: {n}");
+        assert!(n.ends_with("-escape-hatch"), "it reads as what was meant: {n}");
+    }
+
+    /// Degrades to the unlabeled name rather than leaving a trailing separator.
+    #[test]
+    fn a_label_with_nothing_usable_leaves_the_plain_name() {
+        let n = name_of("///");
+        assert!(!n.ends_with('-'), "no dangling separator: {n}");
+        assert!(n.starts_with("prova-"), "{n}");
+    }
+
+    /// Long labels are bounded, because a path has a length limit and the interesting part is the
+    /// front of the name.
+    #[test]
+    fn a_long_label_is_bounded() {
+        let n = name_of(&"x".repeat(500));
+        assert!(n.len() < 200, "bounded: {} chars", n.len());
+    }
+}

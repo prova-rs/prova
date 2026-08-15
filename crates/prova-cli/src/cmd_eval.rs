@@ -271,3 +271,63 @@ mod tests {
         assert!(parse_eval_args(args(&["a", "b"])).is_err(), "one snippet only");
     }
 }
+
+#[cfg(test)]
+mod separator_tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<EvalCli, ExitCode> {
+        parse_eval_args(args.iter().map(|s| s.to_string()).collect())
+    }
+
+    /// The refusal code, or `None` when the parse was accepted. `EvalCli` is not `Debug`, and
+    /// deriving it only so a test can `unwrap_err` would put a trait on shipping code for the
+    /// test's convenience.
+    fn refused(args: &[&str]) -> Option<ExitCode> {
+        parse(args).err()
+    }
+
+    /// The whole point of the separator: a snippet whose first line is a Lua comment arrives as one
+    /// argv element starting with `--`, which every argument loop reads as a flag.
+    #[test]
+    fn a_commented_snippet_survives_the_separator() {
+        let code = "-- what this does\nreturn 1";
+        let cli = parse(&["--", code]).ok().unwrap();
+        assert_eq!(cli.code, code, "taken verbatim, comment and all");
+    }
+
+    /// Without it the refusal has to recognize SOURCE, or it reports a flag problem to someone
+    /// holding valid Lua — who then audits their script instead of the argument boundary.
+    #[test]
+    fn a_commented_snippet_without_the_separator_is_refused_as_source() {
+        assert_eq!(refused(&["-- a note\nreturn 1"]), Some(ExitCode::from(2)), "refused, not guessed at");
+    }
+
+    /// The control that keeps the heuristic from becoming a worse error than the one it replaced:
+    /// a real typo'd flag is one word, and must still read as a flag.
+    #[test]
+    fn a_genuine_unknown_flag_is_still_a_flag() {
+        assert_eq!(refused(&["--bogus"]), Some(ExitCode::from(2)));
+        // …and a lone `--` with nothing behind it is a usage error, not an empty snippet.
+        assert_eq!(refused(&["--"]), Some(ExitCode::from(2)));
+    }
+
+    /// The paths that already worked must keep working — a parser fix earns its keep only if it
+    /// costs nothing that was already correct.
+    #[test]
+    fn ordinary_snippets_and_flags_are_untouched() {
+        assert_eq!(parse(&["return 1 + 1"]).ok().unwrap().code, "return 1 + 1");
+
+        let cli = parse(&["--profile", "ci", "return 1"]).ok().unwrap();
+        assert_eq!(cli.profile.as_deref(), Some("ci"));
+        assert_eq!(cli.code, "return 1");
+
+        assert!(parse(&["--json", "return 1"]).ok().unwrap().force_json);
+        // A trailing comment never needed the separator; only the leading position bites.
+        assert!(parse(&["return 1\n-- trailing"]).is_ok());
+        // Two snippets is a usage error, not a silent last-one-wins.
+        assert_eq!(refused(&["return 1", "return 2"]), Some(ExitCode::from(2)));
+        // An empty snippet is refused rather than run as a no-op.
+        assert_eq!(refused(&["   "]), Some(ExitCode::from(2)));
+    }
+}

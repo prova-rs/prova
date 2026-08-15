@@ -219,3 +219,103 @@ fn source_mode(_p: &Path) -> u32 {
 fn tar_err(path: &str, e: impl std::fmt::Display) -> mlua::Error {
     mlua::Error::RuntimeError(format!("docker.run `files`: packing {path:?}: {e}"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(path: &str, source: FileSource, mode: Option<u32>) -> FileEntry {
+        FileEntry { path: path.to_string(), source, mode }
+    }
+
+    /// Read the archive back as (path, mode, entry_type, contents).
+    fn unpack(bytes: &[u8]) -> Vec<(String, u32, tar::EntryType, String)> {
+        let mut archive = tar::Archive::new(bytes);
+        let mut out = Vec::new();
+        for e in archive.entries().unwrap() {
+            let mut e = e.unwrap();
+            let path = e.path().unwrap().to_string_lossy().to_string();
+            let (mode, kind) = (e.header().mode().unwrap(), e.header().entry_type());
+            let mut body = String::new();
+            use std::io::Read;
+            let _ = e.read_to_string(&mut body);
+            out.push((path, mode, kind, body));
+        }
+        out
+    }
+
+    /// The archive endpoint extracts into a directory that must ALREADY exist, and
+    /// `/opt/keycloak/data/import` does not. Without parent entries the upload silently places
+    /// nothing — which is the failure this whole feature exists to avoid.
+    #[test]
+    fn parents_are_emitted_so_a_deep_path_needs_no_help_from_the_image() {
+        let tar = tar_bytes(&[entry(
+            "/opt/deep/nested/realm.json",
+            FileSource::Text("{}".into()),
+            None,
+        )])
+        .unwrap();
+        let got = unpack(&tar);
+        let dirs: Vec<&String> = got
+            .iter()
+            .filter(|(_, _, k, _)| *k == tar::EntryType::Directory)
+            .map(|(p, _, _, _)| p)
+            .collect();
+        assert_eq!(dirs, vec!["opt/", "opt/deep/", "opt/deep/nested/"], "every ancestor: {got:?}");
+        assert!(got.iter().any(|(p, _, _, b)| p == "opt/deep/nested/realm.json" && b == "{}"));
+    }
+
+    /// Each ancestor exactly once, however many entries share it — a duplicate directory header is
+    /// accepted by some extractors and rejected by others, so "it worked here" would not travel.
+    #[test]
+    fn a_shared_parent_is_emitted_once() {
+        let tar = tar_bytes(&[
+            entry("/etc/app/a.conf", FileSource::Text("a".into()), None),
+            entry("/etc/app/b.conf", FileSource::Text("b".into()), None),
+        ])
+        .unwrap();
+        let dirs = unpack(&tar)
+            .into_iter()
+            .filter(|(_, _, k, _)| *k == tar::EntryType::Directory)
+            .map(|(p, _, _, _)| p)
+            .collect::<Vec<_>>();
+        assert_eq!(dirs, vec!["etc/", "etc/app/"], "no duplicate ancestors: {dirs:?}");
+    }
+
+    /// An explicit mode is what makes a carried-in script runnable; the default must NOT be
+    /// executable, or every config file would land with a bit it has no business having.
+    #[test]
+    fn mode_defaults_to_read_only_and_an_explicit_one_wins() {
+        let tar = tar_bytes(&[
+            entry("/a/plain.txt", FileSource::Text("x".into()), None),
+            entry("/a/hook.sh", FileSource::Text("#!/bin/sh\n".into()), Some(0o755)),
+        ])
+        .unwrap();
+        let got = unpack(&tar);
+        let mode = |name: &str| {
+            got.iter().find(|(p, _, _, _)| p == name).map(|(_, m, _, _)| *m).unwrap()
+        };
+        assert_eq!(mode("a/plain.txt"), 0o644, "a plain file is not executable");
+        assert_eq!(mode("a/hook.sh"), 0o755, "an explicit mode is honored");
+    }
+
+    /// Lua table order is unspecified, so without the sort the archive — and any failure naming an
+    /// entry — would differ run to run for the same input.
+    #[test]
+    fn entries_are_packed_in_a_stable_order() {
+        let mk = || {
+            vec![
+                entry("/z.conf", FileSource::Text("z".into()), None),
+                entry("/a.conf", FileSource::Text("a".into()), None),
+            ]
+        };
+        let mut sorted = mk();
+        sorted.sort_by(|a, b| a.path.cmp(&b.path));
+        let files: Vec<String> = unpack(&tar_bytes(&sorted).unwrap())
+            .into_iter()
+            .filter(|(_, _, k, _)| *k == tar::EntryType::Regular)
+            .map(|(p, _, _, _)| p)
+            .collect();
+        assert_eq!(files, vec!["a.conf", "z.conf"]);
+    }
+}

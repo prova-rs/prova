@@ -581,6 +581,39 @@ error.
 It bit precisely where snippets are longest: a `[==[ … ]==]` block opening with a note about what
 it does. Only the leading position ever mattered — a trailing comment was always fine.
 
+<!-- backlog: unit-coverage-diluted-since-the-arc-closed recorded=2026-08-15 -->
+**Unit coverage has fallen from its banked floor because feature work outran unit-test writing —
+the ratchet is right, and recovering it is a campaign rather than a patch.** Measured 2026-08-15:
+`rust.coverage.unit` 72.296% (20316/28101 lines) against a floor of 73.460%, reproducing CI's
+72.259% exactly. The merged number is 79.05% against 84.69%.
+
+**Why.** The floor was banked 2026-08-11 as the CLOSING ACT of the north-star coverage arc — the
+high-water mark of a push whose whole purpose was raising it. The four days after landed conduct
+leases, selection pushdown into deputies, `--covering`, the timing capability, lock-wait narration,
+conduct identity, start budgets, and this session's six items. Every one adds shipping Rust proven
+by black-box proofs, so the denominator grew faster than the numerator. CI went red within a day of
+the floor being set, which fits exactly. Nothing is broken; the gate is reporting the thing it
+exists to report.
+
+**The gap is ~327 covered lines.** For scale: 22 genuine unit tests written this session (the opts
+gate's ordering and suggestion rules, the tar builder's parent entries and modes, http's header
+and URL joining, the tempdir label sanitizer, eval's argument parser) moved the number **+0.04pp**.
+Recovering 1.16pp by hand is roughly twenty-five more batches of that size — the same shape as the
+arc that reached 73.46 in the first place.
+
+**Ranked worklist, by uncovered lines at the unit layer:** `grpc_mock.rs` 386 (52.1%),
+`mcp/blocking.rs` 381 (35.8%), `terminal.rs` 378 (49.1%), `cmd_attest.rs` 370 (45.9%),
+`broker.rs` 368 (29.5%), `socket.rs` 298 (72.8%), `matchers.rs` 284 (70.8%), `modules.rs` 260
+(46.6%), `dispatch.rs` 247 (73.4%), `formats.rs` 242 (33.0%). Any two of the top five closes it.
+
+**What NOT to do.** Do not write tests to move the number — a suite that exercises lines without
+asserting behavior is the exact vacuous-proof disease the rest of this document is about, and it
+would be worse than a red gate because it would be a green one that means nothing. Do not lower the
+floor casually either: it was earned, and the first day it becomes inconvenient is the worst moment
+to give it up. Excluding `xtask` from the denominator (88 lines, 0%, build automation rather than
+shipped code) is defensible on its own merits and worth +0.23pp, but it is a scope decision to make
+deliberately, not a way to get to green.
+
 <!-- backlog: overlap-assertions-depend-on-host-headroom recorded=2026-08-15 -->
 **A scheduling proof that asserts two units OVERLAP is only true when the host has room to overlap
 them.** `prova-core::resources modes_are_independent_of_how_the_token_was_made` runs a scenario at

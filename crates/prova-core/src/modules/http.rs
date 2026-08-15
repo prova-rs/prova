@@ -539,3 +539,61 @@ fn wait_params(opts: &Option<Table>) -> mlua::Result<WaitParams> {
     }
     Ok(p)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A per-call header must REPLACE a client default rather than joining it — two `Authorization`
+    /// headers is a request whose meaning depends on which the server reads first.
+    #[test]
+    fn a_header_is_replaced_case_insensitively_not_appended() {
+        let mut headers = vec![("Authorization".into(), "Bearer old".into())];
+        upsert_header(&mut headers, "authorization".into(), "Bearer new".into());
+        assert_eq!(headers.len(), 1, "replaced, not appended: {headers:?}");
+        assert_eq!(headers[0].1, "Bearer new");
+        // …and the original casing survives, since some servers are stricter than the RFC.
+        assert_eq!(headers[0].0, "Authorization");
+
+        upsert_header(&mut headers, "X-Trace".into(), "1".into());
+        assert_eq!(headers.len(), 2, "a genuinely new header is added");
+    }
+
+    /// A client's `base_url` and a per-call path meet at exactly one slash, whichever side brought
+    /// one — a doubled slash is a different URL to a router that matches on path.
+    #[test]
+    fn base_url_and_path_join_at_exactly_one_slash() {
+        assert_eq!(join_url("http://h/api", "users"), "http://h/api/users");
+        assert_eq!(join_url("http://h/api/", "users"), "http://h/api/users");
+        assert_eq!(join_url("http://h/api", "/users"), "http://h/api/users");
+        assert_eq!(join_url("http://h/api/", "/users"), "http://h/api/users");
+        // An empty path addresses the base itself, without inventing a trailing slash.
+        assert_eq!(join_url("http://h/api", ""), "http://h/api");
+        // An absolute URL ignores the base entirely — how a client reaches somewhere else once.
+        assert_eq!(join_url("http://h/api", "http://other/x"), "http://other/x");
+        assert_eq!(join_url("http://h/api", "https://other/x"), "https://other/x");
+    }
+
+    /// `redirects` is one key carrying two meanings, so the mapping from Lua value to policy is
+    /// where a wrong guess would silently change what a proof observes.
+    #[test]
+    fn redirects_maps_each_shape_to_a_policy() {
+        let lua = mlua::Lua::new();
+        let with = |v: Value| {
+            let t = lua.create_table().unwrap();
+            t.set("redirects", v).unwrap();
+            parse_redirects(&t)
+        };
+        // Absent and `true` are both "the default policy" — stated vs assumed, same behavior.
+        assert_eq!(parse_redirects(&lua.create_table().unwrap()).unwrap(), None);
+        assert_eq!(with(Value::Boolean(true)).unwrap(), None);
+        // `false` and `0` both mean "hand me the 3xx".
+        assert_eq!(with(Value::Boolean(false)).unwrap(), Some(0));
+        assert_eq!(with(Value::Integer(0)).unwrap(), Some(0));
+        assert_eq!(with(Value::Integer(3)).unwrap(), Some(3));
+        // A negative cap has no meaning and is refused rather than saturated to zero, which would
+        // silently turn "follow" into "do not".
+        assert!(with(Value::Integer(-1)).is_err());
+        assert!(with(Value::String(lua.create_string("yes").unwrap())).is_err());
+    }
+}
