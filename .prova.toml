@@ -62,14 +62,34 @@ proofs      = ["coverage"]
 switches    = ["coverage"]
 must_run    = ["cargo-llvm-cov", "cargo-nextest"]
 
-# Everything short of the soaks, one command: the whole black-box suite PLUS the switched heavy
-# legs — unit tests deputed via nextest, the cargo quality gates. The pre-push answer to "did I
-# break anything big?": slower than bare `prova`, far faster than waiting for CI, and one exit
-# code for all of it. Soaks stay ad-hoc (`-s soak`) — hours never ride a sweep.
+# The three tiers answer three DIFFERENT questions, which is why they are three profiles and not
+# one dial:
+#
+#   bare `prova`      is this correct?          seconds — the inner loop
+#   `prova run all`   am I checking in DEBT?    minutes — before commit and push
+#   `prova run release`  is the whole bar met?  ~15 min — before cutting a version
+#
+# The middle one is the one worth explaining. Green proofs say the behavior is right; they say
+# nothing about a `.unwrap()` added to shipping code, a file grown past the size limit, a function
+# past the length limit, or a clone count creeping up. "My proofs pass" is not "this is ready to
+# land", and `all` is where that difference gets caught — by ratchets, so the bar can only move one
+# way without a deliberate, reviewable edit to a committed baseline.
 [profiles.all]
-description = "the pre-push sweep: every black-box proof plus the ut and quality legs (soaks stay out)"
+description = "before you commit: every black-box proof, the unit tests, and the debt ratchets (clippy, unwrap/expect, file + function size, clones) — green proofs are not the same as ready to land"
 switches    = ["ut", "quality"]
 must_run    = ["cargo-nextest"]
+
+# The last look before a version goes out. `all` plus coverage — which is the deepest debt signal
+# there is, since untested code is debt whether or not anything is currently broken, and the
+# slowest, which is why it is here rather than in the pre-commit tier.
+#
+# It is a SUPERSET by construction: `all`'s switches are repeated rather than referenced, and
+# `proofs/spec/lanes/switch_coverage_test.lua` fails if any switched class stops being thrown by
+# some profile — the way `coverage` itself silently fell out of every path for three days.
+[profiles.release]
+description = "before you release: everything `all` runs, plus layered coverage ratcheted against its floor — the whole bar, one exit code"
+switches    = ["ut", "quality", "coverage"]
+must_run    = ["cargo-nextest", "cargo-llvm-cov"]
 
 # Prova's own specs — the prose layer. The point of declaring this is not bookkeeping — it is that
 # prova must be the exemplar of a proven application, and a lifecycle nobody has run end-to-end on a

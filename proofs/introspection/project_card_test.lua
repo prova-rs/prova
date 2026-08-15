@@ -70,13 +70,18 @@ prova.test("the quality interface is profiles, each named and described — the 
   -- the manifest under test is the one CI's legs run through.
   local r = shell.run(prova.bin .. " run --list", { cwd = prova.root, merge_stderr = true })
   t:expect(r.code, r.stdout):equals(0)
-  for _, leg in ipairs({ "ut", "quality", "coverage", "all" }) do
+  for _, leg in ipairs({ "ut", "quality", "coverage", "all", "release" }) do
     t:expect(r.stdout, "the `" .. leg .. "` leg exists"):contains(leg)
   end
   -- Descriptions ride the listing — "ut" alone does not convey "these are the unit tests".
   t:expect(r.stdout):contains("unit tests")
   t:expect(r.stdout):contains("whole-bar merge")
-  t:expect(r.stdout):contains("pre-push sweep")
+  -- The two sweep tiers say WHEN to reach for them, not how big they are. That wording is
+  -- load-bearing: `all` was skipped for a hand-assembled subset while its description read as a
+  -- size ("the pre-push sweep"), which said nothing about what skipping it would cost.
+  t:expect(r.stdout, "`all` is placed at commit time"):contains("before you commit")
+  t:expect(r.stdout, "…and says what green proofs do NOT cover"):contains("ready to land")
+  t:expect(r.stdout, "`release` is placed at release time"):contains("before you release")
 end)
 
 prova.test("CONTEXT.md rides the card — beside the manifest, or tucked in a flat layout's .prova/", {

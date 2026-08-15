@@ -581,6 +581,24 @@ error.
 It bit precisely where snippets are longest: a `[==[ … ]==]` block opening with a note about what
 it does. Only the leading position ever mattered — a trailing comment was always fine.
 
+<!-- backlog: overlap-assertions-depend-on-host-headroom recorded=2026-08-15 -->
+**A scheduling proof that asserts two units OVERLAP is only true when the host has room to overlap
+them.** `prova-core::resources modes_are_independent_of_how_the_token_was_made` runs a scenario at
+`-j 8` and asserts that two readers of one token overlap while two writers do not. The second half
+is a real invariant — serialization is what `writes` promises. The first half is a statement about
+the SCHEDULER getting to run both, and under a saturated machine it can be false without anything
+being wrong. Observed once, 2026-08-15, inside a `prova run all` sweep on a loaded box; the same
+test passed in isolation, in a standalone `cargo nextest` run (423/423), and in two other sweeps
+the same night.
+
+Filed rather than reflexively fixed, because the cheap answers are all worse: retrying hides a real
+serialization break, widening the window makes the suite slower for everyone, and deleting the
+overlap half gives up the assertion that `reads` is genuinely concurrent. The shape worth
+considering is asserting overlap through something the scheduler CONTROLS rather than through wall
+clock — a permit count, an observed concurrency high-water mark — so the proof stops depending on
+the host having spare capacity at that instant. Low priority: one sighting, and the failure is
+loud rather than silent.
+
 <!-- backlog: module-opts-gate-remaining-namespaces recorded=2026-08-14 -->
 **Every CONSTRUCTOR is closed; the builder and filter surfaces are not.** `crate::opts::Closed` now
 gates nineteen entry points: `shell.run`/`spawn`, `docker.build`/`run` and its nested `wait`, the
