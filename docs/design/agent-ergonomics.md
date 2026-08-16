@@ -581,6 +581,37 @@ error.
 It bit precisely where snippets are longest: a `[==[ … ]==]` block opening with a note about what
 it does. Only the leading position ever mattered — a trailing comment was always fine.
 
+## 26. A list verb returns a list, empty or not
+
+<!-- claim: a-list-verb-returns-a-list recorded=2026-08-15 -->
+**Anything that returns a sequence returns something that IS a sequence, including when it is
+empty.** `json.decode('[]')`, `csv.decode` over a header-only file, and `fs.glob` with no matches
+all hand back a table wearing the array metatable, so they re-encode as `[]` rather than `{}`.
+
+A bare Lua table cannot say which it is: an empty list and an empty map are the same value. So
+every list-returning verb had a shape-loss bug on exactly one input — the empty one — and
+`json.encode(fs.glob(dir, pattern))` silently emitted `{}` the day the directory happened to have
+no matches. Plenty of APIs treat `[]` and `{}` as different requests, and the failure lands at the
+far end of one, naming nothing about the glob. That the empty case is also the least-exercised
+while writing a proof is what makes it worth a claim rather than a footnote.
+
+The marker is inert: `#`, `pairs`, `ipairs` and indexing are unchanged, and `values_equal` and
+`subset_mismatch` compare structure rather than metatables, so a decoded list still `equals` a
+plain literal and still `matches` a shape. It is consulted only on the way back out through an
+encoder. `modules::list_table` is the one constructor; new list verbs use it rather than
+`create_sequence_from`.
+
+**Found by paying down unit coverage**, which is the argument for that exercise: the first test
+written against the JSON boundary was going to *document* the asymmetry as a known quirk. It is a
+bug, and it generalized to two more verbs the moment it was named.
+
+<!-- claim: csv-duplicate-headers-refused recorded=2026-08-15 -->
+**`csv.decode` refuses duplicate headers rather than dropping a column.** Rows are header-keyed
+maps, so two columns of one name cannot both survive — the second overwrote the first and the lost
+column was never mentioned, which is data loss wearing a successful return. The contract is
+unsatisfiable for that input, so the verb says so and names the header, rather than answering with
+a row that is quietly missing a field.
+
 <!-- backlog: unit-coverage-diluted-since-the-arc-closed recorded=2026-08-15 -->
 **Unit coverage has fallen from its banked floor because feature work outran unit-test writing —
 the ratchet is right, and recovering it is a campaign rather than a patch.** Measured 2026-08-15:

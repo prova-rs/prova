@@ -89,6 +89,27 @@ pub(super) fn client_opts(opts: &Table, who: &str, url_key: &str) -> mlua::Resul
     Ok((url, headers, timeout))
 }
 
+/// Build a Lua table that IS a list, empty or not.
+///
+/// A bare table cannot say whether it is an empty list or an empty map — and every verb that
+/// returns a list has an empty case, so `json.encode(fs.glob(dir, "**/*.none"))` used to emit `{}`
+/// where the author wrote something that returns rows. That is a data-shape change at a boundary,
+/// silent, and rejected by plenty of APIs that treat `[]` and `{}` as different requests
+/// (docs/design/agent-ergonomics.md#a-list-verb-returns-a-list).
+///
+/// The array metatable is a pure marker: `#`, `pairs`, `ipairs` and indexing are unchanged, and
+/// equality compares structure rather than metatables, so a marked list still `equals` a plain
+/// literal. It is only consulted when the value crosses BACK out through an encoder.
+pub(super) fn list_table<T: mlua::IntoLua>(
+    lua: &Lua,
+    items: impl IntoIterator<Item = T>,
+) -> mlua::Result<Table> {
+    use mlua::LuaSerdeExt;
+    let t = lua.create_sequence_from(items)?;
+    t.set_metatable(Some(lua.array_metatable()))?;
+    Ok(t)
+}
+
 /// Tie a resource's life to the caller's scope via `ctx:manage`, exactly as containers do —
 /// reaped by the same LIFO machinery, in the same order, as every other resource — including
 /// under `prova up`, where the scope is held until a signal rather than ending with a test.
@@ -394,7 +415,7 @@ fn make_fs(lua: &Lua) -> mlua::Result<Table> {
                 .map(|p| emit_path(&p))
                 .collect();
             out.sort();
-            lua.create_sequence_from(out)
+            list_table(lua, out)
         })?,
     )?;
 

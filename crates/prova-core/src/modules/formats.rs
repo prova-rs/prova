@@ -80,6 +80,16 @@ pub(crate) fn json_value_to_lua(lua: &Lua, v: &serde_json::Value) -> mlua::Resul
             for (i, item) in a.iter().enumerate() {
                 t.set(i + 1, json_value_to_lua(lua, item)?)?;
             }
+            // Wear the array metatable, so an array that came IN as an array goes back out as
+            // one. Without it a decoded `[]` is indistinguishable from a decoded `{}` — both are
+            // bare empty tables — and re-encoding silently turns the array into an object. That
+            // is a data-shape change at a boundary, the same class of quiet wrong as a lossy body
+            // conversion, and many APIs treat `[]` and `{}` as different requests.
+            //
+            // Behaviorally transparent to Lua: the metatable is a pure marker, so `#`, `pairs`,
+            // `ipairs` and indexing are unchanged, and `values_equal`/`subset_mismatch` compare
+            // structure rather than metatables — a decoded array still `equals` a plain literal.
+            t.set_metatable(Some(lua.array_metatable()))?;
             Value::Table(t)
         }
         J::Object(o) => {
@@ -249,7 +259,20 @@ pub(crate) fn make_csv(lua: &Lua) -> mlua::Result<Table> {
                 .headers()
                 .map_err(|e| mlua::Error::RuntimeError(format!("csv.decode: {e}")))?
                 .clone();
-            let rows = lua.create_table()?;
+            // Duplicate headers cannot be represented as a header-keyed map: the second column
+            // overwrites the first, so a two-column file silently becomes a one-key row and the
+            // dropped column is never mentioned. Refuse rather than lose data — the row shape is
+            // the whole contract of this verb, and it is unsatisfiable here.
+            let mut seen = std::collections::BTreeSet::new();
+            for h in headers.iter() {
+                if !seen.insert(h) {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "csv.decode: duplicate header {h:?} — rows are header-keyed maps, so two                          columns of the same name cannot both survive. Rename one, or read the                          file positionally."
+                    )));
+                }
+            }
+            // A list of rows, even when there are none — see `modules::list_table`.
+            let rows = super::list_table(lua, Vec::<mlua::Value>::new())?;
             for (i, record) in reader.records().enumerate() {
                 let record =
                     record.map_err(|e| mlua::Error::RuntimeError(format!("csv.decode: {e}")))?;
@@ -453,4 +476,159 @@ pub(crate) fn make_url(lua: &Lua) -> mlua::Result<Table> {
     )?;
 
     Ok(url_ns)
+}
+
+#[cfg(test)]
+mod fidelity_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn lua() -> Lua {
+        Lua::new()
+    }
+
+    fn to_json(l: &Lua, v: Value) -> mlua::Result<serde_json::Value> {
+        lua_value_to_json(l, &v)
+    }
+
+    /// The empty-table question has no right answer, only a chosen one — and the choice is
+    /// load-bearing, because a JSON API asserted against `{}` and one asserted against `[]` are
+    /// different assertions. `{}` is an OBJECT (the common case for APIs); `json.array{}` is how
+    /// you say the other thing.
+    #[test]
+    fn an_empty_table_is_an_object_and_the_array_sentinel_overrides_it() {
+        let l = lua();
+        let bare = l.create_table().unwrap();
+        assert_eq!(to_json(&l, Value::Table(bare)).unwrap(), json!({}));
+
+        let arr = l.create_table().unwrap();
+        arr.set_metatable(Some(l.array_metatable())).unwrap();
+        assert_eq!(
+            to_json(&l, Value::Table(arr)).unwrap(),
+            json!([]),
+            "the sentinel wins over the empty-table default"
+        );
+    }
+
+    /// A table with sequence entries is an array; one with named keys is an object. Getting this
+    /// backwards would silently reshape every payload a proof sends.
+    #[test]
+    fn shape_follows_the_table_and_keys_are_stringified() {
+        let l = lua();
+        let seq = l.create_table().unwrap();
+        seq.set(1, "a").unwrap();
+        seq.set(2, "b").unwrap();
+        assert_eq!(to_json(&l, Value::Table(seq)).unwrap(), json!(["a", "b"]));
+
+        let map = l.create_table().unwrap();
+        map.set("name", "prova").unwrap();
+        assert_eq!(to_json(&l, Value::Table(map)).unwrap(), json!({"name": "prova"}));
+
+        // A non-sequential integer key cannot be an array index, so it becomes an object key —
+        // stringified, since JSON has no integer keys.
+        let sparse = l.create_table().unwrap();
+        sparse.set(7, "seven").unwrap();
+        assert_eq!(to_json(&l, Value::Table(sparse)).unwrap(), json!({"7": "seven"}));
+    }
+
+    /// `nil` and the null sentinel both encode as JSON null, but they are NOT the same thing on
+    /// the way back: decode maps null → nil so `t:expect(body.field):is_nil()` holds, which is why
+    /// the sentinel exists for the encode direction at all.
+    #[test]
+    fn null_crosses_in_both_directions_without_becoming_a_string() {
+        let l = lua();
+        assert_eq!(to_json(&l, Value::Nil).unwrap(), json!(null));
+        let sentinel = Value::LightUserData(mlua::LightUserData(std::ptr::null_mut()));
+        assert_eq!(to_json(&l, sentinel).unwrap(), json!(null));
+
+        // Decode: null becomes nil, not the string "null" and not a userdata the author must know
+        // to compare against.
+        let back = json_value_to_lua(&l, &json!(null)).unwrap();
+        assert!(matches!(back, Value::Nil), "null decodes to nil, got {back:?}");
+    }
+
+    /// Integers must not silently become floats: an id of 9007199254740993 that round-trips as
+    /// 9007199254740992.0 is a payload that looks right and addresses the wrong row.
+    #[test]
+    fn integers_stay_integers_and_floats_stay_floats() {
+        let l = lua();
+        assert_eq!(to_json(&l, Value::Integer(42)).unwrap(), json!(42));
+        assert!(to_json(&l, Value::Integer(42)).unwrap().is_i64());
+
+        let f = to_json(&l, Value::Number(1.5)).unwrap();
+        assert!(f.is_f64() && (f.as_f64().unwrap() - 1.5).abs() < f64::EPSILON);
+
+        // And back: a JSON integer arrives as a Lua integer, not a float.
+        assert!(matches!(
+            json_value_to_lua(&l, &json!(7)).unwrap(),
+            Value::Integer(7)
+        ));
+    }
+
+    /// JSON has no infinity or NaN. Encoding one must RAISE rather than emit something a parser
+    /// will reject far away, or worse, coerce to a number that is merely wrong.
+    #[test]
+    fn a_non_finite_number_is_refused_rather_than_coerced() {
+        let l = lua();
+        for bad in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+            let err = to_json(&l, Value::Number(bad)).unwrap_err().to_string();
+            assert!(err.contains("non-finite"), "named for what it is: {err}");
+        }
+    }
+
+    /// A value JSON cannot represent is an error at the boundary, where the author's own call
+    /// site is still on the stack — not a silently dropped field discovered by the server.
+    #[test]
+    fn an_unencodable_value_or_key_is_named_at_the_boundary() {
+        let l = lua();
+        let f = l.create_function(|_, ()| Ok(())).unwrap();
+        let err = to_json(&l, Value::Function(f.clone())).unwrap_err().to_string();
+        assert!(err.contains("cannot encode"), "{err}");
+
+        let t = l.create_table().unwrap();
+        t.set(f, "value").unwrap();
+        let err = to_json(&l, Value::Table(t)).unwrap_err().to_string();
+        assert!(err.contains("table key"), "the KEY is named, not just the table: {err}");
+    }
+
+    /// Nesting is where a conversion that handles each scalar correctly can still lose structure.
+    #[test]
+    fn nested_structures_survive_a_round_trip() {
+        let l = lua();
+        let original = json!({
+            "name": "prova",
+            "ports": [8080, 9090],
+            "nested": { "deep": { "flag": true, "count": 3 } },
+            "empty_obj": {},
+        });
+        let as_lua = json_value_to_lua(&l, &original).unwrap();
+        let back = lua_value_to_json(&l, &as_lua).unwrap();
+        assert_eq!(back, original, "structure survives both crossings");
+    }
+
+    /// An empty array survives re-encoding as an array. It used to come back as `{}`: decode
+    /// produced a bare table, which is indistinguishable from a decoded empty OBJECT, so the shape
+    /// was lost at the boundary. Found by writing these tests, 2026-08-15 — a proof that read a
+    /// response, changed a field and sent it back would silently convert every empty list to an
+    /// object, and plenty of APIs treat those as different requests.
+    #[test]
+    fn an_empty_array_survives_the_round_trip_as_an_array() {
+        let l = lua();
+        for original in [
+            json!({ "items": [] }),
+            json!({ "items": [1, 2] }),
+            json!({ "items": {} }),
+            json!([[], {}, [[]]]),
+        ] {
+            let as_lua = json_value_to_lua(&l, &original).unwrap();
+            let back = lua_value_to_json(&l, &as_lua).unwrap();
+            assert_eq!(back, original, "shape is preserved across the boundary");
+        }
+    }
+
+    #[test]
+    fn hex_is_lowercase_and_zero_padded() {
+        assert_eq!(hex_string(&[0x00, 0x0f, 0xff]), "000fff");
+        assert_eq!(hex_string(&[]), "");
+    }
 }

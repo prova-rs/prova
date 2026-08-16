@@ -31,3 +31,35 @@ end)
 prova.test("prova.parse.json is removed — the clean break to tech-first modules", function(t)
   t:expect(prova.parse.json):is_nil() ---@diagnostic disable-line: undefined-field
 end)
+
+prova.test("a decoded array is still an array when it goes back out", {
+  proves = "decode used to produce a bare table for `[]`, indistinguishable from a decoded empty OBJECT, so re-encoding turned every empty list into `{}` — a data-shape change at a boundary, silent, and rejected by plenty of APIs that treat the two as different requests. Found while paying down unit coverage on the fidelity layer, which is the kind of defect that exercise is FOR",
+}, function(t)
+  -- The shapes that can lose their identity, and the nesting where a per-value fix would miss.
+  for _, src in ipairs({
+    '{"items":[]}',
+    '{"items":[1,2]}',
+    '{"items":{}}',
+    '[[],{},[[]]]',
+    '{"a":{"b":[]},"c":[[],[]]}',
+  }) do
+    t:expect(json.encode(json.decode(src)), src .. " survives the round trip"):equals(src)
+  end
+end)
+
+prova.test("the array marker is invisible to everything except re-encoding", {
+  proves = "the fix stamps a metatable on decoded arrays, and a marker that changed how tables COMPARE or ITERATE would be a worse bug than the one it fixed — every proof that asserts a decoded response against a literal depends on this being transparent",
+}, function(t)
+  local decoded = json.decode('{"ports":[8080,9090]}')
+
+  t:expect(decoded.ports, "compares equal to a plain literal"):equals({ 8080, 9090 })
+  t:expect(#decoded.ports, "length is unchanged"):equals(2)
+  t:expect(decoded.ports[1], "indexing is unchanged"):equals(8080)
+
+  local seen = 0
+  for _ in ipairs(decoded.ports) do seen = seen + 1 end
+  t:expect(seen, "ipairs is unchanged"):equals(2)
+
+  -- …and a structural subset match, the other way proofs read a payload.
+  t:expect(decoded, "matches a shape"):matches({ ports = { 8080, 9090 } })
+end)
