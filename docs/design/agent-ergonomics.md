@@ -692,6 +692,28 @@ then re-banked with bands (see `proofs/coverage/coverage_test.lua`), because the
 this expensive was never the measurement alone — it was a peak-banked ratchet that made a wrong
 number look like a real regression.
 
+<!-- backlog: ut-lane-cannot-see-what-cargo-test-sees recorded=2026-08-16 -->
+**The `ut` lane deputes to nextest, so a whole class of test-isolation defect cannot fail locally.**
+nextest runs each test in its OWN PROCESS; `cargo test` runs them as threads in one. Tests that
+share state keyed on something per-process — a scratch directory named after `std::process::id()`,
+a static, an env var, a fixed port — are therefore isolated under `prova run ut` and racing under
+`cargo test`, and the local bar reports green either way.
+
+Not hypothetical: `barrier.rs`'s tests keyed their home on the pid alone and wiped it on entry, so
+under threads one test deleted another's barrier state mid-run. `prova run ut`, `prova run all` and
+`prova run release` were all green locally; the v0.24.0 release then failed in the Release
+workflow's Setup leg, which runs plain `cargo test`. The tag existed and nothing shipped. A barrier
+is shared state by construction, which is what makes it the worst possible place for this blind
+spot — and the tests were written the day the primitive landed, so the exposure was one release
+long.
+
+The asymmetry is the problem, not nextest: the release gate is judged by a runner the local gate
+never uses. Options, in rough order of appeal — run the unit layer BOTH ways in the `release`
+profile (cheap, and it is the profile that means "fit to be a version"); or align CI's Setup leg
+onto `prova run ut` so one runner judges everywhere, which is the cleaner story but moves what CI
+checks; or leave it and accept that this class ships. Worth settling before the next release
+rather than after it.
+
 <!-- backlog: unparseable-durations-are-dropped-not-refused recorded=2026-08-16 -->
 **A malformed duration at a closed boundary is silently dropped, and it produces the unbounded
 wait this section forbids.** `client_opts` parses its `timeout` as

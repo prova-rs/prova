@@ -271,8 +271,25 @@ hold!(SharedHold, libc::LOCK_SH);
 mod tests {
     use super::*;
 
+    /// A home no other test shares.
+    ///
+    /// Keyed per CALL, not per process. Keyed on the pid alone, every test in this module got the
+    /// same directory — and since each one wipes it on the way in, one test deleted another's
+    /// barrier state mid-run. Under `cargo test` these are threads in a single process, so that is
+    /// a live race; under nextest they are separate processes, so it is invisible. `prova run ut`
+    /// deputes to nextest, which is exactly why this passed locally for a day and then failed the
+    /// release gate, whose Setup leg runs plain `cargo test`.
+    ///
+    /// A barrier is shared state by construction — the whole primitive is "have N parties met
+    /// here" — so its tests are the ones that can least afford to share a home by accident.
     fn tmp() -> PathBuf {
-        let d = std::env::temp_dir().join(format!("prova-barrier-test-{}", std::process::id()));
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let d = std::env::temp_dir().join(format!(
+            "prova-barrier-test-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
