@@ -659,6 +659,31 @@ provision are the two callers that would feel it first.
 unknown duration is the verb's whole job, so a default would abort legitimate work; `idle_timeout`
 and `first_byte` exist as the opt-in liveness bounds for the cases where silence IS the signal.
 
+<!-- backlog: blackbox-layer-stopped-measuring-the-recursion recorded=2026-08-16 -->
+**The black-box coverage layer measures only the conducting process, so its number collapsed
+without any coverage being lost.** The layer's whole design is that the instrumented binary runs
+the suite and `LLVM_PROFILE_FILE`'s `%p` pattern rides into every `prova.bin` child — the
+RECURSION is what gets measured, because that is where the runtime actually executes. It no longer
+does: under `PROVA_TRAMPOLINED=1`, which is exactly what the conduct sets, `prova.bin` resolves to
+`target/debug/prova` — the ordinary uninstrumented build — instead of the running instrumented
+executable. Every child therefore contributes nothing.
+
+Measured 2026-08-16: a 197-second conduct left **2** `suite-*.profraw` files. The layer reads
+45.47% (10879/23927 lines) against a floor of 68.99% banked 2026-08-11, when the recursion was
+still measured — a gap of roughly 5,600 covered lines, far more than four days of feature work can
+explain, and the shape is wrong for dilution: the denominator is unchanged, the numerator fell.
+
+Why it stayed invisible: the layered proof asserts `rust.coverage.unit` before
+`rust.coverage.blackbox`, and a failing ratchet aborts the body, so while the unit floor was red
+the blackbox figure was never evaluated. It surfaced the moment unit went green.
+
+**Do not pay this down with tests.** The instrument is broken, not the bar; writing black-box
+proofs to lift a number whose numerator is being discarded would add unearned suite weight and
+leave the real gap exactly where it was. Fix the trampoline so `prova.bin` is the running
+executable when `PROVA_TRAMPOLINED` is set, re-measure, and only then decide whether 68.99 is
+still the right floor. The per-layer denominators now print before the ratchets, which is how this
+was caught and how the re-measure should be read.
+
 <!-- backlog: unparseable-durations-are-dropped-not-refused recorded=2026-08-16 -->
 **A malformed duration at a closed boundary is silently dropped, and it produces the unbounded
 wait this section forbids.** `client_opts` parses its `timeout` as

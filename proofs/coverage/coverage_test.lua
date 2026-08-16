@@ -248,6 +248,19 @@ prova.test("each layer's coverage holds on its own — and the delta names where
   t:expect(measured_xtask, "build automation is not shipped code and is not in the denominator")
     :has_length(0)
 
+  -- Each layer's DENOMINATOR, printed before any ratchet fires. A percent alone cannot be
+  -- diagnosed: this proof's own header records two separate incidents where a layer moved several
+  -- points with no behavior change anywhere, because instrumented objects entered or left the scan
+  -- and the denominator moved underneath it. Printed BEFORE the assertions on purpose — a failing
+  -- ratchet aborts the body, so anything printed after it is missing on exactly the runs that need
+  -- it (the unit-owed worklist below has been invisible for days for this reason).
+  for _, layer in ipairs({ { "unit", produced.unit }, { "blackbox", produced.blackbox },
+                           { "merged", produced.merged } }) do
+    local tot = layer[2].data[1].totals.lines
+    print(string.format("  layer %-9s %6.2f%%  %6d/%-6d lines  %4d files",
+      layer[1], tot.percent, tot.covered, tot.count, #(layer[2].data[1].files or {})))
+  end
+
   measure.ratchet(t, "rust.coverage.unit", pct(produced.unit), {
     set = "quality", direction = "higher_is_better",
   })
