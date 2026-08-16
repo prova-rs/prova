@@ -599,6 +599,48 @@ wait converts that into a failure that says which rendezvous, how many participa
 which of the possible causes to look at first. Coordination primitives are welcome; unbounded ones
 are not.
 
+## 28. An assertion answers; it never takes the run with it
+
+<!-- claim: equals-must-answer-not-abort recorded=2026-08-15 -->
+**`equals` compares cyclic structures without walking them forever.** Identity short-circuits
+first — the same table IS equal to itself, which terminates any cycle reached through it — and a
+depth cap (64, far beyond real data) backstops two DISTINCT self-referencing structures by
+answering "not equal" rather than recursing until the stack dies.
+
+Before the guard this did not fail, it ABORTED: `fatal runtime error: stack overflow`, exit 134,
+taking the whole run with it. Every other test lost its result, the reporter emitted nothing, and
+the exit code named a signal rather than a verdict. That is categorically worse than a wrong
+answer — a wrong answer is a finding, and a dead process is an absence. The same bound-and-report
+doctrine as [[every-wait-is-bounded]], applied to recursion instead of time.
+
+`:matches` was never affected: it walks the finite SHAPE the author wrote, not the subject.
+
+**Found by paying down the coverage floor**, which is the argument for doing that as a discovery
+exercise rather than a number to clear: no bug report, no failing suite, and the defect was
+reachable from any proof comparing user data with a back-reference in it.
+
+<!-- backlog: digest-identity-is-location-dependent recorded=2026-08-15 -->
+**A conduct-identity digest carries each file's ABSOLUTE path, so the same content at two locations
+never matches itself.** `digest_paths` contributes `emit_path(&p)` per file, which is the resolved
+absolute path — two checkouts of one commit, or one repo moved, produce different digests for
+identical bytes.
+
+That is RIGHT for what it exists for: conduct identity within one run, on one machine, where the
+question is "are these two conducts the same question, so one execution can answer both" — and
+there the location genuinely is part of the environment. It becomes a trap the moment an identity
+outlives that scope. A cached verdict keyed on this can never be shared between a developer's
+checkout and CI's, or between two agents' worktrees of the same tree — which is exactly what
+[[resumable-runs-incremental-verdicts]] would want, and it would fail as a permanent cache MISS
+rather than as an error, so the symptom is "the cache never helps" rather than anything diagnosable.
+
+`fs.digest` exposes the same function to suite authors, where "content-addressed" reads as a
+promise about CONTENT and location-dependence is a surprise.
+
+Pinned as the current contract by a unit test rather than changed, because the fix is a decision
+about scope, not a bug: make the path RELATIVE to the identity's root (portable, shareable, and
+the root becomes part of what a caller declares), or keep absolute and say so in `fs.digest`'s own
+summary. Worth settling before anything persists a verdict across runs.
+
 <!-- backlog: lock-waits-are-unbounded recorded=2026-08-15 -->
 **A cross-instance lock wait has no bound, and it is the one place the rule above does not hold.**
 `locks::hold` flocks blocking with no deadline, so a run queued behind another instance's `cargo`

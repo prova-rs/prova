@@ -1468,3 +1468,10 @@ mod tests {
         });
     }
 }
+
+/// The framing model's unit tests, in their own file: `socket.rs` is at the file-size limit, and
+/// the ratchet is right that a 1600-line module is hard to hold in your head — the tests are the
+/// part that can move without splitting the implementation.
+#[cfg(test)]
+#[path = "socket/framing_tests.rs"]
+mod framing_tests;

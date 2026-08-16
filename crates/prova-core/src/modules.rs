@@ -908,3 +908,132 @@ mod yaml;
 // mirroring the grpc module's `call` / `call_status`. Queries and mutations share the transport.
 #[cfg(feature = "graphql")]
 mod graphql;
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    /// A distinct directory per call. The first version keyed the name on file count and name
+    /// lengths, which collided for two trees of the same shape — so a test that meant to compare
+    /// two trees compared one tree with itself, and "no difference" looked like a product bug.
+    fn tree(files: &[(&str, &str)]) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "prova-digest-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        for (name, body) in files {
+            let p = dir.join(name);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, body).unwrap();
+        }
+        dir
+    }
+
+    fn digest(dir: &std::path::Path, patterns: &[&str]) -> String {
+        digest_paths(
+            &patterns.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            Some(dir),
+        )
+    }
+
+    /// Conduct identity decides whether two conducts are the SAME QUESTION and may share one
+    /// execution. So a digest that answers differently for the same tree makes a cache useless,
+    /// and one that answers identically for different trees hands a stale verdict to a caller who
+    /// asked something else — a green that was never earned.
+    #[test]
+    fn the_same_tree_answers_identically_whatever_order_it_was_asked_in() {
+        let dir = tree(&[("a.txt", "alpha"), ("b.txt", "beta")]);
+        let one = digest(&dir, &["a.txt", "b.txt"]);
+        let other = digest(&dir, &["b.txt", "a.txt"]);
+        assert_eq!(one, other, "pattern order is not part of the question");
+        assert_eq!(one, digest(&dir, &["*.txt"]), "…nor is how the files were named");
+    }
+
+    /// The framing guard, and the reason the length prefix exists: without it a hasher fed
+    /// `"ab" + ""` and `"a" + "b"` sees one byte stream, so two different trees collide and the
+    /// second one silently inherits the first's verdict.
+    #[test]
+    fn content_that_concatenates_the_same_still_digests_differently() {
+        let split = tree(&[("x/1.txt", "a"), ("x/2.txt", "b")]);
+        let joined = tree(&[("y/1.txt", "ab"), ("y/2.txt", "")]);
+        assert_ne!(
+            digest(&split, &["x/*.txt"]),
+            digest(&joined, &["y/*.txt"]),
+            "the length prefix keeps the boundary between files"
+        );
+        // Same property one level up, where a conduct's command and its input digest meet.
+        assert_ne!(
+            digest_of_parts(&["ab", "c"]),
+            digest_of_parts(&["a", "bc"]),
+            "and again for the outer identity"
+        );
+    }
+
+    /// A file's PATH is part of the question, not just its bytes — moving content changes what is
+    /// being built, so it must change the answer. Asserted WITHIN one tree, because comparing two
+    /// trees would also vary their roots and prove nothing about the path.
+    #[test]
+    fn moving_content_changes_the_digest_even_though_the_bytes_are_the_same() {
+        let dir = tree(&[("src/main.rs", "fn main() {}"), ("lib/main.rs", "fn main() {}")]);
+        assert_ne!(
+            digest(&dir, &["src/*.rs"]),
+            digest(&dir, &["lib/*.rs"]),
+            "same bytes, different place, different question"
+        );
+    }
+
+    /// The digest carries each file's ABSOLUTE path, so the same tree at two locations answers
+    /// differently. Pinned as the CURRENT contract rather than endorsed: it is right for the use
+    /// this exists for — conduct identity within one run, on one machine, where two conducts of
+    /// one question must share an execution — and it is a trap for anything that outlives that,
+    /// since two checkouts of one commit would never share a cached verdict.
+    /// See agent-ergonomics.md#digest-identity-is-location-dependent.
+    #[test]
+    fn the_same_content_at_two_locations_digests_differently() {
+        let here = tree(&[("only.txt", "same bytes")]);
+        let there = tree(&[("only.txt", "same bytes")]);
+        assert_ne!(
+            digest(&here, &["only.txt"]),
+            digest(&there, &["only.txt"]),
+            "location is part of the identity today"
+        );
+    }
+
+    /// Absence is a fact about the build, so it is IN the digest. A pattern that matches nothing
+    /// today and a file tomorrow must not answer the same, or a generated input appearing would
+    /// replay a verdict computed without it.
+    #[test]
+    fn a_pattern_that_matches_nothing_still_contributes_its_absence() {
+        let empty = tree(&[("keep.txt", "x")]);
+        let absent = digest(&empty, &["generated.rs"]);
+
+        let filled = tree(&[("keep.txt", "x"), ("generated.rs", "// now it exists")]);
+        assert_ne!(absent, digest(&filled, &["generated.rs"]), "appearing changes the answer");
+        assert!(!absent.is_empty(), "and absence is not an error");
+    }
+
+    /// Editing a byte changes the answer — the property every other one is only useful because of.
+    #[test]
+    fn changed_content_changes_the_digest() {
+        let before = tree(&[("only.txt", "one")]);
+        let d1 = digest(&before, &["only.txt"]);
+        std::fs::write(before.join("only.txt"), "two").unwrap();
+        assert_ne!(d1, digest(&before, &["only.txt"]));
+    }
+
+    /// One file matched by two patterns is one contribution: a caller listing `src/*.rs` and
+    /// `src/main.rs` asked one question, and the digest must not depend on how they spelled it.
+    #[test]
+    fn a_file_matched_twice_counts_once() {
+        let dir = tree(&[("src/main.rs", "fn main() {}")]);
+        assert_eq!(
+            digest(&dir, &["src/*.rs"]),
+            digest(&dir, &["src/*.rs", "src/main.rs"]),
+            "overlapping patterns are the same question"
+        );
+    }
+}

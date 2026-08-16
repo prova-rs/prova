@@ -830,7 +830,30 @@ pub(super) fn truthy(v: &Value) -> bool {
     !matches!(v, Value::Nil | Value::Boolean(false))
 }
 
+/// How deep `equals` will walk before refusing to go further.
+///
+/// A guard against CYCLES, not against depth. Two tables that each contain themselves describe an
+/// infinite structure, and a naive walk follows it until the stack dies — measured: `t:expect(a)
+/// :equals(b)` on two self-referencing tables aborted the whole runner with a stack overflow,
+/// exit 134, no verdict and no report for any test in the run. A failed assertion is a result; a
+/// dead process is not.
+///
+/// Deliberately far beyond real data. A payload nested 64 deep is already pathological, so the cap
+/// only ever fires on a cycle — and `:matches` is unaffected, since it walks the finite SHAPE
+/// rather than the subject.
+const MAX_EQUALS_DEPTH: usize = 64;
+
 pub(super) fn values_equal(a: &Value, b: &Value) -> bool {
+    values_equal_at(a, b, 0)
+}
+
+fn values_equal_at(a: &Value, b: &Value, depth: usize) -> bool {
+    if depth > MAX_EQUALS_DEPTH {
+        // Unequal rather than a panic: this is an assertion, and its job is to produce a verdict.
+        // The only structures that reach here are cyclic, and two distinct infinite structures
+        // being reported as different is a defensible answer where aborting is not.
+        return false;
+    }
     match (a, b) {
         (Value::Nil, Value::Nil) => true,
         (Value::Boolean(x), Value::Boolean(y)) => x == y,
@@ -840,7 +863,10 @@ pub(super) fn values_equal(a: &Value, b: &Value) -> bool {
             (*x as f64) == *y
         }
         (Value::String(x), Value::String(y)) => x.to_string_lossy() == y.to_string_lossy(),
-        (Value::Table(x), Value::Table(y)) => tables_equal(x, y),
+        // Identity first: the same table IS equal to itself, and short-circuiting here makes a
+        // self-referencing structure terminate instead of walking its own cycle forever.
+        (Value::Table(x), Value::Table(y)) if x.to_pointer() == y.to_pointer() => true,
+        (Value::Table(x), Value::Table(y)) => tables_equal_at(x, y, depth),
         // Sentinels (json.null) and other lightuserdata compare by identity — what makes
         // `t:expect({ x = json.null }):matches{ x = json.null }` hold (api-freeze §3).
         (Value::LightUserData(x), Value::LightUserData(y)) => x == y,
@@ -910,13 +936,18 @@ pub(super) fn path_str(path: &[String]) -> String {
 
 /// Deep table equality: same set of keys, values recursively equal. (Cyclic tables are not guarded
 /// — test data is expected to be acyclic.)
-pub(super) fn tables_equal(x: &Table, y: &Table) -> bool {
+/// Exact table equality, both ways: every key in `x` matches in `y`, and the key counts agree.
+///
+/// `depth` is the cycle guard's ply counter — see `MAX_EQUALS_DEPTH`. Callers outside the
+/// recursion pass 0; there is no wrapper hiding it, because a comparison that cannot say how deep
+/// it already is cannot be bounded.
+pub(super) fn tables_equal_at(x: &Table, y: &Table, depth: usize) -> bool {
     let mut x_keys = 0;
     for pair in x.clone().pairs::<Value, Value>() {
         let Ok((key, xv)) = pair else { return false };
         x_keys += 1;
         match y.get::<Value>(key) {
-            Ok(yv) if values_equal(&xv, &yv) => {}
+            Ok(yv) if values_equal_at(&xv, &yv, depth + 1) => {}
             _ => return false,
         }
     }
@@ -1138,6 +1169,47 @@ mod tests {
         assert!(!values_equal(&Value::Nil, &Value::Boolean(false)));
     }
 
+    /// A cyclic structure must produce a VERDICT, not kill the process.
+    ///
+    /// Measured before the guard: `t:expect(a):equals(b)` on two self-referencing tables walked the
+    /// cycle until the stack died — `fatal runtime error: stack overflow`, exit 134, taking down
+    /// the whole run. Every test in that run lost its result, not just this assertion. An
+    /// assertion's job is to answer; a dead process answers nothing.
+    #[test]
+    fn cyclic_tables_are_compared_without_walking_forever() {
+        let lua = Lua::new();
+        let a = lua.create_table().unwrap();
+        a.set("self", a.clone()).unwrap();
+        let b = lua.create_table().unwrap();
+        b.set("self", b.clone()).unwrap();
+
+        // Two DISTINCT infinite structures: the depth cap answers rather than aborting.
+        assert!(!values_equal(&Value::Table(a.clone()), &Value::Table(b)));
+
+        // The same table is equal to itself — identity short-circuits before any walk, which is
+        // both correct and what makes a self-cycle terminate at all.
+        assert!(values_equal(&Value::Table(a.clone()), &Value::Table(a)));
+    }
+
+    /// The guard must not change ordinary answers: real payloads are shallow, and a cap that
+    /// fired on them would turn equal things unequal — a worse bug, and a silent one.
+    #[test]
+    fn ordinary_nesting_is_unaffected_by_the_depth_guard() {
+        let lua = Lua::new();
+        let deep = |leaf: i64| {
+            let mut t = lua.create_table().unwrap();
+            t.set("leaf", leaf).unwrap();
+            for _ in 0..30 {
+                let outer = lua.create_table().unwrap();
+                outer.set("inner", t).unwrap();
+                t = outer;
+            }
+            t
+        };
+        assert!(values_equal(&Value::Table(deep(1)), &Value::Table(deep(1))), "30 deep still compares");
+        assert!(!values_equal(&Value::Table(deep(1)), &Value::Table(deep(2))), "…and still discriminates");
+    }
+
     /// The structural-subset walk behind `:matches` and the §6 journal filter: shape keys must
     /// match, extra subject keys are unconstrained, and the FIRST mismatch names its dotted path
     /// — the diff a failing assertion prints.
@@ -1216,10 +1288,10 @@ mod tests {
         let lua = Lua::new();
         let a = lua_table(&lua, &[("x", Value::Integer(1))]);
         let b = lua_table(&lua, &[("x", Value::Number(1.0))]);
-        assert!(tables_equal(&a, &b), "coerced numbers are equal values");
+        assert!(tables_equal_at(&a, &b, 0), "coerced numbers are equal values");
         let extra = lua_table(&lua, &[("x", Value::Integer(1)), ("y", Value::Integer(2))]);
-        assert!(!tables_equal(&a, &extra), "an extra key on the right is inequality");
-        assert!(!tables_equal(&extra, &a), "and on the left");
+        assert!(!tables_equal_at(&a, &extra, 0), "an extra key on the right is inequality");
+        assert!(!tables_equal_at(&extra, &a, 0), "and on the left");
 
         assert_eq!(as_number(&Value::Integer(2)), Some(2.0));
         assert_eq!(as_number(&Value::Number(2.5)), Some(2.5));

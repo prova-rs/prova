@@ -65,6 +65,25 @@ implementation can, it deserves a unit test.
 | The bug lives in one function's logic | Unit-test it natively; keep the proof at the boundary that exposed it |
 | Contract known, implementation deferred (design doc, out-of-scope gap) | Author it NOW as a promise: `{ promises = "reason" }` — executable spec, not a TODO comment |
 | `prova tests --promises` shows open promises in this repo | That is scoped, unclaimed work — offer to burn it down (`prova learn promises`) |
+| A ratchet refuses your change (size, length, clones, coverage) | It is pointing at a seam — find it, do not rebaseline. See below |
+
+## The restrictions are a discovery tool, by design
+
+A ratchet does not suggest, it REFUSES — and the only honest way through is to find the boundary
+that was already there. That is the point, not a side effect: a lint you can dismiss gets
+dismissed, while a limit at zero makes you argue with yourself about where the code wanted to be
+cut, and you usually find the answer.
+
+Measured, in one session: `too_many_lines` firing twice produced two functions that wanted names
+(a proxy-mode decision, a CSV header rule) — neither would have been extracted unprompted. The
+file-size limit split a test module out of a 1600-line file. And paying down the COVERAGE floor —
+not chasing the number, but writing real tests for the least-covered code — turned up six defects
+nobody had reported, including one that killed the whole runner: comparing two self-referencing
+tables walked the cycle until the stack died, taking every other test's result with it.
+
+So when a gate goes red, the first question is "what is it pointing at", not "how do I get past
+it". Rebaselining is available and is almost never the answer — and if it IS, the reasoning goes in
+the commit, not in the diff alone.
 
 See also: `prova learn authoring` (the DSL) · `prova learn running` (selection) · `prova learn
 falsify` (proving it can fail) · `prova learn spec` (where the obligation is written)

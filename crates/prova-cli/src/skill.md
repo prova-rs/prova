@@ -210,6 +210,14 @@ carries configuration INTO a container between create and start — no image bui
 (the bytes travel the daemon API, so a remote daemon works). `archetect.render{...}` /
 `archetect.verify(...)`. When unsure of a shape: probe it with `eval` — that is what it is for.
 
+**A ratchet that refuses you is pointing at a seam.** The quality gates (file size, function
+length, clone count, unwrap census, the coverage floor) do not suggest — they refuse, and the way
+through is to find the boundary the code already wanted. Rebaselining exists and is almost never
+the answer. Paying a floor down is a DISCOVERY exercise, not a number to clear: writing real tests
+for the least-covered code is how latent defects surface, so do that rather than covering lines
+cheaply — a green gate that means nothing is worse than a red one that means something.
+`prova learn pdd` has the worked evidence.
+
 **Option tables are closed.** Every one of these refuses a key it cannot honor, naming the key, the
 nearest accepted spelling, and the accepted set — it is never silently dropped, because a dropped
 option reads as *configured* (`tiemout = "10m"` means unbounded). Two consequences worth knowing:
