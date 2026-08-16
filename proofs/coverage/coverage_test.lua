@@ -17,6 +17,35 @@
 -- census after a "identical three ways" conduct found 768 visible nextest profraws nested and
 -- 444 invisible suite profraws at the main root. The suite's profile path is therefore pinned
 -- into the scan root, and the staging dir lives OUTSIDE it so staged files are truly unseen.
+-- WHERE THE FLOORS SIT, and why they are not the high-water mark (re-banked 2026-08-16).
+--
+-- A ratchet banked at a peak fails forever after. The 2026-08-11 floors were set as the closing
+-- act of a push whose whole purpose was raising them — the most favourable measurement the tree
+-- had ever produced — and CI went red within a day, stayed red for five, and cost two sessions
+-- arguing about a number instead of reading it.
+--
+-- So each coverage floor now carries a BAND, and the trigger sits a few degrees back from the
+-- edge. The band is not slack to be spent; it is the distance at which a trip still has obvious
+-- material behind it. Trip a ratchet 1pp down and the unit-owed worklist below names files with
+-- 40+ point deltas — real work, chosen by consequence. Trip it at 0.01pp and the only moves left
+-- are the ones that damage the codebase: tests that execute lines without asserting behavior,
+-- written to move a number rather than to catch a defect.
+--
+-- The bands are sized from measured behavior, not taste:
+--
+--   unit      1.0  Was ZERO, and that is what proved the point: two runs of IDENTICAL code
+--                  measured 21043 and 21040 covered lines, and the 0.0019pp difference failed the
+--                  release gate. The metric has run-to-run jitter, so a zero-tolerance floor gates
+--                  releases on noise. 1.0pp is also roughly a week of this tree's feature velocity
+--                  (four days of features diluted it ~0.76pp), so ordinary work does not trip it.
+--   blackbox  1.0  Unchanged — it was already the one band sized for a layer whose denominator
+--                  moves when instrumented objects enter or leave the scan.
+--   merged    0.5  Half the others on purpose: the union of both layers moves LESS, because a
+--                  proof-first tree covers new behavior black-box as it lands.
+--
+-- Raising a floor is `--update-baseline` (it tightens only, and refuses to loosen). LOWERING one
+-- is a hand edit of .prova/baselines/quality.json, deliberately — with the reason in the commit,
+-- never as a way past a red gate.
 local COV_DIR = prova.root .. "/target/llvm-cov-target"
 local SUITE_STAGE = prova.root .. "/target/suite-profraws"
 local EXEC_STAGE = prova.root .. "/target/exec-stage"
@@ -148,13 +177,22 @@ local conduct = prova.fixture("layered-coverage", Scope.File, function()
   -- layer pays denominator rent for `#[cfg(test)]` code it can never execute — measured live:
   -- each unit-test batch sank the black-box percent (~0.2–1.2%/batch) until the layer breached
   -- its own tolerance band with no behavior change anywhere. Suite-first, the black-box
-  -- denominator is the shipping code alone. ONLY what instrumentation needs crosses in:
-  -- LLVM_PROFILE_FILE (the %p pattern rides into every prova.bin child — the recursion is what
-  -- gets measured) and PROVA_TRAMPOLINED (this IS this tree's build — skip the hop). Ambient
-  -- cargo vars redirected sandbox proofs' builds, live.
+  -- denominator is the shipping code alone. ONLY what instrumentation needs crosses in (ambient
+  -- cargo vars redirected sandbox proofs' builds, live):
+  --
+  --   LLVM_PROFILE_FILE  the %p pattern rides into every prova.bin child.
+  --   PROVA_SUBJECT_BIN  makes those children the INSTRUMENTED build. The recursion is where the
+  --                      runtime executes, so it is most of what this layer measures — and until
+  --                      2026-08-16 it was measuring none of it. The variable this replaces,
+  --                      `PROVA_TRAMPOLINED`, was read by nothing: it named a re-exec mechanism
+  --                      that had since been retired, so `prova.bin` resolved to the declared
+  --                      [runner] (the ordinary uninstrumented target/debug/prova) and every child
+  --                      contributed zero. The layer read 45% against a 69% floor with no coverage
+  --                      lost, and the ratchet was blamed for four days.
   local suite = shell.run({ COV_DIR .. "/debug/prova" },
     { cwd = prova.root, timeout = "1200s", merge_stderr = true,
-      env = { LLVM_PROFILE_FILE = COV_DIR .. "/suite-%p-%m.profraw", PROVA_TRAMPOLINED = "1" } })
+      env = { LLVM_PROFILE_FILE = COV_DIR .. "/suite-%p-%m.profraw",
+              PROVA_SUBJECT_BIN = COV_DIR .. "/debug/prova" } })
   if suite.code ~= 0 then
     -- The tail of this capture is NOT the failure. A run's summary is the last thing the runner
     -- prints, but detached children (`--reprovision`, backgrounded with `&`) hold the same pipe
@@ -184,6 +222,25 @@ local conduct = prova.fixture("layered-coverage", Scope.File, function()
   for _, f in ipairs(fs.glob(prova.root, "default_*.profraw")) do
     shell.run({ "mv", f, COV_DIR .. "/" }, { cwd = prova.root })
   end
+
+  -- Did the RECURSION get measured? This layer's number is mostly what `prova.bin` children
+  -- executed, so one profraw per instrumented process is the evidence that the thing being
+  -- reported is the thing intended. When the subject silently reverted to the uninstrumented
+  -- build, the suite still passed, the report still produced a number, and the only visible
+  -- symptom was 24 points of "regression" that no code change explained — for four days. Two
+  -- profraws from a 197-second suite was the fact that named it, and nothing was checking.
+  --
+  -- The floor is deliberately far below a healthy conduct (hundreds) and far above the broken
+  -- one (2): this is a did-it-happen-at-all guard, not a count to tune.
+  local recursion = #fs.glob(COV_DIR, "suite-*.profraw")
+  if recursion < 20 then
+    return { error = string.format(
+      "the black-box layer measured only its own conductor: %d suite profraw(s). The subject is "
+      .. "not instrumented, so every prova.bin child contributed nothing — check that "
+      .. "PROVA_SUBJECT_BIN reaches the children and that %s/debug/prova is the build they run.",
+      recursion, COV_DIR) }
+  end
+
   local blackbox = fresh_report()
   if stage(false) == 0 then
     return { error = "staging moved no suite profraws — the scan-root assumption broke again" }

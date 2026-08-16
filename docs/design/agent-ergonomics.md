@@ -659,30 +659,38 @@ provision are the two callers that would feel it first.
 unknown duration is the verb's whole job, so a default would abort legitimate work; `idle_timeout`
 and `first_byte` exist as the opt-in liveness bounds for the cases where silence IS the signal.
 
-<!-- backlog: blackbox-layer-stopped-measuring-the-recursion recorded=2026-08-16 -->
-**The black-box coverage layer measures only the conducting process, so its number collapsed
-without any coverage being lost.** The layer's whole design is that the instrumented binary runs
-the suite and `LLVM_PROFILE_FILE`'s `%p` pattern rides into every `prova.bin` child — the
-RECURSION is what gets measured, because that is where the runtime actually executes. It no longer
-does: under `PROVA_TRAMPOLINED=1`, which is exactly what the conduct sets, `prova.bin` resolves to
-`target/debug/prova` — the ordinary uninstrumented build — instead of the running instrumented
-executable. Every child therefore contributes nothing.
+<!-- claim: a-measurement-must-prove-it-measured recorded=2026-08-16 -->
+**A number that stops being produced correctly must fail loudly, not keep reporting.** The
+black-box coverage layer measures the RECURSION — the instrumented binary runs the suite and
+`LLVM_PROFILE_FILE`'s `%p` rides into every `prova.bin` child, because that is where the runtime
+actually executes. For four days it measured none of it, and said so with a number.
 
-Measured 2026-08-16: a 197-second conduct left **2** `suite-*.profraw` files. The layer reads
-45.47% (10879/23927 lines) against a floor of 68.99% banked 2026-08-11, when the recursion was
-still measured — a gap of roughly 5,600 covered lines, far more than four days of feature work can
-explain, and the shape is wrong for dilution: the denominator is unchanged, the numerator fell.
+The cause was a variable read by nobody. The conduct set `PROVA_TRAMPOLINED=1` meaning "this IS
+this tree's build — skip the hop", but that named a re-exec mechanism which had since been retired,
+and nothing in the source ever read it. So `prova.bin` resolved to the declared `[runner]` — the
+ordinary uninstrumented `target/debug/prova` — and every child contributed nothing. A 197-second
+conduct wrote **2** profraws. The layer read 45.47% against a 68.99% floor, and the ratchet took
+the blame: the honest-looking conclusion was that four days of feature work had diluted coverage,
+because a percent arrives with no evidence of how it was obtained.
 
-Why it stayed invisible: the layered proof asserts `rust.coverage.unit` before
-`rust.coverage.blackbox`, and a failing ratchet aborts the body, so while the unit floor was red
-the blackbox figure was never evaluated. It surfaced the moment unit went green.
+Three things now make that impossible to repeat, and they generalize past coverage:
 
-**Do not pay this down with tests.** The instrument is broken, not the bar; writing black-box
-proofs to lift a number whose numerator is being discarded would add unearned suite weight and
-leave the real gap exactly where it was. Fix the trampoline so `prova.bin` is the running
-executable when `PROVA_TRAMPOLINED` is set, re-measure, and only then decide whether 68.99 is
-still the right floor. The per-layer denominators now print before the ratchets, which is how this
-was caught and how the re-measure should be read.
+- **The intent is executable.** `PROVA_SUBJECT_BIN` names the subject outright and is read by
+  `subject_bin`, so a conduct that means "test THIS artifact" says it in a way that can be wrong
+  out loud. Proved in `runner_provision_test.lua`, inheritance included — the recursion is
+  arbitrarily deep, which is why it is an env var rather than a flag.
+- **The measurement proves it measured.** The conduct counts `suite-*.profraw` before reporting and
+  refuses below a floor far under a healthy run and far above a broken one. Two profraws is no
+  longer a number, it is an error naming the cause.
+- **Every layer prints its denominator, before the ratchets fire.** Covered/total, not just a
+  percent — the numerator falling with a fixed denominator looks nothing like dilution, and that
+  is the read that ends this argument in seconds rather than sessions.
+
+Re-measured after the fix: blackbox 45.47% → **73.04%**, merged 79.96% → **86.37%**, unit unchanged
+at 73.47%. No coverage had been lost; all three floors were being held all along. The floors were
+then re-banked with bands (see `proofs/coverage/coverage_test.lua`), because the thing that made
+this expensive was never the measurement alone — it was a peak-banked ratchet that made a wrong
+number look like a real regression.
 
 <!-- backlog: unparseable-durations-are-dropped-not-refused recorded=2026-08-16 -->
 **A malformed duration at a closed boundary is silently dropped, and it produces the unbounded

@@ -283,9 +283,36 @@ pub(crate) fn provision_subject(home: &Home, force: bool) -> Option<ExitCode> {
     provision_runner(home, &runner, force)
 }
 
-/// The binary nested proofs reach as `prova.bin`: the declared subject when the manifest names
-/// one, else this executable. Resolution only — provisioning is the run path's explicit act.
+/// The env override naming the subject outright: an absolute path to the binary `prova.bin` must
+/// resolve to, ahead of any declared `[runner]`.
+///
+/// For the one caller that builds a DIFFERENT artifact of this same tree and needs the suite to
+/// exercise THAT one — coverage. The layered conduct runs the suite through an instrumented build
+/// and depends on `prova.bin` children being instrumented too, because the recursion is where the
+/// runtime actually executes; with the declared `[runner]` winning, every child was the ordinary
+/// uninstrumented `target/debug/prova`, contributing nothing. Measured: a 197-second conduct wrote
+/// TWO profraws and the layer read 45% against a 69% floor, with no coverage having been lost.
+///
+/// An ENV var rather than a flag because the recursion is arbitrarily deep: a flag stops at the
+/// first child, while every descendant inherits this (the same reason `LLVM_PROFILE_FILE` works).
+/// Precedent: `PROVA_RUN_DEPTH`, also run-scoped mechanism rather than configuration.
+///
+/// Deliberately NOT a general configuration surface — the manifest is where a package says what it
+/// tests, and reading the subject from the ambient environment is exactly the silent split
+/// `[runner]` exists to remove. Nothing in prova sets it; a conduct that means it sets it, and the
+/// coverage proof asserts afterwards that the recursion was actually measured, so this cannot fail
+/// quietly the way the arrangement it replaces did.
+const SUBJECT_BIN_ENV: &str = "PROVA_SUBJECT_BIN";
+
+/// The binary nested proofs reach as `prova.bin`: the explicit override when one is set, else the
+/// declared subject when the manifest names one, else this executable. Resolution only —
+/// provisioning is the run path's explicit act.
 pub(crate) fn subject_bin(home: Option<&Home>) -> Option<std::path::PathBuf> {
+    // Empty counts as unset, matching `PROVA_RUN_DEPTH`: a child that clears the variable rather
+    // than removing it means "no override", not "the subject is the empty path".
+    if let Some(path) = std::env::var_os(SUBJECT_BIN_ENV).filter(|v| !v.is_empty()) {
+        return Some(std::path::PathBuf::from(path));
+    }
     if let Some(home) = home {
         if let Some(Ok(runner)) = declared_subject(home) {
             return Some(home.dir.join(runner.bin));
