@@ -563,6 +563,152 @@ mod tests {
         matches!(parse_anchor(line), Anchor::Malformed(_))
     }
 
+    // --- reconcile ------------------------------------------------------------------------
+    //
+    // What `prova owed` reports, and therefore what a human believes is still outstanding. Every
+    // branch below is a way for the ledger to be confidently wrong rather than loud: a covered
+    // claim reported as unproven sends someone to write a proof that exists, and — the expensive
+    // direction — an unproven claim omitted reads as discharged when nothing tests it.
+
+    fn claim_at(kind: Kind, address: &str, digest: &str) -> Claim {
+        Claim {
+            kind,
+            address: address.to_string(),
+            file: PathBuf::from(address.split('#').next().unwrap_or(address)),
+            line: 3,
+            digest: digest.to_string(),
+            props: BTreeMap::new(),
+        }
+    }
+
+    fn proof(path: &str, covers: &[&str]) -> crate::ProofObligation {
+        crate::ProofObligation {
+            path: path.to_string(),
+            promises: None,
+            covers: covers.iter().map(|c| c.to_string()).collect(),
+        }
+    }
+
+    fn statuses(owed: &[Owed]) -> Vec<(Status, &str)> {
+        owed.iter().map(|o| (o.status, o.subject.as_str())).collect()
+    }
+
+    /// The two directions of a broken link, which is why they are separate statuses: a proof
+    /// pointing at prose that is not there, and prose no proof points at.
+    #[test]
+    fn a_cover_without_an_anchor_dangles_and_an_anchor_without_a_cover_is_unproven() {
+        let claims = vec![claim_at(Kind::Claim, "docs/a.md#kept", "d1")];
+        let proofs = vec![proof("proofs/x.lua", &["docs/a.md#absent"])];
+
+        let owed = reconcile(&claims, &proofs);
+        assert_eq!(
+            statuses(&owed),
+            vec![
+                (Status::Dangling, "docs/a.md#absent"),
+                (Status::Unproven, "docs/a.md#kept"),
+            ]
+        );
+        assert!(owed[0].detail.contains("proofs/x.lua"), "the dangling row names the proof");
+        assert!(owed[1].detail.contains("no proof covers it"));
+    }
+
+    /// A claim a proof covers is discharged and must NOT appear. This is the assertion that fails
+    /// if the match ever drifts (an address compared with a pin still attached, say) — the whole
+    /// ledger would then report every bound claim as unproven at once.
+    #[test]
+    fn a_covered_claim_is_not_owed() {
+        let claims = vec![claim_at(Kind::Claim, "docs/a.md#bound", "d1")];
+        let proofs = vec![proof("proofs/x.lua", &["docs/a.md#bound"])];
+        assert!(reconcile(&claims, &proofs).is_empty());
+
+        // …including when the binding carries a pin that still matches the claim's text.
+        let pinned = vec![proof("proofs/x.lua", &["docs/a.md#bound@d1"])];
+        assert!(reconcile(&claims, &pinned).is_empty(), "a matching pin is not an obligation");
+    }
+
+    /// An external address is opaque, not unbound. Reporting `jira:PROVA-142` as dangling would
+    /// send an agent hunting for local prose that was never supposed to exist.
+    #[test]
+    fn an_external_address_is_skipped_rather_than_reported_as_dangling() {
+        let proofs = vec![proof("proofs/x.lua", &["jira:PROVA-142", "https://example.test/spec"])];
+        assert!(reconcile(&[], &proofs).is_empty());
+
+        // The discriminator is the `#`: an address carrying one is local, even with a scheme-like
+        // prefix, so it is still reconciled rather than waved through.
+        let local = vec![proof("proofs/x.lua", &["pkg:docs/a.md#id"])];
+        assert_eq!(statuses(&reconcile(&[], &local)), vec![(Status::Dangling, "pkg:docs/a.md#id")]);
+    }
+
+    /// A backlog item is muted in BOTH directions: covering one is reported (a proof cannot
+    /// discharge what nobody promoted), and an uncovered one is silent (a parked item is not
+    /// owed). The muting is the point — half-formed work can be parked in a doc under active
+    /// development without inflating what that doc owes today.
+    #[test]
+    fn a_backlog_item_is_muted_when_uncovered_and_reported_when_covered() {
+        let claims = vec![claim_at(Kind::Backlog, "docs/a.md#parked", "d1")];
+        assert!(reconcile(&claims, &[]).is_empty(), "a cold item is not owed");
+
+        let owed = reconcile(&claims, &[proof("proofs/x.lua", &["docs/a.md#parked"])]);
+        assert_eq!(statuses(&owed), vec![(Status::Backlogged, "docs/a.md#parked")]);
+        assert!(
+            owed[0].detail.contains("prova backlog promote parked"),
+            "the remedy names the BARE id, not the address: {}",
+            owed[0].detail
+        );
+    }
+
+    /// Pinning is opt-in per binding, so a wording change costs a re-confirmation only where the
+    /// author asked for one. A pin that fired on every binding would make ordinary prose edits
+    /// re-confirm the whole suite; one that never fired would silently drop the guarantee.
+    #[test]
+    fn a_stale_pin_is_reported_and_an_unpinned_binding_is_not() {
+        let claims = vec![claim_at(Kind::Claim, "docs/a.md#watched", "current")];
+
+        let stale = reconcile(&claims, &[proof("proofs/x.lua", &["docs/a.md#watched@older"])]);
+        assert_eq!(statuses(&stale), vec![(Status::Stale, "docs/a.md#watched")]);
+        assert!(stale[0].detail.contains("prova owed --pin"), "the row names its remedy");
+
+        let unpinned = reconcile(&claims, &[proof("proofs/x.lua", &["docs/a.md#watched"])]);
+        assert!(unpinned.is_empty(), "an unpinned binding does not watch the text");
+    }
+
+    /// An open promise is owed against the PROOF, not against a claim — it is the one row whose
+    /// subject is a node path, and it rides alongside whatever its covers produced.
+    #[test]
+    fn a_promise_is_owed_against_the_proof_that_made_it() {
+        let mut p = proof("proofs/x.lua", &[]);
+        p.promises = Some("the retry path is not covered yet".to_string());
+
+        let owed = reconcile(&[], &[p]);
+        assert_eq!(statuses(&owed), vec![(Status::Promised, "proofs/x.lua")]);
+        assert_eq!(owed[0].detail, "the retry path is not covered yet");
+    }
+
+    /// Worst-first, then by subject: the rows are read top-down and truncated by whoever is
+    /// reading, so the order decides what gets acted on.
+    #[test]
+    fn rows_are_ordered_worst_first_then_by_subject() {
+        let claims = vec![
+            claim_at(Kind::Claim, "docs/a.md#unproven-b", "d"),
+            claim_at(Kind::Claim, "docs/a.md#unproven-a", "d"),
+            claim_at(Kind::Claim, "docs/a.md#pinned", "current"),
+        ];
+        let mut promising = proof("proofs/z.lua", &["docs/a.md#pinned@stale"]);
+        promising.promises = Some("open".to_string());
+        let proofs = vec![proof("proofs/x.lua", &["docs/a.md#missing"]), promising];
+
+        assert_eq!(
+            statuses(&reconcile(&claims, &proofs)),
+            vec![
+                (Status::Dangling, "docs/a.md#missing"),
+                (Status::Unproven, "docs/a.md#unproven-a"),
+                (Status::Unproven, "docs/a.md#unproven-b"),
+                (Status::Stale, "docs/a.md#pinned"),
+                (Status::Promised, "proofs/z.lua"),
+            ]
+        );
+    }
+
     #[test]
     fn an_anchor_is_recognised_regardless_of_spacing() {
         assert_eq!(ids("<!-- claim: busy-not-absent -->"), Some((Kind::Claim, "busy-not-absent".into(), props(&[]))));

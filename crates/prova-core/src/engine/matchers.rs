@@ -1360,4 +1360,60 @@ mod tests {
         assert!(!path_is_empty(&path_value(&root.join("absent"))), "missing is not empty");
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// Small subjects print whole — the windowing must not touch the common case, where the
+    /// diagnostic IS the value.
+    #[test]
+    fn a_small_subject_is_rendered_verbatim() {
+        let s = "just a line";
+        assert_eq!(display_windowed(s, "a"), format!("{s:?}"));
+        let at_limit = "x".repeat(600);
+        assert_eq!(display_windowed(&at_limit, "x"), format!("{at_limit:?}"));
+    }
+
+    /// For a `never():contains` failure, WHERE it matched is the actionable part, so a large
+    /// subject is windowed around the first match rather than dumped. Reported from the field: a
+    /// `contains` against a captured CLI transcript put ~3KB on every diagnostic line and buried
+    /// the needle it was about.
+    #[test]
+    fn a_large_subject_is_windowed_around_the_match() {
+        let subject = format!("{}NEEDLE{}", "a".repeat(1000), "b".repeat(1000));
+        let out = display_windowed(&subject, "NEEDLE");
+
+        assert!(out.contains("NEEDLE"), "the window keeps what the assertion was about");
+        assert!(out.len() < subject.len() / 2, "and it is much shorter than the subject");
+        assert!(out.contains("bytes elided"), "the cut is declared, not silent");
+        // Both sides were cut, and each elision counts the bytes it stands for.
+        assert!(out.starts_with(" …[760 bytes elided]… "), "{out}");
+        assert!(out.ends_with(" …[760 bytes elided]… "), "{out}");
+    }
+
+    /// With no match, no middle is more relevant than any other, so the edges are shown — the
+    /// head and tail are where a transcript says what it was and how it ended.
+    #[test]
+    fn a_large_subject_with_no_match_shows_its_edges() {
+        let subject = format!("{}{}", "head".repeat(200), "tail".repeat(200));
+        let out = display_windowed(&subject, "absent");
+        assert!(out.starts_with("\"head"), "{out}");
+        assert!(out.ends_with("tail\""), "{out}");
+        assert!(out.contains("bytes elided"));
+
+        // An empty needle has nothing to centre on and takes the same path.
+        assert_eq!(display_windowed(&subject, ""), out);
+    }
+
+    /// Every cut slides to a char boundary. Slicing a `str` mid-UTF-8 PANICS, and this code runs
+    /// while a failure is being reported — so the bug would replace an assertion's diagnostic
+    /// with a dead runner, which is the one outcome an assertion must never produce.
+    #[test]
+    fn cuts_never_land_mid_character() {
+        // A one-byte lead-in makes every 3-byte char start at an offset the window lands inside.
+        let subject = format!("x{}", "日".repeat(400));
+        let out = display_windowed(&subject, "absent");
+        assert!(out.contains("bytes elided"));
+
+        // …and the same with a match, where both cuts are computed from the needle's position.
+        let around = format!("x{}NEEDLE{}", "日".repeat(400), "日".repeat(400));
+        assert!(display_windowed(&around, "NEEDLE").contains("NEEDLE"));
+    }
 }
