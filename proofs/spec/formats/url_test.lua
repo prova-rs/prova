@@ -8,7 +8,8 @@
 --- bug themselves.
 
 prova.test("what encode writes, decode reads back", {
-  proves = "an encoder whose output nothing can read is half an API — and the round trip is the only assertion that catches an inverse which is subtly not one",
+  covers = "docs/design/agent-ergonomics.md#url-encode-had-no-inverse",
+  proves ="an encoder whose output nothing can read is half an API — and the round trip is the only assertion that catches an inverse which is subtly not one",
 }, function(t)
   for _, original in ipairs({ "a b&c=d/e", "plus+sign", "café", "100%", "", "/nested/path?q=1" }) do
     t:expect(url.decode(url.encode(original)), "round trip of " .. original):equals(original)

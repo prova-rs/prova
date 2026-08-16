@@ -33,6 +33,7 @@ prova.test("prova.parse.json is removed — the clean break to tech-first module
 end)
 
 prova.test("a decoded array is still an array when it goes back out", {
+  covers = "docs/design/agent-ergonomics.md#a-list-verb-returns-a-list",
   proves = "decode used to produce a bare table for `[]`, indistinguishable from a decoded empty OBJECT, so re-encoding turned every empty list into `{}` — a data-shape change at a boundary, silent, and rejected by plenty of APIs that treat the two as different requests. Found while paying down unit coverage on the fidelity layer, which is the kind of defect that exercise is FOR",
 }, function(t)
   -- The shapes that can lose their identity, and the nesting where a per-value fix would miss.

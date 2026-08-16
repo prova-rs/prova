@@ -19,6 +19,7 @@ prova.test("csv.encode emits headers + rows, round-tripping parse", function(t)
 end)
 
 prova.test("a verb that returns rows returns a LIST, even when there are none", {
+  covers = "docs/design/agent-ergonomics.md#a-list-verb-returns-a-list",
   proves = "an empty result used to be a bare table, indistinguishable from an empty map, so `json.encode(csv.decode(header_only))` emitted `{}` where the author wrote something that returns rows — the same shape-loss `json.decode` had for `[]`, and it reaches every list-returning verb",
 }, function(t)
   t:expect(json.encode(csv.decode("a,b\n")), "zero rows still encodes as a list"):equals("[]")
@@ -31,6 +32,7 @@ prova.test("a verb that returns rows returns a LIST, even when there are none", 
 end)
 
 prova.test("duplicate headers are refused, not silently collapsed", {
+  covers = "docs/design/agent-ergonomics.md#csv-duplicate-headers-refused",
   proves = "rows are header-keyed maps, so two columns of one name cannot both survive — the second overwrote the first and the dropped column was never mentioned, which is data loss wearing a successful return. The contract is unsatisfiable for that input, so the honest answer is to say so",
 }, function(t)
   local ok, err = pcall(function() return csv.decode("a,a\n1,2\n") end)
@@ -40,6 +42,7 @@ prova.test("duplicate headers are refused, not silently collapsed", {
 end)
 
 prova.test("a row carrying a column the header row lacks is refused, not silently dropped", {
+  covers = "docs/design/agent-ergonomics.md#csv-encode-loses-no-column",
   proves = "headers are taken from the FIRST row, so a later row's extra field vanished with a successful return — the column existed in the data and not in the output, and which row happened to be first decided what was lost. Declaring `headers` is different: naming the columns IS choosing them, so a projection stays legal",
 }, function(t)
   local ok, err = pcall(function()
@@ -59,6 +62,7 @@ prova.test("a row carrying a column the header row lacks is refused, not silentl
 end)
 
 prova.test("encoding no rows produces no file, not a file with one nameless column", {
+  covers = "docs/design/agent-ergonomics.md#csv-encode-loses-no-column",
   proves = "it emitted `\"\"` — a header line declaring a single column whose name is the empty string — which decodes back to a row shape nobody asked for. Nothing to describe means nothing to write",
 }, function(t)
   t:expect(csv.encode({}), "no rows, no output"):equals("")

@@ -21,7 +21,8 @@ prova.test("fs.mkdir is idempotent — a second call on an existing dir is a no-
 end)
 
 prova.test("fs.glob returns a list even when nothing matches", {
-  proves = "a glob that matched nothing used to encode as `{}` rather than `[]`, so a proof that sent its result onward changed the request's shape whenever the directory happened to be empty — the failure only shows up on the empty path, which is exactly the case least likely to be exercised while writing the proof",
+  covers = "docs/design/agent-ergonomics.md#a-list-verb-returns-a-list",
+  proves ="a glob that matched nothing used to encode as `{}` rather than `[]`, so a proof that sent its result onward changed the request's shape whenever the directory happened to be empty — the failure only shows up on the empty path, which is exactly the case least likely to be exercised while writing the proof",
 }, function(t)
   local dir = t:tempdir("globbing")
   t:expect(json.encode(fs.glob(dir, "**/*.nothing")), "no matches is an empty LIST"):equals("[]")
