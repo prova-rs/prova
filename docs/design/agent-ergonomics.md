@@ -659,6 +659,25 @@ provision are the two callers that would feel it first.
 unknown duration is the verb's whole job, so a default would abort legitimate work; `idle_timeout`
 and `first_byte` exist as the opt-in liveness bounds for the cases where silence IS the signal.
 
+<!-- backlog: unparseable-durations-are-dropped-not-refused recorded=2026-08-16 -->
+**A malformed duration at a closed boundary is silently dropped, and it produces the unbounded
+wait this section forbids.** `client_opts` parses its `timeout` as
+`opts.get("timeout")?.and_then(|s| parse_duration(&s))`, and `parse_duration` answers `None` for
+anything it cannot read. So `http.client{ base_url = …, timeout = "5 seconds" }` — a plausible
+spelling of a real grammar (`"5s"`) — configures a client with **no timeout at all**, and the
+proof that meant to bound its wait waits forever instead.
+
+This is the module-opts gate's blind spot rather than a gap in it. The gate closed the KEY set, so
+`timeut = "5s"` is now refused by name; the VALUE under a correctly-spelled key is still parsed
+best-effort, and the two failures look identical to an author who typed one character wrong in
+either place. Found while writing unit tests for `client_opts`, not from a report — the silent path
+has no symptom until something hangs.
+
+Suggested shape: parse strictly at every boundary that takes a duration string — refuse with the
+site, the key, and the accepted grammar, the same way an unknown key is refused. Worth auditing as
+one sweep rather than one call site, since `and_then(parse_duration)` is the idiom wherever a
+duration crosses from Lua, and every instance of it fails the same way.
+
 <!-- claim: a-list-verb-returns-a-list recorded=2026-08-15 -->
 **Anything that returns a sequence returns something that IS a sequence, including when it is
 empty.** `json.decode('[]')`, `csv.decode` over a header-only file, and `fs.glob` with no matches

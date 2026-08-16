@@ -909,6 +909,12 @@ mod yaml;
 #[cfg(feature = "graphql")]
 mod graphql;
 
+/// The path algebra and filter boundaries, in their own file: `modules.rs` is a large module
+/// already, and the tests are the part that can move without splitting the implementation.
+#[cfg(test)]
+#[path = "modules/path_tests.rs"]
+mod path_tests;
+
 #[cfg(test)]
 mod identity_tests {
     use super::*;
