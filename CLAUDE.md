@@ -41,17 +41,33 @@ opt-in classes).
 prova                    # the black-box suite        prova --last-failed   # the inner loop
 prova run ut             # unit tests, deputed via nextest into the account
 prova run quality        # clippy -D warnings, unwrap/expect ratchet, file sizes
-prova run coverage       # line coverage, ratcheted against the committed baseline
-prova run all            # the pre-push sweep: proofs + ut + quality
+prova run coverage       # layered coverage, ratcheted against the committed baseline
+prova run all            # before you COMMIT: proofs + ut + the debt ratchets
+prova run release        # before you RELEASE: everything `all` runs, plus coverage
 
 # Cold start (no prova installed yet) — cargo is the artifact tool, once:
 cargo run -p prova-cli --           # then `cargo xtask install` puts prova on PATH
 
-# Artifacts (xtask's whole job)
+# Artifacts (xtask's whole job — it holds the `cargo` lock for you)
 cargo xtask install                 # install to ~/.cargo/bin; refreshes the user-scoped prova MCP
                                     # build — restart Claude Code afterward to load it
 cargo xtask check / build / sweep   # cargo check · release build · drop stale target/ artifacts
 ```
+
+**Reach cargo through prova, not around it.** `cargo nextest` and `cargo llvm-cov` have lanes —
+`prova run ut` and `prova run coverage` — and those hold the package `cargo` lock, so they queue
+behind a sweep instead of racing it over `target/`. Typing the cargo command directly skips the
+hold, and a build that lands mid-conduct can leave a deputy producing no junit at all (seen:
+`zero cases parsed from junit.xml`, three layers away from the cause). When you genuinely need a
+raw invocation, join the rule rather than opting out of it:
+
+```bash
+prova lock cargo -- cargo tree -i some-crate   # any tool, same hold, exit code forwarded
+```
+
+`cargo xtask` already does this for you (it flocks `.prova/var/locks/cargo.lock` — the same file,
+which IS the contract), so `xtask` commands need no wrapper. The one exception is `xtask run`,
+which delegates to prova and must not hold a lock its own child will ask for.
 
 Inside a proof, drive prova recursively through `prova.bin` (the runtime injects its own executable),
 never a bare `prova`. `proofs/hermeticity/binary_identity_test.lua` fails the suite if one reappears.

@@ -86,3 +86,23 @@ prova.test("`prova lock` joins the house rule from outside — exit code forward
   t:expect(homeless.code, "a package lock needs a package"):equals(2)
   t:expect(homeless.stdout):contains("--machine")
 end)
+
+prova.test("xtask joins the same house rule, on the same file", {
+  covers = "docs/design/architecture.md#locks-cross-instance",
+  proves = "the cargo lock is a FILE, and every tool that agrees on the path joins the rule — xtask holds it by flocking the path directly rather than by calling prova, so nothing but agreement keeps them in the same queue. A drift here is silent: both tools keep working, they simply stop excluding each other, and the symptom lands in whichever conduct happens to be compiling when the other one builds",
+}, function(t)
+  local xtask = fs.read(prova.root .. "/xtask/src/main.rs")
+  t:expect(xtask, "xtask flocks the package cargo lock"):contains(".prova/var/locks/cargo.lock")
+
+  -- The path prova itself computes, asserted through the binary rather than by restating the
+  -- convention here — a proof that hard-codes the same string twice proves only that it can copy.
+  local from_prova = shell.run({ prova.bin, "eval",
+    'local d = fs.tempdir(); local r = shell.run({ prova.bin, "lock", "cargo", "--", "true" }, ' ..
+    '{ cwd = prova.root }); return tostring(r.code)' },
+    { merge_stderr = true, timeout = "60s" })
+  t:expect(from_prova.code, "`prova lock cargo` holds and releases: " .. from_prova.stdout):equals(0)
+
+  -- `xtask run` must NOT hold it: it delegates to prova, which asks for the same token, and a
+  -- parent holding what its child needs is a deadlock rather than a slow build.
+  t:expect(xtask, "the delegating command is exempt"):matches("Commands::Run%s*{%s*%.%.%s*}%s*=>%s*None")
+end)
