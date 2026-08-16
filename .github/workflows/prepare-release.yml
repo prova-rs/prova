@@ -33,8 +33,43 @@ env:
   COMMIT_EMAIL: github-actions@users.noreply.github.com
 
 jobs:
+  # Eat the dogfood: the bar prova asks of everyone else is the bar prova ships
+  # under. `prova run release` is the profile that means "I have seen everything
+  # I need to see" — every black-box proof, the unit tests, the debt ratchets,
+  # and layered coverage against its floor. Running it HERE, before the bump,
+  # is what makes it a gate rather than a habit: the tag is the point of no
+  # return (pushing it triggers release.yml, which builds and publishes), so a
+  # bar checked afterwards is a bar that ships broken releases and apologizes.
+  #
+  # This is deliberately not a copy of the legs Build already runs. Build
+  # answers "does main work"; this answers "is this fit to be a version", which
+  # is a strictly higher bar and includes the coverage floor Build never sees.
+  gate:
+    name: prova run release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enable Rust Dependency Caching
+        uses: Swatinem/rust-cache@v2
+
+      # The release profile `must_run`s both, so a runner missing either fails
+      # loudly rather than skipping the leg that would have caught something.
+      - name: Install cargo-nextest and cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest,cargo-llvm-cov
+
+      - name: Build the subject
+        run: cargo build
+
+      - name: prova run release
+        run: ./target/debug/prova run release
+
   prepare:
     name: Bump & Tag
+    needs: gate
     runs-on: ubuntu-latest
     steps:
       - name: Install cargo-workspaces

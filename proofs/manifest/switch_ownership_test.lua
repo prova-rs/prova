@@ -97,3 +97,25 @@ prova.test("the tiers say which question they answer, so the right one is obviou
   t:expect(r.stdout, "`all` says when to reach for it"):matches("all%s+before you commit")
   t:expect(r.stdout, "`release` says when to reach for it"):matches("release%s+before you release")
 end)
+
+prova.test("the release workflow runs the release profile before it tags", {
+  covers = "docs/design/manifest.md#switches-not-env-capabilities",
+  proves = "a bar that lives in someone's head is the same shape as a gate nobody throws — this file's other proofs exist because `coverage` fell off the path silently. 'we always run it before releasing' is prose; the assertion is that the workflow which creates the TAG cannot reach its bump step without the release profile passing first, since the tag is the point of no return (pushing it triggers the build-and-publish)",
+}, function(t)
+  local wf = fs.read(prova.root .. "/.github/workflows/prepare-release.yml")
+
+  t:expect(wf, "the workflow runs the release profile"):contains("prova run release")
+  -- …and the bump cannot start until that job succeeds. Without `needs`, both jobs run in
+  -- parallel and a red gate tags anyway — which looks identical in the UI until you read it.
+  t:expect(wf, "the bump waits on the gate"):contains("needs: gate")
+
+  -- The profile it runs must be the one that actually sees everything; `run all` here would
+  -- silently drop coverage, which is the leg Build never runs and the reason this gate exists.
+  local order = wf:find("prova run release") < wf:find("needs: gate")
+  t:expect(order, "the gate is declared before the job that depends on it"):is_true()
+
+  -- The tools the profile `must_run`s have to be installed, or the leg fails on provisioning
+  -- rather than on the bar — a red gate for the wrong reason trains people to rerun it.
+  t:expect(wf, "nextest is provisioned"):contains("cargo-nextest")
+  t:expect(wf, "…and llvm-cov, which coverage must_runs"):contains("cargo-llvm-cov")
+end)
