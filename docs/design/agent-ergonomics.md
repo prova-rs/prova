@@ -583,6 +583,40 @@ it does. Only the leading position ever mattered — a trailing comment was alwa
 
 ## 26. A list verb returns a list, empty or not
 
+## 27. A wait is bounded, and the bound is a verdict
+
+<!-- claim: every-wait-is-bounded recorded=2026-08-15 -->
+**Every primitive that blocks on a signal carries a timeout by default, and reaching it FAILS the
+test rather than hanging the run.** `prova.barrier` (30s), `prova.retry` (30s), `http.wait_for`
+(30s), `docker.run`'s `wait` (30s) and `docker.build`'s `first_byte` (90s) all raise, naming what
+they waited for and what arrived. A default rather than a required argument — the number is a
+patience, and making every caller invent one adds ceremony without adding judgement — but there is
+no spelling of any of them that waits forever.
+
+The reason is that a hang reports nothing. A suite that stops has no verdict, no line naming the
+seam, and no exit code until some outer timeout kills it — CI's blunt one, or a human's. A bounded
+wait converts that into a failure that says which rendezvous, how many participants arrived, and
+which of the possible causes to look at first. Coordination primitives are welcome; unbounded ones
+are not.
+
+<!-- backlog: lock-waits-are-unbounded recorded=2026-08-15 -->
+**A cross-instance lock wait has no bound, and it is the one place the rule above does not hold.**
+`locks::hold` flocks blocking with no deadline, so a run queued behind another instance's `cargo`
+waits indefinitely. It is safer than it looks — the kernel releases a flock when its holder dies,
+so the wait is always behind a LIVE process doing real work, never a dead one — which is why this
+is a backlog item and not the same severity as a hang on a signal that may never come.
+
+What it costs is diagnosis. In CI the job stops until the runner's own timeout fires, and that
+kills the process with no line naming the token, the holder, or how long it waited — the run banks
+`run.lock_wait_ms` only if it finishes. Suggested shape: a generous default bound (minutes, not
+seconds, since a legitimate build genuinely takes them) whose expiry fails with the token, the
+elapsed time, and the holding pid if it can be read. `prova lock --machine` and the `[runner]`
+provision are the two callers that would feel it first.
+
+**Deliberately NOT in scope:** `shell.run`'s optional `timeout`. Running an arbitrary command of
+unknown duration is the verb's whole job, so a default would abort legitimate work; `idle_timeout`
+and `first_byte` exist as the opt-in liveness bounds for the cases where silence IS the signal.
+
 <!-- claim: a-list-verb-returns-a-list recorded=2026-08-15 -->
 **Anything that returns a sequence returns something that IS a sequence, including when it is
 empty.** `json.decode('[]')`, `csv.decode` over a header-only file, and `fs.glob` with no matches

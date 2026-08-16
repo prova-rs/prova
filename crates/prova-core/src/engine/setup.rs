@@ -278,6 +278,59 @@ fn install_utilities(lua: &Lua, prova: &Table) -> mlua::Result<()> {
         })?,
     )?;
 
+    // prova.barrier(token, parties, opts?) — block until `parties` participants have arrived, so
+    // reaching the far side IS the proof they were in flight at once. The primitive concurrency
+    // assertions were missing: `sleep` measures timing luck (it fails on a loaded host and PASSES
+    // when a serialized system happens to overlap anyway), and the locks serialize, which is the
+    // opposite. See crate::barrier.
+    //
+    // ASYNC, and that is load-bearing rather than stylistic. A worker drives many Lua coroutines
+    // cooperatively on one current-thread runtime, so a barrier that blocked the thread would
+    // starve the very sibling it waits for and deadlock itself — measured, on the first draft.
+    // Awaiting between polls yields the worker, letting the other participants run and arrive.
+    prova.set(
+        "barrier",
+        lua.create_async_function(|_, (token, parties, opts): (String, u64, Option<Table>)| async move {
+            if let Some(o) = &opts {
+                crate::opts::reject_unknown(o, &["timeout"], "prova.barrier")?;
+            }
+            let timeout = opts
+                .as_ref()
+                .map(|o| o.get::<Option<String>>("timeout"))
+                .transpose()?
+                .flatten()
+                .and_then(|s| crate::model::parse_duration(&s))
+                .unwrap_or(crate::barrier::DEFAULT_TIMEOUT);
+            let root = std::env::current_dir().ok();
+            let (path, position) = crate::barrier::join(&token, parties, root.as_deref())
+                .map_err(mlua::Error::RuntimeError)?;
+
+            let started = std::time::Instant::now();
+            loop {
+                if position >= parties
+                    || crate::barrier::released(&path, &token, parties)
+                        .map_err(mlua::Error::RuntimeError)?
+                {
+                    // The last one out leaves nothing behind, so the next barrier on this token
+                    // counts from zero instead of inheriting a satisfied one.
+                    if position >= parties {
+                        crate::barrier::release(&path);
+                    }
+                    return Ok(position);
+                }
+                if started.elapsed() >= timeout {
+                    return Err(mlua::Error::RuntimeError(crate::barrier::timeout_message(
+                        &token,
+                        parties,
+                        crate::barrier::arrived(&path, &token),
+                        started.elapsed(),
+                    )));
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })?,
+    )?;
+
     // prova.retry(fn, { timeout = "30s", every = "500ms", message? }) — call `fn` until it returns a
     // truthy value (raising is treated as "not yet"), or the deadline elapses. Returns the value.
     // Replaces the hand-rolled `for _=1,N do pcall(...) sleep end` readiness loop; the common case is

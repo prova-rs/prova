@@ -538,6 +538,23 @@ function prova.describe(label, body) end
 ---@param millis integer
 function prova.sleep(millis) end
 
+---Wait until `parties` participants have arrived at `token`, then release them together.
+---
+---The concurrency assertion: reaching the far side IS the proof the participants were in flight at
+---once, so there is no window to have been lucky in. `prova.sleep` measures timing luck in both
+---directions — it fails on a loaded host and passes when a serialized system happens to overlap.
+---
+---Bounded: `timeout` defaults to 30s and reaching it FAILS the test, naming how many of how many
+---arrived. Participants become one atomic selection unit — `-k`, `--node` and `--last-failed` that
+---pick some of them leave the rest waiting — so reach for it when concurrency is the property under
+---proof, not as a general coordination tool.
+---@param token string
+---@param parties integer
+---@param opts? { timeout?: string }
+---@return integer position  # 1-based arrival order
+function prova.barrier(token, parties, opts) end
+
+
 ---The exec-CLI output-parsing toolkit: turn the text a container CLI returns into Lua values.
 ---@class prova.parse
 prova.parse = {}
