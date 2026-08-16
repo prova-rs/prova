@@ -42,7 +42,8 @@ pub const LAST_RUN: &str = "last-run.json";
 
 // The canonical run-record types live in the core ledger so embeddings can read the same file.
 pub use prova_core::ledger::{
-    attest, Attested, Counts, DeputedRow, Executed, MeasurementRow, Record, ReminderEntry, Skipped,
+    attest, Attested, Counts, DeputedRow, Executed, MeasurementRow, Record, ReminderEntry, ReportRow,
+    Skipped,
 };
 
 /// Convert the engine's evaluated reminders into record rows.
@@ -95,6 +96,26 @@ pub fn measurement_rows(measurements: &[prova_core::Measurement]) -> Vec<Measure
             // The stable string form lives on the core type, shared with the baseline file.
             direction: m.direction.as_str().to_string(),
             set: m.set.clone(),
+        })
+        .collect()
+}
+
+/// Convert the engine's published reports into record rows.
+///
+/// Paths render through `emit_path` for the same reason every path-producing API does: the record
+/// is read by agents and pasted into shells, and a Windows `\` in JSON is an escape nobody meant.
+pub fn report_rows(reports: &[prova_core::Report]) -> Vec<ReportRow> {
+    reports
+        .iter()
+        .map(|r| ReportRow {
+            name: r.name.clone(),
+            summary: r.summary.clone(),
+            explains: r.explains.clone(),
+            forms: r
+                .forms
+                .iter()
+                .map(|f| (f.kind.clone(), prova_core::emit_path(&f.path)))
+                .collect(),
         })
         .collect()
 }
@@ -205,6 +226,7 @@ mod tests {
             deselected: vec!["f › other".into()],
             measurements: vec![],
             attached: vec![],
+            reports: Vec::new(),
             reminders: vec![],
             deputed: vec![],
             deputed_narrowed: false,

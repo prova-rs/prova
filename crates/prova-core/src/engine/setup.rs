@@ -778,6 +778,8 @@ pub(super) fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(
         config.progress(),
         config.deputed_registry.clone(),
         config.measurement_registry.clone(),
+        config.report_registry.clone(),
+        config.report_custody.clone(),
     )?;
 
     // Host-provided plugin modules (e.g. `archetect`), installed into every Lua state.

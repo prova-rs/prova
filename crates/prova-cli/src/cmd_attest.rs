@@ -868,6 +868,7 @@ end)
                 deselected: vec![],
                 measurements: vec![],
                 attached: vec![],
+                reports: Vec::new(),
                 reminders: vec![],
                 deputed_narrowed: false,
                 deputed: vec![record::DeputedRow {

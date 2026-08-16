@@ -496,6 +496,7 @@ fn build_config(
     progress_sink: &std::sync::Arc<dyn prova_core::Progress>,
     deputed: &prova_core::DeputedRegistry,
     measurements: &prova_core::MeasurementRegistry,
+    reports: &prova_core::ReportRegistry,
 ) -> Result<prova_core::RunConfig, ExitCode> {
     if cli.promises_only && cli.proofs_only {
         eprintln!(
@@ -521,7 +522,13 @@ fn build_config(
     .with_capabilities(std::mem::take(&mut env.env.capabilities))
     .with_globals_inject(std::mem::take(&mut env.env.globals_inject))
     .with_deputed_tracking(deputed.clone())
-    .with_measurement_tracking(measurements.clone());
+    .with_measurement_tracking(measurements.clone())
+    // Custody lives beside the rest of prova's generated state, and only when there IS a package:
+    // without one there is nowhere durable to file an artifact, so a report names where it lies.
+    .with_report_tracking(
+        reports.clone(),
+        home.as_ref().map(|h| h.dir.join(".prova/var/reports")),
+    );
 
     // `--last-failed`: fold the previous run's failed node paths into the selection as exact nodes.
     if cli.last_failed {
@@ -844,6 +851,9 @@ struct Accounts {
     // `measure.ratchet` call takes accumulates here, drained into the record and, under
     // `--update-baseline`, into the guarded baseline writer.
     measurements: prova_core::MeasurementRegistry,
+    // The report account (docs/design/verifiers.md#reports-are-custody-not-visualization): every
+    // artifact a conduct publishes accumulates here, drained into the run record.
+    reports: prova_core::ReportRegistry,
     attached: prova_core::AttachedRegistry,
     snapshots: Option<prova_core::SnapshotRegistry>,
 }
@@ -909,6 +919,7 @@ fn store_run_record(
             deputed: record::deputed_rows(&drain(&accounts.deputed)),
             deputed_narrowed: !config.selection.is_empty(),
             measurements: record::measurement_rows(measurements),
+            reports: record::report_rows(&drain(&accounts.reports)),
             attached: accounts
                 .attached
                 .lock()
@@ -999,6 +1010,25 @@ fn conclude_run(
         direction: prova_core::Direction::LowerIsBetter,
         set: "timings".to_string(),
     });
+
+    // The reports line, in the recap's spirit and for the same reason as `switched off:` — an
+    // artifact nobody knows exists is one nobody reads. Peeked BEFORE the record drains the
+    // account, console only, and silent when nothing published: a run that produces no artifact
+    // should say nothing rather than say "none".
+    if is_console {
+        let published = accounts
+            .reports
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !published.is_empty() {
+            let names = published
+                .iter()
+                .map(|r| r.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            println!("reports: {names} — read with `prova reports <name>`");
+        }
+    }
 
     let full_run =
         from_manifest && config.selection.is_empty() && !cli.falsify && !cli.promises_only;
@@ -1180,6 +1210,19 @@ fn resolve_run(cli: &mut Cli) -> Result<(XdgSystemLayout, Option<Home>, RunEnv),
     Ok((layout, home, env))
 }
 
+/// Provision the binary under test, when this invocation is actually TESTING.
+///
+/// A run is the only thing that provisions (docs/design/manifest.md#runner-is-the-subject-not-the-conductor):
+/// query verbs and `prova mcp` never reach this path, `-U` forces even a fresh subject to rebuild,
+/// and pure discoveries (`--list`, the switches census) execute nothing so they skip it.
+fn provision_if_testing(cli: &Cli, home: Option<&Home>) -> Option<ExitCode> {
+    let home = home?;
+    if cli.list || cli.switches_list {
+        return None;
+    }
+    crate::cmd_run::provision_subject(home, cli.reprovision)
+}
+
 pub(crate) fn run(cli_args: Vec<String>) -> ExitCode {
     let mut cli = match parse_cli(cli_args) {
         Ok(cli) => cli,
@@ -1194,12 +1237,8 @@ pub(crate) fn run(cli_args: Vec<String>) -> ExitCode {
     // asked (docs/design/manifest.md#runner-is-the-subject-not-the-conductor). Query verbs and
     // `prova mcp` never reach this path; `-U` forces even a fresh subject to rebuild; pure
     // discoveries (`--list`, the switches census) execute nothing and skip it.
-    if let Some(h) = home.as_ref() {
-        if !cli.list && !cli.switches_list {
-            if let Some(code) = crate::cmd_run::provision_subject(h, cli.reprovision) {
-                return code;
-            }
-        }
+    if let Some(code) = provision_if_testing(&cli, home.as_ref()) {
+        return code;
     }
     let suites = match collect_run_suites(&env, from_manifest) {
         Ok(suites) => suites,
@@ -1214,6 +1253,7 @@ pub(crate) fn run(cli_args: Vec<String>) -> ExitCode {
     // The plugin searcher consults the global install dir plus any manifest-declared plugins.
     let deputed_registry: prova_core::DeputedRegistry = std::sync::Arc::default();
     let measurement_registry: prova_core::MeasurementRegistry = std::sync::Arc::default();
+    let report_registry: prova_core::ReportRegistry = std::sync::Arc::default();
     let mut config = match build_config(
         &mut cli,
         &mut env,
@@ -1221,6 +1261,7 @@ pub(crate) fn run(cli_args: Vec<String>) -> ExitCode {
         &progress_sink,
         &deputed_registry,
         &measurement_registry,
+        &report_registry,
     ) {
         Ok(config) => config,
         Err(code) => return code,
@@ -1278,6 +1319,7 @@ pub(crate) fn run(cli_args: Vec<String>) -> ExitCode {
     let accounts = Accounts {
         deputed: deputed_registry,
         measurements: measurement_registry,
+        reports: report_registry,
         attached: attached_registry,
         snapshots: snapshot_registry,
     };

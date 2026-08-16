@@ -101,7 +101,12 @@ pub use layout::{RootedSystemLayout, SystemLayout, XdgSystemLayout};
 pub use progress::{Activity, Kind as ActivityKind, NullProgress, Progress};
 pub use model::{
     spec_summary_segment, ConsoleReporter, DeputedCase, DeputedRegistry, Direction, Event,
-    JUnitReporter, JsonReporter, Measurement, MeasurementRegistry, MultiReporter, NullReporter,
+    JUnitReporter, JsonReporter, Measurement, MeasurementRegistry, Report, ReportForm, ReportRegistry, MultiReporter, NullReporter,
     Outcome, ReminderAccount, ReminderListing, ReminderOutcome, ReminderState, Reporter, SpecItem, Summary, TapReporter,
 };
 pub use suite::{discover_files, discover_suite, discover_suites, is_test_file, run_suite, run_suites, Suite};
+
+/// The one separator convention for every path prova emits — `/`-normalized on Windows,
+/// byte-exact elsewhere. Public because the run record is a path-PRODUCING surface too: agents read
+/// it and people paste it into shells, so a `\\` in JSON is an escape nobody meant.
+pub use crate::modules::emit_path;

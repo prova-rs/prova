@@ -257,6 +257,46 @@ local conduct = prova.fixture("layered-coverage", Scope.File, function()
   -- The merge: suite profraws rejoin, one whole-bar total.
   stage(true)
   local merged = fresh_report()
+
+  -- CUSTODY (docs/design/verifiers.md#reports-are-custody-not-visualization). The conduct has
+  -- produced the answer to "which lines"; without this it is discarded, and the floor can refuse a
+  -- regression while being unable to show what moved. That is not hypothetical — it is what made
+  -- diagnosing this layer cost days.
+  --
+  -- Two forms of one fact, because the two readers differ: llvm-cov's own HTML for a person, the
+  -- merged JSON for an agent (and for diffing two runs). Prova renders neither — llvm-cov does, and
+  -- prova takes custody so `target/` being swept does not take the evidence with it.
+  local html_dir = prova.root .. "/target/coverage-html"
+  fs.remove_all(html_dir)
+  local html = shell.run(
+    { "cargo", "llvm-cov", "report", "--html", "--output-dir", html_dir,
+      "--ignore-filename-regex", IGNORE_FILES },
+    { cwd = prova.root, timeout = "600s" })
+  local json_path = prova.root .. "/target/coverage-merged.json"
+  fs.write(json_path, json.encode(merged))
+
+  local forms = { json = json_path }
+  -- llvm-cov writes a TREE at <output-dir>/html — a page per file, linked from an index. The whole
+  -- tree is published (custody copies it and addresses its index.html), because copying the entry
+  -- point alone would file a report with every link broken.
+  --
+  -- The HTML pass is one extra llvm-cov invocation over profdata that already exists. If it fails,
+  -- the JSON still publishes: a missing human form is worth less than the whole report going away.
+  if html.code == 0 and fs.exists(html_dir .. "/html/index.html") then
+    forms.html = html_dir .. "/html"
+  end
+
+  report.publish{
+    name = "coverage",
+    summary = string.format("unit %.2f%% · black-box %.2f%% · merged %.2f%% (%d/%d lines)",
+      pct(unit), pct(blackbox), pct(merged),
+      merged.data[1].totals.lines.covered, merged.data[1].totals.lines.count),
+    -- Named so a red ratchet can point at the evidence instead of leaving the reader to rebuild
+    -- the conduct: these three are exactly the floors this artifact explains.
+    explains = { "rust.coverage.unit", "rust.coverage.blackbox", "rust.coverage.lines" },
+    forms = forms,
+  }
+
   return { unit = unit, blackbox = blackbox, merged = merged }
 end)
 

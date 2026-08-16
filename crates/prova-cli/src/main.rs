@@ -179,6 +179,12 @@ const VERBS: &[Verb] = &[
         run: evidence_subcommand,
     },
     Verb {
+        name: "reports",
+        help: "  prova reports [<name>]    the report account: artifacts the last run produced, each with\n\
+               \x20                           a one-line summary and its forms; --kind prints one path alone",
+        run: cmd_reports::reports_subcommand,
+    },
+    Verb {
         name: "capabilities",
         help: "  prova capabilities        what prova can detect on THIS host: the built-in capability\n\
                \x20                           vocabulary (docker, github, native clients…), each met or unmet",
@@ -438,6 +444,7 @@ mod cmd_run;
 use cmd_run::*;
 
 mod cmd_attest;
+mod cmd_reports;
 use cmd_attest::*;
 
 mod cmd_eval;

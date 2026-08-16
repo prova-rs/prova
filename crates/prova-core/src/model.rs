@@ -262,6 +262,50 @@ pub struct Measurement {
 /// far apart.
 pub type MeasurementRegistry = std::sync::Arc<std::sync::Mutex<Vec<Measurement>>>;
 
+/// One FORM of a report — the same evidence rendered for a different reader.
+///
+/// A coverage conduct produces llvm-cov's JSON and llvm-cov's HTML: the same facts, one shaped for
+/// a program and one for a person. Listing forms rather than fixing two fields is what lets a
+/// caller pick what suits it — an agent takes `json`, a human takes `html`, and a format nobody
+/// anticipated (lcov, a text summary) needs no new vocabulary.
+#[derive(Debug, Clone)]
+pub struct ReportForm {
+    /// What it IS, not what it is for: `json`, `html`, `xml`, `lcov`, `text`. The chooser's key.
+    pub kind: String,
+    /// Where it lives now. Rewritten to the custodial copy when a run takes custody.
+    pub path: std::path::PathBuf,
+}
+
+/// One report — an artifact a conduct PRODUCED, taken into custody so it outlives the conduct.
+///
+/// The third thing a deputed conduct hands back, beside cases (which the ledger adopts) and
+/// measurements (which the ratchets hold). Those two were already kept; the artifact itself was
+/// dropped, so `prova run coverage` could refuse a regression at 73.46% and be unable to show which
+/// lines — the information existed inside the conduct and was thrown away
+/// (docs/design/verifiers.md#reports-are-custody-not-visualization).
+///
+/// Prova does not RENDER these. The deputy already did; prova preserves the file, names it,
+/// summarizes it in one line, and makes it addressable. That is the difference between custody and
+/// the dashboard this deliberately is not.
+#[derive(Debug, Clone)]
+pub struct Report {
+    /// The address: stable across runs, so `prova reports coverage` means the same thing tomorrow.
+    pub name: String,
+    /// The one line prova itself renders — counts and rows, the only visualization in bounds.
+    /// Required, because a report nobody can read the gist of is a file path with extra steps.
+    pub summary: String,
+    /// The measurement(s) this artifact is the evidence for, so a red ratchet can name where the
+    /// explanation lives. This is the ergonomic the whole feature is for: a floor that fails with
+    /// `73.4586 < 73.4604` and nothing else makes the reader reconstruct the entire conduct.
+    pub explains: Vec<String>,
+    /// Every rendering of this evidence. Order is the author's; the chooser keys on `kind`.
+    pub forms: Vec<ReportForm>,
+}
+
+/// Where a run's published reports accumulate — same shape and same reason as
+/// [`MeasurementRegistry`]: published from Lua on any worker, drained by the caller.
+pub type ReportRegistry = std::sync::Arc<std::sync::Mutex<Vec<Report>>>;
+
 /// Result totals for a run.
 #[derive(Debug, Clone, Default)]
 pub struct Summary {

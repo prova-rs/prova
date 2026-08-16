@@ -882,6 +882,39 @@ function junit.ingest(report) end
 ---@return prova.JunitReport
 function junit.verify(t, opts) end
 
+---@class prova.ReportOpts
+---@field name string        # REQUIRED: the address — `prova reports <name>`, stable across runs
+---@field summary string     # REQUIRED: one line saying what the artifact shows. The only thing
+---                          # prova itself renders, so a reader gets the gist with no viewer.
+---@field forms table        # REQUIRED: renderings of the same fact, `{ json = path, html = path }`
+---                          # (or `{ { kind = ..., path = ... }, ... }`). An agent takes the json,
+---                          # a person opens the html — one publish, both readers.
+---@field explains? string|string[]  # measurement name(s) this artifact is the evidence for, so a
+---                          # red ratchet can name where the explanation lives
+
+---@class prova.report
+report = {}
+--- Publish an artifact this conduct produced, and take custody of it
+--- (docs/design/verifiers.md#reports-are-custody-not-visualization).
+---
+--- The third thing a deputed conduct hands back, beside cases (which the ledger adopts) and
+--- measurements (which the ratchets hold). The file is COPIED into `.prova/var/reports/<name>/`
+--- immediately, because `target/` is swept and a fixture's tempdir is reaped — a recorded path
+--- that rots is worse than no report, since it reads as available.
+---
+--- Prova never renders the artifact; the deputy already did. Prova preserves it, summarizes it in
+--- one line, and makes it addressable (`prova reports`, and the run record for agents).
+--- ```lua
+--- report.publish{
+---   name = "coverage",
+---   summary = "unit 73.47% · merged 86.37%",
+---   explains = "rust.coverage.unit",
+---   forms = { json = json_path, html = html_dir .. "/index.html" },
+--- }
+--- ```
+---@param opts prova.ReportOpts
+function report.publish(opts) end
+
 ---@class prova.toml
 toml = {}
 --- Parse TOML text into a Lua value. Raises on invalid TOML.

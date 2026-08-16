@@ -60,5 +60,27 @@ sweeps every still-leased conduct group and exits. It is spawned once per run th
 holds nothing else, and idles at zero cost. `prova start` provisions are deliberately
 unleased — outliving the invocation is that verb's purpose (`prova down` reaps those).
 
+## Reports: the artifact a conduct produced, kept
+
+A deputed conduct hands back three things. Cases go to the ledger, measurements to the
+ratchets — and the deputy's own artifact (llvm-cov's HTML, its JSON, a junit file) used to be
+dropped under `target/`, which the sweep deletes. So a coverage floor could refuse a
+regression and be unable to show which lines moved.
+
+```lua
+report.publish{
+  name = "coverage",                       -- the address: `prova reports coverage`
+  summary = "unit 73.5% · merged 86.4%",   -- the gist, with no viewer needed
+  explains = "rust.coverage.unit",         -- the measurement this is evidence FOR
+  forms = { json = json_path, html = html_dir .. "/index.html" },
+}
+```
+
+The file is COPIED into `.prova/var/reports/<name>/` at publish time, so it outlives the
+conduct. `forms` are renderings of one fact: an agent takes the `json`, a person opens the
+`html`, from a single publish. Read them back with `prova reports` (what exists) or
+`prova reports <name> --kind html` (that path alone — `open $(…)` is the whole viewing
+story). Prova never renders an artifact; the deputy did. Custody, not a dashboard.
+
 See also: `prova learn locks` (the rule a conduct needs) · `prova learn running` (selection
 pushdown) · `prova learn record` (proving it actually ran)

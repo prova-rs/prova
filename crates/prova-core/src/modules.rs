@@ -55,6 +55,7 @@ mod date;
 mod ingest;
 mod junit;
 mod measure;
+mod report;
 mod sarif;
 mod shellproxy;
 mod socket;
@@ -163,6 +164,8 @@ pub(crate) fn install(
     progress: &Arc<dyn Progress>,
     deputed: Option<crate::model::DeputedRegistry>,
     measurements: Option<crate::model::MeasurementRegistry>,
+    reports: Option<crate::model::ReportRegistry>,
+    report_custody: Option<std::path::PathBuf>,
 ) -> mlua::Result<()> {
     lua.globals().set("shell", shell::make_shell(lua, progress)?)?;
     lua.globals().set("fs", make_fs(lua)?)?;
@@ -198,6 +201,12 @@ pub(crate) fn install(
     // baseline (.prova/baselines/) and asserts no regression — the quality ratchet.
     lua.globals()
         .set("measure", measure::make(lua, measurements)?)?;
+    // The custody seam (docs/design/verifiers.md#reports-are-custody-not-visualization):
+    // report.publish files the ARTIFACT a conduct produced — the third thing a deputed conduct
+    // hands back, beside cases and measurements, and the one that used to be dropped. Prova
+    // preserves and addresses it; the deputy is what rendered it.
+    lua.globals()
+        .set("report", report::make(lua, reports, report_custody)?)?;
     // The `date` convenience over os.time/os.date — ergonomic time qualifiers for reminder `when`
     // conditions (date.past/days_since/…). A utility, not a scheduling mechanism.
     lua.globals().set("date", date::make(lua)?)?;
@@ -526,7 +535,7 @@ fn path_norm_seps(p: &str) -> String {
 /// canonicalization grows a `\\?\` prefix), byte-exact everywhere else — a unix filename may
 /// legally CONTAIN `\`, so blanket replacement would corrupt it. Every path-PRODUCING API
 /// (`fs.tempdir`, `fs.glob`, `ctx:tempdir`) must emit through this.
-pub(crate) fn emit_path(p: &std::path::Path) -> String {
+pub fn emit_path(p: &std::path::Path) -> String {
     let s = p.to_string_lossy();
     if cfg!(windows) {
         path_norm_seps(&s)

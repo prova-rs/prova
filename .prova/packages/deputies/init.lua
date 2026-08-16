@@ -33,6 +33,24 @@ M.nextest = prova.fixture("nextest-junit", Scope.Run, function()
     end
   end
   shell.run(cmd, { cwd = prova.root, merge_stderr = true, idle_timeout = "600s", timeout = "1800s" })
+
+  -- CUSTODY (docs/design/verifiers.md#reports-are-custody-not-visualization). The account already
+  -- adopts every CASE from this artifact; the artifact itself lives under `target/`, which the
+  -- sweep deletes — so the detail behind a red case (stdout, the failure message, timings) went
+  -- away with it. Publishing keeps it addressable: `prova reports unit-cases --kind xml`.
+  --
+  -- One form, because nextest emits one. A report does not owe every reader a bespoke rendering —
+  -- it owes them an honest list of what exists, and junit XML is what this deputy produced.
+  if fs.exists(artifact) then
+    local adopted = junit.load(artifact)
+    report.publish{
+      name = "unit-cases",
+      summary = string.format("%d cases · %d passed · %d failed · %d skipped",
+        adopted.total, adopted.passed, adopted.failed + adopted.errors, adopted.skipped),
+      forms = { xml = artifact },
+    }
+  end
+
   return artifact
 end)
 

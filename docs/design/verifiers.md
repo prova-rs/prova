@@ -171,10 +171,48 @@ fixture the deputy is known to fail — and asserts the facet surfaces that fail
 proven only on green fixtures is a rubber stamp, the vacuity `falsify` exists to hunt one
 level further out.
 
+<!-- claim: reports-are-custody-not-visualization -->
+A deputed conduct hands back **three** things, and prova adopted two. Cases go to the ledger,
+measurements go to the ratchets, and the deputy's own artifact — llvm-cov's HTML, its per-file JSON,
+a junit file — was dropped: it landed under `target/`, which the sweep deletes, and nothing named
+it. So `prova run coverage` could refuse a regression at 73.46% and be unable to show which lines
+moved, having computed that answer and discarded it. Diagnosing that layer cost days for want of a
+file prova had already made.
+
+`report.publish{ name, summary, forms, explains? }` closes it. The artifact is **copied** into
+`.prova/var/reports/<name>/` at publish time — not referenced, because `target/` is swept and a
+fixture's tempdir is reaped, and a recorded path that rots is worse than no report, since it reads
+as available. Publishing is the moment the file is certain to exist.
+
+**This is custody, not the dashboard the boundary below forbids, and the distinction is load-bearing:
+prova never renders an artifact.** The deputy already did. Prova preserves it, gives it a stable
+address, and renders one line — the required `summary`, counts and rows, exactly what it rendered
+before. A report with no summary is refused, because a file path with extra steps helps nobody.
+
+`forms` is a list of renderings of one fact — `{ json = …, html = … }` — because the two readers
+differ and neither should cope with the other's format. An agent takes the JSON, a person opens the
+HTML, from a single publish. That is what makes the surface equally useful to both, and it is why
+forms are enumerated rather than fixed as a human/machine pair: lcov, TAP, a text summary need no
+new vocabulary.
+
+`explains` names the measurements the artifact is evidence for, so a red ratchet can point at where
+the explanation lives instead of leaving a reader to rebuild the conduct — the ergonomic the whole
+feature exists for.
+
+Read it two ways, because discovery and addressing are different needs: `prova reports` LISTS what
+exists with each summary and its forms; `prova reports <name> --kind html` prints that path ALONE,
+so `open $(prova reports coverage --kind html)` is the whole viewing story and no platform-specific
+opener has to live in prova. The run record carries the same rows, so agents and `--format json` get
+it without parsing a console.
+
 ## Boundaries
 
 - **Not a dashboard.** Ingestion serves the obligation ledger — attest, evidence, structured
   failure reports — not result visualization. Allure exists; prova renders counts and rows.
+  **Custody is not an exception to this** (see the claim above): preserving and addressing an
+  artifact the deputy rendered is the ledger knowing where its evidence is. The line is drawn at
+  rendering — the day prova draws a coverage table or a trend chart, this boundary has moved and
+  should be moved deliberately, not discovered in a diff.
 - **No per-case re-run in v1.** The facet knows its tool's selection syntax, so translating
   `--last-failed` into `mvn test -Dtest=...` is a designed extension — deliberately after the
   seam proves out.

@@ -106,6 +106,24 @@ pub struct MeasurementRow {
 }
 
 
+/// One published report — an artifact this run produced and took custody of, with the one line that
+/// says what it shows and every form it is available in.
+///
+/// The record is what makes this equally useful to a person and to an agent: the `summary` answers
+/// without opening anything, and `forms` lets each reader take the rendering that suits it — a
+/// program reads the `json`, a person opens the `html`, and neither has to cope with the other's.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReportRow {
+    pub name: String,
+    pub summary: String,
+    /// Measurements this artifact is the evidence for, so a red ratchet can name where to look.
+    #[serde(default)]
+    pub explains: Vec<String>,
+    /// `kind` → path, sorted by kind. A map because one kind per report is every case so far, and
+    /// it is what a chooser (`prova reports <name> --kind html`) keys on.
+    pub forms: BTreeMap<String, String>,
+}
+
 /// One run, as a durable fact.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Record {
@@ -137,6 +155,10 @@ pub struct Record {
     /// so records from before attach existed still parse.
     #[serde(default)]
     pub attached: Vec<String>,
+    /// The report account: every artifact a conduct published this run, in custody. Defaulted so
+    /// records written before reports existed still parse.
+    #[serde(default)]
+    pub reports: Vec<ReportRow>,
 
     /// The attention account: every reminder with its evaluated state.
     #[serde(default)]
@@ -336,6 +358,7 @@ mod tests {
             deputed_narrowed: false,
             measurements: Vec::new(),
             attached: Vec::new(),
+            reports: Vec::new(),
         }
     }
 

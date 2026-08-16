@@ -34,6 +34,7 @@ local roots = {
   url = url,
   sqlite = sqlite,
   docker = docker,
+  report = report,
   archetect = archetect,
   suite = suite,
   Double = require("prova.double"),

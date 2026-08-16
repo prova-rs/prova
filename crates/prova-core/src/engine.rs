@@ -249,6 +249,13 @@ pub struct RunConfig {
     /// here (shared across workers), so the caller can file them into the run record and the
     /// baseline writer (`--update-baseline`) can read this run's observed values.
     measurement_registry: Option<crate::model::MeasurementRegistry>,
+    /// If present, every `report.publish` lands here — the artifacts a conduct produced, for the
+    /// caller to file into the run record (docs/design/verifiers.md#reports-are-custody-not-visualization).
+    report_registry: Option<crate::model::ReportRegistry>,
+    /// Where published artifacts are COPIED so they outlive the conduct that made them
+    /// (`<home>/.prova/var/reports`). Absent without a package: there is nowhere durable to put
+    /// them, so the report names where the artifact already lies.
+    report_custody: Option<std::path::PathBuf>,
     modules: Vec<Module>,
     /// Extra disk roots the plugin searcher consults (e.g. the global `data_dir/plugins`).
     package_roots: Vec<std::path::PathBuf>,
@@ -357,6 +364,8 @@ impl Default for RunConfig {
             snapshot_registry: None,
             deputed_registry: None,
             measurement_registry: None,
+            report_registry: None,
+            report_custody: None,
             modules: Vec::new(),
             package_roots: Vec::new(),
             named_packages: std::collections::BTreeMap::new(),
@@ -491,6 +500,18 @@ impl RunConfig {
     /// for the caller to file into the run record and to feed the guarded `--update-baseline` writer.
     pub fn with_measurement_tracking(mut self, registry: crate::model::MeasurementRegistry) -> Self {
         self.measurement_registry = Some(registry);
+        self
+    }
+
+    /// Attach the report registry and the custody root — every `report.publish` lands in the
+    /// former, and its artifact is copied under the latter so it survives `target/` being swept.
+    pub fn with_report_tracking(
+        mut self,
+        registry: crate::model::ReportRegistry,
+        custody: Option<std::path::PathBuf>,
+    ) -> Self {
+        self.report_registry = Some(registry);
+        self.report_custody = custody;
         self
     }
 
