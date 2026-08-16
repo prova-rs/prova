@@ -96,11 +96,22 @@ prova.test("xtask joins the same house rule, on the same file", {
 
   -- The path prova itself computes, asserted through the binary rather than by restating the
   -- convention here — a proof that hard-codes the same string twice proves only that it can copy.
-  local from_prova = shell.run({ prova.bin, "eval",
-    'local d = fs.tempdir(); local r = shell.run({ prova.bin, "lock", "cargo", "--", "true" }, ' ..
-    '{ cwd = prova.root }); return tostring(r.code)' },
-    { merge_stderr = true, timeout = "60s" })
+  --
+  -- Taken in a SCRATCH package, never in `prova.root`. The token is the real one, so the agreement
+  -- being proven is the real one; but holding THIS repo's `cargo` lock made the proof deadlock by
+  -- construction the moment it ran inside a conduct that already holds it — which is exactly what
+  -- the coverage conduct does (`locks = { prova.writes("cargo") }`), so the black-box layer timed
+  -- out here at 60s and no coverage could be measured at all. A proof of where a lock LIVES has no
+  -- reason to queue for the one the suite is using.
+  local probe = t:tempdir("lock-path-probe")
+  fs.write(probe .. "/prova.toml", '[run]\nproofs = ["proofs"]\n')
+  fs.mkdir(probe .. "/proofs")
+  local from_prova = shell.run({ prova.bin, "lock", "cargo", "--", "true" },
+    { cwd = probe, merge_stderr = true, timeout = "60s" })
   t:expect(from_prova.code, "`prova lock cargo` holds and releases: " .. from_prova.stdout):equals(0)
+  -- …and it held the file at the path xtask hard-codes, resolved under whatever package it ran in.
+  t:expect(probe .. "/.prova/var/locks/cargo.lock",
+    "prova's computed path for the `cargo` token is the one xtask flocks"):exists()
 
   -- `xtask run` must NOT hold it: it delegates to prova, which asks for the same token, and a
   -- parent holding what its child needs is a deadlock rather than a slow build.

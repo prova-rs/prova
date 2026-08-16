@@ -38,12 +38,22 @@ local function purge(dir, pat)
   end
 end
 
+--- What coverage is measured ABOUT: shipped code. `xtask` is this repo's build automation — it
+--- runs on a developer's machine to produce artifacts, it is never in a release, and no user can
+--- reach it. Measuring it puts 88 lines a test suite has no business exercising into the
+--- denominator of every layer, which is not a coverage gap but a category error.
+---
+--- Scoped deliberately and on its own merits, not as a route past a red ratchet: it is worth
+--- ~+0.23pp, the gap it was decided against was ~217 lines, and the floors are re-banked against
+--- the new denominator in the same commit so nothing is credited twice.
+local IGNORE_FILES = "(^|/)xtask/"
+
 --- Report over the profraws currently at the scan root. The cached profdata is purged first:
 --- `report` reuses it and would silently ignore every profraw written since the last merge.
 local function fresh_report()
   purge(COV_DIR, "*.profdata")
   local r = shell.run(
-    { "cargo", "llvm-cov", "report", "--json" },
+    { "cargo", "llvm-cov", "report", "--json", "--ignore-filename-regex", IGNORE_FILES },
     { cwd = prova.root, timeout = "600s" }
   )
   return json.decode(r.stdout or "{}")
@@ -146,8 +156,25 @@ local conduct = prova.fixture("layered-coverage", Scope.File, function()
     { cwd = prova.root, timeout = "1200s", merge_stderr = true,
       env = { LLVM_PROFILE_FILE = COV_DIR .. "/suite-%p-%m.profraw", PROVA_TRAMPOLINED = "1" } })
   if suite.code ~= 0 then
+    -- The tail of this capture is NOT the failure. A run's summary is the last thing the runner
+    -- prints, but detached children (`--reprovision`, backgrounded with `&`) hold the same pipe
+    -- open and keep narrating after the parent exits — so the final bytes are reliably progress
+    -- noise, and a `:sub(-2000)` of it showed twelve identical "running … done in 1.7s" lines and
+    -- not one word about what failed. Measured: three consecutive conducts were diagnosed blind
+    -- because of it. Select the reporter's own verdict lines instead, and keep the whole capture.
+    local log = prova.root .. "/target/coverage-suite.log"
+    fs.write(log, suite.stdout or "")
+    local verdicts = {}
+    for line in (suite.stdout or ""):gmatch("[^\n]+") do
+      if line:match("FAIL") or line:match("%d+ passed,") then
+        verdicts[#verdicts + 1] = line
+      end
+    end
+    if #verdicts == 0 then
+      verdicts[1] = "(the suite printed no verdict line at all — it died rather than reported)"
+    end
     return { error = "the black-box suite is red under instrumentation — fix the bar before measuring it:\n"
-      .. (suite.stdout or ""):sub(-2000) }
+      .. table.concat(verdicts, "\n") .. "\n  full capture: " .. log }
   end
   -- Sweep root strays INTO the scan root before reporting. An instrumented child whose
   -- environment lost LLVM_PROFILE_FILE falls back to `default_<sig>_0_<pid>.profraw` in its
@@ -211,6 +238,16 @@ prova.test("each layer's coverage holds on its own — and the delta names where
 }, function(t)
   local produced = t:use(conduct)
   t:expect(produced.error, produced.error or "conduct produced reports"):is_nil()
+
+  -- The exclusion is a regex in a shell argument — a typo silently measures everything again and
+  -- the floors drift back down for a reason nobody can see. Assert the denominator directly.
+  local measured_xtask = {}
+  for file in pairs(by_file(produced.merged)) do
+    if file:match("/xtask/") then measured_xtask[#measured_xtask + 1] = file end
+  end
+  t:expect(measured_xtask, "build automation is not shipped code and is not in the denominator")
+    :has_length(0)
+
   measure.ratchet(t, "rust.coverage.unit", pct(produced.unit), {
     set = "quality", direction = "higher_is_better",
   })
