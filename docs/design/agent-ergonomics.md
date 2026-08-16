@@ -1079,3 +1079,84 @@ Memoization is per scope INSTANCE, not per run — a fixture and the test using 
 instances and must not share, or a file-scoped directory would leak one test's scratch files into
 the next. `fs.tempdir()` remains only as the unmanaged escape hatch for code with no context to
 ask.
+
+# Round six — 2026-08-16 (an upgrade landing mid-session in a consumer repo)
+
+## 29. A semantic change to a verb that still compiles has no landing signal
+
+<!-- backlog: tempdir-migration-was-silent recorded=2026-08-16 -->
+**[[context-tempdir-not-idempotent]] was the right fix, and for code written before it the failure
+mode inverted rather than disappeared — silently, at the same call sites, with no signal at any
+layer.** The factory→accessor change means a pre-existing proof that called `ctx:tempdir()` three
+times for three roles now gets one directory three times. Nothing errors: three names bind, three
+directories exist as far as the proof can tell, and the roles collapse into one.
+
+That collapse is worse than the bug it replaced, in one specific way. The old failure SEPARATED
+things that should have been one, and its symptom was an absence — a file that was not there. The
+new one MERGES things that should have been distinct, and its symptom is a false equality: a proof
+whose subject is "these two locations differ" now compares one location with itself and passes, or
+takes the branch it exists to forbid.
+
+Found the hard way, in the aegis repo, about forty minutes after the upgrade landed mid-session:
+
+* `install_test` §5 hands a lifecycle verb a state dir that is NOT the installed service's and
+  asserts it refuses. Its three roles — plist dir, installed state dir, and the other one — became
+  one directory, so `installed == other`, the guard saw a match and waved the command through, and
+  the proof drove `launchctl bootstrap` under a constant label instead of asserting a refusal.
+  **That guard exists because the same accident once took down the author's daily driver.** The
+  upgrade quietly converted a safety proof into the act it forbids; nothing was harmed only because
+  the label happened to be loaded already.
+* `mcp_proxy` §7 asserts that registering an MCP server with no daemon running is refused. Its
+  "orphan" state dir became the LIVE daemon's, so the section was registering with one and
+  asserting on the answer.
+
+Both had passed thirteen minutes earlier. The reds arrived with nothing in the consumer repo having
+touched them, so the diagnosis began — correctly, and expensively — by restoring `crates/` from the
+parent commit to rule the local change out. The answer was in `ls -la $(which prova)`.
+
+**The honest difficulty, and why this is backlog rather than a claim: there is no clean runtime
+guard available.** Calling `ctx:tempdir()` twice is the PRIMARY intended usage — `fs.write(t:tempdir()
+.. "/x")` then `fs.read(t:tempdir() .. "/x")` is the exact pattern the fix exists to make work — so
+erroring on a second unnamed call would break the thing it repaired. The stale shape and the correct
+shape are identical at runtime; only the author's intent separates them.
+
+So the options are not runtime ones. A migration lint that flags a unit binding two unnamed
+`tempdir()` results to two different locals would catch the stale shape precisely, and its false
+positives are cases where naming is harmless anyway. Cheaper, and possibly enough: a CHANGELOG entry
+saying "if you called this more than once for more than one directory, name them" — a consumer who
+knows to look can grep. What cost the time here was not the missing guard. It was that a behavioral
+change to a verb arrived indistinguishable from no change at all, in a tool consumers upgrade by
+reinstalling.
+
+## 30. A repeated flag is not a second value; it is a discarded one
+
+<!-- backlog: repeated-update-baseline-silently-drops recorded=2026-08-16 -->
+**`--update-baseline=<name>` keeps only its LAST occurrence, so passing it twice banks one metric and
+silently drops the other.** `dispatch.rs` assigns rather than accumulates — each
+`--update-baseline=` match overwrites `self.update_baseline` with a fresh `BankSelection::Named(…)`
+— while the flag's own error text advertises "metric name(s)", so the comma form
+(`--update-baseline=a,b`) is the supported spelling and the repeated form reads as equally plausible.
+
+The symptom is that the run succeeds for one metric and, for the other, prints the very message
+telling you to do the thing you just did:
+
+```
+prova: baseline tightened quality:rust.expect.production 85 -> 84
+prova: baseline held quality:rust.duplication.clones stays at 7
+       (measured 6; no goal — bank it by name: --update-baseline=rust.duplication.clones)
+```
+
+At a glance that reads as prova declining to move a ratchet, not as prova discarding an argument.
+Found while banking two improved ratchets in the minion repo; running it again with one flag at a
+time worked, which is what made the cause obvious in hindsight.
+
+This is [[unknown-test-opts-silently-ignored]]'s principle — "a dropped option is worse than a
+rejected one — it reads as configured" — unhonored one layer out, at argv rather than at a Lua opts
+table. The line the DSL and the manifest both hold has not been walked across the CLI's own
+repeated-flag handling, and there is little reason to think this is the only flag that assigns where
+a reader would expect it to accumulate.
+
+Either resolution beats silence: union the occurrences (what a repeatable flag conventionally means,
+and what the comma form already expresses), or refuse the second naming both selections. Worth
+auditing as one sweep over `dispatch.rs` rather than one flag, since the shape — `self.x = Some(…)`
+inside an arg loop — is the idiom wherever an option takes a value.
