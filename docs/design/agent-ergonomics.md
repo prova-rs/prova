@@ -692,6 +692,30 @@ then re-banked with bands (see `proofs/coverage/coverage_test.lua`), because the
 this expensive was never the measurement alone — it was a peak-banked ratchet that made a wrong
 number look like a real regression.
 
+<!-- backlog: file-locking-is-a-no-op-on-windows recorded=2026-08-16 -->
+**Two subsystems take file locks, and on Windows both compile to nothing.** `locks.rs` has said so
+since it was written — the `LockFileEx` twin "lands with the Windows runner", and until then a
+cross-instance lock is run-scoped there, which is the pre-lock behavior. `barrier.rs` then
+hand-rolled its own `libc::flock` instead of reusing that shape, and so did not COMPILE for
+windows-x86_64 at all; it now carries the same documented no-op, which is what unblocked v0.24.0's
+release matrix.
+
+What the no-op costs, per site. For `locks`, a house rule like "one cargo at a time" simply does
+not bind across instances on Windows. For `barrier`, arrivals are a read-modify-write of one small
+file, so two simultaneous arrivals can lose an increment — and that direction is the safe one: a
+lost increment TIMES OUT, reporting fewer arrivals than came, which is loud. It cannot manufacture
+a vacuous pass, because that needs an increment nobody made.
+
+Do it as ONE piece of work across both sites, and do it where it can be run. Writing a lock
+implementation blind is the unverified-claim problem with a worse blast radius than usual: a lock
+that silently fails to exclude produces exactly the races it was added to prevent, and no local
+test can tell you. Same prerequisite as [[windows-ut-relink-denied]] — someone on the platform.
+
+The sharper lesson is the one about reuse: `locks.rs` had already met this problem and written the
+portable shape down. A second subsystem solved it again from scratch, inherited none of the
+thinking, and the gap surfaced as a broken release rather than a compile error on anyone's desk —
+because the only leg that builds Windows is the release matrix.
+
 <!-- backlog: ut-lane-cannot-see-what-cargo-test-sees recorded=2026-08-16 -->
 **The `ut` lane deputes to nextest, so a whole class of test-isolation defect cannot fail locally.**
 nextest runs each test in its OWN PROCESS; `cargo test` runs them as threads in one. Tests that

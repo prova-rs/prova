@@ -80,9 +80,20 @@ fn sweep_orphans(dir: &std::path::Path) {
 
 /// Is `pid` still running? `kill(pid, 0)` asks without signalling — the same check a stale-lock
 /// reaper would use, except the kernel already reclaims flocks and only these count files need it.
+#[cfg(unix)]
 fn process_is_alive(pid: i32) -> bool {
     // SAFETY: signal 0 performs error checking only; it never delivers anything to the process.
     unsafe { libc::kill(pid, 0) == 0 }
+}
+
+/// Windows has no `kill(pid, 0)`, and this reaper only ever DELETES state, so the conservative
+/// answer is the safe one: assume alive and leave the file. The cost is a stale count file for a
+/// crashed run; the alternative — assuming dead — would delete a live run's arrivals and turn its
+/// barrier into a timeout. Reaping is an optimization here, not a correctness requirement: the
+/// filename carries the pid, so a later run never reads a dead one's count in the first place.
+#[cfg(not(unix))]
+fn process_is_alive(_pid: i32) -> bool {
+    true
 }
 
 /// Where a barrier's arrival file lives. Beside the locks, and sanitized the same way — two tokens
@@ -241,6 +252,7 @@ fn read_count(path: &std::path::Path, token: &str) -> Result<u64, String> {
     Ok(text.trim().parse::<u64>().unwrap_or(0))
 }
 
+#[cfg(unix)]
 macro_rules! hold {
     ($name:ident, $op:expr) => {
         /// An flock held for the life of the value — released by the kernel even if we panic.
@@ -264,8 +276,42 @@ macro_rules! hold {
         }
     };
 }
+#[cfg(unix)]
 hold!(ExclusiveHold, libc::LOCK_EX);
+#[cfg(unix)]
 hold!(SharedHold, libc::LOCK_SH);
+
+/// The Windows twin, matching the one `locks.rs` already ships: the hold compiles and does
+/// nothing, so the surrounding code is written once against a portable shape.
+///
+/// This file previously used `libc::flock` unconditionally, so `prova-core` did not COMPILE for
+/// windows-x86_64 at all — the release matrix caught it, three platforms in. Nothing else had:
+/// `prova.barrier` landed 2026-08-15, after v0.23.0 was cut, and the Windows Build lane is red for
+/// an unrelated reason (`windows-ut-relink-denied`), so nobody had built it there.
+///
+/// What the no-op costs, stated rather than implied: arrivals are counted through a
+/// read-modify-write of one small file, so without exclusion two simultaneous arrivals on Windows
+/// can lose an increment. That direction is the safe one — a lost increment means the barrier
+/// TIMES OUT, reporting fewer arrivals than came, and a timeout is a loud failure a human reads.
+/// It cannot manufacture the outcome barriers exist to prevent: a vacuous pass needs an increment
+/// that was never made, and no interleaving invents one.
+///
+/// The real fix is `LockFileEx`, and it belongs to both sites at once — see
+/// `agent-ergonomics.md#file-locking-is-a-no-op-on-windows`. Deliberately not written blind here:
+/// a lock implementation nobody can run is the unverified-claim problem, and this is a release pad.
+#[cfg(not(unix))]
+mod windows_holds {
+    pub(super) struct Noop;
+    impl Noop {
+        pub(super) fn take(_file: &std::fs::File) -> std::io::Result<Self> {
+            Ok(Self)
+        }
+    }
+}
+#[cfg(not(unix))]
+use windows_holds::Noop as ExclusiveHold;
+#[cfg(not(unix))]
+use windows_holds::Noop as SharedHold;
 
 #[cfg(test)]
 mod tests {
