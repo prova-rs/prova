@@ -292,21 +292,9 @@ pub(crate) fn make_csv(lua: &Lua) -> mlua::Result<Table> {
     csv_ns.set(
         "encode",
         lua.create_function(|_, (rows, opts): (Table, Option<Table>)| {
-            let mut headers: Vec<String> = Vec::new();
-            if let Some(hs) = opts
-                .as_ref()
-                .map(|o| o.get::<Option<Table>>("headers"))
-                .transpose()?
-                .flatten()
-            {
-                for h in hs.sequence_values::<String>() {
-                    headers.push(h?);
-                }
-            } else if let Some(first) = rows.get::<Option<Table>>(1)? {
-                for pair in first.pairs::<String, Value>() {
-                    headers.push(pair?.0);
-                }
-                headers.sort();
+            let headers = csv_headers(&rows, &opts)?;
+            if headers.is_empty() {
+                return Ok(String::new());
             }
             let delimiter = csv_delimiter(&opts, "csv.encode")?;
             let mut writer = csv::WriterBuilder::new()
@@ -343,6 +331,57 @@ pub(crate) fn make_csv(lua: &Lua) -> mlua::Result<Table> {
     )?;
 
     Ok(csv_ns)
+}
+
+/// Which columns `csv.encode` writes, and the guarantee that comes with each way of deciding.
+///
+/// DECLARED (`opts.headers`) is the author naming the columns, so a row field left out is a
+/// projection they asked for. DERIVED (the first row's keys, sorted for a diffable order) is a
+/// GUESS, and a later row carrying a key the first one lacks would be dropped without a word —
+/// data loss decided by which row happened to be first. So a derived set must fit every row, and
+/// says so when it does not.
+///
+/// Empty means there is nothing to describe: no declared headers and no first row. Writing a
+/// record for that emits a header line declaring one column named the empty string, so the caller
+/// returns early instead.
+fn csv_headers(rows: &Table, opts: &Option<Table>) -> mlua::Result<Vec<String>> {
+    let declared = opts
+        .as_ref()
+        .map(|o| o.get::<Option<Table>>("headers"))
+        .transpose()?
+        .flatten();
+    let was_declared = declared.is_some();
+
+    let mut headers: Vec<String> = Vec::new();
+    if let Some(hs) = declared {
+        for h in hs.sequence_values::<String>() {
+            headers.push(h?);
+        }
+    } else if let Some(first) = rows.get::<Option<Table>>(1)? {
+        for pair in first.pairs::<String, Value>() {
+            headers.push(pair?.0);
+        }
+        headers.sort();
+    }
+    if was_declared || headers.is_empty() {
+        return Ok(headers);
+    }
+
+    let known: std::collections::BTreeSet<&str> = headers.iter().map(String::as_str).collect();
+    for (i, row) in rows.clone().sequence_values::<Table>().enumerate() {
+        for pair in row?.pairs::<String, Value>() {
+            let key = pair?.0;
+            if !known.contains(key.as_str()) {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "csv.encode: row {} has a `{key}` field, which the header row does not \u{2014} \
+                     headers come from the FIRST row, so this column would be dropped without a \
+                     word. Pass `headers = {{ \u{2026} }}` to name the columns you want.",
+                    i + 1
+                )));
+            }
+        }
+    }
+    Ok(headers)
 }
 
 /// The one-byte `delimiter` option shared by `csv.decode` / `csv.encode`.
@@ -472,6 +511,25 @@ pub(crate) fn make_url(lua: &Lua) -> mlua::Result<Table> {
         "encode",
         lua.create_function(|_, s: String| {
             Ok(percent_encoding::utf8_percent_encode(&s, COMPONENT).to_string())
+        })?,
+    )?;
+
+    // url.decode(s) → `encode`'s exact inverse. An encoder without one left a proof that RECEIVES
+    // a percent-encoded value — a redirect's Location, a query parameter, a header — with nothing
+    // to read it but a hand-rolled decoder, which is the well-known place to introduce a quiet bug
+    // that this module declares a crate to avoid.
+    //
+    // Component decoding, not form decoding: `+` stays a literal plus, because `encode` emits
+    // `%20` for a space. The two conventions disagree on exactly one character, and picking the
+    // wrong one silently corrupts every value containing it.
+    //
+    // Bytes, not lossy text: a percent sequence can encode any octet, and turning an invalid one
+    // into U+FFFD is the same silent corruption `res.body` was fixed for. A Lua string is a byte
+    // string, so the exact octets cross unharmed.
+    url_ns.set(
+        "decode",
+        lua.create_function(|lua, s: String| {
+            lua.create_string(percent_encoding::percent_decode_str(&s).collect::<Vec<u8>>())
         })?,
     )?;
 
@@ -624,6 +682,71 @@ mod fidelity_tests {
             let back = lua_value_to_json(&l, &as_lua).unwrap();
             assert_eq!(back, original, "shape is preserved across the boundary");
         }
+    }
+
+    /// `sha256("abc")`, the canonical NIST vector. A digest function that is subtly wrong produces
+    /// stable, plausible-looking output forever, so the only useful assertion is against a value
+    /// computed somewhere other than here.
+    #[test]
+    fn sha256_matches_the_published_vector() {
+        let l = lua();
+        let hash = make_hash(&l).unwrap();
+        let f: mlua::Function = hash.get("sha256").unwrap();
+        let got: String = f.call("abc").unwrap();
+        assert_eq!(got, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    }
+
+    /// base64 must be binary-safe in BOTH directions — it is what carries a non-text payload
+    /// through a JSON field, so a lossy step here defeats the purpose of having it.
+    #[test]
+    fn base64_round_trips_bytes_that_are_not_text() {
+        let l = lua();
+        let b64 = make_base64(&l).unwrap();
+        let enc: mlua::Function = b64.get("encode").unwrap();
+        let dec: mlua::Function = b64.get("decode").unwrap();
+
+        let raw = [0u8, 255, 128, 10, 13, 0x7f];
+        let s = l.create_string(raw).unwrap();
+        let encoded: String = enc.call(s).unwrap();
+        let back: mlua::String = dec.call(encoded).unwrap();
+        assert_eq!(back.as_bytes(), raw, "every octet survives");
+
+        // A known vector, so the alphabet and padding are pinned too.
+        let hello: String = enc.call("hello").unwrap();
+        assert_eq!(hello, "aGVsbG8=");
+    }
+
+    /// `url.decode` is `url.encode`'s exact inverse, and the pair disagrees with FORM encoding on
+    /// exactly one character. `+` is a literal plus here (encode emits `%20` for a space), so
+    /// decoding it as a space would silently corrupt every value containing one.
+    #[test]
+    fn url_encoding_round_trips_and_leaves_plus_alone() {
+        let l = lua();
+        let url_ns = make_url(&l).unwrap();
+        let enc: mlua::Function = url_ns.get("encode").unwrap();
+        let dec: mlua::Function = url_ns.get("decode").unwrap();
+
+        for original in ["a b&c=d/e", "plus+sign", "café", "100%", ""] {
+            let encoded: String = enc.call(original).unwrap();
+            let back: mlua::String = dec.call(encoded.clone()).unwrap();
+            assert_eq!(back.to_str().unwrap().to_owned(), original, "round trip of {original:?}");
+        }
+
+        let space: String = enc.call("a b").unwrap();
+        assert_eq!(space, "a%20b", "a space is %20, not +");
+        let plus: mlua::String = dec.call("a+b").unwrap();
+        assert_eq!(plus.to_str().unwrap().to_owned(), "a+b", "+ decodes as itself");
+    }
+
+    /// A percent sequence can carry any octet, so decode hands back BYTES. Turning an invalid one
+    /// into U+FFFD would be the same silent corruption `res.body` was fixed for.
+    #[test]
+    fn url_decode_preserves_octets_that_are_not_utf8() {
+        let l = lua();
+        let url_ns = make_url(&l).unwrap();
+        let dec: mlua::Function = url_ns.get("decode").unwrap();
+        let back: mlua::String = dec.call("%FF%00%80").unwrap();
+        assert_eq!(back.as_bytes(), [0xFF, 0x00, 0x80]);
     }
 
     #[test]

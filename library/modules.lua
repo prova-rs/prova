@@ -964,6 +964,12 @@ function url.parse(s) end
 ---@param s string
 ---@return string
 function url.encode(s) end
+--- Decode percent-encoding — `encode`'s exact inverse. A COMPONENT codec, so `+` stays a literal
+--- plus (form encoding reads it as a space; the two differ on exactly that character). Returns
+--- bytes: a percent sequence can carry any octet, so nothing is lost to a UTF-8 conversion.
+---@param s string
+---@return string
+function url.decode(s) end
 
 ------------------------------------------------------------------------------------------
 -- graphql (POST { query, variables } → { data, errors } over HTTP — the third transport)

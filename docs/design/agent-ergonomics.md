@@ -605,6 +605,31 @@ encoder. `modules::list_table` is the one constructor; new list verbs use it rat
 written against the JSON boundary was going to *document* the asymmetry as a known quirk. It is a
 bug, and it generalized to two more verbs the moment it was named.
 
+<!-- claim: url-encode-had-no-inverse recorded=2026-08-15 -->
+**`url.decode` is `url.encode`'s exact inverse, and both are COMPONENT codecs.** A space is `%20`
+and `+` is a literal plus — form encoding disagrees on exactly that character, so a decoder
+borrowed from the wrong convention corrupts every value containing one, silently, and only for the
+inputs that happen to include it. Decoding yields BYTES, because a percent sequence can carry any
+octet and turning an invalid one into U+FFFD is the corruption [[http-binary-response-corrupted]]
+was fixed for, one namespace over.
+
+`encode` shipped without a decode half. A proof that RECEIVED a percent-encoded value — a
+redirect's Location, a query parameter, a header — had nothing to read it with but a hand-rolled
+decoder, which is exactly the "well-known place to introduce a quiet bug" this module declares a
+crate to avoid. The missing verb pushed authors into writing the bug themselves.
+
+<!-- claim: csv-encode-loses-no-column recorded=2026-08-15 -->
+**`csv.encode` refuses a row carrying a column the header row lacks, and writes nothing when there
+is nothing to describe.** Headers are taken from the FIRST row, so a later row's extra field
+vanished with a successful return — the column was in the data and not in the output, and which row
+happened to be first decided what was lost. Declaring `headers` is different: naming the columns IS
+choosing them, so a deliberate projection stays legal. A row MISSING a column is not loss either —
+that is an empty cell.
+
+Encoding zero rows used to emit `""` — a header line declaring one column whose name is the empty
+string, which decodes back to a row shape nobody asked for. Nothing to describe means nothing to
+write.
+
 <!-- claim: csv-duplicate-headers-refused recorded=2026-08-15 -->
 **`csv.decode` refuses duplicate headers rather than dropping a column.** Rows are header-keyed
 maps, so two columns of one name cannot both survive — the second overwrote the first and the lost
@@ -647,21 +672,31 @@ deliberately, not a way to get to green.
 
 <!-- backlog: overlap-assertions-depend-on-host-headroom recorded=2026-08-15 -->
 **A scheduling proof that asserts two units OVERLAP is only true when the host has room to overlap
-them.** `prova-core::resources modes_are_independent_of_how_the_token_was_made` runs a scenario at
-`-j 8` and asserts that two readers of one token overlap while two writers do not. The second half
-is a real invariant — serialization is what `writes` promises. The first half is a statement about
-the SCHEDULER getting to run both, and under a saturated machine it can be false without anything
-being wrong. Observed once, 2026-08-15, inside a `prova run all` sweep on a loaded box; the same
-test passed in isolation, in a standalone `cargo nextest` run (423/423), and in two other sweeps
-the same night.
+them — and it is now the release gate's flakiest assertion.** `prova-core::resources
+modes_are_independent_of_how_the_token_was_made` runs a scenario at `-j 8` where two READERS of one
+token each `record("enter")`, `prova.sleep(40)`, `record("exit")`, and asserts the pairs interleave.
 
-Filed rather than reflexively fixed, because the cheap answers are all worse: retrying hides a real
-serialization break, widening the window makes the suite slower for everyone, and deleting the
-overlap half gives up the assertion that `reads` is genuinely concurrent. The shape worth
-considering is asserting overlap through something the scheduler CONTROLS rather than through wall
-clock — a permit count, an observed concurrency high-water mark — so the proof stops depending on
-the host having spare capacity at that instant. Low priority: one sighting, and the failure is
-loud rather than silent.
+**The mechanism, now that it has been seen twice:** overlap has to happen inside a 40ms window. On
+a loaded box the scheduler may simply not start the second reader before the first finishes
+sleeping, so the events do not interleave and the assertion fails — with nothing wrong. Observed
+2026-08-15 in two separate `prova run all` sweeps, both times passing in isolation, in a standalone
+`cargo nextest` run, and in the other sweeps the same night.
+
+**Only the reader half is fragile.** The writer half asserts units do NOT overlap, and load makes
+that MORE likely to hold, so it cannot fail this way. Serialization is also the property that
+actually matters; concurrency is the one being measured by stopwatch.
+
+**Priority is no longer low.** `prova run release` gates releases now, and a gate that fails
+randomly is the thing that trains people to re-run rather than read — the exact failure the
+switched-off line already demonstrated this session.
+
+**Shape worth building:** make the readers RENDEZVOUS instead of racing a clock — each records its
+entry, then waits (generously) to observe the other's entry before exiting. Concurrency then proves
+itself by construction: if the scheduler runs them together both proceed immediately, and if it
+genuinely serializes them the first blocks until timeout and fails for the right reason, naming
+scheduling rather than timing. Do NOT widen the sleep (slower for everyone, same race), retry
+(hides a real serialization break), or drop the assertion (gives up the claim that `reads` is
+concurrent at all).
 
 <!-- backlog: module-opts-gate-remaining-namespaces recorded=2026-08-14 -->
 **Every CONSTRUCTOR is closed; the builder and filter surfaces are not.** `crate::opts::Closed` now
