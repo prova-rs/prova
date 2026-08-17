@@ -152,3 +152,78 @@ prova.test("a run that publishes nothing says nothing", {
   t:expect(r.stdout, "silent when there is nothing to announce"):never():contains("reports:")
   t:expect(run(dir, "reports").stdout, "and the verb says so plainly"):contains("no reports")
 end)
+
+--- The human lane (`-c`/`--choose`) must never become a trap for an agent.
+---
+--- A menu is the right affordance for a person — discover everything at once, scroll, press enter —
+--- and the worst possible outcome for a program, which cannot answer it and cannot escape it. The
+--- flag being opt-in is NOT sufficient: an agent lifts a command from a doc, a CI step inherits one
+--- from a README, and the failure mode is a job that hangs until someone kills it, with no output
+--- saying why.
+---
+--- So the prompt is gated on both streams being a terminal, and where that does not hold it answers
+--- the same question in the non-interactive way rather than erroring — `--choose` differs from a
+--- bare `prova reports` only in PRESENTATION, so a context that cannot present it should still
+--- answer it. Every assertion below runs through shell.run, which has no terminal: this proof is
+--- executed in exactly the situation it is protecting against.
+local ONLY_MACHINE = [[
+  prova.test("publishes a machine-only report", function(t)
+    local made = prova.root .. "/artifacts"
+    fs.mkdir(made)
+    fs.write(made .. "/data.json", "{}")
+    report.publish{ name = "raw", summary = "machine only", forms = { json = made .. "/data.json" } }
+    t:expect(true):is_true()
+  end)
+]]
+
+prova.test("--choose never prompts where nothing can answer it", {
+  covers = "docs/design/verifiers.md#reports-are-custody-not-visualization",
+  proves = "an interactive menu is the one affordance that can hang a pipeline forever, and the flag being opt-in does not prevent an agent inheriting it from a doc. The guard is the feature: no terminal, no prompt — and it still answers, because refusing to present is not a reason to refuse to reply",
+}, function(t)
+  local dir = package(t)
+  run(dir)
+
+  -- The trap scenario, exactly: no terminal on either stream. It must RETURN, with the listing.
+  local chosen = run(dir, "reports", "--choose")
+  t:expect(chosen.code, "it answered rather than blocking"):equals(0)
+  t:expect(chosen.stdout, "…with the same answer a bare listing gives"):contains("coverage")
+  t:expect(chosen.stdout, "and it says WHY it did not present a menu"):contains("needs a terminal")
+
+  -- Both spellings, since a doc may carry either.
+  t:expect(run(dir, "reports", "-c").code):equals(0)
+
+  -- Named + choose: no menu to drive, but opening a browser from a pipeline is still wrong, so it
+  -- degrades to the path — which is the composable answer a program wanted anyway.
+  local named = run(dir, "reports", "coverage", "-c")
+  t:expect(named.code):equals(0)
+  t:expect(named.stdout):contains("/.prova/var/reports/coverage/index.html")
+end)
+
+prova.test("--choose offers only what a person would open", {
+  covers = "docs/design/verifiers.md#reports-are-custody-not-visualization",
+  proves = "the menu is the human lane, so offering to open a json blob is offering to do something nobody wanted; and the two empty cases differ — nothing published at all, versus nothing a person would open while the machine forms are still addressable",
+}, function(t)
+  local dir = t:tempdir("machine-only")
+  fs.write(dir .. "/prova.toml", '[run]\nproofs = ["proofs"]\n')
+  fs.mkdir(dir .. "/proofs")
+  fs.write(dir .. "/proofs/raw_test.lua", ONLY_MACHINE)
+  run(dir)
+
+  -- A json-only report is published and listed…
+  t:expect(run(dir, "reports").stdout):contains("raw")
+  -- …but it is not something to open, and the refusal points at what IS addressable.
+  local named = run(dir, "reports", "raw", "-c")
+  t:expect(named.code, "no human form is a refusal, not a browser opening a json"):never():equals(0)
+  t:expect(named.stdout):contains("--kind")
+end)
+
+prova.test("--choose and --kind are refused together, not silently reconciled", {
+  covers = "docs/design/verifiers.md#reports-are-custody-not-visualization",
+  proves = "one says `pick a form for me`, the other names the form — obeying either silently would make the command mean something the author did not write",
+}, function(t)
+  local dir = package(t)
+  run(dir)
+  local both = run(dir, "reports", "coverage", "-c", "--kind", "json")
+  t:expect(both.code):equals(2)
+  t:expect(both.stdout):contains("drop --kind")
+end)
