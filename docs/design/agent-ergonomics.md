@@ -1160,3 +1160,34 @@ Either resolution beats silence: union the occurrences (what a repeatable flag c
 and what the comma form already expresses), or refuse the second naming both selections. Worth
 auditing as one sweep over `dispatch.rs` rather than one flag, since the shape — `self.x = Some(…)`
 inside an arg loop — is the idiom wherever an option takes a value.
+
+<!-- backlog: stdio-cannot-drive-a-conversational-sut recorded=2026-08-18 -->
+**A spawned process cannot be driven: `Process` has no stdin, so a request/response SUT is
+unprovable without a co-process written in something else.** `Process` exposes `output()`,
+`running()`, `stop()`, `wait()`. `shell.run{stdin=…}` and `Container:run{stdin=…}` take one
+string, written before the program runs. The shim/cassette facility journals the stdin of
+commands the SUT execs, which is interposition, not driving. So there is no way to write to a
+live process and read the reply before deciding what to write next.
+
+That rules out every SUT whose protocol is a conversation over stdio: MCP servers, LSP servers,
+REPLs, debug adapters, interactive CLIs. It is not a niche shape — prova ships an `mcp` mode of
+its own, and MCP-over-stdio is how agents reach most tools now.
+
+Batching the requests instead is not a workaround, it is a race. Feeding an MCP server its whole
+session on stdin at once (init, `render`, `respond`) made the server dispatch the tool calls
+concurrently: `respond` reached the session lock before `render` had stored anything and answered
+"No active render session." The proof was red for a reason that had nothing to do with the
+behavior under test, and it would have been flaky rather than red had the scheduling gone the
+other way.
+
+Found proving that archetect's MCP session carries a UI breadcrumb across turns — the assertion
+is specifically that state opened on turn one survives to turn two, which is unreachable in one
+batch by construction. Worked around with a Python co-process driver (`subprocess.Popen`, write,
+read until the matching id, write again) invoked via `shell.run`. It works and it is honest, but
+it means the proof is written in Python rather than in prova, and every project with a stdio SUT
+will write that same driver again.
+
+Shape, if it earns a place: `Process:write(str)` plus a bounded read — `Process:read_line(opts)`
+or an expect-style `Process:await(pattern, {timeout})` — so the exchange is a loop in the proof.
+The bounded read is the load-bearing half; an unbounded one turns a wedged SUT into a hung suite,
+which is the failure mode `first_byte`/`idle_timeout` already exist to prevent for `shell.run`.
