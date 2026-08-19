@@ -13,56 +13,45 @@ local prova_bin = assert(prova.bin, "prova.bin not injected by the runtime")
 local fixtures = assert(os.getenv("PROVA_FIXTURES"), "PROVA_FIXTURES not set")
 local project = fixtures .. "/warm-project"
 
-function json_encode(v)
-  local t = type(v)
-  if t == "string" then
-    return '"' .. v:gsub('\\', '\\\\'):gsub('"', '\\"') .. '"'
-  elseif t == "number" or t == "boolean" then
-    return tostring(v)
-  elseif t == "table" then
-    local parts = {}
-    if #v > 0 then
-      for _, item in ipairs(v) do parts[#parts + 1] = json_encode(item) end
-      return "[" .. table.concat(parts, ",") .. "]"
-    elseif next(v) == nil then
-      return "{}"
-    else
-      for k, item in pairs(v) do
-        parts[#parts + 1] = string.format("%q", k) .. ":" .. json_encode(item)
-      end
-      return "{" .. table.concat(parts, ",") .. "}"
-    end
-  end
-  error("unencodable type: " .. t)
-end
 
 -- One server process, one batch: the ordering across tool calls IS what warmth means.
-local function mcp(messages)
-  local batch = {
-    { jsonrpc = "2.0", id = 1, method = "initialize", params = {
-        protocolVersion = "2024-11-05",
-        capabilities = {},
-        clientInfo = { name = "prova-selftest", version = "0" },
-      } },
-    { jsonrpc = "2.0", method = "notifications/initialized" },
-  }
-  for _, m in ipairs(messages) do batch[#batch + 1] = m end
-  local req = fs.tempdir() .. "/requests.jsonl"
-  local lines = {}
-  for _, m in ipairs(batch) do lines[#lines + 1] = json_encode(m) end
-  fs.write(req, table.concat(lines, "\n") .. "\n")
-  local r = shell.run(prova_bin .. " mcp < " .. req, { cwd = project, timeout = "120s" })
-  local by_id = {}
-  for _, line in ipairs(prova.parse.lines(r.stdout)) do
-    local ok, msg = pcall(json.decode, line)
-    if ok and type(msg) == "table" and msg.id ~= nil then by_id[msg.id] = msg end
+--- Drive `prova mcp` as a real CONVERSATION over `stdio.spawn`: each request written only after
+--- the previous reply has come back, so the ordering these proofs assert is ORDERING rather than
+--- an assumption about how the server schedules.
+---
+--- This was a batch — every message into a `requests.jsonl`, redirected in — which worked only
+--- because prova's server answers sequentially; against one free to dispatch concurrently the
+--- same batch answers turn two before turn one has stored anything
+--- (`agent-ergonomics.md#stdio-cannot-drive-a-conversational-sut`). The hand-rolled `json_encode`
+--- went with it: `codec = "json"` encodes the turn.
+local function mcp(t, messages)
+  local sess = stdio.spawn(t, {
+    cmd = { prova_bin, "mcp" },
+    cwd = project,
+    framing = "line",     -- MCP stdio framing is newline-delimited JSON
+    codec = "json",
+  })
+  sess:send({ jsonrpc = "2.0", id = 1, method = "initialize", params = {
+    protocolVersion = "2024-11-05",
+    capabilities = {},
+    clientInfo = { name = "prova-selftest", version = "0" },
+  } })
+  local by_id = { [1] = sess:recv({ where = { id = 1 }, timeout = "60s" }) }
+  sess:send({ jsonrpc = "2.0", method = "notifications/initialized" })
+
+  for _, m in ipairs(messages) do
+    sess:send(m)
+    if m.id ~= nil then
+      by_id[m.id] = sess:recv({ where = { id = m.id }, timeout = "120s" })
+    end
   end
-  return by_id, r
+  sess:eof()
+  return by_id, { code = sess:wait({ timeout = "60s" }) }
 end
 
 local function tool_json(response, label)
   assert(response, (label or "tool") .. ": no response")
-  assert(response.result, (label or "tool") .. ": rpc error: " .. json_encode(response.error or {}))
+  assert(response.result, (label or "tool") .. ": rpc error: " .. json.encode(response.error or {}))
   local content = response.result.content
   assert(type(content) == "table" and content[1] and content[1].type == "text",
     (label or "tool") .. ": expected one text content item")
@@ -84,7 +73,7 @@ end
 prova.group("prova mcp — warm phase", function(g)
   g:test("the full warm lifecycle: up once, run twice warm, eval sees state, down tears down", function(t)
     clean()
-    local by_id = mcp({
+    local by_id = mcp(t, {
       call(2, "up", { name = "warmtop" }),
       call(3, "status"),
       call(4, "run", { topology = "warmtop" }),
@@ -97,12 +86,12 @@ prova.group("prova mcp — warm phase", function(g)
     -- up: provisions exactly once, reports the resource url.
     local up = tool_json(by_id[2], "up")
     t:expect(up.name):equals("warmtop")
-    t:expect(json_encode(up)):contains("mem://warmtop")
+    t:expect(json.encode(up)):contains("mem://warmtop")
     t:expect(fs.read(project .. "/provisions")):equals("1")
 
     -- status while held: names the topology.
     local held = tool_json(by_id[3], "status")
-    t:expect(json_encode(held)):contains("warmtop")
+    t:expect(json.encode(held)):contains("warmtop")
 
     -- two warm runs: both green, NO re-provisioning, and the SAME held Lua table accumulates.
     local run1 = tool_json(by_id[4], "warm run 1")
@@ -120,13 +109,13 @@ prova.group("prova mcp — warm phase", function(g)
     tool_json(by_id[7], "down")
     t:expect(fs.exists(project .. "/teardown"), "teardown sentinel written"):is_true()
     local after = tool_json(by_id[8], "status after down")
-    t:expect(json_encode(after)):never():contains("warmtop")
+    t:expect(json.encode(after)):never():contains("warmtop")
     clean()
   end)
 
   g:test("run{topology} without a held environment is an explicit error", function(t)
     clean()
-    local by_id = mcp({ call(2, "run", { topology = "warmtop" }) })
+    local by_id = mcp(t, { call(2, "run", { topology = "warmtop" }) })
     local resp = assert(by_id[2], "no response")
     local is_error = (resp.result and resp.result.isError) or (resp.error ~= nil)
     t:expect(is_error, "not-held must be an explicit error"):is_true()

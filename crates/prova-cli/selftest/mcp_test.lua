@@ -18,62 +18,47 @@ local project = fixtures .. "/mcp-project"
 
 -- Send a batch of JSON-RPC messages to `prova mcp` over stdio; return { responses_by_id, result }.
 -- MCP stdio framing is newline-delimited JSON. The batch always opens with the handshake.
-local function mcp(messages)
-  local batch = {
-    { jsonrpc = "2.0", id = 1, method = "initialize", params = {
-        protocolVersion = "2024-11-05",
-        capabilities = {},
-        clientInfo = { name = "prova-selftest", version = "0" },
-      } },
-    { jsonrpc = "2.0", method = "notifications/initialized" },
-  }
-  for _, m in ipairs(messages) do batch[#batch + 1] = m end
+--- Drive `prova mcp` as a real CONVERSATION over `stdio.spawn`: each request written only after
+--- the previous reply has come back, so the ordering these proofs assert is ORDERING rather than
+--- an assumption about how the server schedules.
+---
+--- This was a batch — every message into a `requests.jsonl`, redirected in — which worked only
+--- because prova's server answers sequentially; against one free to dispatch concurrently the
+--- same batch answers turn two before turn one has stored anything
+--- (`agent-ergonomics.md#stdio-cannot-drive-a-conversational-sut`). The hand-rolled `json_encode`
+--- went with it: `codec = "json"` encodes the turn.
+local function mcp(t, messages)
+  local sess = stdio.spawn(t, {
+    cmd = { prova_bin, "mcp" },
+    cwd = project,
+    framing = "line",     -- MCP stdio framing is newline-delimited JSON
+    codec = "json",
+  })
+  sess:send({ jsonrpc = "2.0", id = 1, method = "initialize", params = {
+    protocolVersion = "2024-11-05",
+    capabilities = {},
+    clientInfo = { name = "prova-selftest", version = "0" },
+  } })
+  local by_id = { [1] = sess:recv({ where = { id = 1 }, timeout = "60s" }) }
+  sess:send({ jsonrpc = "2.0", method = "notifications/initialized" })
 
-  local dir = fs.tempdir()
-  local req = dir .. "/requests.jsonl"
-  local lines = {}
-  for _, m in ipairs(batch) do lines[#lines + 1] = json_encode(m) end
-  fs.write(req, table.concat(lines, "\n") .. "\n")
-
-  local r = shell.run(prova_bin .. " mcp < " .. req, { cwd = project, timeout = "60s" })
-  local by_id = {}
-  for _, line in ipairs(prova.parse.lines(r.stdout)) do
-    local ok, msg = pcall(json.decode, line)
-    if ok and type(msg) == "table" and msg.id ~= nil then by_id[msg.id] = msg end
+  for _, m in ipairs(messages) do
+    sess:send(m)
+    if m.id ~= nil then
+      by_id[m.id] = sess:recv({ where = { id = m.id }, timeout = "120s" })
+    end
   end
-  return by_id, r
+  sess:eof()
+  return by_id, { code = sess:wait({ timeout = "60s" }) }
 end
 
 -- Minimal JSON encoder for request batches (strings/numbers/bools/tables; enough for JSON-RPC —
 -- request strings here never contain newlines or exotic escapes).
-function json_encode(v)
-  local t = type(v)
-  if t == "string" then
-    return '"' .. v:gsub('\\', '\\\\'):gsub('"', '\\"') .. '"' 
-  elseif t == "number" or t == "boolean" then
-    return tostring(v)
-  elseif t == "table" then
-    local is_array = #v > 0 or next(v) == nil
-    local parts = {}
-    if is_array and next(v) ~= nil then
-      for _, item in ipairs(v) do parts[#parts + 1] = json_encode(item) end
-      return "[" .. table.concat(parts, ",") .. "]"
-    elseif next(v) == nil then
-      return "{}"
-    else
-      for k, item in pairs(v) do
-        parts[#parts + 1] = string.format("%q", k) .. ":" .. json_encode(item)
-      end
-      return "{" .. table.concat(parts, ",") .. "}"
-    end
-  end
-  error("unencodable type: " .. t)
-end
 
 -- Every tool result is one text content item whose text is JSON — decode it.
 local function tool_json(response, label)
   assert(response, (label or "tool") .. ": no response")
-  assert(response.result, (label or "tool") .. ": error: " .. json_encode(response.error or {}))
+  assert(response.result, (label or "tool") .. ": error: " .. json.encode(response.error or {}))
   local content = response.result.content
   assert(type(content) == "table" and content[1] and content[1].type == "text",
     (label or "tool") .. ": expected one text content item")
@@ -82,7 +67,7 @@ end
 
 prova.group("prova mcp", function(g)
   g:test("initialize: serverInfo + the skill as instructions; clean exit on EOF", function(t)
-    local by_id, r = mcp({})
+    local by_id, r = mcp(t, {})
     t:expect(r.code, "server exits 0 on stdin EOF"):equals(0)
     local init = by_id[1]
     t:expect(init and init.result and init.result.serverInfo.name):equals("prova")
@@ -91,7 +76,7 @@ prova.group("prova mcp", function(g)
   end)
 
   g:test("tools/list exposes the CLI-parity cold tools", function(t)
-    local by_id = mcp({ { jsonrpc = "2.0", id = 2, method = "tools/list" } })
+    local by_id = mcp(t, { { jsonrpc = "2.0", id = 2, method = "tools/list" } })
     local tools = assert(by_id[2] and by_id[2].result and by_id[2].result.tools, "no tools result")
     local names = {}
     for _, tool in ipairs(tools) do names[tool.name] = true end
@@ -103,7 +88,7 @@ prova.group("prova mcp", function(g)
   end)
 
   g:test("eval evaluates in the full environment and returns JSON", function(t)
-    local by_id = mcp({
+    local by_id = mcp(t, {
       { jsonrpc = "2.0", id = 3, method = "tools/call",
         params = { name = "eval", arguments = { code = "return 21 * 2" } } },
     })
@@ -112,7 +97,7 @@ prova.group("prova mcp", function(g)
   end)
 
   g:test("tests discovers the project's nodes and honors selection", function(t)
-    local by_id = mcp({
+    local by_id = mcp(t, {
       { jsonrpc = "2.0", id = 4, method = "tools/call",
         params = { name = "tests", arguments = {} } },
       { jsonrpc = "2.0", id = 5, method = "tools/call",
@@ -126,7 +111,7 @@ prova.group("prova mcp", function(g)
   end)
 
   g:test("learn serves the topic catalog over MCP (docs/plans/autodidact.md M1)", function(t)
-    local by_id = mcp({
+    local by_id = mcp(t, {
       { jsonrpc = "2.0", id = 10, method = "tools/list" },
       { jsonrpc = "2.0", id = 11, method = "tools/call",
         params = { name = "learn", arguments = {} } },
@@ -154,7 +139,7 @@ prova.group("prova mcp", function(g)
   end)
 
   g:test("introspect answers for a declared plugin's API, not just the core (autodidact M4)", function(t)
-    local by_id = mcp({
+    local by_id = mcp(t, {
       { jsonrpc = "2.0", id = 20, method = "tools/call",
         params = { name = "introspect", arguments = { filter = "greet.hello" } } },
       -- With `package`, the same answer comes from a server started ANYWHERE — the common
@@ -172,7 +157,7 @@ prova.group("prova mcp", function(g)
   end)
 
   g:test("topics are also protocol-native resources", function(t)
-    local by_id = mcp({
+    local by_id = mcp(t, {
       { jsonrpc = "2.0", id = 14, method = "resources/list" },
       { jsonrpc = "2.0", id = 15, method = "resources/read",
         params = { uri = "prova://learn/pdd" } },
@@ -189,7 +174,7 @@ prova.group("prova mcp", function(g)
   end)
 
   g:test("run returns counts and per-failure detail; selection deselects", function(t)
-    local by_id = mcp({
+    local by_id = mcp(t, {
       { jsonrpc = "2.0", id = 6, method = "tools/call",
         params = { name = "run", arguments = {} } },
       { jsonrpc = "2.0", id = 7, method = "tools/call",
@@ -212,7 +197,7 @@ prova.group("prova mcp", function(g)
   g:test("the promise burndown drives over MCP: selection, strict mode, the promised count", function(t)
     -- fixtures/spec-project: one open promise + one finished proof (a package mid-burndown).
     local spec_project = fixtures .. "/spec-project"
-    local by_id = mcp({
+    local by_id = mcp(t, {
       -- The CI shape: the open promise is counted, never failed — the run is green.
       { jsonrpc = "2.0", id = 30, method = "tools/call",
         params = { name = "run", arguments = { package = spec_project } } },

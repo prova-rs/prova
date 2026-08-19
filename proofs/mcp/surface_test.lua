@@ -23,24 +23,50 @@ end)
 -- is free — on a bare run nothing uses it, so nothing conducts.
 local deputies = require("deputies")
 
---- Drive `prova mcp` with one batch: handshake + `lines` (raw JSON-RPC strings), stdin EOF,
---- responses decoded by id. One process per call — ordering across tool calls IS the warmth.
-local function mcp(dir, lines, env)
-  local req = dir .. "/requests.jsonl"
-  local all = {
-    '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05",'
-      .. '"capabilities":{},"clientInfo":{"name":"proof","version":"0"}}}',
-    '{"jsonrpc":"2.0","method":"notifications/initialized"}',
-  }
-  for _, l in ipairs(lines) do all[#all + 1] = l end
-  fs.write(req, table.concat(all, "\n") .. "\n")
-  local r = shell.run(prova.bin .. " mcp < " .. req, { cwd = dir, env = env or {}, timeout = "60s" })
-  local by_id = {}
-  for line in r.stdout:gmatch("[^\n]+") do
-    local ok, msg = pcall(json.decode, line)
-    if ok and type(msg) == "table" and msg.id then by_id[msg.id] = msg end
+--- Drive `prova mcp` as a real CONVERSATION: handshake, then each request written only after the
+--- previous reply has come back, over `stdio.spawn` (docs/plans/stdio-transport.md).
+---
+--- This used to write every message into a `requests.jsonl` and redirect it in. That worked here
+--- only because prova's MCP server happens to answer sequentially — it is a race in general, and
+--- the same batch against a server free to dispatch concurrently answers turn two before turn one
+--- has stored anything (`agent-ergonomics.md#stdio-cannot-drive-a-conversational-sut`). These
+--- proofs ASSERT the ordering they used to assume: `where = { id = … }` picks each reply out of
+--- the stream, so a notification arriving mid-exchange is skipped rather than mistaken for it.
+---
+--- One process per call — ordering across tool calls IS the warmth.
+local function mcp(t, dir, msgs, env)
+  local sess = stdio.spawn(t, {
+    cmd = { prova.bin, "mcp" },
+    cwd = dir,
+    env = env or {},
+    framing = "line",   -- MCP over stdio is newline-delimited JSON
+    codec = "json",
+  })
+  sess:send({
+    jsonrpc = "2.0",
+    id = 1,
+    method = "initialize",
+    params = {
+      protocolVersion = "2024-11-05",
+      capabilities = {},
+      clientInfo = { name = "proof", version = "0" },
+    },
+  })
+  local by_id = { [1] = sess:recv({ where = { id = 1 }, timeout = "60s" }) }
+  sess:send({ jsonrpc = "2.0", method = "notifications/initialized" })
+
+  for _, msg in ipairs(msgs) do
+    sess:send(msg)
+    -- A notification (no id) expects no answer; anything else is awaited before the next write.
+    if msg.id then
+      by_id[msg.id] = sess:recv({ where = { id = msg.id }, timeout = "120s" })
+    end
   end
-  return by_id, r
+  -- Server shutdown is stdin EOF — the same signal a real client sends when it goes away, and
+  -- what the held-topology teardown below hangs on.
+  sess:eof()
+  sess:wait({ timeout = "60s" })
+  return by_id, sess
 end
 
 --- A tool result's decoded JSON payload plus its error flag.
@@ -48,9 +74,13 @@ local function tool_json(resp)
   return json.decode(resp.result.content[1].text), resp.result.isError
 end
 
-local function call(id, tool, arguments_json)
-  return '{"jsonrpc":"2.0","id":' .. id .. ',"method":"tools/call","params":{"name":"' .. tool
-    .. '","arguments":' .. (arguments_json or "{}") .. "}}"
+local function call(id, tool, arguments)
+  return {
+    jsonrpc = "2.0",
+    id = id,
+    method = "tools/call",
+    params = { name = tool, arguments = arguments or {} },
+  }
 end
 
 --- A package with one registered, resourceless topology whose factory counts provisions, defers
@@ -116,7 +146,7 @@ prova.test("the tool surface mirrors the CLI verbs, warm holder included",
   { covers = "docs/design/mcp-mode.md#mcp-cli-parity" }, function(t)
   local root = t:use(scratch)()
   registered(root)
-  local by_id = mcp(root, { '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' })
+  local by_id = mcp(t, root, { { jsonrpc = "2.0", id = 2, method = "tools/list" } })
   local names = {}
   for _, tool in ipairs(by_id[2].result.tools) do names[tool.name] = true end
   -- The FULL surface, not a sample: a tool silently dropped from the server would slip past a
@@ -144,7 +174,7 @@ prova.test("every MCP tool name, typed at the CLI, dispatches or teaches — nev
     'prova.test("one", function(t) t:expect(true):is_true() end)\n')
 
   -- The LIVE tool surface, never a hand-kept list — a tool added tomorrow is swept tomorrow.
-  local by_id = mcp(root, { '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' })
+  local by_id = mcp(t, root, { { jsonrpc = "2.0", id = 2, method = "tools/list" } })
   local tools = by_id[2].result.tools
   t:expect(#tools, "the live surface, not a sample"):gte(15)
 
@@ -176,8 +206,8 @@ prova.test("a server-held topology reports through status and never writes a run
   -- Hold it and ask status; no `down`, so the hold spans the batch. `prova ps` reads the
   -- `running/` records that `prova start` writes — a server-held topology must never mint one,
   -- which is exactly why it is invisible to `ps` and visible to `status`.
-  local by_id = mcp(root, {
-    call(2, "up", '{"name":"orders"}'),
+  local by_id = mcp(t, root, {
+    call(2, "up", { name = "orders" }),
     call(3, "status"),
   })
   local held = tool_json(by_id[3]).held
@@ -195,10 +225,10 @@ prova.test("run{topology} resolves the held instance: one provision, state accum
   registered(root)
   local count, hits, marker = root .. "/count.txt", root .. "/hits.txt", root .. "/marker.txt"
 
-  local by_id = mcp(root, {
-    call(2, "up", '{"name":"orders"}'),
-    call(3, "run", '{"topology":"orders"}'),
-    call(4, "run", '{"topology":"orders"}'),
+  local by_id = mcp(t, root, {
+    call(2, "up", { name = "orders" }),
+    call(3, "run", { topology = "orders" }),
+    call(4, "run", { topology = "orders" }),
   }, { PROVA_PROOF_COUNT = count, PROVA_PROOF_HITS = hits, PROVA_PROOF_MARKER = marker })
 
   local _, up_err = tool_json(by_id[2])
@@ -218,7 +248,7 @@ prova.test("run{topology} without a held environment is an explicit error, not a
   { covers = "docs/design/mcp-mode.md#warm-rerun-held-injection" }, function(t)
   local root = t:use(scratch)()
   registered(root)
-  local by_id = mcp(root, { call(2, "run", '{"topology":"orders"}') })
+  local by_id = mcp(t, root, { call(2, "run", { topology = "orders" }) })
   t:expect(by_id[2].result.isError):is_truthy()
   t:expect(by_id[2].result.content[1].text):contains("not held")
 end)
@@ -234,7 +264,7 @@ prova.test("eval runs one-shot code in the full environment on both transports",
   t:expect(cli.code):equals(0)
   t:expect(cli.stdout):contains("42")
 
-  local by_id = mcp(root, { call(2, "eval", '{"code":"return json.encode({ok = true})"}') })
+  local by_id = mcp(t, root, { call(2, "eval", { code = "return json.encode({ok = true})" }) })
   local value, is_err = tool_json(by_id[2])
   t:expect(is_err):never():is_truthy()
   t:expect(value, "modules are available, same as the CLI"):contains("ok")
@@ -259,11 +289,11 @@ prova.test("the reminders tool narrows by state, and isError answers only for wh
   { covers = "docs/design/reminders.md#reminders-state-filters" }, function(t)
   local root = t:use(scratch)()
   reminded(root)
-  local by_id = mcp(root, {
+  local by_id = mcp(t, root, {
     call(2, "reminders"),
-    call(3, "reminders", '{"state":"watching"}'),
-    call(4, "reminders", '{"state":"due"}'),
-    call(5, "reminders", '{"state":"snoozed"}'),
+    call(3, "reminders", { state = "watching" }),
+    call(4, "reminders", { state = "due" }),
+    call(5, "reminders", { state = "snoozed" }),
   })
   local full, full_err = tool_json(by_id[2])
   t:expect(#full.reminders):equals(2)
@@ -284,11 +314,11 @@ prova.test("the reminders tool takes the same selector axes the CLI verb takes",
   { covers = "docs/design/reminders.md#reminders-selectors-narrow" }, function(t)
   local root = t:use(scratch)()
   reminded(root)
-  local by_id = mcp(root, {
-    call(2, "reminders", '{"keywords":["deps"]}'),
-    call(3, "reminders", '{"tags":["ops"]}'),
-    call(4, "reminders", '{"nodes":["deps-current"]}'),
-    call(5, "reminders", '{"keyword_excludes":["deps"]}'),
+  local by_id = mcp(t, root, {
+    call(2, "reminders", { keywords = { "deps" } }),
+    call(3, "reminders", { tags = { "ops" } }),
+    call(4, "reminders", { nodes = { "deps-current" } }),
+    call(5, "reminders", { keyword_excludes = { "deps" } }),
   })
   local k = tool_json(by_id[2])
   t:expect(#k.reminders):equals(1)
@@ -330,12 +360,12 @@ prova.test("beta ops", { tags = { "ops" } }, function(t) t:expect(true):is_true(
     if p:find("alpha", 1, true) then alpha_node = p end
   end
 
-  local by_id = mcp(root, {
-    call(2, "tests", '{"keywords":["alpha"]}'),
-    call(3, "tests", '{"keyword_excludes":["alpha"]}'),
-    call(4, "tests", '{"tags":["ops"]}'),
-    call(5, "tests", '{"tag_excludes":["ops"]}'),
-    call(6, "tests", json.encode({ nodes = { alpha_node } })),
+  local by_id = mcp(t, root, {
+    call(2, "tests", { keywords = { "alpha" } }),
+    call(3, "tests", { keyword_excludes = { "alpha" } }),
+    call(4, "tests", { tags = { "ops" } }),
+    call(5, "tests", { tag_excludes = { "ops" } }),
+    call(6, "tests", { nodes = { alpha_node } }),
   })
   local function tool_paths(id)
     local out = {}
@@ -369,9 +399,9 @@ prova.test("the run tool throws switches — the MCP door to the opt-in classes"
 prova.test("ordinary", function(t) t:expect(true):is_true() end)
 prova.test("heavy", { switch = "heavy" }, function(t) t:expect(true):is_true() end)
 ]])
-  local by_id = mcp(root, {
+  local by_id = mcp(t, root, {
     call(2, "run"),
-    call(3, "run", '{"switches":["heavy"]}'),
+    call(3, "run", { switches = { "heavy" } }),
   })
   local bare = tool_json(by_id[2])
   t:expect(bare.passed, "the class is off unless thrown, over MCP exactly as on the CLI"):equals(1)
@@ -391,7 +421,7 @@ prova.test("the one embedded skill: printed, served as instructions, and install
   t:expect(printed.code):equals(0)
   t:expect(printed.stdout):contains(fingerprint)
 
-  local by_id = mcp(root, {})
+  local by_id = mcp(t, root, {})
   t:expect(by_id[1].result.instructions, "served on connect"):contains(fingerprint)
 
   local installed = shell.run(prova.bin .. " skill --install", { cwd = root, merge_stderr = true })
@@ -414,15 +444,15 @@ prova.test("the capture tool writes a scanned anchor, stamps the date, and refus
   fs.write(root .. "/docs/design.md",
     "# design\n\n<!-- claim: existing-item -->\nAlready anchored, for the duplicate-id refusal.\n")
 
-  local by_id = mcp(root, {
+  local by_id = mcp(t, root, {
     -- A good capture: under the source, fresh id — lands, dated, addressable.
-    call(2, "capture", '{"state":"backlog","id":"lease-renewal","prose":"Leases should renew before expiry.","file":"docs/design.md"}'),
+    call(2, "capture", { state = "backlog", id = "lease-renewal", prose = "Leases should renew before expiry.", file = "docs/design.md" }),
     -- A plausible-but-unscanned path: refused, naming the sources.
-    call(3, "capture", '{"state":"backlog","id":"lost-item","prose":"x","file":"README.md"}'),
+    call(3, "capture", { state = "backlog", id = "lost-item", prose = "x", file = "README.md" }),
     -- A duplicate id: refused, naming the existing address.
-    call(4, "capture", '{"state":"claim","id":"existing-item","prose":"x","file":"docs/design.md"}'),
+    call(4, "capture", { state = "claim", id = "existing-item", prose = "x", file = "docs/design.md" }),
     -- The lane sees the capture (the same server, same scan the ledger uses).
-    call(5, "specs", '{"state":"backlog"}'),
+    call(5, "specs", { state = "backlog" }),
   })
 
   local captured, err = tool_json(by_id[2])
