@@ -97,7 +97,7 @@ serde = { version = "1", features = ["derive"] }
 # archetect-core, so the lockfile dedupes to one copy). Calling archetect's implementation rather
 # than reimplementing is the point: `str.snake_case` in a proof and `snake_case` in an archetype
 # are the same function, so casing asserts on rendered output cannot drift from the renderer.
-archetect-inflections = { git = "https://github.com/archetect/archetect.git", tag = "v3.4.1" }
+archetect-inflections = { git = "https://github.com/archetect/archetect.git", tag = "v3.5.0" }
 # Capability version predicates — `requires = { "dotnet >= 9" }`. The constraint is real semver, not
 # a hand-rolled compare: version ordering is exactly where "obviously correct" hand code is quietly
 # wrong (prereleases, ranges, `^`). prova-cli already depends on semver for archetect's own
