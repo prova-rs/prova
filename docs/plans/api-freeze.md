@@ -142,7 +142,11 @@ grpc keeps `method/request/code`). Filters accept the same subset-matcher shapes
 - `delay` = per-reply one-shot (shipped) · `latency/drop/corrupt/throttle/after` = continuous
   proxy fault verbs (future). Both words, distinct meanings.
 - Driver observation: `wait_for` (readiness) / `expect` (observe-until-match, timeout'd) —
-  future `Process:expect(pattern)` and `terminal:expect` conform.
+  `terminal:expect` and `stdio` `Session:expect` conform. **`Process:expect(pattern)` is retired
+  (2026-08-18)**: written before `terminal` and `socket` existed, it predicted the wrong home.
+  Conversation belongs to a session type, not to a process handle — `shell.spawn`'s nulled stdin
+  is the hermeticity promise of "boot it, probe it from outside", not a gap to fill. The
+  conversational posture is `stdio.spawn` (`docs/plans/stdio-transport.md`).
 - `ctx:log` is promoted to a real **Log event** in the report stream (today stderr-only).
 - Naming: **Mock** (transport seam) / **double** (function seam) / never "double mocks" — with
   the Meszaros glossary folded into mocks-proxies-drivers.md.

@@ -1108,7 +1108,11 @@ mod tests {
         let e = recv_args(&Framing::Line, Codec::Json, Some(Value::Table(opts)), None)
             .unwrap_err()
             .to_string();
-        assert!(e.contains("did you mean `where`"), "a typo is caught and named: {e}");
+        // The refusal is the contract; the "did you mean" is a bonus `suggest::nearest` withholds
+        // when nothing is close enough, and a transposition is past its bar. What must hold is
+        // that the bad key is NAMED and the accepted set is listed — that is the one jump to a fix.
+        assert!(e.contains("wehre"), "the key prova cannot honor is named: {e}");
+        assert!(e.contains("timeout, where"), "and the accepted set is listed: {e}");
     }
 
     /// `where` selects among TURNS. On an unframed connection there are none, so the option can
@@ -1301,7 +1305,7 @@ mod tests {
                     r#"
                     -- originate: raw bytes, exact counts
                     local srv = socket.listen(ctx, { addr = "tcp://127.0.0.1:0" })
-                    local c = socket.connect(srv.addr)
+                    local c = socket.connect(ctx, { addr = srv.addr })
                     c:send("\1\2\3")
                     local conn = srv:accept()
                     local raw = conn:recv(3, { timeout = "5s" })
@@ -1312,14 +1316,14 @@ mod tests {
                     -- terminate: a framed mock answers turns; strays journal as unmatched
                     local m = socket.mock(ctx, { addr = "tcp://127.0.0.1:0", framing = "line" })
                     m:on("PING"):reply("PONG")
-                    local mc = socket.connect(m.addr, { framing = "line" })
+                    local mc = socket.connect(ctx, { addr = m.addr, framing = "line" })
                     mc:send("PING")
                     local answered = mc:recv({ timeout = "5s" })
                     mc:send("STRAY")
 
                     -- interpose: the proxy wiretaps in front of the mock
                     local p = socket.proxy(ctx, { upstream = m.addr, framing = "line" })
-                    local pc = socket.connect(p.addr, { framing = "line" })
+                    local pc = socket.connect(ctx, { addr = p.addr, framing = "line" })
                     pc:send("PING")
                     local through = pc:recv({ timeout = "5s" })
 

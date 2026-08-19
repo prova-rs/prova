@@ -17,6 +17,14 @@ fn run<F: std::future::Future<Output = ()>>(f: impl FnOnce() -> F) {
     local.block_on(&rt, f());
 }
 
+/// Take the child out from under its `RefCell` BEFORE awaiting on it. The borrow guard lives to
+/// the end of the statement, so `this.child.borrow_mut().take().unwrap().kill().await` holds it
+/// across the await — which on a single-threaded runtime is how you deadlock a session against
+/// itself. The production paths take-then-await for the same reason.
+fn take_child(this: &Session) -> tokio::process::Child {
+    this.child.borrow_mut().take().expect("the child is still held by the session")
+}
+
 /// A `Session` over a real child, without going through Lua (the constructor needs a ctx).
 fn session(program: &str, framing: Framing, codec: Codec) -> Session {
     let mut command = CommandSpec::Shell(program.to_string()).build();
@@ -68,7 +76,7 @@ fn a_read_failure_carries_stderr_the_child_status_and_the_label() {
         assert!(msg.contains("test-child"), "and WHICH process it was: {msg}");
         assert!(msg.contains("0 turns read"), "and how far the conversation got: {msg}");
 
-        let _ = this.child.borrow_mut().take().unwrap().kill().await;
+        let _ = take_child(&this).kill().await;
     });
 }
 
@@ -82,7 +90,7 @@ fn a_silent_stderr_says_so_rather_than_showing_an_empty_section() {
         tokio::time::sleep(Duration::from_millis(100)).await;
         let msg = this.diagnose("recv: timed out", 0, "").to_string();
         assert!(msg.contains("stderr: (silent)"), "silence is stated: {msg}");
-        let _ = this.child.borrow_mut().take().unwrap().kill().await;
+        let _ = take_child(&this).kill().await;
     });
 }
 
@@ -94,7 +102,7 @@ fn an_exited_child_is_reported_as_exited() {
     run(|| async {
         let this = session("exit 3", Framing::Line, Codec::Bytes);
         // Reap it the way `:wait()` would, so try_wait has a status to report.
-        let mut child = this.child.borrow_mut().take().unwrap();
+        let mut child = take_child(&this);
         let status = child.wait().await.unwrap();
         assert_eq!(status.code(), Some(3));
         *this.child.borrow_mut() = Some(child);
@@ -113,10 +121,11 @@ fn a_line_framed_session_round_trips_through_a_real_child() {
     run(|| async {
         let this = session("cat", Framing::Line, Codec::Bytes);
         {
-            let mut w = this.stdin.borrow_mut();
-            let w = w.as_mut().unwrap();
+            // Same rule on the write half: own it across the await, then hand it back.
+            let mut w = this.stdin.borrow_mut().take().expect("stdin is piped");
             w.write_all(&Framing::Line.encode(b"ping")).await.unwrap();
             w.flush().await.unwrap();
+            *this.stdin.borrow_mut() = Some(w);
         }
         let (mut out, mut buf) = checkout(&this, "recv").unwrap();
         let got = tokio::time::timeout(
@@ -128,7 +137,7 @@ fn a_line_framed_session_round_trips_through_a_real_child() {
         assert_eq!(got.unwrap().unwrap().as_deref(), Some(&b"ping"[..]));
 
         this.stdin.borrow_mut().take(); // EOF — `cat` exits
-        let code = this.child.borrow_mut().take().unwrap().wait().await.unwrap();
+        let code = take_child(&this).wait().await.unwrap();
         assert_eq!(code.code(), Some(0), "the child exits cleanly on stdin EOF");
     });
 }
@@ -156,6 +165,6 @@ fn where_on_an_unframed_session_is_refused_naming_the_cure() {
         assert_eq!(dur, Duration::from_secs(5));
         assert!(sel.is_any());
 
-        let _ = this.child.borrow_mut().take().unwrap().kill().await;
+        let _ = take_child(&this).kill().await;
     });
 }

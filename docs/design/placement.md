@@ -49,7 +49,7 @@ implements it as a hop.
 
 ## Transport
 
-Newline-delimited JSON over a Unix domain socket — `socket.connect(addr, { delimiter = "\n" })`
+Newline-delimited JSON over a Unix domain socket — `socket.connect(ctx, { addr = addr, framing = { delimiter = "\n" } })`
 in prova's own vocabulary. No TLS: a Unix socket is protected by filesystem permissions, and
 there is no remote peer on this hop to authenticate.
 

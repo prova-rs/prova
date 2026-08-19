@@ -302,15 +302,39 @@ and caused a field bug. All of it in the same change:
 
 Each lands green and is committable on its own.
 
-1. **`codec` + `where` on the existing turn transports** (socket, websocket). No new namespace, and
-   it proves the matcher reuse before anything depends on it.
-2. **`Framing::ContentLength`**; delete the chunker claim.
-3. **`stdio.spawn`** — the Driver, stderr separation, bounded reads with the diagnostic message.
-4. **The ctx/self-management harmonization** on socket/websocket + the teaching refusals.
-5. **`stdio.mock`** — the PATH-shadow responder.
-6. **`stdio.proxy`** + the cassette `kind`.
-7. **Convert `proofs/mcp/` and the selftest battery** off the batch file.
-8. **Cohesion proofs + teaching surface**, closing the loop.
+1. ✅ **`codec` + `where` on the existing turn transports** (socket, websocket). No new namespace,
+   and it proves the matcher reuse before anything depends on it. *Landed 2026-08-18: `Framing`
+   moved out of `socket.rs` into `modules/turn.rs` with `Codec` and `Selector` beside it — one
+   scanner, one matcher, three transports.*
+2. ✅ **`Framing::ContentLength`**; delete the chunker claim. *Landed: `content_length` ships and
+   the never-built chunker sentence is gone from `mocks-proxies-drivers.md` and the socket spec's
+   own header.*
+3. ✅ **`stdio.spawn`** — the Driver, stderr separation, bounded reads with the diagnostic message.
+   *Landed: `crates/prova-core/src/modules/stdio.rs`, 9 black-box proofs in `proofs/spec/stdio/`,
+   5 unit tests on the diagnostics.*
+4. ✅ **The ctx/self-management harmonization** on socket/websocket + the teaching refusals.
+   *Landed with 1: both take ctx first and self-manage; the retired positional spellings refuse
+   with the new one, checked at the call site because a first-argument change is invisible to the
+   closed-opts gate.*
+5. ⬜ **`stdio.mock`** — the PATH-shadow responder.
+6. ⬜ **`stdio.proxy`** + the cassette `kind`.
+7. ✅ **Convert `proofs/mcp/` and the selftest battery** off the batch file. *Landed: 23 proofs
+   across both batteries now assert turn ordering instead of assuming it; both selftest files shed
+   the hand-rolled `json_encode` that only existed because a batch needed strings.*
+8. ✅ **Cohesion proofs + teaching surface**, closing the loop. *Landed: three Session-contract
+   proofs in `proofs/spec/cohesion/`, the `stdio` namespace reserved and injected, LuaCATS stubs
+   for `prova.Session` + the amended `socket`/`websocket` signatures, the `drivers` learn topic,
+   the matrix row, and api-freeze §7's `Process:expect` struck.*
 
-1–3 is the minimum that discharges the backlog item. 4 is the harmonization. 5–8 complete the row
-and collect the dogfooding payoff.
+1–4 and 7–8 are in. **5 and 6 are the honest remainder**, and the matrix in
+`mocks-proxies-drivers.md` says *not yet* in both cells rather than naming a surface that is not
+there. The mock is a PATH-shadowed framed responder — `terminal.mock` without the pty, reusing
+`shellproxy.rs`'s spool-through-the-filesystem journal because the shim is a different process.
+The proxy is the turn-by-turn session wiretap plus a third `cassette.rs` `kind`. Neither is on the
+critical path for the backlog item this plan discharges; both complete the row.
+
+One thing 5 unblocks that is worth doing at the same time: `codec` on `socket.mock`. It is
+deliberately absent from `MOCK_OPTS` today, because a mock matches turns by their bytes and shape
+matching over decoded turns is exactly what the stdio mock needs (an MCP stub keys on `method`, not
+on an exact serialization). Accepting the option before it is honored would be the silent drop the
+whole gate exists to refuse — so it lands when the behavior does, once, for both.

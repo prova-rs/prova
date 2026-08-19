@@ -549,7 +549,7 @@ mod tests {
                     local m = websocket.mock(ctx)
                     m:on_connect(function(conn) conn:send("welcome") end)
                     m:on("ping"):reply("pong")
-                    local c = websocket.connect(m.url)
+                    local c = websocket.connect(ctx, { url = m.url })
                     local pushed = c:recv({ timeout = "5s" })
                     c:send("ping")
                     local answered = c:recv({ timeout = "5s" })
@@ -619,7 +619,7 @@ mod tests {
                     local m = websocket.mock(ctx)
                     m:on("ping"):reply("pong")
                     local p = websocket.proxy(ctx, { upstream = m.url })
-                    local c = websocket.connect(p.url)
+                    local c = websocket.connect(ctx, { url = p.url })
                     c:send("ping")
                     local answered = c:recv({ timeout = "5s" })
                     return { p = p, url = p.url, answered = answered }

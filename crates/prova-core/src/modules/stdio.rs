@@ -195,196 +195,211 @@ fn opt_timeout(opts: &Option<Table>, site: &str, default: Duration) -> mlua::Res
     }
 }
 
+/// The three verb families the Session contract names (docs/plans/stdio-transport.md §3), split
+/// the way `terminal` splits its own: **drive** (`:send`), **observe** (`:recv`, `:expect`,
+/// `:stderr`, `:transcript`), **lifecycle** (`:eof`, `:wait`, `:stop`). The split is the contract
+/// made visible in the code — a reader looking for "how does this transport observe?" lands in one
+/// function rather than scanning one long one.
 impl UserData for Session {
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
         fields.add_field_method_get("pid", |_, this| Ok(this.pid));
     }
 
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        // ── drive ──────────────────────────────────────────────────────────────────────────────
-        methods.add_async_method("send", |lua, this, data: Value| async move {
-            let payload = this.codec.encode(&lua, &data)?;
-            let wire = this.framing.encode(&payload);
-            let Some(mut w) = this.stdin.borrow_mut().take() else {
-                // Distinguishable from "busy" on purpose: after `:eof()` this is the author's own
-                // doing, and saying so is faster than saying the stream is unavailable.
-                return Err(err(
-                    "send: stdin is closed (`:eof()` was called, or the session was stopped)",
-                ));
-            };
-            this.transcript.borrow_mut().push(TranscriptRow {
-                dir: "in",
-                data: payload,
-            });
-            let r = w.write_all(&wire).await;
-            // A pipe is buffered; without the flush the peer may never see the turn we are about
-            // to block waiting for a reply to.
-            let r = match r {
-                Ok(()) => w.flush().await,
-                e => e,
-            };
-            *this.stdin.borrow_mut() = Some(w);
-            r.map_err(|e| err(format!("send: {e}")))
-        });
+        add_drive_methods(methods);
+        add_observe_methods(methods);
+        add_lifecycle_methods(methods);
+    }
+}
 
-        // ── observe ────────────────────────────────────────────────────────────────────────────
-        methods.add_async_method("recv", |lua, this, opts: Option<Table>| async move {
-            let (dur, sel) = read_args(&this, &opts)?;
-            if this.framing.is_raw() {
-                return Err(err(
-                    "recv: this session is unframed, so there are no turns to read — set framing \
-                     (\"line\" for newline-delimited JSON, \"content_length\" for LSP), or use \
-                     :expect(pattern) to scan the raw stream",
-                ));
-            }
-            let mut skipped = 0usize;
-            let (mut out, mut buf) = checkout(&this, "recv")?;
-            let (framing, codec) = (this.framing.clone(), this.codec);
+/// Drive: write one turn, framed and encoded.
+fn add_drive_methods<M: UserDataMethods<Session>>(methods: &mut M) {
+    methods.add_async_method("send", |lua, this, data: Value| async move {
+        let payload = this.codec.encode(&lua, &data)?;
+        let wire = this.framing.encode(&payload);
+        let Some(mut w) = this.stdin.borrow_mut().take() else {
+            // Distinguishable from "busy" on purpose: after `:eof()` this is the author's own
+            // doing, and saying so is faster than saying the stream is unavailable.
+            return Err(err(
+                "send: stdin is closed (`:eof()` was called, or the session was stopped)",
+            ));
+        };
+        this.transcript.borrow_mut().push(TranscriptRow {
+            dir: "in",
+            data: payload,
+        });
+        let r = w.write_all(&wire).await;
+        // A pipe is buffered; without the flush the peer may never see the turn we are about
+        // to block waiting for a reply to.
+        let r = match r {
+            Ok(()) => w.flush().await,
+            e => e,
+        };
+        *this.stdin.borrow_mut() = Some(w);
+        r.map_err(|e| err(format!("send: {e}")))
+    });
+
+}
+
+/// Observe: the two bounded reads, plus the two evidence surfaces.
+fn add_observe_methods<M: UserDataMethods<Session>>(methods: &mut M) {
+    methods.add_async_method("recv", |lua, this, opts: Option<Table>| async move {
+        let (dur, sel) = read_args(&this, &opts)?;
+        if this.framing.is_raw() {
+            return Err(err(
+                "recv: this session is unframed, so there are no turns to read — set framing \
+                 (\"line\" for newline-delimited JSON, \"content_length\" for LSP), or use \
+                 :expect(pattern) to scan the raw stream",
+            ));
+        }
+        let mut skipped = 0usize;
+        let (mut out, mut buf) = checkout(&this, "recv")?;
+        let (framing, codec) = (this.framing.clone(), this.codec);
+        let transcript = this.transcript.clone();
+        let res = tokio::time::timeout(
+            dur,
+            super::turn::read_until(&mut out, &mut buf, &framing, |payload| {
+                // Every turn read is transcript, matched or not: the notification that arrived
+                // while we waited for the reply is evidence, not noise.
+                transcript.borrow_mut().push(TranscriptRow {
+                    dir: "out",
+                    data: payload.to_vec(),
+                });
+                if sel.is_any() {
+                    return Ok(true);
+                }
+                let hit = sel.accepts(&codec.decode(&lua, payload)?)?;
+                if !hit {
+                    skipped += 1;
+                }
+                Ok(hit)
+            }),
+        )
+        .await;
+        restore(&this, out, buf);
+        let turns = this.transcript.borrow().len();
+        match res {
+            Err(_) => Err(this.diagnose(
+                "recv: timed out",
+                turns,
+                &format!(" after {dur:?}{}", super::turn::waited(skipped)),
+            )),
+            Ok(Err(e)) => Err(e),
+            Ok(Ok(None)) => Err(this.diagnose(
+                "recv: the stream ended without producing a turn",
+                turns,
+                &super::turn::waited(skipped),
+            )),
+            Ok(Ok(Some(payload))) => this.codec.decode(&lua, &payload),
+        }
+    });
+
+    // Observe-until-match, the unframed sibling of `recv{ where = … }`: block until the
+    // stream SHOWS something. On a framed session it scans turns; on a raw one, bytes.
+    methods.add_async_method(
+        "expect",
+        |_, this, (pattern, opts): (mlua::String, Option<Table>)| async move {
+            let dur = opt_timeout(&opts, "expect", DEFAULT_IO_TIMEOUT)?;
+            let needle = pattern.as_bytes().to_vec();
+            let quoted = String::from_utf8_lossy(&needle).to_string();
+            let (mut out, mut buf) = checkout(&this, "expect")?;
+            let framing = this.framing.clone();
             let transcript = this.transcript.clone();
-            let res = tokio::time::timeout(
-                dur,
+            let res = tokio::time::timeout(dur, async {
+                if framing.is_raw() {
+                    return scan_raw(&mut out, &mut buf, &needle)
+                        .await
+                        .map_err(|e| err(format!("expect: {e}")));
+                }
                 super::turn::read_until(&mut out, &mut buf, &framing, |payload| {
-                    // Every turn read is transcript, matched or not: the notification that arrived
-                    // while we waited for the reply is evidence, not noise.
                     transcript.borrow_mut().push(TranscriptRow {
                         dir: "out",
                         data: payload.to_vec(),
                     });
-                    if sel.is_any() {
-                        return Ok(true);
-                    }
-                    let hit = sel.accepts(&codec.decode(&lua, payload)?)?;
-                    if !hit {
-                        skipped += 1;
-                    }
-                    Ok(hit)
-                }),
-            )
+                    Ok(needle.is_empty() || payload.windows(needle.len()).any(|w| w == needle))
+                })
+                .await
+                .map(|hit| hit.is_some())
+            })
             .await;
             restore(&this, out, buf);
             let turns = this.transcript.borrow().len();
             match res {
                 Err(_) => Err(this.diagnose(
-                    "recv: timed out",
+                    &format!("expect {quoted:?}: not observed"),
                     turns,
-                    &format!(" after {dur:?}{}", super::turn::waited(skipped)),
+                    &format!(" within {dur:?}"),
                 )),
                 Ok(Err(e)) => Err(e),
-                Ok(Ok(None)) => Err(this.diagnose(
-                    "recv: the stream ended without producing a turn",
+                Ok(Ok(false)) => Err(this.diagnose(
+                    &format!("expect {quoted:?}: the stream ended without producing it"),
                     turns,
-                    &super::turn::waited(skipped),
+                    "",
                 )),
-                Ok(Ok(Some(payload))) => this.codec.decode(&lua, &payload),
+                Ok(Ok(true)) => Ok(()),
             }
-        });
+        },
+    );
 
-        // Observe-until-match, the unframed sibling of `recv{ where = … }`: block until the
-        // stream SHOWS something. On a framed session it scans turns; on a raw one, bytes.
-        methods.add_async_method(
-            "expect",
-            |_, this, (pattern, opts): (mlua::String, Option<Table>)| async move {
-                let dur = opt_timeout(&opts, "expect", DEFAULT_IO_TIMEOUT)?;
-                let needle = pattern.as_bytes().to_vec();
-                let quoted = String::from_utf8_lossy(&needle).to_string();
-                let (mut out, mut buf) = checkout(&this, "expect")?;
-                let framing = this.framing.clone();
-                let transcript = this.transcript.clone();
-                let res = tokio::time::timeout(dur, async {
-                    if framing.is_raw() {
-                        return scan_raw(&mut out, &mut buf, &needle)
-                            .await
-                            .map_err(|e| err(format!("expect: {e}")));
-                    }
-                    super::turn::read_until(&mut out, &mut buf, &framing, |payload| {
-                        transcript.borrow_mut().push(TranscriptRow {
-                            dir: "out",
-                            data: payload.to_vec(),
-                        });
-                        Ok(needle.is_empty() || payload.windows(needle.len()).any(|w| w == needle))
-                    })
-                    .await
-                    .map(|hit| hit.is_some())
-                })
-                .await;
-                restore(&this, out, buf);
-                let turns = this.transcript.borrow().len();
-                match res {
-                    Err(_) => Err(this.diagnose(
-                        &format!("expect {quoted:?}: not observed"),
-                        turns,
-                        &format!(" within {dur:?}"),
-                    )),
-                    Ok(Err(e)) => Err(e),
-                    Ok(Ok(false)) => Err(this.diagnose(
-                        &format!("expect {quoted:?}: the stream ended without producing it"),
-                        turns,
-                        "",
-                    )),
-                    Ok(Ok(true)) => Ok(()),
-                }
-            },
-        );
+    // The bounded diagnostic tail (last 64KB, oldest dropped). Never part of the frame
+    // stream — asserting on a server's LOGS is a different act from reading its protocol.
+    methods.add_method("stderr", |lua, this, ()| {
+        let b = this.stderr.lock().unwrap_or_else(|p| p.into_inner());
+        lua.create_string(&b[..])
+    });
 
-        // The bounded diagnostic tail (last 64KB, oldest dropped). Never part of the frame
-        // stream — asserting on a server's LOGS is a different act from reading its protocol.
-        methods.add_method("stderr", |lua, this, ()| {
-            let b = this.stderr.lock().unwrap_or_else(|p| p.into_inner());
-            lua.create_string(&b[..])
-        });
+    super::wiretap::add_transcript_method(methods);
+}
 
-        super::wiretap::add_transcript_method(methods);
+/// Lifecycle: half-close, reap, kill.
+fn add_lifecycle_methods<M: UserDataMethods<Session>>(methods: &mut M) {
+    // Half-close stdin. A distinct act from `:stop()` and worth its own verb: "the client went
+    // away" is a real obligation for these SUTs, and `sess:eof(); sess:wait()` is how a proof
+    // states that the server shuts down cleanly when it happens.
+    methods.add_method("eof", |_, this, ()| {
+        this.stdin.borrow_mut().take();
+        Ok(())
+    });
 
-        // ── lifecycle ──────────────────────────────────────────────────────────────────────────
-
-        // Half-close stdin. A distinct act from `:stop()` and worth its own verb: "the client went
-        // away" is a real obligation for these SUTs, and `sess:eof(); sess:wait()` is how a proof
-        // states that the server shuts down cleanly when it happens.
-        methods.add_method("eof", |_, this, ()| {
-            this.stdin.borrow_mut().take();
-            Ok(())
-        });
-
-        methods.add_async_method("wait", |_, this, opts: Option<Table>| async move {
-            let dur = opt_timeout(&opts, "wait", Duration::from_secs(30))?;
-            let Some(mut child) = this.child.borrow_mut().take() else {
-                return Ok(None); // already reaped
-            };
-            let res = tokio::time::timeout(dur, child.wait()).await;
-            match res {
-                Err(_) => {
-                    // Put it back: a timed-out wait has not reaped anything, and a session whose
-                    // child vanished from under it could never be stopped.
-                    *this.child.borrow_mut() = Some(child);
-                    Err(this.diagnose(
-                        "wait: the process is still running",
-                        this.transcript.borrow().len(),
-                        &format!(" after {dur:?} (did you forget `:eof()`?)"),
-                    ))
-                }
-                Ok(Err(e)) => Err(err(format!("wait: {e}"))),
-                Ok(Ok(status)) => {
-                    this.lease.borrow_mut().take(); // exited — nothing left to sweep
-                    Ok(status.code())
-                }
+    methods.add_async_method("wait", |_, this, opts: Option<Table>| async move {
+        let dur = opt_timeout(&opts, "wait", Duration::from_secs(30))?;
+        let Some(mut child) = this.child.borrow_mut().take() else {
+            return Ok(None); // already reaped
+        };
+        let res = tokio::time::timeout(dur, child.wait()).await;
+        match res {
+            Err(_) => {
+                // Put it back: a timed-out wait has not reaped anything, and a session whose
+                // child vanished from under it could never be stopped.
+                *this.child.borrow_mut() = Some(child);
+                Err(this.diagnose(
+                    "wait: the process is still running",
+                    this.transcript.borrow().len(),
+                    &format!(" after {dur:?} (did you forget `:eof()`?)"),
+                ))
             }
-        });
-
-        // What `ctx:manage` calls at scope end. Idempotent.
-        methods.add_async_method("stop", |_, this, ()| async move {
-            this.stdin.borrow_mut().take();
-            let child = this.child.borrow_mut().take();
-            if let Some(mut child) = child {
-                // The session is its own process GROUP, so a server's workers die with it —
-                // exactly as `shell.spawn` and every bounded conduct do
-                // (docs/design/verifiers.md#conduct-process-group-reaping).
-                crate::lease::kill_group(this.pid);
-                let _ = child.kill().await;
+            Ok(Err(e)) => Err(err(format!("wait: {e}"))),
+            Ok(Ok(status)) => {
+                this.lease.borrow_mut().take(); // exited — nothing left to sweep
+                Ok(status.code())
             }
-            this.lease.borrow_mut().take();
-            Ok(())
-        });
-    }
+        }
+    });
+
+    // What `ctx:manage` calls at scope end. Idempotent.
+    methods.add_async_method("stop", |_, this, ()| async move {
+        this.stdin.borrow_mut().take();
+        let child = this.child.borrow_mut().take();
+        if let Some(mut child) = child {
+            // The session is its own process GROUP, so a server's workers die with it —
+            // exactly as `shell.spawn` and every bounded conduct do
+            // (docs/design/verifiers.md#conduct-process-group-reaping).
+            crate::lease::kill_group(this.pid);
+            let _ = child.kill().await;
+        }
+        this.lease.borrow_mut().take();
+        Ok(())
+    });
 }
 
 // Not the `impl_transcript!` macro: that one reaches through a `state` field, which is a mock/proxy

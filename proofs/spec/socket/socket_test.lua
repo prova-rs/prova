@@ -7,9 +7,9 @@
 ---     A `unix://` address implicitly folds `requires = { "unix" }` into the leaf — authors
 ---     never hand-write the platform gate for a transport that knows its own platform.
 ---   * A raw byte stream has no natural "request" unit, so mocks and transcripts need a
----     FRAMING strategy to turn bytes into matchable turns: `"line"`, `{ length_prefixed = n }`
----     (n-byte big-endian length header), `{ delimiter = "..." }`, or a Lua chunker function.
----     No framing = raw bytes, driven by explicit recv sizes.
+---     FRAMING strategy to turn bytes into matchable turns: `"line"`, `"content_length"` (the
+---     LSP/DAP envelope), `{ length_prefixed = n }` (n-byte big-endian header), or
+---     `{ delimiter = "..." }`. No framing = raw bytes, driven by explicit recv sizes.
 ---   * The three postures: `socket.mock` (terminate — listen, answer synthetically),
 ---     `socket.proxy` (interpose — the wiretap; this is what gives EVERY TCP-based protocol
 ---     fault injection and transcripts with zero protocol knowledge), `socket.connect` /

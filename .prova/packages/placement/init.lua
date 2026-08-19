@@ -49,7 +49,7 @@ function M.broker(ctx)
 	-- and listening-not-yet read as the same "not ready, ask again".
 	local spawned = "unix://" .. sock
 	prova.retry(function()
-		local ok, probe = pcall(socket.connect, spawned, { framing = { delimiter = "\n" } })
+		local ok, probe = pcall(socket.connect, ctx, { addr = spawned, framing = { delimiter = "\n" } })
 		if not ok then
 			return false
 		end
@@ -71,16 +71,16 @@ M.PROTOCOL = "1.0"
 --- Dial the broker. Newline-delimited JSON, one frame per turn.
 ---
 --- Connections are managed by the scope, so a spec never leaks a socket into the next test — which
---- matters here because leases are keyed to connections in some broker designs.
+--- matters here because leases are keyed to connections in some broker designs. That is now the
+--- DRIVER's promise rather than this package's: `socket.connect` takes the context and closes with
+--- the scope, so the hand-rolled defer that used to live here is gone.
 ---@param ctx any
 ---@param addr string|nil defaults to `M.broker(ctx)` — the external broker, or a spawned reference one
 function M.connect(ctx, addr)
-	local conn = socket.connect(addr or M.broker(ctx), { framing = { delimiter = "\n" } })
-	ctx:defer(function()
-		pcall(function()
-			conn:close()
-		end)
-	end)
+	local conn = socket.connect(ctx, {
+		addr = addr or M.broker(ctx),
+		framing = { delimiter = "\n" },
+	})
 
 	local next_id = 0
 

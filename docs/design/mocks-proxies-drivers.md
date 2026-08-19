@@ -56,6 +56,13 @@ t:expect(db:transcript()):contains("BEGIN")          -- spy: assert on what actu
 **Driver — originate.** Act on and observe the SUT itself. The shipped `shell.run`/`shell.spawn` and
 `http.get`/`http.wait_for` are Drivers. `terminal.spawn` (below) is the new one.
 
+Drivers differ in exactly two dimensions — how you OBTAIN the stream (dial an address, upgrade over
+http, spawn on a pty, spawn on pipes) and how you OBSERVE it (raw bytes, framed turns, a screen).
+**They must not differ in how you converse**: `:send` to drive, `:recv`/`:expect` to observe (both
+bounded, never a sleep), `:close`/`:stop` to end it. Every driver that holds an OS resource takes
+`ctx` first and is torn down with the scope, exactly as every mock and proxy already was.
+`proofs/spec/cohesion/` holds that executably, so a fifth transport cannot drift.
+
 Note that a Driver's readiness gate (`http.wait_for`) and a terminal Driver's `:expect(pattern)` are
 the *same idea* — "block until observed state matches, with a timeout." We standardize that
 vocabulary across Drivers: `wait_for` / `expect`, never a sleep.
@@ -73,6 +80,7 @@ default, not a special case. Every transport advertises the same three verbs whe
 | `socket` (tcp + uds)  | `socket.mock`     | `socket.proxy`                 | `socket.connect/listen`     | kernel |
 | `websocket`           | `websocket.mock`  | `websocket.proxy`              | `websocket.connect`         | kernel |
 | `process`             | —                 | `shell.proxy` (shim on PATH)   | `shell.run/spawn`           | kernel |
+| **`stdio`**           | *not yet*         | *not yet*                      | `stdio.spawn` → session     | kernel |
 | **`terminal` (pty)**  | `terminal.mock`   | `terminal.proxy`               | `terminal.spawn` → session  | kernel |
 | `postgres`/`redis`/…  | resource/container| capture/replay                 | native client               | package |
 
@@ -86,10 +94,20 @@ Two consequences worth stating:
    `terminal`) work everywhere. Authors should not hand-write the platform `requires` for a
    transport that already knows its own platform. And because a raw byte stream has no natural
    "request" unit, mocks and transcripts take a **framing** strategy (`"line"`,
-   `{ length_prefixed = n }`, `{ delimiter = "…" }`, or a Lua chunker) to turn bytes into matchable
-   turns — which is also what makes the byte-level `socket.proxy` the universal wiretap: put it in
-   front of Postgres, Redis, Kafka, anything TCP, and you get transcripts and fault injection with
-   zero protocol knowledge.
+   `"content_length"` — the LSP/DAP envelope — `{ length_prefixed = n }`, or `{ delimiter = "…" }`)
+   to turn bytes into matchable turns — which is also what makes the byte-level `socket.proxy` the
+   universal wiretap: put it in front of Postgres, Redis, Kafka, anything TCP, and you get
+   transcripts and fault injection with zero protocol knowledge. (A *Lua chunker* was advertised
+   here until 2026-08-18 and never existed; `content_length` covers the case that wanted it, and
+   calling into Lua from inside an async read loop is the wrong shape anyway. A documented
+   capability that is not there is the same lie as a dropped option.)
+
+   **Framing has two companions, and the three are orthogonal on purpose** (see
+   `docs/plans/stdio-transport.md` §5): `codec` says how a turn becomes a VALUE (`bytes` |
+   `json`), and `where` on a driver's `recv` says WHICH turn to stop on — the same structural
+   subset match as `:matches`, `:on` and `received()`. Separating them is what makes
+   `recv{ where = { id = 3 } }` expressible on a JSON-RPC stream: correlation lives in the kernel
+   instead of in every proof's hand-rolled read-until loop.
 2. **Prior art we are deliberately converging on:** mountebank (multi-protocol imposters that are both
    stubs and proxies), toxiproxy (the fault vocabulary), WireMock/VCR (record-replay). What none of
    them have is the terminal transport or Prova's capability-gated cross-platform proof story — that
@@ -245,10 +263,18 @@ it, and every other platform replays it deterministically without a Windows box.
   `res.url` through it and exposing `res.tap`, so any containerized dependency gets transcripts and
   fault injection with zero protocol knowledge. The recipe author declares the wire `framing` once;
   turn-level taps follow for free.
-- **The matrix is COMPLETE (2026-07-27):** every transport has all three postures. `terminal.proxy`
+- **The matrix was declared COMPLETE (2026-07-27) — and was, for the postures it then
+  enumerated:** every transport had all three. `terminal.proxy`
   closed the last cell (terminal's interpose + record/replay). The cohesion seams are closed too:
   a universal `.endpoint` (the "same value" promise made literal across `.url`/`.addr`), `:close()`
   on every proxy, and `grpc.proxy` speaking the shared fault vocabulary (latency/drop/after).
+- **`stdio` — the conversational process transport (2026-08-18):** the row `shell.proxy` could not
+  fill, because its turn is one whole INVOCATION (argv+stdin → stdout+exit) and an interleaved
+  session collapses into it. `stdio.spawn` ships: a framed, codec'd, `where`-selectable session
+  with a separate stderr tail and bounded reads. **Its mock and proxy cells are honestly empty** —
+  a PATH-shadowed framed responder and a turn-by-turn session wiretap, both planned in
+  `docs/plans/stdio-transport.md` §4, neither built. They are named here as the shape of the work,
+  not as a shipped surface; the row above says *not yet* for exactly that reason.
 - **Still open — by design or platform, not a hole in the matrix:** ConPTY (Windows) twins for
   terminal/shell.proxy behind a Windows runner + `must_run` (see
   `docs/plans/windows-lane-via-parallels.md` — a local Parallels guest is the planned first
