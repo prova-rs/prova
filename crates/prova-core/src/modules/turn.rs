@@ -323,9 +323,31 @@ pub(super) enum Selector {
     Any,
     Shape(Table),
     Pred(mlua::Function),
+    /// An exact turn, byte for byte. Reachable only as a mock's stub key — a driver's `where`
+    /// has no use for it (you cannot ask for "the turn I already know verbatim"), which is why
+    /// [`Selector::parse`] does not produce it and [`Selector::parse_stub`] does.
+    Bytes(Vec<u8>),
 }
 
 impl Selector {
+    /// A **stub** key: the same grammar as `where`, plus the literal form a byte mock speaks.
+    ///
+    /// This is what makes `:on` and `where` one code path. The alternative — a second matcher for
+    /// stubs — is two implementations of "does this turn match?" that agree until the day they
+    /// don't, and the day they don't is a mock answering the wrong stub while both look right.
+    pub(super) fn parse_stub(site: &str, codec: Codec, v: Value) -> mlua::Result<Selector> {
+        match v {
+            // A string is always the literal turn, under either codec: `m:on('{"a":1}')` means
+            // those bytes. Shape matching is what a TABLE asks for.
+            Value::String(s) => Ok(Selector::Bytes(s.as_bytes().to_vec())),
+            Value::Table(_) if codec == Codec::Bytes => Err(err(format!(
+                "{site}: a table stub matches FIELDS, and this mock's turns are bytes — set \
+                 codec = \"json\" so turns decode, or stub the exact turn as a string"
+            ))),
+            other => Selector::parse(site, codec, Some(other)),
+        }
+    }
+
     pub(super) fn parse(site: &str, codec: Codec, v: Option<Value>) -> mlua::Result<Selector> {
         match v {
             None | Some(Value::Nil) => Ok(Selector::Any),
@@ -364,6 +386,9 @@ impl Selector {
                 let r: Value = f.call(turn.clone())?;
                 Ok(!matches!(r, Value::Nil | Value::Boolean(false)))
             }
+            // Compared against the raw turn by the caller, which has the bytes; by the time a
+            // value has been decoded the literal is the wrong question to ask of it.
+            Selector::Bytes(_) => Ok(false),
         }
     }
 }

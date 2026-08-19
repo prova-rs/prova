@@ -45,13 +45,13 @@ fn err(msg: impl Into<String>) -> mlua::Error {
 
 /// A scheme-unified address. The scheme *is* the platform capability: `unix://` exists only where
 /// `cfg(unix)` does, and the spec suite carries `requires = { "unix" }` on those legs.
-enum Addr {
+pub(super) enum Addr {
     Tcp(String),
     #[cfg(unix)]
     Unix(std::path::PathBuf),
 }
 
-fn parse_addr(s: &str) -> mlua::Result<Addr> {
+pub(super) fn parse_addr(s: &str) -> mlua::Result<Addr> {
     if let Some(hostport) = s.strip_prefix("tcp://") {
         return Ok(Addr::Tcp(hostport.to_string()));
     }
@@ -70,7 +70,7 @@ fn parse_addr(s: &str) -> mlua::Result<Addr> {
 
 // ── streams (tcp | unix behind one type) ───────────────────────────────────────────────────────
 
-enum Stream {
+pub(super) enum Stream {
     Tcp(tokio::net::TcpStream),
     #[cfg(unix)]
     Unix(tokio::net::UnixStream),
@@ -136,7 +136,7 @@ async fn dial(addr: &str) -> mlua::Result<Stream> {
 
 // ── listeners ──────────────────────────────────────────────────────────────────────────────────
 
-enum Acceptor {
+pub(super) enum Acceptor {
     Tcp(tokio::net::TcpListener),
     #[cfg(unix)]
     Unix(tokio::net::UnixListener, std::path::PathBuf),
@@ -145,7 +145,11 @@ enum Acceptor {
 impl Acceptor {
     /// Bind synchronously so the resolved address is known — and accepting — before we return.
     /// `tcp://host:0` resolves the ephemeral port into the advertised `.addr`.
-    fn bind(addr: &Addr) -> mlua::Result<(Self, String)> {
+    ///
+    /// Synchronous binding is also what closes the spawn race for `stdio.mock`: the socket is
+    /// LISTENING before its address (and therefore the shim that dials it) exists, so a SUT that
+    /// spawns the shim instantly cannot arrive before the mock is ready.
+    pub(super) fn bind(addr: &Addr) -> mlua::Result<(Self, String)> {
         match addr {
             Addr::Tcp(hp) => {
                 let std_l = std::net::TcpListener::bind(hp)
@@ -172,7 +176,7 @@ impl Acceptor {
         }
     }
 
-    async fn accept(&self) -> std::io::Result<Stream> {
+    pub(super) async fn accept(&self) -> std::io::Result<Stream> {
         match self {
             Acceptor::Tcp(l) => l.accept().await.map(|(s, _)| Stream::Tcp(s)),
             #[cfg(unix)]
@@ -431,32 +435,120 @@ fn listen_fn(lua: &Lua) -> mlua::Result<Function> {
     })
 }
 
+/// Bind an address and hand back the acceptor plus the RESOLVED address string — the one call
+/// `stdio.mock`/`stdio.proxy` need, so the spawnable postures never reach into `Addr`/`Acceptor`
+/// themselves. Synchronous, so the endpoint is accepting before its address exists anywhere.
+pub(super) fn bind_at(addr: &str) -> mlua::Result<(Acceptor, String)> {
+    Acceptor::bind(&parse_addr(addr)?)
+}
+
+/// A snapshot of the mock's §6 journal rows, for a handle that wraps this state rather than
+/// owning it (`stdio.mock` is this mock, reached by spawn).
+pub(super) fn journal_of(state: &Rc<RefCell<MockState>>) -> Vec<super::wiretap::JournalRow> {
+    state.borrow().journal.clone()
+}
+
+/// The turn models a byte-turn replay can read. `socket` and `stdio` record an identical format —
+/// a session captured through one replays through the other.
+pub(super) const BYTE_TURN_KINDS: &[&str] = &["socket", "stdio"];
+
 // ── the mock: terminate ────────────────────────────────────────────────────────────────────────
 
+/// One stub: what selects the turn, and what to answer with.
+///
+/// The key is a [`Selector`] — the SAME type `recv{ where = … }` takes — so `:on` and `where` are
+/// one code path rather than two matchers that can disagree. With `codec = "json"`,
+/// `:on{ method = "tools/list" }` subset-matches the DECODED turn, which is what an MCP or LSP stub
+/// needs: it keys on a field, never on an exact serialization (key order and whitespace are the
+/// client's business, not the stub's).
+pub(super) struct Stub {
+    key: Selector,
+    /// Bytes as they go on the wire — the codec has already been applied at `:reply` time.
+    reply: Option<Vec<u8>>,
+}
+
 #[derive(Default)]
-struct MockState {
-    stubs: Vec<(Vec<u8>, Option<Vec<u8>>)>,
+pub(super) struct MockState {
+    stubs: Vec<Stub>,
     journal: Vec<super::wiretap::JournalRow>,
+}
+
+impl MockState {
+    /// The first stub whose selector accepts this turn, and its answer. `Ok(None)` is unmatched —
+    /// which the caller makes LOUD; a mock never guesses.
+    fn answer(&self, lua: &Lua, codec: Codec, turn: &[u8]) -> mlua::Result<Option<Option<Vec<u8>>>> {
+        // Decode ONCE for the whole stub list rather than per stub. A byte-keyed selector does not
+        // need it at all, so a bytes-codec mock never pays for a decode it cannot use.
+        let decoded = match self.stubs.iter().any(|s| s.needs_decode()) {
+            true => Some(codec.decode(lua, turn)?),
+            false => None,
+        };
+        for stub in &self.stubs {
+            let hit = match (&stub.key, &decoded) {
+                (Selector::Bytes(b), _) => b == turn,
+                (_, Some(v)) => stub.key.accepts(v)?,
+                // A shape stub with nothing decoded cannot match; unreachable given the check
+                // above, and a silent `false` beats a panic if that ever stops being true.
+                (_, None) => false,
+            };
+            if hit {
+                return Ok(Some(stub.reply.clone()));
+            }
+        }
+        Ok(None)
+    }
+}
+
+impl Stub {
+    fn needs_decode(&self) -> bool {
+        !matches!(self.key, Selector::Bytes(_))
+    }
 }
 
 struct MockUd {
     addr: String,
     state: Rc<RefCell<MockState>>,
+    codec: Codec,
     shutdown: RefCell<Option<tokio::sync::oneshot::Sender<()>>>,
 }
 
-struct MockStub {
+pub(super) struct MockStub {
     state: Rc<RefCell<MockState>>,
+    codec: Codec,
     idx: usize,
 }
 
 impl UserData for MockStub {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("reply", |_, this, data: mlua::String| {
-            this.state.borrow_mut().stubs[this.idx].1 = Some(data.as_bytes().to_vec());
+        methods.add_method("reply", |lua, this, data: Value| {
+            // Encoded HERE, once, at declaration time — not per delivery. The codec is the same
+            // dial the driver's `:send` uses, so a json mock answers with a table.
+            let payload = this.codec.encode(lua, &data)?;
+            this.state.borrow_mut().stubs[this.idx].reply = Some(payload);
             Ok(())
         });
     }
+}
+
+/// Register `:on(turn_or_shape)` — shared by `socket.mock` and, through the relay adapter,
+/// `stdio.mock`. There is one mock implementation; the two namespaces differ only in how the SUT
+/// REACHES it (dial an address, or spawn a shim that dials it for them).
+pub(super) fn add_on_method<T, M>(methods: &mut M, state: fn(&T) -> &Rc<RefCell<MockState>>, codec: fn(&T) -> Codec)
+where
+    T: UserData + 'static,
+    M: UserDataMethods<T>,
+{
+    methods.add_method("on", move |lua, this, turn: Value| {
+        let c = codec(this);
+        let key = Selector::parse_stub("on", c, turn)?;
+        let st = state(this);
+        let idx = {
+            let mut s = st.borrow_mut();
+            s.stubs.push(Stub { key, reply: None });
+            s.stubs.len() - 1
+        };
+        lua.create_userdata(MockStub { state: st.clone(), codec: c, idx })
+    });
 }
 
 impl UserData for MockUd {
@@ -465,18 +557,7 @@ impl UserData for MockUd {
         fields.add_field_method_get("endpoint", |_, this| Ok(this.addr.clone()));
     }
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("on", |lua, this, turn: mlua::String| {
-            let idx = {
-                let mut s = this.state.borrow_mut();
-                s.stubs.push((turn.as_bytes().to_vec(), None));
-                s.stubs.len() - 1
-            };
-            lua.create_userdata(MockStub {
-                state: this.state.clone(),
-                idx,
-            })
-        });
-
+        add_on_method(methods, |t: &MockUd| &t.state, |t: &MockUd| t.codec);
         super::wiretap::add_received_method(methods);
         super::wiretap::add_shutdown_methods(methods);
     }
@@ -488,11 +569,11 @@ super::wiretap::impl_shutdown!(MockUd);
 /// Every option `socket.mock` honors — closed by construction
 /// (docs/design/agent-ergonomics.md#module-opts-silently-ignored).
 ///
-/// Deliberately NOT `codec`: a mock matches turns by their bytes, and shape matching over decoded
-/// turns lands with `stdio.mock`, which needs it (an MCP stub keys on `method`, not on an exact
-/// serialization). Accepting the option here before it is honored would be the silent drop this
-/// whole gate exists to refuse — it would read as configured and match nothing.
-const MOCK_OPTS: &[&str] = &["addr", "framing"];
+/// `codec` landed here 2026-08-19 with `stdio.mock`, which needed shape matching — and since a
+/// stdio mock IS this mock reached by spawn, both got it in one change. It was deliberately absent
+/// until the behavior existed: accepting an option before it is honored is the silent drop this
+/// gate exists to refuse.
+const MOCK_OPTS: &[&str] = &["addr", "codec", "framing"];
 
 /// Every option `socket.listen` honors — the raw acceptor, not the mock.
 const LISTEN_OPTS: &[&str] = &["addr", "codec", "framing"];
@@ -509,6 +590,7 @@ fn mock_fn(lua: &Lua) -> mlua::Result<Function> {
         })?;
         crate::opts::reject_unknown(&opts, MOCK_OPTS, "socket.mock")?;
         let framing = Framing::parse("socket.mock", opts.get::<Option<Value>>("framing")?)?;
+        let codec = Codec::parse("socket.mock", opts.get::<Option<Value>>("codec")?)?;
         if framing.is_raw() {
             return Err(err(
                 "socket.mock: framing is required — a mock matches TURNS, and raw bytes have no \
@@ -520,66 +602,91 @@ fn mock_fn(lua: &Lua) -> mlua::Result<Function> {
             .unwrap_or_else(|| "tcp://127.0.0.1:0".to_string());
         let (acceptor, addr) = Acceptor::bind(&parse_addr(&addr_s)?)?;
         let state: Rc<RefCell<MockState>> = Rc::default();
-        let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
 
-        let accept_state = state.clone();
-        let f = framing.clone();
-        tokio::task::spawn_local(async move {
-            loop {
-                tokio::select! {
-                    _ = &mut rx => break,
-                    accepted = acceptor.accept() => {
-                        let Ok(mut stream) = accepted else { break };
-                        let conn_state = accept_state.clone();
-                        let framing = f.clone();
-                        tokio::task::spawn_local(async move {
-                            let mut buf = Vec::new();
-                            while let Ok(Some(turn)) = read_frame(&mut stream, &mut buf, &framing).await {
-                                let reply = {
-                                    let mut s = conn_state.borrow_mut();
-                                    match s.stubs.iter().find(|(k, _)| *k == turn) {
-                                        Some((_, r)) => {
-                                            let r = r.clone();
-                                            s.journal.push(super::wiretap::JournalRow {
-                                                data: turn,
-                                                matched: true,
-                                                source: "stub",
-                                            });
-                                            r
-                                        }
-                                        None => {
-                                            // The §6 rule: an unmatched turn is journaled — it is
-                                            // the most interesting thing a mock can record — and
-                                            // the connection closes LOUD instead of guessing.
-                                            s.journal.push(super::wiretap::JournalRow {
-                                                data: turn,
-                                                matched: false,
-                                                source: "unmatched",
-                                            });
-                                            break;
-                                        }
-                                    }
-                                };
-                                if let Some(r) = reply {
-                                    if stream.write_all(&framing.encode(&r)).await.is_err() {
-                                        break;
-                                    }
-                                }
-                            }
-                        });
-                    }
-                }
-            }
-        });
+        serve_mock(lua, acceptor, state.clone(), framing, codec, rx);
 
         let ud = lua.create_userdata(MockUd {
             addr,
             state,
+            codec,
             shutdown: RefCell::new(Some(tx)),
         })?;
         super::manage("socket.mock", &ctx, &ud)?;
         Ok(ud)
     })
+}
+
+/// Run the mock's accept loop until `rx` fires. Shared with `stdio.mock`, which is THIS mock
+/// reached by spawn instead of dial — there is one implementation, and the shim only carries bytes.
+///
+/// `spawn_local`, never `tokio::spawn`: matching decodes turns and calls Lua predicates, so this
+/// task holds a `Lua` handle and must stay on the engine's thread (the same rule `http.mock`'s
+/// handler loop follows).
+pub(super) fn serve_mock(
+    lua: &Lua,
+    acceptor: Acceptor,
+    state: Rc<RefCell<MockState>>,
+    framing: Framing,
+    codec: Codec,
+    mut rx: tokio::sync::oneshot::Receiver<()>,
+) {
+    let lua = lua.clone();
+    tokio::task::spawn_local(async move {
+        loop {
+            tokio::select! {
+                _ = &mut rx => break,
+                accepted = acceptor.accept() => {
+                    let Ok(mut stream) = accepted else { break };
+                    let conn_state = state.clone();
+                    let framing = framing.clone();
+                    let lua = lua.clone();
+                    tokio::task::spawn_local(async move {
+                        let mut buf = Vec::new();
+                        while let Ok(Some(turn)) = read_frame(&mut stream, &mut buf, &framing).await {
+                            // Resolve the answer and drop the borrow BEFORE the write: matching
+                            // can re-enter Lua (a predicate stub), and a borrow held across that
+                            // — or across the await below — is a runtime panic, not a warning.
+                            let answer = conn_state.borrow().answer(&lua, codec, &turn);
+                            let reply = match answer {
+                                Ok(Some(reply)) => {
+                                    conn_state.borrow_mut().journal.push(
+                                        super::wiretap::JournalRow {
+                                            data: turn,
+                                            matched: true,
+                                            source: "stub",
+                                        },
+                                    );
+                                    reply
+                                }
+                                // The §6 rule: an unmatched turn is journaled — it is the most
+                                // interesting thing a mock can record — and the connection closes
+                                // LOUD instead of guessing. A turn the codec cannot even decode
+                                // lands here too, and for the same reason: a turn we cannot read
+                                // is a turn we cannot have matched, and the journal carries the
+                                // raw bytes so the author sees WHAT arrived.
+                                Ok(None) | Err(_) => {
+                                    conn_state.borrow_mut().journal.push(
+                                        super::wiretap::JournalRow {
+                                            data: turn,
+                                            matched: false,
+                                            source: "unmatched",
+                                        },
+                                    );
+                                    break;
+                                }
+                            };
+                            if let Some(r) = reply {
+                                if stream.write_all(&framing.encode(&r)).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    });
+                }
+            }
+        }
+    });
 }
 
 // ── the proxy: interpose (wiretap + faults) ────────────────────────────────────────────────────
@@ -988,7 +1095,7 @@ fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
             let path = cassette
                 .as_ref()
                 .ok_or_else(|| err("socket.proxy: replay needs a `cassette`"))?;
-            let p = super::cassette::Player::load(path)
+            let p = super::cassette::Player::load_of(path, BYTE_TURN_KINDS)
                 .map_err(|e| err(format!("socket.proxy: {e}")))?;
             Some(Rc::new(RefCell::new(p)))
         } else {
@@ -1063,318 +1170,7 @@ fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
     })
 }
 
+/// The unit tests live in their own file — see the note at the top of it.
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use super::super::turn::read_exact_buffered;
-
-    /// recv's arity IS the framing: raw connections read exact byte counts (n required),
-    /// framed connections read whole turns (a byte count is refused, taught) — and the
-    /// timeout opt parses through either form.
-    #[test]
-    fn recv_args_follow_the_framing() {
-        let lua = Lua::new();
-        let args = |f: &Framing, a: Option<Value>| recv_args(f, Codec::Bytes, a, None);
-
-        let got = args(&Framing::Raw, Some(Value::Integer(64))).unwrap();
-        assert_eq!((got.want, got.timeout), (64, DEFAULT_IO_TIMEOUT));
-        assert!(args(&Framing::Raw, None).is_err(), "raw without n");
-        assert!(args(&Framing::Raw, Some(Value::Integer(0))).is_err(), "zero bytes");
-
-        let got = args(&Framing::Line, None).unwrap();
-        assert_eq!((got.want, got.timeout), (0, DEFAULT_IO_TIMEOUT));
-        assert!(got.selector.is_any(), "no `where` reads the next turn, whatever it is");
-        assert!(
-            args(&Framing::Line, Some(Value::Integer(64))).is_err(),
-            "framed refuses a byte count"
-        );
-        let opts = lua.create_table().unwrap();
-        opts.set("timeout", "250ms").unwrap();
-        let got = args(&Framing::Line, Some(Value::Table(opts))).unwrap();
-        assert_eq!(got.timeout, Duration::from_millis(250));
-        let opts = lua.create_table().unwrap();
-        opts.set("timeout", "eleventy").unwrap();
-        assert!(args(&Framing::Line, Some(Value::Table(opts))).is_err());
-    }
-
-    /// `recv` is a closed opts surface like every other. It matters more here than most: a
-    /// dropped `where` still RETURNS a turn — the wrong one — and the proof asserts on it
-    /// confidently. A dropped `timeout` is the unbounded read this whole API exists to prevent.
-    #[test]
-    fn recv_refuses_an_option_it_cannot_honor() {
-        let lua = Lua::new();
-        let opts = lua.create_table().unwrap();
-        opts.set("wehre", "x").unwrap();
-        let e = recv_args(&Framing::Line, Codec::Json, Some(Value::Table(opts)), None)
-            .unwrap_err()
-            .to_string();
-        // The refusal is the contract; the "did you mean" is a bonus `suggest::nearest` withholds
-        // when nothing is close enough, and a transposition is past its bar. What must hold is
-        // that the bad key is NAMED and the accepted set is listed — that is the one jump to a fix.
-        assert!(e.contains("wehre"), "the key prova cannot honor is named: {e}");
-        assert!(e.contains("timeout, where"), "and the accepted set is listed: {e}");
-    }
-
-    /// `where` selects among TURNS. On an unframed connection there are none, so the option can
-    /// only ever be a no-op — and a no-op filter reads as configured, which is the failure the
-    /// closed-opts doctrine exists to prevent.
-    #[test]
-    fn where_on_an_unframed_connection_is_refused() {
-        let lua = Lua::new();
-        let f: mlua::Function = lua.load("function() return true end").eval().unwrap();
-        let opts = lua.create_table().unwrap();
-        opts.set("where", f).unwrap();
-        let e = recv_args(&Framing::Raw, Codec::Bytes, Some(Value::Integer(4)), Some(opts))
-            .unwrap_err()
-            .to_string();
-        assert!(e.contains("set framing"), "the cure is named: {e}");
-    }
-
-    /// Rates are declared in bits (bps/kbps/mbps, the units networks speak) and applied in
-    /// bytes per second.
-    #[test]
-    fn parse_rate_converts_bits_to_bytes() {
-        assert_eq!(parse_rate("8bps").unwrap(), 1.0);
-        assert_eq!(parse_rate("16kbps").unwrap(), 2_000.0);
-        assert_eq!(parse_rate("1 mbps").unwrap(), 125_000.0, "whitespace before the unit is fine");
-        assert!(parse_rate("100").is_err(), "unitless is refused");
-        assert!(parse_rate("fastbps").is_err(), "non-numeric is refused");
-    }
-
-    /// The proxy's option contract: passthrough by default, auto collapses on the cassette's
-    /// presence, cassettes demand framing (a raw stream has no turn to key on) and a path,
-    /// and every non-replay mode validates its upstream at the call site.
-    #[test]
-    fn proxy_config_speaks_the_mode_contract() {
-        let lua = Lua::new();
-        let opts = |pairs: &[(&str, &str)]| {
-            let t = lua.create_table().unwrap();
-            for (k, v) in pairs {
-                t.set(*k, *v).unwrap();
-            }
-            t
-        };
-
-        let (up, framing, mode, cas) =
-            proxy_config(&opts(&[("upstream", "tcp://127.0.0.1:9")])).unwrap();
-        assert_eq!(up.as_deref(), Some("tcp://127.0.0.1:9"));
-        assert!(framing.is_raw() && mode == Mode::Passthrough && cas.is_none());
-
-        let missing = std::env::temp_dir().join("prova-socket-ut-no-such.json");
-        let _ = std::fs::remove_file(&missing);
-        let missing = missing.to_string_lossy().into_owned();
-        let (_, _, mode, cas) = proxy_config(&opts(&[
-            ("upstream", "tcp://127.0.0.1:9"),
-            ("framing", "line"),
-            ("mode", "auto"),
-            ("cassette", &missing),
-        ]))
-        .unwrap();
-        assert_eq!(mode, Mode::Record, "auto with no cassette on disk records");
-        assert_eq!(cas.as_deref(), Some(missing.as_str()));
-
-        for (broken, teaches) in [
-            (opts(&[("mode", "record"), ("cassette", "c.json")]), "framing"),
-            (opts(&[("mode", "record"), ("framing", "line")]), "cassette"),
-            (opts(&[("mode", "auto"), ("framing", "line")]), "cassette"),
-            (opts(&[("mode", "record"), ("framing", "line"), ("cassette", "c.json")]), "upstream"),
-            (opts(&[("upstream", "not-an-addr"), ("mode", "record"), ("framing", "line"), ("cassette", "c.json")]), "tcp://"),
-            (opts(&[("mode", "sideways")]), "passthrough|record|replay|auto"),
-        ] {
-            let e = proxy_config(&broken).unwrap_err().to_string();
-            assert!(e.contains(teaches), "expected the error to teach {teaches:?}: {e}");
-        }
-
-        let (up, _, mode, _) = proxy_config(&opts(&[
-            ("mode", "replay"),
-            ("framing", "line"),
-            ("cassette", "c.json"),
-        ]))
-        .unwrap();
-        assert!(up.is_none() && mode == Mode::Replay, "replay needs no upstream");
-    }
-
-    /// The scheme IS the parse: tcp:// keeps its host:port, anything else is a taught error.
-    #[test]
-    fn parse_addr_schemes() {
-        assert!(matches!(parse_addr("tcp://127.0.0.1:80"), Ok(Addr::Tcp(hp)) if hp == "127.0.0.1:80"));
-        let Err(err) = parse_addr("http://x") else {
-            panic!("http:// must not parse as a socket address");
-        };
-        let err = err.to_string();
-        assert!(err.contains("tcp://host:port"), "teaches the grammar: {err}");
-        #[cfg(unix)]
-        assert!(matches!(
-            parse_addr("unix:///tmp/s.sock"),
-            Ok(Addr::Unix(p)) if p == std::path::Path::new("/tmp/s.sock")
-        ));
-    }
-
-    /// The frame readers against a real loopback pair: a frame split across writes completes,
-    /// leftovers past a frame boundary carry into the next read, an EOF'd partial frame is None
-    /// (never a half-turn), and raw reads report exactly how much arrived before an early close.
-    #[test]
-    fn frame_readers_recover_turns_across_chunk_boundaries() {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_io()
-            .build()
-            .unwrap();
-        rt.block_on(async {
-            let pair = || async {
-                let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-                let addr = l.local_addr().unwrap();
-                let client = tokio::net::TcpStream::connect(addr).await.unwrap();
-                let (server, _) = l.accept().await.unwrap();
-                (Stream::Tcp(client), server)
-            };
-
-            // Line framing: one write carries a whole frame AND the head of the next; the
-            // second frame completes only when the rest arrives.
-            let (mut conn, mut server) = pair().await;
-            let mut buf = Vec::new();
-            server.write_all(b"hello\nwor").await.unwrap();
-            let frame = read_frame(&mut conn, &mut buf, &Framing::Line).await.unwrap();
-            assert_eq!(frame.as_deref(), Some(&b"hello"[..]));
-            server.write_all(b"ld\n").await.unwrap();
-            let frame = read_frame(&mut conn, &mut buf, &Framing::Line).await.unwrap();
-            assert_eq!(frame.as_deref(), Some(&b"world"[..]));
-            drop(server);
-            let frame = read_frame(&mut conn, &mut buf, &Framing::Line).await.unwrap();
-            assert_eq!(frame, None, "a clean EOF with no partial frame is the end of turns");
-
-            // Length-prefixed: the prefix and payload arrive in separate writes.
-            let (mut conn, mut server) = pair().await;
-            let mut buf = Vec::new();
-            server.write_all(&[0, 5, b'a', b'b']).await.unwrap();
-            server.write_all(b"cde").await.unwrap();
-            let frame = read_frame(&mut conn, &mut buf, &Framing::LengthPrefixed(2)).await.unwrap();
-            assert_eq!(frame.as_deref(), Some(&b"abcde"[..]));
-
-            // A partial frame at EOF never surfaces as a turn.
-            let (mut conn, mut server) = pair().await;
-            let mut buf = Vec::new();
-            server.write_all(b"dangling").await.unwrap();
-            drop(server);
-            let frame = read_frame(&mut conn, &mut buf, &Framing::Line).await.unwrap();
-            assert_eq!(frame, None, "an unterminated frame is not a frame");
-
-            // Raw reads: exact counts across chunks, leftovers kept; an early close names the
-            // shortfall.
-            let (mut conn, mut server) = pair().await;
-            let mut buf = Vec::new();
-            server.write_all(b"abcdef").await.unwrap();
-            let got = read_exact_buffered(&mut conn, &mut buf, 4).await.unwrap();
-            assert_eq!(got, b"abcd");
-            assert_eq!(buf, b"ef", "the surplus stays buffered for the next read");
-            drop(server);
-            let err = read_exact_buffered(&mut conn, &mut buf, 4).await.unwrap_err();
-            assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
-            assert!(err.to_string().contains("2/4"), "names the shortfall: {err}");
-        });
-    }
-
-    /// The scope-teardown seam's stand-in: accepts the registration so `manage` is satisfied.
-    struct StubCtx;
-    impl UserData for StubCtx {
-        fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-            methods.add_method("manage", |_, _, _ud: mlua::AnyUserData| Ok(()));
-        }
-    }
-
-    /// All three postures through the module's own Lua surface, hosted like the engine hosts
-    /// them: originate (listen/connect, raw bytes with exact counts), terminate (a framed mock
-    /// answering turns and journaling the unmatched), and interpose (the proxy's
-    /// direction-tagged transcript in front of the mock).
-    #[test]
-    fn the_three_postures_round_trip_over_loopback() {
-        use mlua::ObjectLike;
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let local = tokio::task::LocalSet::new();
-        local.block_on(&rt, async {
-            let lua = Lua::new();
-            lua.globals().set("socket", make(&lua).unwrap()).unwrap();
-            lua.globals()
-                .set("ctx", lua.create_userdata(StubCtx).unwrap())
-                .unwrap();
-
-            let outcome: Table = lua
-                .load(
-                    r#"
-                    -- originate: raw bytes, exact counts
-                    local srv = socket.listen(ctx, { addr = "tcp://127.0.0.1:0" })
-                    local c = socket.connect(ctx, { addr = srv.addr })
-                    c:send("\1\2\3")
-                    local conn = srv:accept()
-                    local raw = conn:recv(3, { timeout = "5s" })
-                    conn:send("\4")
-                    local back = c:recv(1, { timeout = "5s" })
-                    c:close()
-
-                    -- terminate: a framed mock answers turns; strays journal as unmatched
-                    local m = socket.mock(ctx, { addr = "tcp://127.0.0.1:0", framing = "line" })
-                    m:on("PING"):reply("PONG")
-                    local mc = socket.connect(ctx, { addr = m.addr, framing = "line" })
-                    mc:send("PING")
-                    local answered = mc:recv({ timeout = "5s" })
-                    mc:send("STRAY")
-
-                    -- interpose: the proxy wiretaps in front of the mock
-                    local p = socket.proxy(ctx, { upstream = m.addr, framing = "line" })
-                    local pc = socket.connect(ctx, { addr = p.addr, framing = "line" })
-                    pc:send("PING")
-                    local through = pc:recv({ timeout = "5s" })
-
-                    return { raw = raw, back = back, answered = answered, through = through,
-                             m = m, p = p }
-                    "#,
-                )
-                .eval_async()
-                .await
-                .unwrap();
-            assert_eq!(outcome.get::<mlua::String>("raw").unwrap().as_bytes(), &b"\x01\x02\x03"[..]);
-            assert_eq!(outcome.get::<mlua::String>("back").unwrap().as_bytes(), &b"\x04"[..]);
-            assert_eq!(outcome.get::<String>("answered").unwrap(), "PONG");
-            assert_eq!(outcome.get::<String>("through").unwrap(), "PONG", "the proxy passes untouched");
-
-            // The mock's journal keeps the stray as unmatched (§6: kept, not dropped) and the
-            // proxy's transcript tags both directions.
-            let m: mlua::AnyUserData = outcome.get("m").unwrap();
-            let mut journal: Option<Table> = None;
-            for _ in 0..100 {
-                let got: Table = m.call_method("received", ()).unwrap();
-                // Three turns reached the mock: PING direct, STRAY, PING through the proxy.
-                if got.raw_len() == 3 {
-                    journal = Some(got);
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-            let journal = journal.expect("all three turns journal within the bound");
-            let stray: Table = journal.get(2).unwrap();
-            assert_eq!(stray.get::<String>("data").unwrap(), "STRAY");
-            assert!(!stray.get::<bool>("matched").unwrap());
-            assert_eq!(stray.get::<String>("source").unwrap(), "unmatched");
-
-            let p: mlua::AnyUserData = outcome.get("p").unwrap();
-            let mut transcript: Option<Table> = None;
-            for _ in 0..100 {
-                let got: Table = p.call_method("transcript", ()).unwrap();
-                if got.raw_len() == 2 {
-                    transcript = Some(got);
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-            let transcript = transcript.expect("both directions transcribe within the bound");
-            let up: Table = transcript.get(1).unwrap();
-            let down: Table = transcript.get(2).unwrap();
-            assert_eq!(up.get::<String>("dir").unwrap(), "up");
-            assert_eq!(up.get::<String>("data").unwrap(), "PING");
-            assert_eq!(down.get::<String>("dir").unwrap(), "down");
-            assert_eq!(down.get::<String>("data").unwrap(), "PONG");
-        });
-    }
-}
+#[path = "socket/tests.rs"]
+mod tests;

@@ -1111,19 +1111,21 @@ function SocketListener:stop() end
 
 ---@class prova.SocketStub
 local SocketStub = {}
---- Answer this turn with `data` (framed onto the wire).
----@param data string
+--- Answer this turn with `data` (framed onto the wire). A table when `codec = "json"`.
+---@param data any
 function SocketStub:reply(data) end
 
 ---@class prova.SocketMock
 ---@field addr string        # endpoint symmetry: the same string a driver's connect takes
 ---@field endpoint string    # the driver-target alias == addr
 local SocketMock = {}
---- Stub one framed turn (exact bytes). First matching stub wins; an unmatched turn is journaled
---- (§6: matched=false, source="unmatched") and the connection closes LOUD.
----@param turn string
+--- Stub one framed turn: exact bytes (a string), or — under `codec = "json"` — a SHAPE,
+--- subset-matched against the decoded turn with the same matcher `recv{ where }` uses. First
+--- matching stub wins; an unmatched turn is journaled (§6: matched=false, source="unmatched") and
+--- the connection closes LOUD.
+---@param turn_or_shape any
 ---@return prova.SocketStub
-function SocketMock:on(turn) end
+function SocketMock:on(turn_or_shape) end
 --- The §6 journal: `{ seq, data, matched, source }[]`, filterable by subset table or predicate.
 ---@param filter? table|fun(entry: table): boolean
 ---@return table[]
@@ -1172,7 +1174,7 @@ function socket.connect(ctx, opts) end
 --- Terminate: a mock that answers framed turns synthetically. Framing is REQUIRED — matching
 --- needs turns; raw exchanges are scripted with `socket.listen`/`accept` instead.
 ---@param ctx any
----@param opts { addr?: string, framing: prova.SocketFraming }
+---@param opts { addr?: string, framing: prova.SocketFraming, codec?: prova.Codec }
 ---@return prova.SocketMock
 function socket.mock(ctx, opts) end
 --- Interpose: the universal wiretap. Put it in front of ANY tcp/unix dependency for transcripts
@@ -1243,6 +1245,73 @@ stdio = {}
 ---@param opts { cmd: string|string[], framing?: prova.SocketFraming, codec?: prova.Codec, cwd?: string, env?: table<string,string|number|boolean> }
 ---@return prova.Session
 function stdio.spawn(ctx, opts) end
+
+---@class prova.StdioStub
+local StdioStub = {}
+--- Answer this turn. A table when `codec = "json"`, a string otherwise.
+---@param data any
+function StdioStub:reply(data) end
+
+---@class prova.StdioMock
+---@field env table<string,string>   # PATH-prefixed env — hand to whatever spawns the SUT
+---@field path string                # the shim's absolute path
+local StdioMock = {}
+--- Stub one turn: an exact turn (a string), or — under `codec = "json"` — a SHAPE, subset-matched
+--- against the decoded turn. The shape form is the one an MCP or LSP stub wants: it keys on a
+--- field (`{ method = "tools/list" }`), never on an exact serialization.
+---@param turn_or_shape any
+---@return prova.StdioStub
+function StdioMock:on(turn_or_shape) end
+--- The §6 journal: `{ seq, data, matched, source }[]`, filterable by subset table or predicate.
+---@param filter? table|fun(entry: table): boolean
+---@return table[]
+function StdioMock:received(filter) end
+--- Stop the mock and remove the shim (what `ctx:manage` calls).
+function StdioMock:stop() end
+--- Alias for `:stop()`.
+function StdioMock:close() end
+
+---@class prova.StdioProxy
+---@field env table<string,string>   # PATH-prefixed env — hand to whatever spawns the SUT
+---@field path string                # the shim's absolute path
+local StdioProxy = {}
+--- The direction-tagged record: `{ seq, dir = "up"|"down", data }[]`.
+---@return table[]
+function StdioProxy:transcript() end
+--- Delay every turn ("300ms") — the turn-level fault. `corrupt`/`throttle` are BYTE-level and are
+--- refused here, naming `socket.proxy`, which is where a byte-level wiretap lives.
+---@param d string
+function StdioProxy:latency(d) end
+--- Sever the session: the SUT sees its server go away mid-conversation.
+function StdioProxy:drop() end
+--- Stop the proxy (what `ctx:manage` calls). In record mode, the cassette's flush point.
+function StdioProxy:stop() end
+--- Alias for `:stop()` — the proxy grammar's teardown verb.
+function StdioProxy:close() end
+
+--- Terminate: shadow a command NAME on PATH with a framed responder the SUT SPAWNS.
+---
+--- This is `socket.mock` reached by spawn instead of dial — the shim on PATH is two lines
+--- (`exec <prova> relay --to unix://…`) and carries no behavior, so stubs, journal and matching
+--- stay in-process. That is what lets `:on` take a SHAPE; a shim that was itself the matcher could
+--- only ever match bytes.
+---@param ctx any
+---@param opts { as: string, framing: prova.SocketFraming, codec?: prova.Codec }
+---@return prova.StdioMock
+function stdio.mock(ctx, opts) end
+--- Interpose: shadow a command NAME, spawn the REAL server behind it, and pair every request with
+--- its response — the turn-by-turn session wiretap `shell.proxy` cannot be (its turn is one whole
+--- invocation, so a conversation collapses into a single blob).
+---
+--- With `cassette` + `mode` it records a real session once and replays it credential-free forever:
+--- `record` captures pairs (flushed on `:close()`), `replay` answers with no upstream at all,
+--- `auto` records when the file is absent and replays when present. A replay miss ends the session
+--- loud. The recording is byte-turn shaped — the same format `socket.proxy` writes, and portable
+--- between them.
+---@param ctx any
+---@param opts { as: string, upstream?: string|string[], framing: prova.SocketFraming, cassette?: string, mode?: string, redact?: string[] }
+---@return prova.StdioProxy
+function stdio.proxy(ctx, opts) end
 
 -- ---------------------------------------------------------------------------------------------
 -- terminal — the pty transport: drive TUIs/CLIs, observe a real screen

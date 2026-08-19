@@ -34,6 +34,8 @@ mod packages;
 mod placement;
 mod registry;
 mod progress;
+/// The spawnable-mock adapter: `prova relay --to <addr>` (docs/plans/stdio-transport.md §4).
+mod relay;
 mod record;
 mod report;
 mod runstate;
@@ -205,6 +207,12 @@ const VERBS: &[Verb] = &[
         help: "  prova lock <token> [--reads] [--machine] -- <cmd>  hold a package lock while <cmd> runs — join\n\
                \x20                           the suite's house rules from any tool (`prova learn locks`)",
         run: lock_subcommand,
+    },
+    Verb {
+        name: "relay",
+        help: "  prova relay --to <addr>   pipe this process's stdio to a socket (tcp:// or unix://) — the adapter that makes a\n\
+               \x20                           listening mock/proxy SPAWNABLE (`stdio.mock`, `stdio.proxy`)",
+        run: relay::run,
     },
     Verb {
         name: "broker",

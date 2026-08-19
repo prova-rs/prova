@@ -116,6 +116,13 @@ pub(super) fn list_table<T: mlua::IntoLua>(
     Ok(t)
 }
 
+/// The runtime-error constructor every module surface raises through. Shared rather than
+/// per-module: five identical copies is what a duplication detector notices, and the sixth would
+/// have been the one that quietly started formatting differently.
+pub(super) fn err(msg: impl Into<String>) -> mlua::Error {
+    mlua::Error::RuntimeError(msg.into())
+}
+
 /// Tie a resource's life to the caller's scope via `ctx:manage`, exactly as containers do —
 /// reaped by the same LIFO machinery, in the same order, as every other resource — including
 /// under `prova up`, where the scope is held until a signal rather than ending with a test.

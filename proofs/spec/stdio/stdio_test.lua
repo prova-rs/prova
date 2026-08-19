@@ -108,7 +108,11 @@ prova.test("stderr is a separate tail — a logging server does not corrupt the 
   local reply = sess:recv({ where = { id = 3 } })
   t:expect(reply.ok):is_true()
 
-  t:expect(sess:stderr()):contains("starting up")
+  -- The two streams are read by INDEPENDENT tasks, so the protocol reply arriving says nothing
+  -- about whether the log line has been drained yet — under load it had not, and asserting
+  -- straight through was a flake waiting for a busy machine. Poll the bound instead of sleeping
+  -- past it: `:eventually` is the same anti-sleep rule the driver's own reads follow.
+  t:expect(function() return sess:stderr() end):eventually():contains("starting up")
 end)
 
 prova.test("a silent SUT fails loud, naming stderr and the child's state", {

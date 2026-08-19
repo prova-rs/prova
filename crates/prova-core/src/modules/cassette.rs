@@ -27,7 +27,12 @@ pub(crate) struct Turn {
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct Cassette {
     pub version: u32,
-    pub kind: String, // "socket" | "shell" — a human reading the file, and a sanity check
+    /// What recorded it. Names the TURN MODEL, and a reader accepts any kind sharing its own:
+    /// `socket` and `stdio` are byte-turn recordings with an identical format, so a session
+    /// captured through one replays through the other — which is a property of the decomposition
+    /// (a stdio proxy IS a socket proxy reached by spawn), not a coincidence to paper over.
+    /// `shell` is a genuinely different model (argv+stdin → stdout+exit) and does not interchange.
+    pub kind: String,
     pub turns: Vec<Turn>,
 }
 
@@ -93,17 +98,40 @@ impl Recorder {
 
 /// Replay side: load a cassette and answer keys in recorded order, consuming each entry once.
 pub(crate) struct Player {
+    /// The recorded turn model, for the reader's compatibility check.
+    kind: Option<String>,
     turns: Vec<Turn>,
     consumed: Vec<bool>,
 }
 
 impl Player {
+    /// Load a cassette, refusing one recorded under a turn model this reader cannot replay.
+    ///
+    /// The `kind` field advertised itself as "a sanity check" from the start and nothing checked
+    /// it, so a socket proxy pointed at a `shell` cassette replayed argv-keyed turns as if they
+    /// were framed ones and every answer missed — loud, but for a reason the message never named.
+    pub fn load_of(path: &str, accepted: &[&str]) -> std::io::Result<Player> {
+        let p = Player::load(path)?;
+        if let Some(kind) = &p.kind {
+            if !accepted.contains(&kind.as_str()) {
+                return Err(std::io::Error::other(format!(
+                    "cassette {path:?} was recorded by `{kind}`, which this replay cannot read \
+                     (it reads: {}) — a cassette carries its turn model, and the models do not \
+                     interchange",
+                    accepted.join(", ")
+                )));
+            }
+        }
+        Ok(p)
+    }
+
     pub fn load(path: &str) -> std::io::Result<Player> {
         let text = std::fs::read_to_string(path)?;
         let cas: Cassette = serde_json::from_str(&text)
             .map_err(|e| std::io::Error::other(format!("parsing cassette {path:?}: {e}")))?;
         let n = cas.turns.len();
         Ok(Player {
+            kind: Some(cas.kind),
             turns: cas.turns,
             consumed: vec![false; n],
         })

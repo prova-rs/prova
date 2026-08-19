@@ -40,8 +40,10 @@ filesystem. Green must mean "a real caller would succeed."
 
 ## Boundaries
 
-- Drivers originate; **doubles** stand in for what the SUT calls out to (`prova learn
-  doubles`); **proxies** (interpose) are not yet a shipped surface (`prova learn proxies`).
+- Drivers originate; **doubles** stand in for what the SUT calls out to (`prova learn doubles`);
+  **proxies** interpose (`prova learn proxies`). When the SUT SPAWNS its dependency rather than
+  dialing it, the double is spawnable: `stdio.mock`/`stdio.proxy` shadow a command name on PATH,
+  and `prova relay` is the two-line adapter behind them.
 - `http`/`grpc` responses are userdata, not tables — use `:json()` and fields, don't iterate.
   When a shape surprises you: `prova.help("HttpResponse")` or probe with `eval`.
 - A binary payload needs no special verb: `.body` is byte-exact (a Lua string is bytes), and

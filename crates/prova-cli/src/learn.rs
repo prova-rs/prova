@@ -180,6 +180,8 @@ impl Topic {
         ("watch", Topic::Topologies),
         ("ps", Topic::Topologies),
         ("broker", Topic::Topologies),
+        // The spawnable-mock adapter: what it exists FOR is the doubles story.
+        ("relay", Topic::Doubles),
     ];
 
     pub fn key(self) -> &'static str {

@@ -80,7 +80,7 @@ default, not a special case. Every transport advertises the same three verbs whe
 | `socket` (tcp + uds)  | `socket.mock`     | `socket.proxy`                 | `socket.connect/listen`     | kernel |
 | `websocket`           | `websocket.mock`  | `websocket.proxy`              | `websocket.connect`         | kernel |
 | `process`             | —                 | `shell.proxy` (shim on PATH)   | `shell.run/spawn`           | kernel |
-| **`stdio`**           | *not yet*         | *not yet*                      | `stdio.spawn` → session     | kernel |
+| **`stdio`**           | `stdio.mock`      | `stdio.proxy`                  | `stdio.spawn` → session     | kernel |
 | **`terminal` (pty)**  | `terminal.mock`   | `terminal.proxy`               | `terminal.spawn` → session  | kernel |
 | `postgres`/`redis`/…  | resource/container| capture/replay                 | native client               | package |
 
@@ -268,13 +268,32 @@ it, and every other platform replays it deterministically without a Windows box.
   closed the last cell (terminal's interpose + record/replay). The cohesion seams are closed too:
   a universal `.endpoint` (the "same value" promise made literal across `.url`/`.addr`), `:close()`
   on every proxy, and `grpc.proxy` speaking the shared fault vocabulary (latency/drop/after).
-- **`stdio` — the conversational process transport (2026-08-18):** the row `shell.proxy` could not
-  fill, because its turn is one whole INVOCATION (argv+stdin → stdout+exit) and an interleaved
-  session collapses into it. `stdio.spawn` ships: a framed, codec'd, `where`-selectable session
-  with a separate stderr tail and bounded reads. **Its mock and proxy cells are honestly empty** —
-  a PATH-shadowed framed responder and a turn-by-turn session wiretap, both planned in
-  `docs/plans/stdio-transport.md` §4, neither built. They are named here as the shape of the work,
-  not as a shipped surface; the row above says *not yet* for exactly that reason.
+- **`stdio` — the conversational process transport (2026-08-18/19), COMPLETE:** the row
+  `shell.proxy` could not fill, because its turn is one whole INVOCATION (argv+stdin → stdout+exit)
+  and an interleaved session collapses into it. `stdio.spawn` is a framed, codec'd,
+  `where`-selectable session with a separate stderr tail and bounded reads.
+
+  **The listen postures came from the spawn half of this doc's own definition.** A transport can
+  "listen, connect-OR-SPAWN" (§ above) — and nothing had ever exercised the spawn half of the
+  LISTEN side. A stdio mock IS a socket mock that the SUT reaches by spawning, so the only new
+  mechanism is an adapter: `prova relay --to <addr>`, a public verb, behind a two-line generated
+  shim. Everything that decides anything stays in-process.
+
+  That inversion — **transport in the shim, behavior in-process** — is what made shape matching
+  possible. The older shims (`terminal.mock`, `shell.proxy`) render behavior INTO `sh`, so `sh` is
+  the matcher and the matching cannot go past `case` patterns over bytes; an MCP stub keys on
+  `method`, not on an exact serialization. It is the general answer, available to those two if
+  they ever need more than bytes, and it shrinks the Windows twin to "how do you write a two-line
+  launcher".
+
+  Three properties follow from the shape rather than being extras: the spawn race is closed by
+  construction (the acceptor binds synchronously, so the socket listens before the shim path
+  exists); prova is referenced by ABSOLUTE path, so the SUT's PATH gains only the shim's directory;
+  and the relay never needs updating, because framing and codec happen at both ends.
+
+  One honest carve-out: `stdio.proxy` speaks `latency`/`drop`, and **refuses `corrupt`/`throttle`
+  naming `socket.proxy`** — those are BYTE-level faults and this proxy's unit is a turn. Same line
+  `http.proxy` and `grpc.proxy` draw.
 - **Still open — by design or platform, not a hole in the matrix:** ConPTY (Windows) twins for
   terminal/shell.proxy behind a Windows runner + `must_run` (see
   `docs/plans/windows-lane-via-parallels.md` — a local Parallels guest is the planned first

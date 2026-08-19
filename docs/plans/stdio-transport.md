@@ -158,30 +158,54 @@ interleaved session collapses to a single opaque blob. Record a real server's se
 credential-free forever, on the shared `cassette.rs` engine (a third `kind`, alongside `socket` and
 `shell`). Speaks the shared fault vocabulary.
 
-### The open question these two share: what the shim is
+### The adapter, and the inversion it turns on — RESOLVED 2026-08-19
 
-**Unresolved, and the reason 5–6 are not built yet.** Both postures need a program on PATH that the
-SUT spawns, and that program is a different *process* from the one holding the stubs — so the
-matching has to happen somewhere. `terminal.mock` and `shell.proxy` both generate a POSIX `sh`
-script and journal through the filesystem, which works because their matching is over *bytes*
-(a `case` pattern on argv). A stdio mock's matching is over *decoded turns* — an MCP stub keys on
-`method`, not on an exact serialization — and `sh` cannot subset-match JSON.
+Both postures need a program on PATH that the SUT spawns, and that program is a different *process*
+from the one holding the stubs. The repo's older shims — `terminal.mock`, `shell.proxy` — render
+BEHAVIOR into a generated `sh` script, which is exactly why their matching cannot go past `case`
+patterns over bytes: `sh` is the matcher, so the matcher is `sh`-shaped. A stdio mock's matching is
+over *decoded turns* (an MCP stub keys on `method`, never on an exact serialization), and `sh`
+cannot subset-match JSON.
 
-Three ways out, none free:
+**Invert it: transport in the shim, behavior in-process.** The generated script is two lines and
+decides nothing —
 
-1. **Substring `case` patterns on the serialized turn** (`*'"method":"tools/list"'*`). Cheap, and
-   wrong the first time a client reorders keys or adds whitespace. Fragility that presents as a
-   replay miss is the worst kind.
-2. **`prova.bin eval` per turn inside the shim.** Correct matching, real cost per turn, and it puts
-   prova on the SUT's PATH — which is a hermeticity change, not just a performance one.
-3. **A relay shim.** The generated script is one line — `exec "$PROVA_BIN" <relay-verb>
-   unix:///…` — piping the SUT's stdio to a unix socket where the in-process mock does the matching
-   with the real `Selector`. This reuses the whole `socket` substrate, keeps ONE matcher, and
-   dogfoods; the cost is a new (hidden) CLI verb, which is an architecture decision this plan has
-   not made.
+```sh
+#!/bin/sh
+exec "/abs/path/to/prova" relay --to "unix:///…/mock.sock"
+```
 
-(3) is the one to take if the shape holds up, but it deserves a deliberate look rather than a
-tired one. Until then the matrix says *not yet*, which is the honest state.
+— while stubs, journal, cassettes and matching stay where the real `Selector` lives. It is the
+GENERAL answer, available to `terminal.mock` and `shell.proxy` the day either needs more than
+bytes, and it shrinks the Windows twin to "how do you write a two-line launcher."
+
+**`prova relay --to <addr>` is a public, documented verb**, alongside `prova broker` and
+`prova lock`. Hiding it would make the shim a private protocol between prova and itself, surfacing
+its failures inside a generated script nobody can read. It is scheme-unified (`tcp://` and
+`unix://`) for the same reason `socket` is, and because the Windows path — no unix sockets — is a
+`tcp://` mock plus a `.cmd`, with the verb unchanged.
+
+Three properties follow from the shape rather than being extras:
+
+- **The spawn race is closed by construction.** `Acceptor::bind` binds synchronously and is already
+  accepting when it returns, and the shim is written only after — so the socket is live before the
+  path that reaches it exists.
+- **prova is referenced by ABSOLUTE path.** The SUT's PATH gains only the shim's directory;
+  shadowing a command name is the point, and putting prova itself on the SUT's PATH would be a
+  hermeticity change nobody asked for.
+- **The relay never needs updating.** Framing and codec happen at both ends; it never learns what a
+  turn is.
+
+Two things the build surfaced that the design did not:
+
+1. **A half-close is not a close.** A client that writes its request and closes stdin is still
+   waiting for the reply. Ending the relay on the first completed direction dropped that reply
+   silently and exited 0 — the worst available failure. The write half is shut down (the EOF must
+   TRAVEL) and the DOWN direction is what ends the session.
+2. **A spawnable's directory is keyed per INSTANCE, not per shadowed name.** A record proxy and the
+   replay proxy that succeeds it legitimately shadow the same name; sharing a directory made them
+   share a socket path, and `Acceptor`'s `Drop` reaps that path — the first proxy's teardown,
+   landing after the second had bound, deleted the socket out from under it.
 
 ## 5. `codec` — the new dimension
 
@@ -341,8 +365,14 @@ Each lands green and is committable on its own.
    *Landed with 1: both take ctx first and self-manage; the retired positional spellings refuse
    with the new one, checked at the call site because a first-argument change is invisible to the
    closed-opts gate.*
-5. ⬜ **`stdio.mock`** — the PATH-shadow responder.
-6. ⬜ **`stdio.proxy`** + the cassette `kind`.
+5. ✅ **`stdio.mock`** — the PATH-shadow responder. *Landed 2026-08-19 as `socket.mock` reached by
+   spawn: one mock implementation, one matcher. `codec` returned to `MOCK_OPTS` in the same change,
+   and `:on` now takes a SHAPE through the same `Selector` `where` uses.*
+6. ✅ **`stdio.proxy`** + the cassette `kind`. *Landed: turn-by-turn interpose with one upstream
+   process per session, record/replay/auto, `latency`/`drop`, and `corrupt`/`throttle` refused
+   naming `socket.proxy` (byte-level faults, turn-level proxy — the line `http.proxy` draws too).
+   `kind` is `"stdio"`, and the reader now VALIDATES it: byte-turn kinds interchange, `shell` does
+   not. That check was advertised in the type's own comment and had never existed.*
 7. ✅ **Convert `proofs/mcp/` and the selftest battery** off the batch file. *Landed: 23 proofs
    across both batteries now assert turn ordering instead of assuming it; both selftest files shed
    the hand-rolled `json_encode` that only existed because a batch needed strings.*
@@ -351,15 +381,5 @@ Each lands green and is committable on its own.
    for `prova.Session` + the amended `socket`/`websocket` signatures, the `drivers` learn topic,
    the matrix row, and api-freeze §7's `Process:expect` struck.*
 
-1–4 and 7–8 are in. **5 and 6 are the honest remainder**, and the matrix in
-`mocks-proxies-drivers.md` says *not yet* in both cells rather than naming a surface that is not
-there. The mock is a PATH-shadowed framed responder — `terminal.mock` without the pty, reusing
-`shellproxy.rs`'s spool-through-the-filesystem journal because the shim is a different process.
-The proxy is the turn-by-turn session wiretap plus a third `cassette.rs` `kind`. Neither is on the
-critical path for the backlog item this plan discharges; both complete the row.
-
-One thing 5 unblocks that is worth doing at the same time: `codec` on `socket.mock`. It is
-deliberately absent from `MOCK_OPTS` today, because a mock matches turns by their bytes and shape
-matching over decoded turns is exactly what the stdio mock needs (an MCP stub keys on `method`, not
-on an exact serialization). Accepting the option before it is honored would be the silent drop the
-whole gate exists to refuse — so it lands when the behavior does, once, for both.
+**All eight are in.** The `stdio` row of the matrix is complete, and it completed by exercising
+the spawn half of this doc's own definition of a transport rather than by adding a fourth posture.

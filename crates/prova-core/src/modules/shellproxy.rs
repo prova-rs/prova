@@ -374,7 +374,7 @@ pub(crate) fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
             let path = cassette
                 .as_ref()
                 .ok_or_else(|| err("shell.proxy: mode \"replay\" needs a `cassette`"))?;
-            let player = super::cassette::Player::load(path)
+            let player = super::cassette::Player::load_of(path, &["shell"])
                 .map_err(|e| err(format!("shell.proxy: {e}")))?;
             player_turns(player)
         } else {
