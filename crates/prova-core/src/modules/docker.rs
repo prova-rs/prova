@@ -789,14 +789,14 @@ impl Spec {
             port,
             log,
             cmd,
-            timeout: w
-                .get::<Option<String>>("timeout")?
-                .and_then(|s| parse_duration(&s))
-                .unwrap_or(Duration::from_secs(30)),
-            every: w
-                .get::<Option<String>>("every")?
-                .and_then(|s| parse_duration(&s))
-                .unwrap_or(Duration::from_millis(250)),
+            timeout: match w.get::<Option<String>>("timeout")? {
+                Some(s) => crate::model::require_duration("docker.run wait", "timeout", &s).map_err(mlua::Error::RuntimeError)?,
+                None => Duration::from_secs(30),
+            },
+            every: match w.get::<Option<String>>("every")? {
+                Some(s) => crate::model::require_duration("docker.run wait", "every", &s).map_err(mlua::Error::RuntimeError)?,
+                None => Duration::from_millis(250),
+            },
         }))
     }
 

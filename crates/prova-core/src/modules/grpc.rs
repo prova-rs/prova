@@ -10,7 +10,6 @@ use tonic::codegen::http::uri::PathAndQuery;
 pub(super) use tonic::transport::Channel;
 use tonic::{Request, Status};
 
-use crate::model::parse_duration;
 
 fn err(msg: impl Into<String>) -> mlua::Error {
     mlua::Error::RuntimeError(msg.into())
@@ -527,10 +526,11 @@ reflection_ops!(v1, list_services_v1, files_for_symbol_v1, files_for_filename_v1
 reflection_ops!(v1alpha, list_services_v1alpha, files_for_symbol_v1alpha, files_for_filename_v1alpha, drain_fds_v1alpha);
 
 fn opt_duration(opts: &Option<Table>, key: &str) -> mlua::Result<Option<Duration>> {
-    Ok(match opts {
-        Some(t) => t
-            .get::<Option<String>>(key)?
-            .and_then(|s| parse_duration(&s)),
-        None => None,
-    })
+    match opts {
+        Some(t) => match t.get::<Option<String>>(key)? {
+            Some(s) => crate::model::require_duration("grpc", key, &s).map(Some).map_err(mlua::Error::RuntimeError),
+            None => Ok(None),
+        },
+        None => Ok(None),
+    }
 }

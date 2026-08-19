@@ -877,6 +877,24 @@ fn tap_yaml_scalar(s: &str) -> String {
 }
 
 /// Parse a duration micro-format: `"500ms"`, `"30s"`, `"2m"`, or a bare number (seconds).
+/// Parse a duration string, or say WHY it could not be — the refusing half of [`parse_duration`].
+///
+/// A duration that cannot be read is the one value where dropping it produces the exact failure
+/// the option exists to prevent: `timeout = "30 seconds"` is a plausible spelling of a real
+/// grammar, and best-effort parsing turns it into no bound at all, so the proof that meant to be
+/// bounded waits forever instead. The key was already refused by name if misspelled
+/// (`opts::Closed`); this closes the same hole one level down, at the VALUE.
+///
+/// `site` names the surface and `key` the option, so the message lands the fix in one jump.
+pub fn require_duration(site: &str, key: &str, s: &str) -> Result<Duration, String> {
+    parse_duration(s).ok_or_else(|| {
+        format!(
+            "{site}: `{key} = {s:?}` is not a duration — the grammar is a number with an optional \
+             unit: \"250ms\", \"30s\", \"5m\", or a bare number read as seconds"
+        )
+    })
+}
+
 pub fn parse_duration(s: &str) -> Option<Duration> {
     let s = s.trim();
     if let Some(x) = s.strip_suffix("ms") {

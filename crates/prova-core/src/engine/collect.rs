@@ -255,9 +255,17 @@ pub(super) fn reject_falsifier(falsifier: Option<Function>, what: &str) -> mlua:
 }
 
 pub(super) fn parse_opts(t: &mlua::Table) -> mlua::Result<UnitOpts> {
-    let timeout = t
-        .get::<Option<String>>("timeout")?
-        .and_then(|s| parse_duration(&s));
+    // Refused, never dropped. This is the option whose whole job is to BOUND a unit, so a
+    // best-effort parse of `timeout = "30 seconds"` produced the unbounded run it was written to
+    // prevent — silently, and only visible when something hung
+    // (agent-ergonomics.md#unparseable-durations-are-dropped-not-refused).
+    let timeout = match t.get::<Option<String>>("timeout")? {
+        Some(s) => Some(
+            crate::model::require_duration("prova.test", "timeout", &s)
+                .map_err(mlua::Error::RuntimeError)?,
+        ),
+        None => None,
+    };
     let tags = t.get::<Option<Vec<String>>>("tags")?.unwrap_or_default();
     let depends_on = match t.get::<Option<Vec<Value>>>("depends_on")? {
         None => Vec::new(),

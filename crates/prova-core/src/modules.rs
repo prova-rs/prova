@@ -89,9 +89,13 @@ pub(super) fn client_opts(opts: &Table, who: &str, url_key: &str) -> mlua::Resul
             headers.push((k, v));
         }
     }
-    let timeout = opts
-        .get::<Option<String>>("timeout")?
-        .and_then(|s| crate::model::parse_duration(&s));
+    let timeout = match opts.get::<Option<String>>("timeout")? {
+        Some(s) => Some(
+            crate::model::require_duration(who, "timeout", &s)
+                .map_err(mlua::Error::RuntimeError)?,
+        ),
+        None => None,
+    };
     Ok((url, headers, timeout))
 }
 

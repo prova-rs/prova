@@ -4,7 +4,6 @@ use mlua::{
     Function, Lua, LuaSerdeExt, Table, UserData, UserDataFields, UserDataMethods, Value,
 };
 
-use crate::model::parse_duration;
 
 /// A response from the `http` module: `res.status`, `res.body`, `res.headers`, `res:json()`,
 /// `res:save(path)`.
@@ -339,11 +338,8 @@ fn build_prepared(
         if let Some(ct) = opts.get::<Option<String>>("content_type")? {
             upsert_header(&mut headers, "content-type".into(), ct);
         }
-        if let Some(t) = opts
-            .get::<Option<String>>("timeout")?
-            .and_then(|s| parse_duration(&s))
-        {
-            timeout = Some(t);
+        if let Some(s) = opts.get::<Option<String>>("timeout")? {
+            timeout = Some(crate::model::require_duration("http", "timeout", &s).map_err(mlua::Error::RuntimeError)?);
         }
         redirects = parse_redirects(&opts)?;
     }
@@ -518,17 +514,11 @@ fn wait_params(opts: &Option<Table>) -> mlua::Result<WaitParams> {
         if let Some(s) = opts.get::<Option<u16>>("status")? {
             p.status = s;
         }
-        if let Some(t) = opts
-            .get::<Option<String>>("timeout")?
-            .and_then(|s| parse_duration(&s))
-        {
-            p.timeout = t;
+        if let Some(s) = opts.get::<Option<String>>("timeout")? {
+            p.timeout = crate::model::require_duration("http.wait_for", "timeout", &s).map_err(mlua::Error::RuntimeError)?;
         }
-        if let Some(e) = opts
-            .get::<Option<String>>("every")?
-            .and_then(|s| parse_duration(&s))
-        {
-            p.every = e;
+        if let Some(s) = opts.get::<Option<String>>("every")? {
+            p.every = crate::model::require_duration("http.wait_for", "every", &s).map_err(mlua::Error::RuntimeError)?;
         }
         if let Some(hdrs) = opts.get::<Option<Table>>("headers")? {
             for pair in hdrs.pairs::<String, String>() {

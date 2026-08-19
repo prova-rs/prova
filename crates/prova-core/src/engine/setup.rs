@@ -299,7 +299,8 @@ fn install_utilities(lua: &Lua, prova: &Table) -> mlua::Result<()> {
                 .map(|o| o.get::<Option<String>>("timeout"))
                 .transpose()?
                 .flatten()
-                .and_then(|s| crate::model::parse_duration(&s))
+                .map(|s| crate::model::require_duration("prova.barrier", "timeout", &s).map_err(mlua::Error::RuntimeError))
+                .transpose()?
                 .unwrap_or(crate::barrier::DEFAULT_TIMEOUT);
             let root = std::env::current_dir().ok();
             let (path, position) = crate::barrier::join(&token, parties, root.as_deref())
@@ -342,17 +343,11 @@ fn install_utilities(lua: &Lua, prova: &Table) -> mlua::Result<()> {
             let mut every = Duration::from_millis(500);
             let mut message: Option<String> = None;
             if let Some(opts) = &opts {
-                if let Some(t) = opts
-                    .get::<Option<String>>("timeout")?
-                    .and_then(|s| parse_duration(&s))
-                {
-                    timeout = t;
+                if let Some(s) = opts.get::<Option<String>>("timeout")? {
+                    timeout = crate::model::require_duration("prova.retry", "timeout", &s).map_err(mlua::Error::RuntimeError)?;
                 }
-                if let Some(e) = opts
-                    .get::<Option<String>>("every")?
-                    .and_then(|s| parse_duration(&s))
-                {
-                    every = e;
+                if let Some(s) = opts.get::<Option<String>>("every")? {
+                    every = crate::model::require_duration("prova.retry", "every", &s).map_err(mlua::Error::RuntimeError)?;
                 }
                 message = opts.get::<Option<String>>("message")?;
             }

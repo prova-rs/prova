@@ -6,7 +6,6 @@ use std::time::Instant;
 
 use mlua::{Lua, Table, UserData, UserDataFields, UserDataMethods, Value};
 
-use crate::model::parse_duration;
 use crate::progress::{self, Kind, Progress};
 
 /// `prova.containerized(spec)` — build a grammar-conformant namespace (`{ client?, container }`) from
@@ -409,16 +408,29 @@ fn reject_shell_opts(opts: &Option<Table>, accepted: &[&str], site: &str) -> mlu
     .check(t, site)
 }
 
+/// One duration option, refused rather than dropped when it cannot be read.
+fn opt_duration(
+    opts: &Option<Table>,
+    key: &str,
+    site: &str,
+) -> mlua::Result<Option<std::time::Duration>> {
+    match opt_string(opts, key)? {
+        Some(s) => crate::model::require_duration(site, key, &s)
+            .map(Some)
+            .map_err(mlua::Error::RuntimeError),
+        None => Ok(None),
+    }
+}
+
 fn parse_run_opts(opts: &Option<Table>) -> mlua::Result<RunOpts> {
     reject_shell_opts(opts, RUN_OPTS, "shell.run")?;
     Ok(RunOpts {
         cwd: opt_string(opts, "cwd")?,
         env: opt_env(opts)?,
-        timeout: opt_string(opts, "timeout")?.and_then(|s| parse_duration(&s)),
-        idle_timeout: opt_string(opts, "idle_timeout")?.and_then(|s| parse_duration(&s)),
-        first_byte: opt_string(opts, "first_byte")?
-            .and_then(|s| parse_duration(&s))
-            .filter(|d| !d.is_zero()), // `first_byte = "0s"` disables it explicitly
+        timeout: opt_duration(opts, "timeout", "shell.run")?,
+        idle_timeout: opt_duration(opts, "idle_timeout", "shell.run")?,
+        // `first_byte = "0s"` disables it explicitly — a zero is a choice, not a parse failure.
+        first_byte: opt_duration(opts, "first_byte", "shell.run")?.filter(|d| !d.is_zero()),
         check: opts
             .as_ref()
             .map(|o| o.get::<Option<bool>>("check"))

@@ -738,7 +738,7 @@ onto `prova run ut` so one runner judges everywhere, which is the cleaner story 
 checks; or leave it and accept that this class ships. Worth settling before the next release
 rather than after it.
 
-<!-- backlog: unparseable-durations-are-dropped-not-refused recorded=2026-08-16 -->
+<!-- claim: unparseable-durations-are-dropped-not-refused recorded=2026-08-16 -->
 **A malformed duration at a closed boundary is silently dropped, and it produces the unbounded
 wait this section forbids.** `client_opts` parses its `timeout` as
 `opts.get("timeout")?.and_then(|s| parse_duration(&s))`, and `parse_duration` answers `None` for
