@@ -78,6 +78,25 @@ Where a CLI flag or environment variable exists for the same knob, precedence is
 | `[updates]` | Git-source freshness for `[dependencies]`: `interval` (default `"1d"`; `"12h"`/`"30m"`/bare seconds), `force` (also `-U/--update`), `retention` (default 90 days for unused materialized trees). `--offline` forbids the network entirely. |
 | `context = ["docs/agent.md"]` | **Top-level**, not under `[run]`: team docs (home-relative, `~/` expands) served by `prova learn` as `ctx:<stem>` topics — the project's own doctrine on the same discovery rail. A declared-but-missing file is reported loudly. |
 
+<!-- backlog: luarc-merge-nested-keys recorded=2026-08-19 -->
+**`.luarc.json` reconcile is blind to the nested key dialect.** LuaLS accepts two spellings of
+the same config — flat dotted keys (`"workspace.library"`) and nested objects
+(`"workspace": { "library": ... }`) — and editor-generated files commonly use the nested form.
+`merge_luarc`, `luarc_is_ours`, and `write_fresh_luarc` (prova-cli `annotations.rs`) speak only
+the flat dialect: merging into a nested-style file inserts a *second, flat* `workspace.library`
+and `runtime.version` alongside the user's nested `workspace`/`runtime` objects, and the
+duplicate-spelling file's interpretation is ambiguous in LuaLS — the nested object can shadow
+the flat key, silently dropping the annotations library. Witness (Substrate, 2026-08-19): a
+nested-style `.luarc.json` accumulated both `"runtime": {"version"}` AND `"runtime.version"`,
+plus a nested `workspace` object shadowing the flat `workspace.library` — every prova module
+global (`shell`/`fs`/`json`/`junit`) flagged undefined across `proofs/*.prova.lua` until the
+file was hand-normalized. The `auto` policy's promise is "reconciles non-destructively", but a
+merge that preserves the user's bytes while corrupting the file's meaning is destructive where
+it counts. The fix wants: detect the file's dialect and merge in kind (write into an existing
+nested `workspace`/`runtime` object rather than beside it), treat both spellings as the same
+key in `is_ours` and the reconcile sweep, and never emit a file carrying both spellings of one
+key.
+
 <!-- claim: switches-not-env-capabilities -->
 **Opt-in test classes want a first-class switch, not an env-var capability.** Three gates in this
 repo (`soak`, `quality`, `ut`) express the same intent fact — "someone asked for this expensive
