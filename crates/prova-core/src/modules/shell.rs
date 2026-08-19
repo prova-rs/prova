@@ -250,9 +250,9 @@ struct Process {
 }
 
 /// Cap for a spawned process's captured output. Old bytes drop first.
-const SPAWN_OUTPUT_CAP: usize = 64 * 1024;
+pub(super) const SPAWN_OUTPUT_CAP: usize = 64 * 1024;
 
-fn spawn_output_reader(
+pub(super) fn spawn_output_reader(
     stream: impl tokio::io::AsyncRead + Unpin + Send + 'static,
     buf: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
 ) {
@@ -521,7 +521,7 @@ fn cpu_advanced(pid: Option<u32>, last: &mut Option<u64>) -> bool {
 /// Put the child in its own process group (unix), so a kill can be a GROUP kill
 /// (docs/design/verifiers.md#conduct-process-group-reaping) and the lease's sweep has one
 /// address for the whole tree. Non-unix: no-op (job objects are the windows lane's business).
-fn isolate_group(command: &mut tokio::process::Command) {
+pub(super) fn isolate_group(command: &mut tokio::process::Command) {
     #[cfg(unix)]
     command.process_group(0);
     #[cfg(not(unix))]
@@ -885,7 +885,7 @@ pub(crate) fn make_shell(lua: &Lua, progress: &Arc<dyn Progress>) -> mlua::Resul
 /// absence previously forced authors to route around the API (write the payload to a temp file and
 /// pass a path) for the local half of an SDK whose containerized half had argv all along. See
 /// `docs/design/agent-ergonomics.md` §1.
-enum CommandSpec {
+pub(super) enum CommandSpec {
     Shell(String),
     Argv(Vec<String>),
 }
@@ -894,7 +894,7 @@ impl CommandSpec {
     /// A short label for an activity line. Truncated hard: a `cargo build` invocation with twenty
     /// flags is not what someone staring at a stalled run needs — the program and a hint of its
     /// arguments is. The full command is still in the error on failure.
-    fn display_name(&self) -> String {
+    pub(super) fn display_name(&self) -> String {
         const MAX: usize = 60;
         let full = match self {
             Self::Shell(s) => s.clone(),
@@ -908,7 +908,7 @@ impl CommandSpec {
         format!("{head}…")
     }
 
-    fn parse(v: mlua::Value) -> mlua::Result<Self> {
+    pub(super) fn parse(v: mlua::Value) -> mlua::Result<Self> {
         match v {
             mlua::Value::String(s) => Ok(Self::Shell(s.to_str()?.to_string())),
             mlua::Value::Table(t) => {
@@ -929,7 +929,7 @@ impl CommandSpec {
         }
     }
 
-    fn build(&self) -> tokio::process::Command {
+    pub(super) fn build(&self) -> tokio::process::Command {
         let mut c = match self {
             Self::Shell(s) => shell_command(s),
             Self::Argv(argv) => {
@@ -1006,7 +1006,7 @@ fn opt_env(opts: &Option<Table>) -> mlua::Result<Vec<(String, String)>> {
 
 /// Environment values coerce from the scalars tests naturally hold — ports are numbers, flags are
 /// booleans — so suites never write `tostring()` around env wiring.
-fn env_value(key: &str, v: Value) -> mlua::Result<String> {
+pub(super) fn env_value(key: &str, v: Value) -> mlua::Result<String> {
     Ok(match v {
         Value::String(s) => s.to_str()?.to_string(),
         Value::Integer(i) => i.to_string(),

@@ -59,6 +59,8 @@ mod report;
 mod sarif;
 mod shellproxy;
 mod socket;
+/// The conversational process transport — `stdio.spawn` and its siblings.
+mod stdio;
 mod terminal;
 /// The turn model — framing, codec, selector — shared by every stream transport so `socket`,
 /// `websocket` and `stdio` cannot drift on what a turn is or how a caller picks one.
@@ -176,6 +178,7 @@ pub(crate) fn install(
     lua.globals().set("str", make_str(lua)?)?;
     lua.globals().set("net", make_net(lua)?)?;
     lua.globals().set("socket", socket::make(lua)?)?;
+    lua.globals().set("stdio", stdio::make(lua)?)?;
     lua.globals().set("terminal", terminal::make(lua)?)?;
     lua.globals().set("websocket", websocket::make(lua)?)?;
     // `prova.parse.*` — the exec-CLI output-parsing toolkit (lines / rows / table), added to

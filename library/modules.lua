@@ -1188,6 +1188,63 @@ function socket.mock(ctx, opts) end
 function socket.proxy(ctx, opts) end
 
 -- ---------------------------------------------------------------------------------------------
+-- stdio — the conversational process transport: drive a request/response SUT over its pipes
+-- ---------------------------------------------------------------------------------------------
+
+--- A live conversation with a spawned process. `shell.spawn` boots a thing and probes it from
+--- outside (its stdin is nulled, deliberately); this is for a SUT whose protocol IS a
+--- conversation — an MCP server, an LSP server, a REPL — where the next write depends on the
+--- last read. Torn down with the scope.
+---@class prova.Session
+---@field pid integer|nil       # OS process id (nil if it could not be determined)
+local Session = {}
+--- Write one turn. A table when `codec = "json"`, a string otherwise. Async.
+---@param data any
+function Session:send(data) end
+--- Read the next turn — or with `where`, the next turn that MATCHES, skipping (but still
+--- transcribing) the ones that do not. Bounded: 10s by default, loud on timeout or EOF, and the
+--- failure carries the stderr tail plus the child's state.
+---@param opts? { timeout?: string, where?: prova.Where }
+---@return any                 # a string, or the decoded turn under `codec = "json"`
+function Session:recv(opts) end
+--- Observe-until-match: block until the stream shows `pattern` (a plain substring). The unframed
+--- sibling of `recv{ where }` — use it to wait for a readiness line before the first request.
+---@param pattern string
+---@param opts? { timeout?: string }
+function Session:expect(pattern, opts) end
+--- The bounded stderr tail (last 64KB, oldest dropped). NEVER part of the frame stream: a server
+--- logging to stderr is normal, and folding it into stdout would feed log lines to the decoder.
+---@return string
+function Session:stderr() end
+--- The direction-tagged record of the conversation: `{ seq, dir = "in"|"out", data }[]`.
+---@return table[]
+function Session:transcript() end
+--- Half-close stdin — "the client went away". A distinct act from `:stop()`, and the way to prove
+--- a server shuts down cleanly: `sess:eof()` then `sess:wait()`.
+function Session:eof() end
+--- Wait for exit; returns the exit code (nil if signalled or already reaped). Bounded (30s).
+---@param opts? { timeout?: string }
+---@return integer|nil
+function Session:wait(opts) end
+--- Kill the process — and its whole group, so a server's workers die with it — then reap.
+--- Idempotent; what `ctx:manage` calls at scope end.
+function Session:stop() end
+
+---@class prova.stdio
+stdio = {}
+--- Drive (originate): spawn a program with its stdin, stdout and stderr piped, and converse.
+--- Takes a shell string or an argv table, exactly like `shell.run` — there is no `args` option,
+--- because the arguments are part of the command.
+---
+--- `framing` turns the byte stream into turns (`"line"` is newline-delimited JSON, as MCP over
+--- stdio speaks; `"content_length"` is the LSP/DAP envelope) and `codec = "json"` decodes them, so
+--- `recv{ where = { id = 3 } }` picks the reply out of an interleaved stream.
+---@param ctx any
+---@param opts { cmd: string|string[], framing?: prova.SocketFraming, codec?: prova.Codec, cwd?: string, env?: table<string,string|number|boolean> }
+---@return prova.Session
+function stdio.spawn(ctx, opts) end
+
+-- ---------------------------------------------------------------------------------------------
 -- terminal — the pty transport: drive TUIs/CLIs, observe a real screen
 -- ---------------------------------------------------------------------------------------------
 
