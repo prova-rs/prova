@@ -60,6 +60,9 @@ mod sarif;
 mod shellproxy;
 mod socket;
 mod terminal;
+/// The turn model — framing, codec, selector — shared by every stream transport so `socket`,
+/// `websocket` and `stdio` cannot drift on what a turn is or how a caller picks one.
+mod turn;
 mod websocket;
 mod wiretap;
 
@@ -139,7 +142,7 @@ pub(super) fn manage(what: &str, ctx: &Value, ud: &mlua::AnyUserData) -> mlua::R
 /// `{ path = "/x" }` both work), a **function** is an arbitrary predicate over the entry.
 /// Filtering happens over the *exposed* entry table, so `seq`/`source`/`matched` are as
 /// filterable as the transport-native fields.
-fn journal_keep(lua: &Lua, filter: &Option<Value>, entry: &Table) -> mlua::Result<bool> {
+pub(super) fn journal_keep(lua: &Lua, filter: &Option<Value>, entry: &Table) -> mlua::Result<bool> {
     let _ = lua;
     match filter {
         None | Some(Value::Nil) => Ok(true),

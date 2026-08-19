@@ -4,9 +4,10 @@
 //! One namespace, unified by ADDRESS SCHEME: `tcp://host:port` and `unix:///path` are just
 //! addresses — listen, connect, proxy, and the byte model are identical; only address parsing
 //! differs. A raw byte stream has no natural "request" unit, so mocks and transcripts take a
-//! FRAMING strategy (`"line"`, `{ length_prefixed = n }`, `{ delimiter = "…" }`) that turns bytes
-//! into matchable turns. The byte-level proxy is the universal wiretap: put it in front of
-//! anything TCP and you get direction-tagged transcripts plus the fault vocabulary
+//! FRAMING strategy that turns bytes into matchable turns — and framing, the `codec` that turns a
+//! turn into a value, and the `where` selector that picks one all live in [`super::turn`], shared
+//! with every other stream transport. The byte-level proxy is the universal wiretap: put it in
+//! front of anything TCP and you get direction-tagged transcripts plus the fault vocabulary
 //! (`latency`/`drop`/`corrupt`/`throttle`/`after`) with zero protocol knowledge —
 //! toxiproxy-in-process, no extra daemon.
 //!
@@ -22,6 +23,7 @@ use std::time::Duration;
 use mlua::{Function, Lua, Table, UserData, UserDataFields, UserDataMethods, Value};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 
+use super::turn::{read_frame, Codec, Framing, Selector};
 use crate::model::parse_duration;
 
 const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(10);
@@ -189,150 +191,6 @@ impl Drop for Acceptor {
     }
 }
 
-// ── framing ────────────────────────────────────────────────────────────────────────────────────
-
-/// What turns bytes into matchable TURNS. `Raw` is the absence of framing: `send` writes bytes
-/// verbatim and `recv(n)` reads exact counts — the driver-level escape hatch.
-#[derive(Clone, Debug)]
-enum Framing {
-    Raw,
-    Line,
-    LengthPrefixed(usize),
-    Delimiter(Vec<u8>),
-}
-
-impl Framing {
-    fn parse(v: Option<Value>) -> mlua::Result<Framing> {
-        match v {
-            None | Some(Value::Nil) => Ok(Framing::Raw),
-            Some(Value::String(s)) => match s.to_string_lossy().as_ref() {
-                "line" => Ok(Framing::Line),
-                other => Err(err(format!(
-                    "socket: unknown framing {other:?} (a string framing is \"line\"; tables are \
-                     {{ length_prefixed = n }} or {{ delimiter = \"…\" }})"
-                ))),
-            },
-            Some(Value::Table(t)) => {
-                let lp = t.get::<Option<usize>>("length_prefixed")?;
-                let delim = t.get::<Option<mlua::String>>("delimiter")?;
-                match (lp, delim) {
-                    (Some(n), None) if (1..=8).contains(&n) => Ok(Framing::LengthPrefixed(n)),
-                    (Some(n), None) => Err(err(format!(
-                        "socket: length_prefixed must be 1..=8 bytes, got {n}"
-                    ))),
-                    (None, Some(d)) if !d.as_bytes().is_empty() => {
-                        Ok(Framing::Delimiter(d.as_bytes().to_vec()))
-                    }
-                    (None, Some(_)) => Err(err("socket: delimiter must be non-empty")),
-                    _ => Err(err(
-                        "socket: framing table is { length_prefixed = n } OR { delimiter = \"…\" }",
-                    )),
-                }
-            }
-            Some(other) => Err(err(format!(
-                "socket: framing must be a string or table, got a {}",
-                other.type_name()
-            ))),
-        }
-    }
-
-    fn is_raw(&self) -> bool {
-        matches!(self, Framing::Raw)
-    }
-
-    /// Wrap one payload into its on-wire form.
-    fn encode(&self, payload: &[u8]) -> Vec<u8> {
-        match self {
-            Framing::Raw => payload.to_vec(),
-            Framing::Line => {
-                let mut v = payload.to_vec();
-                v.push(b'\n');
-                v
-            }
-            Framing::LengthPrefixed(n) => {
-                let mut v = Vec::with_capacity(n + payload.len());
-                let len = payload.len() as u64;
-                for i in (0..*n).rev() {
-                    v.push(((len >> (8 * i)) & 0xff) as u8);
-                }
-                v.extend_from_slice(payload);
-                v
-            }
-            Framing::Delimiter(d) => {
-                let mut v = payload.to_vec();
-                v.extend_from_slice(d);
-                v
-            }
-        }
-    }
-}
-
-/// Read one frame from `stream`, consuming `buf` leftovers first. `Ok(None)` is clean EOF.
-async fn read_frame(
-    stream: &mut Stream,
-    buf: &mut Vec<u8>,
-    framing: &Framing,
-) -> std::io::Result<Option<Vec<u8>>> {
-    let needle: &[u8] = match framing {
-        Framing::Line => b"\n",
-        Framing::Delimiter(d) => d,
-        Framing::LengthPrefixed(_) => &[],
-        Framing::Raw => {
-            return Err(std::io::Error::other(
-                "read_frame called without framing (internal)",
-            ))
-        }
-    };
-    loop {
-        if let Framing::LengthPrefixed(n) = framing {
-            if buf.len() >= *n {
-                let mut len: u64 = 0;
-                for b in buf.iter().take(*n) {
-                    len = (len << 8) | *b as u64;
-                }
-                let total = *n + len as usize;
-                if buf.len() >= total {
-                    let payload = buf[*n..total].to_vec();
-                    buf.drain(..total);
-                    return Ok(Some(payload));
-                }
-            }
-        } else if let Some(pos) = buf.windows(needle.len()).position(|w| w == needle) {
-            let payload = buf[..pos].to_vec();
-            buf.drain(..pos + needle.len());
-            return Ok(Some(payload));
-        }
-        let mut chunk = [0u8; 16 * 1024];
-        let n = stream.read(&mut chunk).await?;
-        if n == 0 {
-            return Ok(None); // EOF; any partial frame in `buf` never completed
-        }
-        buf.extend_from_slice(&chunk[..n]);
-    }
-}
-
-/// Read exactly `want` bytes (raw mode), consuming leftovers first.
-async fn read_exact_buffered(
-    stream: &mut Stream,
-    buf: &mut Vec<u8>,
-    want: usize,
-) -> std::io::Result<Vec<u8>> {
-    while buf.len() < want {
-        let mut chunk = [0u8; 16 * 1024];
-        let n = stream.read(&mut chunk).await?;
-        if n == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                format!("connection closed with {}/{want} bytes read", buf.len()),
-            ));
-        }
-        buf.extend_from_slice(&chunk[..n]);
-    }
-    let out = buf[..want].to_vec();
-    buf.drain(..want);
-    Ok(out)
-}
-
 // ── the driver: Conn (originate) ───────────────────────────────────────────────────────────────
 
 /// One live connection. The stream is `take()`n out for the duration of an I/O call so a
@@ -341,19 +199,39 @@ struct Conn {
     stream: Rc<RefCell<Option<Stream>>>,
     buf: Rc<RefCell<Vec<u8>>>,
     framing: Framing,
+    codec: Codec,
 }
 
 impl Conn {
-    fn new(stream: Stream, framing: Framing) -> Conn {
+    fn new(stream: Stream, framing: Framing, codec: Codec) -> Conn {
         Conn {
             stream: Rc::new(RefCell::new(Some(stream))),
             buf: Rc::new(RefCell::new(Vec::new())),
             framing,
+            codec,
         }
     }
 }
 
-fn recv_args(framing: &Framing, a: Option<Value>, b: Option<Table>) -> mlua::Result<(usize, Duration)> {
+/// What `recv` was asked for: a byte count (raw only), a bound, and which turn to stop on.
+#[derive(Debug)]
+struct RecvArgs {
+    want: usize,
+    timeout: Duration,
+    selector: Selector,
+}
+
+/// Every option `recv` honors. Closed like every other opts surface: `recv{ wehre = … }` reading
+/// as "the next turn, unfiltered" is the silent-drop disease at its most expensive, because the
+/// wrong turn still arrives and the proof still asserts on it.
+const RECV_OPTS: &[&str] = &["timeout", "where"];
+
+fn recv_args(
+    framing: &Framing,
+    codec: Codec,
+    a: Option<Value>,
+    b: Option<Table>,
+) -> mlua::Result<RecvArgs> {
     // raw: recv(n, opts?) — framed: recv(opts?)
     let (want, opts) = match (framing.is_raw(), a) {
         (true, Some(Value::Integer(n))) if n > 0 => (n as usize, b),
@@ -372,20 +250,33 @@ fn recv_args(framing: &Framing, a: Option<Value>, b: Option<Table>) -> mlua::Res
             )))
         }
     };
-    let timeout = match &opts {
-        Some(t) => match t.get::<Option<String>>("timeout")? {
-            Some(s) => parse_duration(&s).ok_or_else(|| err(format!("bad duration {s:?}")))?,
-            None => DEFAULT_IO_TIMEOUT,
-        },
-        None => DEFAULT_IO_TIMEOUT,
+    let (timeout, selector) = match &opts {
+        Some(t) => {
+            crate::opts::reject_unknown(t, RECV_OPTS, "recv")?;
+            let dur = match t.get::<Option<String>>("timeout")? {
+                Some(s) => parse_duration(&s).ok_or_else(|| err(format!("bad duration {s:?}")))?,
+                None => DEFAULT_IO_TIMEOUT,
+            };
+            let sel = Selector::parse("recv", codec, t.get::<Option<Value>>("where")?)?;
+            // A raw stream has no turns to select BETWEEN — `where` there would read as a filter
+            // and behave as nothing at all.
+            if framing.is_raw() && !sel.is_any() {
+                return Err(err(
+                    "recv: `where` selects among TURNS, and this connection is unframed — set \
+                     framing so the stream has turns to choose from",
+                ));
+            }
+            (dur, sel)
+        }
+        None => (DEFAULT_IO_TIMEOUT, Selector::Any),
     };
-    Ok((want, timeout))
+    Ok(RecvArgs { want, timeout, selector })
 }
 
 impl UserData for Conn {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_async_method("send", |_, this, data: mlua::String| async move {
-            let wire = this.framing.encode(&data.as_bytes());
+        methods.add_async_method("send", |lua, this, data: Value| async move {
+            let wire = this.framing.encode(&this.codec.encode(&lua, &data)?);
             let Some(mut s) = this.stream.borrow_mut().take() else {
                 return Err(err("send: connection is closed or busy"));
             };
@@ -397,26 +288,45 @@ impl UserData for Conn {
         methods.add_async_method(
             "recv",
             |lua, this, (a, b): (Option<Value>, Option<Table>)| async move {
-                let (want, dur) = recv_args(&this.framing, a, b)?;
+                let args = recv_args(&this.framing, this.codec, a, b)?;
+                let dur = args.timeout;
                 let Some(mut s) = this.stream.borrow_mut().take() else {
                     return Err(err("recv: connection is closed or busy"));
                 };
                 let mut buf = std::mem::take(&mut *this.buf.borrow_mut());
+                let (codec, sel) = (this.codec, &args.selector);
+                let mut skipped = 0usize;
                 let res = tokio::time::timeout(dur, async {
                     if this.framing.is_raw() {
-                        read_exact_buffered(&mut s, &mut buf, want).await.map(Some)
-                    } else {
-                        read_frame(&mut s, &mut buf, &this.framing).await
+                        return super::turn::read_exact_buffered(&mut s, &mut buf, args.want)
+                            .await
+                            .map(Some)
+                            .map_err(|e| err(format!("recv: {e}")));
                     }
+                    super::turn::read_until(&mut s, &mut buf, &this.framing, |payload| {
+                        if sel.is_any() {
+                            return Ok(true);
+                        }
+                        let hit = sel.accepts(&codec.decode(&lua, payload)?)?;
+                        if !hit {
+                            skipped += 1;
+                        }
+                        Ok(hit)
+                    })
+                    .await
                 })
                 .await;
                 *this.buf.borrow_mut() = buf;
                 *this.stream.borrow_mut() = Some(s);
                 match res {
-                    Err(_) => Err(err(format!("recv: timed out after {dur:?}"))),
-                    Ok(Err(e)) => Err(err(format!("recv: {e}"))),
-                    Ok(Ok(None)) => Err(err("recv: connection closed")),
-                    Ok(Ok(Some(payload))) => Ok(lua.create_string(&payload)?),
+                    // Naming the skipped count separates "nothing arrived" from "turns arrived and
+                    // none was the one asked for" — the same failure with opposite causes.
+                    Err(_) => Err(err(format!("recv: timed out after {dur:?}{}", super::turn::waited(skipped)))),
+                    Ok(Err(e)) => Err(e),
+                    Ok(Ok(None)) => {
+                        Err(err(format!("recv: connection closed{}", super::turn::waited(skipped))))
+                    }
+                    Ok(Ok(Some(payload))) => this.codec.decode(&lua, &payload),
                 }
             },
         );
@@ -428,14 +338,35 @@ impl UserData for Conn {
     }
 }
 
+/// Every option `socket.connect` honors.
+const CONNECT_OPTS: &[&str] = &["addr", "codec", "framing"];
+
 fn connect_fn(lua: &Lua) -> mlua::Result<Function> {
-    lua.create_async_function(|_, (addr, opts): (String, Option<Table>)| async move {
+    lua.create_async_function(|lua, (ctx, opts): (Value, Option<Table>)| async move {
         super::runtime_only("socket.connect")?;
-        let framing = Framing::parse(match &opts {
-            Some(t) => t.get::<Option<Value>>("framing")?,
-            None => None,
+        // The retired positional spelling. `Closed` cannot see this — it changed the FIRST
+        // ARGUMENT, not a key — so the shape is checked here, and refused with the new spelling
+        // rather than left to fail as "expected the test context, got a string".
+        if let Value::String(addr) = &ctx {
+            return Err(err(format!(
+                "socket.connect(ctx, {{ addr = {:?} }}): the address is now a named option and the \
+                 context comes first, so the connection is closed with the scope instead of \
+                 leaking until GC",
+                addr.to_string_lossy()
+            )));
+        }
+        let opts = opts.ok_or_else(|| {
+            err("socket.connect(ctx, { addr = \"tcp://…\" }): the options table is required")
         })?;
-        Ok(Conn::new(dial(&addr).await?, framing))
+        crate::opts::reject_unknown(&opts, CONNECT_OPTS, "socket.connect")?;
+        let addr = opts
+            .get::<Option<String>>("addr")?
+            .ok_or_else(|| err("socket.connect(ctx, { addr = \"tcp://…\" }): addr is required"))?;
+        let framing = Framing::parse("socket.connect", opts.get::<Option<Value>>("framing")?)?;
+        let codec = Codec::parse("socket.connect", opts.get::<Option<Value>>("codec")?)?;
+        let ud = lua.create_userdata(Conn::new(dial(&addr).await?, framing, codec))?;
+        super::manage("socket.connect", &ctx, &ud)?;
+        Ok(ud)
     })
 }
 
@@ -445,6 +376,7 @@ struct ListenerUd {
     addr: String,
     acceptor: Rc<RefCell<Option<Acceptor>>>,
     framing: Framing,
+    codec: Codec,
 }
 
 impl UserData for ListenerUd {
@@ -469,7 +401,7 @@ impl UserData for ListenerUd {
             match res {
                 Err(_) => Err(err(format!("accept: timed out after {dur:?}"))),
                 Ok(Err(e)) => Err(err(format!("accept: {e}"))),
-                Ok(Ok(stream)) => Ok(Conn::new(stream, this.framing.clone())),
+                Ok(Ok(stream)) => Ok(Conn::new(stream, this.framing.clone(), this.codec)),
             }
         });
         methods.add_method("stop", |_, this, ()| {
@@ -485,12 +417,14 @@ fn listen_fn(lua: &Lua) -> mlua::Result<Function> {
             .get::<Option<String>>("addr")?
             .unwrap_or_else(|| "tcp://127.0.0.1:0".to_string());
         crate::opts::reject_unknown(&opts, LISTEN_OPTS, "socket.listen")?;
-        let framing = Framing::parse(opts.get::<Option<Value>>("framing")?)?;
+        let framing = Framing::parse("socket.listen", opts.get::<Option<Value>>("framing")?)?;
+        let codec = Codec::parse("socket.listen", opts.get::<Option<Value>>("codec")?)?;
         let (acceptor, addr) = Acceptor::bind(&parse_addr(&addr_s)?)?;
         let ud = lua.create_userdata(ListenerUd {
             addr,
             acceptor: Rc::new(RefCell::new(Some(acceptor))),
             framing,
+            codec,
         })?;
         super::manage("socket.listen", &ctx, &ud)?;
         Ok(ud)
@@ -553,10 +487,15 @@ super::wiretap::impl_shutdown!(MockUd);
 
 /// Every option `socket.mock` honors — closed by construction
 /// (docs/design/agent-ergonomics.md#module-opts-silently-ignored).
+///
+/// Deliberately NOT `codec`: a mock matches turns by their bytes, and shape matching over decoded
+/// turns lands with `stdio.mock`, which needs it (an MCP stub keys on `method`, not on an exact
+/// serialization). Accepting the option here before it is honored would be the silent drop this
+/// whole gate exists to refuse — it would read as configured and match nothing.
 const MOCK_OPTS: &[&str] = &["addr", "framing"];
 
 /// Every option `socket.listen` honors — the raw acceptor, not the mock.
-const LISTEN_OPTS: &[&str] = &["addr", "framing"];
+const LISTEN_OPTS: &[&str] = &["addr", "codec", "framing"];
 
 /// Every option `socket.proxy` honors. `upstream`/`framing`/`mode`/`cassette` are read through
 /// `proxy_config`, so the closed set spans both readers — a gate that only knew this function's
@@ -569,7 +508,7 @@ fn mock_fn(lua: &Lua) -> mlua::Result<Function> {
             err("socket.mock(ctx, { framing = … }): framing is required — matching needs turns")
         })?;
         crate::opts::reject_unknown(&opts, MOCK_OPTS, "socket.mock")?;
-        let framing = Framing::parse(opts.get::<Option<Value>>("framing")?)?;
+        let framing = Framing::parse("socket.mock", opts.get::<Option<Value>>("framing")?)?;
         if framing.is_raw() {
             return Err(err(
                 "socket.mock: framing is required — a mock matches TURNS, and raw bytes have no \
@@ -817,43 +756,12 @@ async fn pump(
                     Err(_) => None,
                 }
             } else {
-                // Framed reads use the shared frame scanner over a plain read loop.
+                // The ONE frame scanner (`super::turn`), same as the blocking reader uses. This
+                // loop carried a second copy until 2026-08-18; two scanners is two chances to
+                // disagree about where a frame ends, and a disagreement here does not error — it
+                // hands the transcript a differently-cut turn.
                 loop {
-                    let needle_hit = {
-                        match &framing {
-                            Framing::Line => buf.iter().position(|b| *b == b'\n').map(|p| (p, 1)),
-                            Framing::Delimiter(d) => buf
-                                .windows(d.len())
-                                .position(|w| w == &d[..])
-                                .map(|p| (p, d.len())),
-                            Framing::LengthPrefixed(n) => {
-                                if buf.len() >= *n {
-                                    let mut len: u64 = 0;
-                                    for b in buf.iter().take(*n) {
-                                        len = (len << 8) | *b as u64;
-                                    }
-                                    let total = *n + len as usize;
-                                    if buf.len() >= total {
-                                        Some((total, 0))
-                                    } else {
-                                        None
-                                    }
-                                } else {
-                                    None
-                                }
-                            }
-                            Framing::Raw => unreachable!(),
-                        }
-                    };
-                    if let Some((pos, skip)) = needle_hit {
-                        let payload: Vec<u8>;
-                        if let Framing::LengthPrefixed(n) = &framing {
-                            payload = buf[*n..pos].to_vec();
-                            buf.drain(..pos);
-                        } else {
-                            payload = buf[..pos].to_vec();
-                            buf.drain(..pos + skip);
-                        }
+                    if let Some(payload) = framing.take_frame(&mut buf) {
                         return Some(payload);
                     }
                     let mut chunk = [0u8; 16 * 1024];
@@ -1015,7 +923,7 @@ fn flush_recorder(state: &Rc<RefCell<ProxyState>>) -> mlua::Result<()> {
 /// site rather than on first connect.
 fn proxy_config(opts: &Table) -> mlua::Result<(Option<String>, Framing, Mode, Option<String>)> {
     let upstream = opts.get::<Option<String>>("upstream")?;
-    let framing = Framing::parse(opts.get::<Option<Value>>("framing")?)?;
+    let framing = Framing::parse("socket.proxy", opts.get::<Option<Value>>("framing")?)?;
     let cassette = opts.get::<Option<String>>("cassette")?;
     let mode_str = opts
         .get::<Option<String>>("mode")?
@@ -1158,41 +1066,7 @@ fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Framing::parse speaks the whole grammar — the string form, both table forms, the bounds,
-    /// and the taught refusals. Encode wraps a payload in its on-wire form, with the length
-    /// prefix big-endian across its declared width.
-    #[test]
-    fn framing_parse_and_encode() {
-        let lua = Lua::new();
-        assert!(Framing::parse(None).unwrap().is_raw());
-        assert!(matches!(
-            Framing::parse(Some(Value::String(lua.create_string("line").unwrap()))),
-            Ok(Framing::Line)
-        ));
-        let t = lua.create_table().unwrap();
-        t.set("length_prefixed", 4).unwrap();
-        assert!(matches!(Framing::parse(Some(Value::Table(t))), Ok(Framing::LengthPrefixed(4))));
-        let t = lua.create_table().unwrap();
-        t.set("length_prefixed", 9).unwrap();
-        assert!(Framing::parse(Some(Value::Table(t))).is_err(), "width capped at 8");
-        let t = lua.create_table().unwrap();
-        t.set("delimiter", "\u{1}").unwrap();
-        assert!(matches!(Framing::parse(Some(Value::Table(t))), Ok(Framing::Delimiter(_))));
-        let t = lua.create_table().unwrap();
-        t.set("delimiter", "").unwrap();
-        assert!(Framing::parse(Some(Value::Table(t))).is_err(), "empty delimiter refused");
-        assert!(Framing::parse(Some(Value::Integer(3))).is_err(), "wrong type taught");
-
-        assert_eq!(Framing::Raw.encode(b"ab"), b"ab");
-        assert_eq!(Framing::Line.encode(b"ab"), b"ab\n");
-        assert_eq!(Framing::LengthPrefixed(2).encode(b"abc"), vec![0, 3, b'a', b'b', b'c']);
-        assert_eq!(
-            Framing::Delimiter(vec![0xff]).encode(b"x"),
-            vec![b'x', 0xff],
-            "delimiter appends"
-        );
-    }
+    use super::super::turn::read_exact_buffered;
 
     /// recv's arity IS the framing: raw connections read exact byte counts (n required),
     /// framed connections read whole turns (a byte count is refused, taught) — and the
@@ -1200,24 +1074,56 @@ mod tests {
     #[test]
     fn recv_args_follow_the_framing() {
         let lua = Lua::new();
-        let (want, dur) = recv_args(&Framing::Raw, Some(Value::Integer(64)), None).unwrap();
-        assert_eq!((want, dur), (64, DEFAULT_IO_TIMEOUT));
-        assert!(recv_args(&Framing::Raw, None, None).is_err(), "raw without n");
-        assert!(recv_args(&Framing::Raw, Some(Value::Integer(0)), None).is_err(), "zero bytes");
+        let args = |f: &Framing, a: Option<Value>| recv_args(f, Codec::Bytes, a, None);
 
-        let (want, dur) = recv_args(&Framing::Line, None, None).unwrap();
-        assert_eq!((want, dur), (0, DEFAULT_IO_TIMEOUT));
+        let got = args(&Framing::Raw, Some(Value::Integer(64))).unwrap();
+        assert_eq!((got.want, got.timeout), (64, DEFAULT_IO_TIMEOUT));
+        assert!(args(&Framing::Raw, None).is_err(), "raw without n");
+        assert!(args(&Framing::Raw, Some(Value::Integer(0))).is_err(), "zero bytes");
+
+        let got = args(&Framing::Line, None).unwrap();
+        assert_eq!((got.want, got.timeout), (0, DEFAULT_IO_TIMEOUT));
+        assert!(got.selector.is_any(), "no `where` reads the next turn, whatever it is");
         assert!(
-            recv_args(&Framing::Line, Some(Value::Integer(64)), None).is_err(),
+            args(&Framing::Line, Some(Value::Integer(64))).is_err(),
             "framed refuses a byte count"
         );
         let opts = lua.create_table().unwrap();
         opts.set("timeout", "250ms").unwrap();
-        let (_, dur) = recv_args(&Framing::Line, Some(Value::Table(opts)), None).unwrap();
-        assert_eq!(dur, Duration::from_millis(250));
+        let got = args(&Framing::Line, Some(Value::Table(opts))).unwrap();
+        assert_eq!(got.timeout, Duration::from_millis(250));
         let opts = lua.create_table().unwrap();
         opts.set("timeout", "eleventy").unwrap();
-        assert!(recv_args(&Framing::Line, Some(Value::Table(opts)), None).is_err());
+        assert!(args(&Framing::Line, Some(Value::Table(opts))).is_err());
+    }
+
+    /// `recv` is a closed opts surface like every other. It matters more here than most: a
+    /// dropped `where` still RETURNS a turn — the wrong one — and the proof asserts on it
+    /// confidently. A dropped `timeout` is the unbounded read this whole API exists to prevent.
+    #[test]
+    fn recv_refuses_an_option_it_cannot_honor() {
+        let lua = Lua::new();
+        let opts = lua.create_table().unwrap();
+        opts.set("wehre", "x").unwrap();
+        let e = recv_args(&Framing::Line, Codec::Json, Some(Value::Table(opts)), None)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("did you mean `where`"), "a typo is caught and named: {e}");
+    }
+
+    /// `where` selects among TURNS. On an unframed connection there are none, so the option can
+    /// only ever be a no-op — and a no-op filter reads as configured, which is the failure the
+    /// closed-opts doctrine exists to prevent.
+    #[test]
+    fn where_on_an_unframed_connection_is_refused() {
+        let lua = Lua::new();
+        let f: mlua::Function = lua.load("function() return true end").eval().unwrap();
+        let opts = lua.create_table().unwrap();
+        opts.set("where", f).unwrap();
+        let e = recv_args(&Framing::Raw, Codec::Bytes, Some(Value::Integer(4)), Some(opts))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("set framing"), "the cure is named: {e}");
     }
 
     /// Rates are declared in bits (bps/kbps/mbps, the units networks speak) and applied in
@@ -1468,10 +1374,3 @@ mod tests {
         });
     }
 }
-
-/// The framing model's unit tests, in their own file: `socket.rs` is at the file-size limit, and
-/// the ratchet is right that a 1600-line module is hard to hold in your head — the tests are the
-/// part that can move without splitting the implementation.
-#[cfg(test)]
-#[path = "socket/framing_tests.rs"]
-mod framing_tests;

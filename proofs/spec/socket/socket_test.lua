@@ -22,7 +22,7 @@
 prova.test("raw byte round-trip — connect, send bytes, accept, recv exact bytes",
   { proves = "tier-a/socket: the originate posture — raw bytes, exact counts, no ceremony" }, function(t)
   local srv = socket.listen(t, { addr = "tcp://127.0.0.1:0" })   -- :0 = ephemeral, addr resolves
-  local c = socket.connect(srv.addr)
+  local c = socket.connect(t, { addr = srv.addr })
 
   c:send("\1\2\3")
   local conn = srv:accept()
@@ -39,7 +39,7 @@ prova.test("socket.mock answers framed turns — line framing over tcp",
   local srv = socket.mock(t, { addr = "tcp://127.0.0.1:0", framing = "line" })
   srv:on("PING"):reply("PONG")
 
-  local c = socket.connect(srv.addr, { framing = "line" })
+  local c = socket.connect(t, { addr = srv.addr, framing = "line" })
   c:send("PING")
   t:expect(c:recv()):equals("PONG")
 end)
@@ -51,7 +51,7 @@ prova.test("the same API over unix:// — schemes unify the transport family",
   srv:on("PING"):reply("PONG")
   t:expect(srv.addr:sub(1, 7)):equals("unix://")   -- endpoint symmetry, scheme preserved
 
-  local c = socket.connect(srv.addr, { framing = "line" })
+  local c = socket.connect(t, { addr = srv.addr, framing = "line" })
   c:send("PING")
   t:expect(c:recv()):equals("PONG")
 end)
@@ -61,7 +61,7 @@ prova.test("length-prefixed framing — a 4-byte big-endian header delimits turn
   local srv = socket.mock(t, { framing = { length_prefixed = 4 } })
   srv:on("hello"):reply("world")
 
-  local c = socket.connect(srv.addr, { framing = { length_prefixed = 4 } })
+  local c = socket.connect(t, { addr = srv.addr, framing = { length_prefixed = 4 } })
   c:send("hello")                       -- the framing layer writes the header
   t:expect(c:recv()):equals("world")    -- and strips it on the way back
 end)
@@ -71,7 +71,7 @@ prova.test("delimiter framing — any byte sequence can bound a turn",
   local srv = socket.mock(t, { framing = { delimiter = "\0" } })
   srv:on("who"):reply("prova")
 
-  local c = socket.connect(srv.addr, { framing = { delimiter = "\0" } })
+  local c = socket.connect(t, { addr = srv.addr, framing = { delimiter = "\0" } })
   c:send("who")
   t:expect(c:recv()):equals("prova")
 end)
@@ -81,7 +81,7 @@ prova.test("an unmatched turn is journaled loud — the §6 spine from day one",
   local srv = socket.mock(t, { framing = "line" })
   srv:on("KNOWN"):reply("OK")
 
-  local c = socket.connect(srv.addr, { framing = "line" })
+  local c = socket.connect(t, { addr = srv.addr, framing = "line" })
   c:send("NOPE")
 
   t:expect(function() return srv:received{ matched = false } end)
@@ -97,7 +97,7 @@ prova.test("socket.proxy interposes and records a direction-tagged transcript",
   srv:on("PING"):reply("PONG")
 
   local tap = socket.proxy(t, { upstream = srv.addr, framing = "line" })
-  local c = socket.connect(tap.addr, { framing = "line" })
+  local c = socket.connect(t, { addr = tap.addr, framing = "line" })
 
   c:send("PING")
   t:expect(c:recv()):equals("PONG")     -- traffic flows through untouched

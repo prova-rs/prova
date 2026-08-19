@@ -12,7 +12,7 @@ prova.test("interpose + transcript — the ws wiretap records direction-tagged m
   local p = websocket.proxy(t, { upstream = m.url })
   t:expect(p.url:sub(1, 5)):equals("ws://")        -- endpoint symmetry
 
-  local c = websocket.connect(p.url)
+  local c = websocket.connect(t, { url = p.url })
   c:send("ping")
   t:expect(c:recv()):equals("pong")                -- traffic flows through untouched
 
@@ -29,7 +29,7 @@ prova.test("the fault vocabulary rides the substrate — latency on the ws proxy
   m:on("ping"):reply("pong")
 
   local p = websocket.proxy(t, { upstream = m.url })
-  local c = websocket.connect(p.url)
+  local c = websocket.connect(t, { url = p.url })
   c:send("ping")
   t:expect(c:recv{ timeout = "2s" }):equals("pong")   -- baseline
 

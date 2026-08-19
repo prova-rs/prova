@@ -16,6 +16,7 @@ use futures::{SinkExt, StreamExt};
 use mlua::{Function, Lua, Table, UserData, UserDataFields, UserDataMethods, Value};
 use tokio_tungstenite::tungstenite::Message;
 
+use super::turn::{Codec, Selector};
 use crate::model::parse_duration;
 
 const DEFAULT_RECV_TIMEOUT: Duration = Duration::from_secs(10);
@@ -48,31 +49,49 @@ type WsClient = tokio_tungstenite::WebSocketStream<
 
 struct ClientUd {
     ws: Rc<RefCell<Option<WsClient>>>,
+    codec: Codec,
 }
+
+/// Every option `websocket.connect`'s `recv` honors — the same closed set, and the same two
+/// reasons for closing it, as `socket`'s (`recv{ wehre = … }` returns the WRONG turn rather than
+/// none).
+const RECV_OPTS: &[&str] = &["timeout", "where"];
 
 impl UserData for ClientUd {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_async_method("send", |_, this, data: mlua::String| async move {
+        methods.add_async_method("send", |lua, this, data: Value| async move {
+            let payload = this.codec.encode(&lua, &data)?;
             let Some(mut ws) = this.ws.borrow_mut().take() else {
                 return Err(err("send: connection is closed or busy"));
             };
-            let text = String::from_utf8_lossy(&data.as_bytes()).to_string();
+            let text = String::from_utf8_lossy(&payload).to_string();
             let r = ws.send(Message::Text(text)).await;
             *this.ws.borrow_mut() = Some(ws);
             r.map_err(|e| err(format!("send: {e}")))
         });
 
         methods.add_async_method("recv", |lua, this, opts: Option<Table>| async move {
-            let dur = match &opts {
-                Some(t) => match t.get::<Option<String>>("timeout")? {
-                    Some(s) => parse_duration(&s).ok_or_else(|| err(format!("bad timeout {s:?}")))?,
-                    None => DEFAULT_RECV_TIMEOUT,
-                },
-                None => DEFAULT_RECV_TIMEOUT,
+            let (dur, sel) = match &opts {
+                Some(t) => {
+                    crate::opts::reject_unknown(t, RECV_OPTS, "recv")?;
+                    let dur = match t.get::<Option<String>>("timeout")? {
+                        Some(s) => {
+                            parse_duration(&s).ok_or_else(|| err(format!("bad timeout {s:?}")))?
+                        }
+                        None => DEFAULT_RECV_TIMEOUT,
+                    };
+                    (
+                        dur,
+                        Selector::parse("recv", this.codec, t.get::<Option<Value>>("where")?)?,
+                    )
+                }
+                None => (DEFAULT_RECV_TIMEOUT, Selector::Any),
             };
             let Some(mut ws) = this.ws.borrow_mut().take() else {
                 return Err(err("recv: connection is closed or busy"));
             };
+            let codec = this.codec;
+            let mut skipped = 0usize;
             let res = tokio::time::timeout(dur, async {
                 loop {
                     match ws.next().await {
@@ -80,7 +99,13 @@ impl UserData for ClientUd {
                         Some(Err(e)) => return Err(err(format!("recv: {e}"))),
                         Some(Ok(m)) => {
                             if let Some(b) = msg_bytes(&m) {
-                                return Ok(b);
+                                // Decoding happens here, inside the loop and never held across the
+                                // await, so a skipped turn costs one decode and nothing else.
+                                if sel.is_any() || sel.accepts(&codec.decode(&lua, &b)?)? {
+                                    return Ok(b);
+                                }
+                                skipped += 1;
+                                continue;
                             }
                             if matches!(m, Message::Close(_)) {
                                 return Err(err("recv: connection closed"));
@@ -92,9 +117,12 @@ impl UserData for ClientUd {
             .await;
             *this.ws.borrow_mut() = Some(ws);
             match res {
-                Err(_) => Err(err(format!("recv: timed out after {dur:?}"))),
+                Err(_) => Err(err(format!(
+                    "recv: timed out after {dur:?}{}",
+                    super::turn::waited(skipped)
+                ))),
                 Ok(Err(e)) => Err(e),
-                Ok(Ok(b)) => Ok(lua.create_string(&b)?),
+                Ok(Ok(b)) => this.codec.decode(&lua, &b),
             }
         });
 
@@ -108,9 +136,30 @@ impl UserData for ClientUd {
     }
 }
 
+/// Every option `websocket.connect` honors.
+const CONNECT_OPTS: &[&str] = &["codec", "url"];
+
 fn connect_fn(lua: &Lua) -> mlua::Result<Function> {
-    lua.create_async_function(|_, url: String| async move {
+    lua.create_async_function(|lua, (ctx, opts): (Value, Option<Table>)| async move {
         super::runtime_only("websocket.connect")?;
+        // The retired positional spelling, refused with the new one. See socket.rs's twin: this is
+        // a FIRST-ARGUMENT change, which the closed-opts gate structurally cannot see.
+        if let Value::String(url) = &ctx {
+            return Err(err(format!(
+                "websocket.connect(ctx, {{ url = {:?} }}): the url is now a named option and the \
+                 context comes first, so the connection is closed with the scope instead of \
+                 leaking until GC",
+                url.to_string_lossy()
+            )));
+        }
+        let opts = opts.ok_or_else(|| {
+            err("websocket.connect(ctx, { url = \"ws://…\" }): the options table is required")
+        })?;
+        crate::opts::reject_unknown(&opts, CONNECT_OPTS, "websocket.connect")?;
+        let url = opts
+            .get::<Option<String>>("url")?
+            .ok_or_else(|| err("websocket.connect(ctx, { url = \"ws://…\" }): url is required"))?;
+        let codec = Codec::parse("websocket.connect", opts.get::<Option<Value>>("codec")?)?;
         if !url.starts_with("ws://") {
             return Err(err(format!(
                 "websocket.connect: url must be ws:// (no TLS in v1), got {url:?}"
@@ -119,9 +168,12 @@ fn connect_fn(lua: &Lua) -> mlua::Result<Function> {
         let (ws, _resp) = tokio_tungstenite::connect_async(&url)
             .await
             .map_err(|e| err(format!("websocket.connect {url}: {e}")))?;
-        Ok(ClientUd {
+        let ud = lua.create_userdata(ClientUd {
             ws: Rc::new(RefCell::new(Some(ws))),
-        })
+            codec,
+        })?;
+        super::manage("websocket.connect", &ctx, &ud)?;
+        Ok(ud)
     })
 }
 

@@ -47,7 +47,7 @@ prova.test("a socket cassette redacts a secret from a recorded turn",
     upstream = srv.addr, framing = "line", cassette = cas, mode = "record",
     redact = { "sk-live-xyz" },
   })
-  local c = socket.connect(p.addr, { framing = "line" })
+  local c = socket.connect(t, { addr = p.addr, framing = "line" })
   c:send("AUTH sk-live-xyz")
   t:expect(c:recv()):equals("OK")
   p:close()

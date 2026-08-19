@@ -1065,20 +1065,38 @@ function http.proxy(ctx, opts) end
 -- unified by address scheme; framing turns bytes into matchable turns)
 -- ---------------------------------------------------------------------------------------------
 
+--- How bytes become TURNS. `"line"` and `"content_length"` (the LSP/DAP envelope:
+--- `Content-Length: N\r\n\r\n<body>`) are the string forms; the table forms are
+--- `{ length_prefixed = n }` (1..=8, big-endian) and `{ delimiter = "…" }`.
 ---@alias prova.SocketFraming string|{ length_prefixed?: integer, delimiter?: string }
+
+--- How a turn becomes a VALUE — the dial that is separate from framing. `"bytes"` (the default)
+--- hands the payload over as a string; `"json"` decodes it, which is what makes `where` able to
+--- select a turn by its FIELDS.
+---@alias prova.Codec "bytes"|"json"
+
+--- WHICH turn to stop on — the framed analogue of `expect`'s pattern. A table is the same
+--- structural subset match as `:matches`/`:on`/`received`; a function is a predicate over the
+--- decoded turn. Non-matching turns are skipped, and stay in the transcript as evidence.
+---@alias prova.Where table|fun(turn: any): boolean
 
 ---@class prova.SocketConn
 local SocketConn = {}
---- Write one turn (framed) or raw bytes (no framing). Async.
----@param data string
+--- Write one turn (framed) or raw bytes (no framing). A table when `codec = "json"`, a string
+--- otherwise. Async.
+---@param data any
 function SocketConn:send(data) end
 --- Framed: read one whole turn — `recv(opts?)`. Raw: read exactly n bytes — `recv(n, opts?)`.
 --- Errors loud on timeout (default 10s) or a closed connection; never hangs.
----@param n_or_opts? integer|{ timeout?: string }
----@param opts? { timeout?: string }
----@return string
+---
+--- `where` reads on until a turn MATCHES — the reply to request 3, skipping the notifications
+--- that arrive first. Skipped turns are counted in the timeout message, so "nothing arrived" and
+--- "nothing matched" read differently.
+---@param n_or_opts? integer|{ timeout?: string, where?: prova.Where }
+---@param opts? { timeout?: string, where?: prova.Where }
+---@return any                # a string, or the decoded turn under `codec = "json"`
 function SocketConn:recv(n_or_opts, opts) end
---- Close the connection.
+--- Close the connection (also what `ctx:manage` calls at scope end).
 function SocketConn:close() end
 
 ---@class prova.SocketListener
@@ -1143,14 +1161,14 @@ socket = {}
 --- Listen (originate, server side): bind `tcp://host:port` (`:0` = ephemeral, resolved into
 --- `.addr`) or `unix:///path`, accept raw or framed connections. Torn down with the scope.
 ---@param ctx any
----@param opts { addr?: string, framing?: prova.SocketFraming }
+---@param opts { addr?: string, framing?: prova.SocketFraming, codec?: prova.Codec }
 ---@return prova.SocketListener
 function socket.listen(ctx, opts) end
---- Connect (originate): dial a `tcp://`/`unix://` address. Async.
----@param addr string
----@param opts? { framing?: prova.SocketFraming }
+--- Connect (originate): dial a `tcp://`/`unix://` address. Async. Closed with the scope.
+---@param ctx any
+---@param opts { addr: string, framing?: prova.SocketFraming, codec?: prova.Codec }
 ---@return prova.SocketConn
-function socket.connect(addr, opts) end
+function socket.connect(ctx, opts) end
 --- Terminate: a mock that answers framed turns synthetically. Framing is REQUIRED — matching
 --- needs turns; raw exchanges are scripted with `socket.listen`/`accept` instead.
 ---@param ctx any
@@ -1285,12 +1303,13 @@ function terminal.proxy(ctx, opts) end
 
 ---@class prova.WsConn
 local WsConn = {}
---- Send one message turn. Async.
----@param data string
+--- Send one message turn. A table when `codec = "json"`, a string otherwise. Async.
+---@param data any
 function WsConn:send(data) end
---- Receive the next message turn (async, timeout'd — default 10s; loud on close).
----@param opts? { timeout?: string }
----@return string
+--- Receive the next message turn (async, timeout'd — default 10s; loud on close). `where` reads
+--- on until a turn matches, exactly as on a socket.
+---@param opts? { timeout?: string, where?: prova.Where }
+---@return any
 function WsConn:recv(opts) end
 --- Close the connection (the ws close handshake).
 function WsConn:close() end
@@ -1321,10 +1340,11 @@ function WsMock:stop() end
 
 ---@class prova.websocket
 websocket = {}
---- Connect (originate): dial a `ws://` url. Async.
----@param url string
+--- Connect (originate): dial a `ws://` url. Async. Closed with the scope.
+---@param ctx any
+---@param opts { url: string, codec?: prova.Codec }
 ---@return prova.WsConn
-function websocket.connect(url) end
+function websocket.connect(ctx, opts) end
 --- Terminate (and push): a real ws server in this process, stubbed and asserted on.
 ---@param ctx any
 ---@param opts? table

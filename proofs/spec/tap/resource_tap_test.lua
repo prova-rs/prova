@@ -25,7 +25,7 @@ prova.test("tap = true interposes the wiretap — same url shape, transcripts fo
   { proves = "tier-a/tap: tap=true interposes the wiretap — same url shape, transcripts for free" }, function(t)
   local res = redis.container(t, { tap = true })
 
-  local c = socket.connect(res.url, { framing = { delimiter = "\r\n" } })
+  local c = socket.connect(t, { addr = res.url, framing = { delimiter = "\r\n" } })
   c:send("PING")
   t:expect(c:recv()):equals("+PONG")               -- the real redis answered, through the tap
 
@@ -40,7 +40,7 @@ prova.test("a tapped resource takes faults — resilience proofs against the rea
   { proves = "tier-a/tap: faults through the tap — resilience proofs against the real dependency" }, function(t)
   local res = redis.container(t, { tap = true })
 
-  local c = socket.connect(res.url, { framing = { delimiter = "\r\n" } })
+  local c = socket.connect(t, { addr = res.url, framing = { delimiter = "\r\n" } })
   c:send("PING")
   t:expect(c:recv()):equals("+PONG")               -- baseline: healthy
 

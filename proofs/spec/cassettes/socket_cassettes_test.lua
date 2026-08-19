@@ -23,7 +23,7 @@ prova.test("record mode captures framed turns; close is the flush point",
   local cas = t:tempdir() .. "/turns.cassette"
 
   local p = socket.proxy(t, { upstream = srv.addr, framing = "line", cassette = cas, mode = "record" })
-  local c = socket.connect(p.addr, { framing = "line" })
+  local c = socket.connect(t, { addr = p.addr, framing = "line" })
   c:send("PING")
   t:expect(c:recv()):equals("PONG")                -- flows while recording
   p:close()
@@ -37,14 +37,14 @@ prova.test("a proxy in record mode manufactures a mock — replay with the upstr
   local cas = t:tempdir() .. "/replay.cassette"
 
   local rec = socket.proxy(t, { upstream = srv.addr, framing = "line", cassette = cas, mode = "record" })
-  local c = socket.connect(rec.addr, { framing = "line" })
+  local c = socket.connect(t, { addr = rec.addr, framing = "line" })
   c:send("PING")
   t:expect(c:recv()):equals("PONG")
   rec:close()
   srv:stop()                                       -- reality leaves the building
 
   local rep = socket.proxy(t, { framing = "line", cassette = cas, mode = "replay" })
-  local c2 = socket.connect(rep.addr, { framing = "line" })
+  local c2 = socket.connect(t, { addr = rep.addr, framing = "line" })
   c2:send("PING")
   t:expect(c2:recv()):equals("PONG")               -- pinned deterministically forever
 end)
@@ -55,7 +55,7 @@ prova.test("auto mode: record when the cassette is absent, replay when it is pre
   local cas = t:tempdir() .. "/auto.cassette"
 
   local first = socket.proxy(t, { upstream = srv.addr, framing = "line", cassette = cas, mode = "auto" })
-  local c = socket.connect(first.addr, { framing = "line" })
+  local c = socket.connect(t, { addr = first.addr, framing = "line" })
   c:send("PING")
   t:expect(c:recv()):equals("PONG")
   first:close()
@@ -63,7 +63,7 @@ prova.test("auto mode: record when the cassette is absent, replay when it is pre
 
   srv:stop()
   local second = socket.proxy(t, { upstream = srv.addr, framing = "line", cassette = cas, mode = "auto" })
-  local c2 = socket.connect(second.addr, { framing = "line" })
+  local c2 = socket.connect(t, { addr = second.addr, framing = "line" })
   c2:send("PING")
   t:expect(c2:recv()):equals("PONG")               -- present → replayed
 end)
@@ -74,13 +74,13 @@ prova.test("a replay miss severs the connection loud — never invented bytes",
   local cas = t:tempdir() .. "/miss.cassette"
 
   local rec = socket.proxy(t, { upstream = srv.addr, framing = "line", cassette = cas, mode = "record" })
-  local c = socket.connect(rec.addr, { framing = "line" })
+  local c = socket.connect(t, { addr = rec.addr, framing = "line" })
   c:send("PING")
   t:expect(c:recv()):equals("PONG")
   rec:close()
 
   local rep = socket.proxy(t, { framing = "line", cassette = cas, mode = "replay" })
-  local c2 = socket.connect(rep.addr, { framing = "line" })
+  local c2 = socket.connect(t, { addr = rep.addr, framing = "line" })
   c2:send("NOPE")
   local ok = pcall(function() c2:recv{ timeout = "2s" } end)
   t:expect(ok):is_false()                          -- closed loud, not answered by guesswork

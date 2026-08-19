@@ -21,7 +21,7 @@ prova.test("latency delays the stream — a tight recv timeout now trips",
   { proves = "tier-a/faults: latency is continuous and observable, never a clock read" }, function(t)
   local srv = echo_upstream(t)
   local p = socket.proxy(t, { upstream = srv.addr, framing = "line" })
-  local c = socket.connect(p.addr, { framing = "line" })
+  local c = socket.connect(t, { addr = p.addr, framing = "line" })
 
   c:send("PING")
   t:expect(c:recv{ timeout = "2s" }):equals("PONG")     -- baseline: clean pass-through
@@ -36,7 +36,7 @@ prova.test("drop severs live connections — recv fails loud, not hangs",
   { proves = "tier-a/faults: drop severs loud — a fault is an error, not a hang" }, function(t)
   local srv = echo_upstream(t)
   local p = socket.proxy(t, { upstream = srv.addr, framing = "line" })
-  local c = socket.connect(p.addr, { framing = "line" })
+  local c = socket.connect(t, { addr = p.addr, framing = "line" })
 
   c:send("PING")
   t:expect(c:recv()):equals("PONG")
@@ -53,7 +53,7 @@ prova.test("after() puts a fuse on any fault — healthy first, injured later",
   { proves = "tier-a/faults: after() is the fuse — resilience proofs need healthy-then-injured" }, function(t)
   local srv = echo_upstream(t)
   local p = socket.proxy(t, { upstream = srv.addr, framing = "line" })
-  local c = socket.connect(p.addr, { framing = "line" })
+  local c = socket.connect(t, { addr = p.addr, framing = "line" })
 
   p:after("500ms"):drop()
 
@@ -62,7 +62,7 @@ prova.test("after() puts a fuse on any fault — healthy first, injured later",
 
   t:expect(function()
     return pcall(function()
-      local c2 = socket.connect(p.addr, { framing = "line" })
+      local c2 = socket.connect(t, { addr = p.addr, framing = "line" })
       c2:send("PING")
       c2:recv{ timeout = "200ms" }
     end)
@@ -76,7 +76,7 @@ prova.test("corrupt alters bytes in flight — what arrives is not what was sent
   p:corrupt()
 
   local payload = string.rep("A", 1024)
-  local c = socket.connect(p.addr)
+  local c = socket.connect(t, { addr = p.addr })
   c:send(payload)
 
   local conn = srv:accept()
@@ -92,7 +92,7 @@ prova.test("throttle rate-limits the stream — bulk transfer misses a tight dea
   srv:on("GET"):reply(bulk)
 
   local p = socket.proxy(t, { upstream = srv.addr, framing = { length_prefixed = 4 } })
-  local c = socket.connect(p.addr, { framing = { length_prefixed = 4 } })
+  local c = socket.connect(t, { addr = p.addr, framing = { length_prefixed = 4 } })
 
   c:send("GET")
   t:expect(c:recv{ timeout = "5s" }):equals(bulk)        -- baseline: 64k arrives easily

@@ -14,7 +14,7 @@ prova.test("mock + driver round-trip — a message turn, stubbed and answered",
   m:on("ping"):reply("pong")
   t:expect(m.url:sub(1, 5)):equals("ws://")     -- endpoint symmetry, ws scheme
 
-  local c = websocket.connect(m.url)
+  local c = websocket.connect(t, { url = m.url })
   c:send("ping")
   t:expect(c:recv()):equals("pong")
 end)
@@ -24,7 +24,7 @@ prova.test("full duplex — the server pushes unprompted on connect",
   local m = websocket.mock(t)
   m:on_connect(function(conn) conn:send("welcome") end)
 
-  local c = websocket.connect(m.url)
+  local c = websocket.connect(t, { url = m.url })
   t:expect(c:recv()):equals("welcome")          -- no request preceded this
 end)
 
@@ -33,7 +33,7 @@ prova.test("the journal speaks the §6 spine from day one",
   local m = websocket.mock(t)
   m:on("hello"):reply("hi")
 
-  local c = websocket.connect(m.url)
+  local c = websocket.connect(t, { url = m.url })
   c:send("hello")
   t:expect(c:recv()):equals("hi")
   c:send("unexpected")
