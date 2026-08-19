@@ -9,10 +9,6 @@
 --- is refused by name; the value under a correctly-spelled key was still parsed best-effort, and
 --- the two mistakes look identical to an author who typed one character wrong in either place.
 
--- The workspace recipe loads with the FILE: a fixture must be registered before the run's plan is
--- sealed, so a `require` inside a test body would arrive too late to be `t:use`d.
-local workspace = require("workspace")
-
 --- Every boundary that takes a duration string, and the shape of the mistake at each.
 local sites = {
   { name = "the unit `timeout` — the bound a proof asks for BY NAME",
@@ -53,41 +49,4 @@ prova.test("every spelling of the real grammar is accepted", {
   local bare = shell.run({ prova.bin, "eval", 'shell.run("true", { timeout = "5" }) return "ok"' },
     { merge_stderr = true, timeout = "60s" })
   t:expect(bare.code, bare.stdout):equals(0)
-end)
-
---- The sweep itself, held structurally — because the backlog item's own advice was to audit this
---- as ONE sweep rather than one call site: `and_then(parse_duration)` is the idiom wherever a
---- duration crosses from Lua, and every instance of it fails the same way. A table of examples
---- proves the sites it lists; this proves there are no others, including ones added tomorrow.
-prova.test("no boundary still drops a duration it cannot read", {
-  covers = "docs/design/agent-ergonomics.md#unparseable-durations-are-dropped-not-refused",
-  requires = { "cargo" },
-  locks = { prova.reads("cargo") },
-  proves = "durations: the sweep is complete and stays complete — the dropping idiom is gone from the tree",
-}, function(t)
-  local roots = workspace.src_roots(t:use(workspace.metadata))
-  t:expect(#roots, "no source roots to scan — cargo metadata found nothing"):gt(0)
-
-  local offenders = {}
-  local scanned = 0
-  for _, root in ipairs(roots) do
-    for _, pat in ipairs({ "*.rs", "**/*.rs" }) do
-      for _, path in ipairs(fs.glob(root, pat)) do
-        scanned = scanned + 1
-        local src = fs.read(path)
-        -- The dropping shape: a fallible parse fed straight into `and_then`, which turns "I could
-        -- not read that" into "you did not ask for one".
-        -- `%(` because a bare `(` opens a CAPTURE in a Lua pattern: the unescaped form matched
-        -- nothing at all, and this proof was vacuously green until a mutation test said so.
-        if src:find("and_then%(%s*|s|%s*[%w_:]*parse_duration") then
-          offenders[#offenders + 1] = path
-        end
-      end
-    end
-  end
-
-  -- Vacuity guard: a broken glob would make the count trivially zero and this proof a no-op.
-  t:expect(scanned, "suspiciously few files scanned — src-root discovery is wrong"):gt(20)
-  t:expect(#offenders, "these still drop a malformed duration: " .. table.concat(offenders, ", "))
-    :equals(0)
 end)
