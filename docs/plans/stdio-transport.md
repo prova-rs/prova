@@ -158,6 +158,31 @@ interleaved session collapses to a single opaque blob. Record a real server's se
 credential-free forever, on the shared `cassette.rs` engine (a third `kind`, alongside `socket` and
 `shell`). Speaks the shared fault vocabulary.
 
+### The open question these two share: what the shim is
+
+**Unresolved, and the reason 5–6 are not built yet.** Both postures need a program on PATH that the
+SUT spawns, and that program is a different *process* from the one holding the stubs — so the
+matching has to happen somewhere. `terminal.mock` and `shell.proxy` both generate a POSIX `sh`
+script and journal through the filesystem, which works because their matching is over *bytes*
+(a `case` pattern on argv). A stdio mock's matching is over *decoded turns* — an MCP stub keys on
+`method`, not on an exact serialization — and `sh` cannot subset-match JSON.
+
+Three ways out, none free:
+
+1. **Substring `case` patterns on the serialized turn** (`*'"method":"tools/list"'*`). Cheap, and
+   wrong the first time a client reorders keys or adds whitespace. Fragility that presents as a
+   replay miss is the worst kind.
+2. **`prova.bin eval` per turn inside the shim.** Correct matching, real cost per turn, and it puts
+   prova on the SUT's PATH — which is a hermeticity change, not just a performance one.
+3. **A relay shim.** The generated script is one line — `exec "$PROVA_BIN" <relay-verb>
+   unix:///…` — piping the SUT's stdio to a unix socket where the in-process mock does the matching
+   with the real `Selector`. This reuses the whole `socket` substrate, keeps ONE matcher, and
+   dogfoods; the cost is a new (hidden) CLI verb, which is an architecture decision this plan has
+   not made.
+
+(3) is the one to take if the shape holds up, but it deserves a deliberate look rather than a
+tired one. Until then the matrix says *not yet*, which is the honest state.
+
 ## 5. `codec` — the new dimension
 
 ```
