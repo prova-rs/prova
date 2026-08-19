@@ -49,6 +49,7 @@ end
 
 prova.test("a request/response session carries state from turn one into turn two", {
   requires = { "unix" },
+  covers = "docs/design/agent-ergonomics.md#stdio-cannot-drive-a-conversational-sut",
   proves = "stdio: the driver posture — write, read the reply, and decide the next write from it",
 }, function(t)
   local sess = stdio.spawn(t, {

@@ -1161,7 +1161,47 @@ and what the comma form already expresses), or refuse the second naming both sel
 auditing as one sweep over `dispatch.rs` rather than one flag, since the shape — `self.x = Some(…)`
 inside an arg loop — is the idiom wherever an option takes a value.
 
-<!-- backlog: stdio-cannot-drive-a-conversational-sut recorded=2026-08-18 -->
+<!-- backlog: coverage-denominator-is-not-reproducible recorded=2026-08-19 -->
+**The coverage ratchet is measuring an unstable denominator, so its floors cannot be re-derived —
+including at the commit that banked them.** Four clean-slate conducts, with
+`target/llvm-cov-target`, `target/exec-stage` and `target/suite-profraws` wiped before each:
+
+| tree | merged | unit | black-box | lines counted |
+|---|---|---|---|---|
+| `cf5719` — the commit that BANKED the floors | **65.74%** | 59.28% | 51.09% | 35,514 |
+| `main` (d78f8) | 80.99% | 73.08% | 54.54% | 29,016 |
+| main + the stdio transport | 80.96% | 72.01% | 56.76% | 29,824 |
+| *(the floors that commit wrote)* | *86.37%* | *73.47%* | *73.04%* | — |
+
+The banking commit measures **twenty points below the floor it wrote**, and counts 5,690 MORE lines
+than a tree three days newer whose source is strictly larger. The source did not shrink. The
+instrument counts a different set of regions per build, and the percentage rides on it.
+
+That makes conclusions unsafe in both directions: the 86.37 floor was never reachable, a later
+run's "regression" is not one, and a re-bank taken today would enshrine whatever the denominator
+happened to be this afternoon. **The move is NOT to re-bank.** `--update-baseline` refusing to
+loosen is the guard working correctly; the value it protects is the problem.
+
+Not a new failure mode, which is the worrying part. `coverage_test.lua` already carries a
+stale-generation guard (wipe `COV_DIR` when the version stamp moves), a recursion guard (≥20 suite
+profraws — 795 were produced, so the black-box layer measured the whole suite honestly), and a
+comment recording a previous instance: "the 0.19.0 bump left 0.18.0 objects behind and both layers
+regressed by the same ~27% — a denominator artifact, not lost coverage". Every guard closed the hole
+it was built for. The denominator moved anyway, on a clean slate, with no version change.
+
+Where to look: `cargo llvm-cov report` derives its denominator from every instrumented object under
+the target dir, which is why `stage_execs` exists to move nextest's binaries out before the
+black-box layer reports. That staging controls WHICH objects are scanned; it does not control how
+many regions a given build emits. Codegen-unit count, incremental state and dead-code stripping all
+change the region count for identical source, and nothing pins any of them — the stamp keys on
+`prova.version`, which does not move when the source does. **A denominator that is not a function of
+the source cannot carry a ratchet.**
+
+Until it is fixed the honest posture is that `prova run all` is this project's gate and
+`prova run release` has one leg measuring noise — worth saying out loud rather than discovering it
+at the next tag.
+
+<!-- claim: stdio-cannot-drive-a-conversational-sut recorded=2026-08-18 -->
 **A spawned process cannot be driven: `Process` has no stdin, so a request/response SUT is
 unprovable without a co-process written in something else.** `Process` exposes `output()`,
 `running()`, `stop()`, `wait()`. `shell.run{stdin=…}` and `Container:run{stdin=…}` take one
