@@ -1161,6 +1161,41 @@ and what the comma form already expresses), or refuse the second naming both sel
 auditing as one sweep over `dispatch.rs` rather than one flag, since the shape — `self.x = Some(…)`
 inside an arg loop — is the idiom wherever an option takes a value.
 
+<!-- backlog: coverage-lane-blocked-by-a-contended-timing-proof recorded=2026-08-19 -->
+**The coverage lane cannot complete, and not because of coverage: one timing proof measures a
+hundred times slower inside the instrumented suite than alone.** `proofs/shell/lease_test.lua`'s
+Ctrl-C proof — "an interrupted prova takes its conducts with it" — spawns a prova, SIGINTs it, and
+waits for the reaper to sweep the leased conduct. The conduct gates on a green suite before it
+measures anything, so this one red stops every layer from reporting.
+
+Measured 2026-08-19, all under the instrumented binary:
+
+| how it ran | result |
+|---|---|
+| the proof alone (`prova proofs/shell/lease_test.lua`) | **PASS in 268ms** |
+| inside the full instrumented suite, 5s sweep bound | FAIL at ~8s |
+| …bound widened to 30s | FAIL at 44.8s |
+| …plus `serial = true` and a 15s bound | FAIL at 23.5s |
+
+Same binary, same code, a hundredfold apart — so it is contention, not instrumentation. But
+**widening the bound and serializing the unit both failed to fix it**, which rules out the two
+obvious readings: it is not simply "the bound was too tight", and it is not competition from other
+units in the same process (`serial` is process-wide, and the conduct runs a NESTED prova whose own
+`--jobs` workers are outside that guarantee).
+
+Both attempted fixes were reverted rather than shipped: a change that does not fix the failure it
+was written for is noise in the diff, however plausible it reads.
+
+Correlation worth checking first: the lane completed on this tree before
+`proofs/spec/durations/` landed and has not since — those proofs spawn eight instrumented
+`prova.bin eval` children. That points at total process pressure in the nested run rather than at
+any one unit. Whether the sweep is genuinely not happening or merely late is the first thing to
+establish, and the proof cannot currently tell those apart — it reports "did not sweep in N
+seconds" for both.
+
+Consequence: [[coverage-denominator-is-not-reproducible]] cannot be re-measured or re-banked until
+this clears, so both coverage items move together or not at all.
+
 <!-- backlog: coverage-denominator-is-not-reproducible recorded=2026-08-19 -->
 **The coverage ratchet is measuring an unstable denominator, so its floors cannot be re-derived —
 including at the commit that banked them.** Four clean-slate conducts, with

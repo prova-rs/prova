@@ -300,6 +300,68 @@ local conduct = prova.fixture("layered-coverage", Scope.File, function()
   return { unit = unit, blackbox = blackbox, merged = merged }
 end)
 
+
+--- WHAT EACH LAYER WAS MEASURED AGAINST, banked beside what it measured.
+---
+--- A percentage is a fraction, and this conduct only ever banked the numerator's share. The
+--- denominator — how many lines `cargo llvm-cov report` counted — is a property of the OBJECT
+--- POPULATION in the scan dir at report time, not of the source: `report` takes no `--bin`/`--lib`
+--- scoping, so it counts whatever instrumented artifacts happen to be there, and a later build can
+--- evict or replace what an earlier report was measured against.
+---
+--- Measured 2026-08-19, four clean-slate conducts: the commit that BANKED the 86.37% floor
+--- re-measures at 65.74% and counts 35,514 lines, where a strictly larger tree three days later
+--- counts 29,824. The source did not shrink. Nothing regressed; the basis moved, and a ratchet
+--- comparing across a moved basis reports a twenty-point fiction with total confidence.
+---
+--- This does not make the denominator stable — that is llvm-cov's to give and it does not. It
+--- makes a moved basis LOUD and names it, so the failure says "your instrument changed" instead of
+--- "your coverage collapsed", and so a floor can never again be banked against a basis nobody
+--- checked. The header above records two earlier incidents diagnosed by hand, over four days and
+--- three conducts; both would have been one line of output with this in place.
+---
+--- Re-banking is deliberate and reviewable: edit the table below in the same commit that edits the
+--- floors, because the two are one measurement and must move together.
+---
+--- **Unbanked as of 2026-08-19, and honestly so.** Banking a basis requires one conduct that
+--- completes, and the lane currently cannot finish
+--- (agent-ergonomics.md#coverage-lane-blocked-by-a-contended-timing-proof). Until then this guard
+--- reports each layer's measured basis and says it is unbanked — it does not fail the run for a
+--- baseline nobody has been able to establish. The first conduct that completes prints the three
+--- numbers to put here.
+local BASIS = {
+  -- layer      lines counted at bank time
+  unit     = nil,
+  blackbox = nil,
+  merged   = nil,
+}
+
+--- How far the basis may drift before the percentages stop being comparable. Small on purpose:
+--- codegen jitter is fractions of a percent, and the incidents this exists for moved it by 15-20%.
+local BASIS_TOLERANCE = 0.02
+
+--- Check a layer's basis against its bank. Returns nil when it holds, else the sentence to fail on.
+local function basis_drift(layer, rep)
+  local banked = BASIS[layer]
+  local measured = rep.data[1].totals.lines.count
+  if not banked then
+    return nil, string.format(
+      "  basis      %-9s %6d lines measured, NOT BANKED — bank it in coverage_test.lua's BASIS "
+      .. "table alongside the floor", layer, measured)
+  end
+  local drift = math.abs(measured - banked) / banked
+  if drift <= BASIS_TOLERANCE then
+    return nil, nil
+  end
+  return string.format(
+    "the %s layer's measurement basis moved: %d lines counted, %d banked (%+.1f%%). A percentage "
+    .. "measured against a different basis is NOT comparable to a floor measured against this one "
+    .. "— `cargo llvm-cov report` counts whatever instrumented objects are in the scan dir, so the "
+    .. "denominator is build state, not source. Re-measure and re-bank the floor AND the basis "
+    .. "together (coverage_test.lua's BASIS table), or find what changed the object population.",
+    layer, measured, banked, 100 * (measured - banked) / banked)
+end
+
 --- Per-file percent map from a full report.
 local function by_file(rep)
   local out = {}
@@ -322,6 +384,13 @@ prova.test("whole-bar line coverage — unit AND black-box merged — does not r
   t:expect(pct(produced.merged) == pct(produced.unit) and pct(produced.unit) == pct(produced.blackbox),
     "unit, blackbox, and merged are identical — the reports are not seeing distinct profraw sets"
   ):is_false()
+  -- Before the ratchet, never after: a moved basis makes the percentage incomparable, and
+  -- reporting that as a coverage regression is the exact fiction this guard exists to stop.
+  local drift, note = basis_drift("merged", produced.merged)
+  if note then print(note) end
+  t:expect(drift, drift or "the merged layer's basis is the one the floor was banked against")
+    :is_nil()
+
   measure.ratchet(t, "rust.coverage.lines", pct(produced.merged), {
     set = "quality", direction = "higher_is_better",
   })
@@ -356,6 +425,13 @@ prova.test("each layer's coverage holds on its own — and the delta names where
     local tot = layer[2].data[1].totals.lines
     print(string.format("  layer %-9s %6.2f%%  %6d/%-6d lines  %4d files",
       layer[1], tot.percent, tot.covered, tot.count, #(layer[2].data[1].files or {})))
+  end
+
+  for _, layer in ipairs({ { "unit", produced.unit }, { "blackbox", produced.blackbox } }) do
+    local drift, note = basis_drift(layer[1], layer[2])
+    if note then print(note) end
+    t:expect(drift, drift or layer[1] .. "'s basis is the one its floor was banked against")
+      :is_nil()
   end
 
   measure.ratchet(t, "rust.coverage.unit", pct(produced.unit), {
