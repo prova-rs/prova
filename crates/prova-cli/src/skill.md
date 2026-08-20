@@ -347,7 +347,8 @@ call tools. Tools mirror the CLI one-to-one and **everything else is identical**
 | `evidence { package? }` / `owed { package? }` | `prova evidence` / `prova owed` — the account and its debts |
 | `attest { address, package? }` | `prova attest <addr|id>` — bare `prova attest` (the CI gate) is CLI-only |
 | `learn { topic? }` / `introspect { filter? }` | `prova learn [<topic>]` / `prova.help(...)` in eval |
-| `up { name }` / `down { name }` / `status {}` | `prova up <name>` — but held *inside* the server |
+| `up { name }` / `down { name }` | `prova up <name>` — but held *inside* the server |
+| `status { package? }` | `prova ps` — what is held: the server's own warm holds, plus the package's detached ones |
 
 Scaffolding stays CLI-only: `prova init`, `prova ide setup`, `prova package lint` — shell out for
 those even when driving the MCP. Prefer the MCP tools for iteration (warm topologies, structured
@@ -361,8 +362,16 @@ holds it inside the server; `run { topology = name }` and `eval { code, topology
 resolve the held live instance instead of provisioning — millisecond re-runs against a standing
 environment while you iterate. In a warm `eval`, the held value is also a global named after the
 topology (`return orders.db.url`). Warm calls require a prior `up` (never provision implicitly);
-`status` lists what's held; the holder owns teardown — `down` (or server shutdown) reaps, warm
-runs never do. A held environment accumulates state (that's the point): `down` then `up` when
-isolation matters.
+the holder owns teardown — `down` (or server shutdown) reaps, warm runs never do. A held
+environment accumulates state (that's the point): `down` then `up` when isolation matters.
+
+**Before you provision, ask `status` — and aim it.** It reports both holders: this server's warm
+holds, and the DETACHED ones a terminal `prova up` / `prova start` holds, which live as records
+under the package they belong to. So `status { package = "<dir>" }` is how you see the second kind
+— and if you skip the `package`, a server whose config is per-user (started in a home directory,
+not a repo) can only answer for its own warm holds. `packages` in the result names what it read;
+an EMPTY `packages` is the one case where `held: []` does not mean "nothing is up". Getting this
+wrong costs a cold stand-up of an environment that was already up, plus a port collision if it
+binds fixed ports.
 
 Full reference: https://prova-rs.github.io (source: https://github.com/prova-rs/prova)

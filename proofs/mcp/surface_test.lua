@@ -199,6 +199,13 @@ end)
 
 -- ── the held registry: status, never ps ──────────────────────────────────────────────────────
 
+--- A tempdir's basename, which is unique per call and survives the /private symlink macOS adds
+--- when a path is canonicalized — so a reported package path can be matched against the directory
+--- the proof created without the two spellings disagreeing.
+local function leaf(path)
+  return path:match("[^/]+$")
+end
+
 prova.test("a server-held topology reports through status and never writes a running record",
   { covers = "docs/design/mcp-mode.md#held-visible-via-status-not-ps" }, function(t)
   local root = t:use(scratch)()
@@ -210,11 +217,61 @@ prova.test("a server-held topology reports through status and never writes a run
     call(2, "up", { name = "orders" }),
     call(3, "status"),
   })
-  local held = tool_json(by_id[3]).held
+  local report = tool_json(by_id[3])
+  local held = report.held
   t:expect(held[1].name):equals("orders")
   t:expect(held[1].resources[1].url):equals("http://127.0.0.1:19999")
+  -- Which holder, and whose package: a warm hold is the server's own, and it names the package
+  -- its `up` resolved against — the two facts that tell an agent how to reach and reap it.
+  t:expect(held[1].holder):equals("server")
+  t:expect(held[1].package):contains(leaf(root))
+  t:expect(report.packages[1], "the startup package is consulted by default"):contains(leaf(root))
+  t:expect(report.note, "a package WAS consulted — nothing to warn about"):never():is_truthy()
   t:expect(fs.exists(root .. "/.prova/var/running/orders.json"),
     "no detached record was ever written"):equals(false)
+end)
+
+prova.test("status takes a package, and reports a DETACHED hold the server never provisioned", {
+  covers = "docs/design/agent-ergonomics.md#mcp-status-cannot-be-aimed-at-a-package",
+  proves = "a held ybor-studio-k8s was invisible to `status` from a server started in the user's home (where an agent harness's per-user MCP config puts it) while `prova --topology` attached to it warm from the package directory in the same minute; `{\"held\": []}` reads as 'safe to provision' and costs a cold stand-up of something already up",
+}, function(t)
+  local root = t:use(scratch)()
+  registered(root)
+  -- The wrong room, literally: a directory with no manifest at it or above it, which is what the
+  -- server's startup resolution finds when its config is per-user rather than per-repo.
+  local outside = t:use(scratch)()
+
+  local started = shell.run(prova.bin .. " start orders", { cwd = root, merge_stderr = true })
+  t:defer(function() shell.run(prova.bin .. " down orders", { cwd = root, merge_stderr = true }) end)
+  t:expect(started.code, "the detached holder came up"):equals(0)
+
+  local by_id = mcp(t, outside, {
+    call(2, "status"),
+    call(3, "status", { package = root }),
+    -- An aim that misses is an error, never an empty list: `outside` is a real directory with no
+    -- package in it, and answering `{held: []}` for it is the same wrong answer one level in.
+    call(4, "status", { package = outside }),
+  })
+
+  -- From the wrong room the list is honestly empty AND says why — `packages` is what it read, so
+  -- an empty one is the single case where `held: []` does not mean "nothing is up".
+  local blind = tool_json(by_id[2])
+  t:expect(#blind.held, "a server outside a package holds nothing itself"):equals(0)
+  t:expect(#blind.packages, "and it consulted nothing"):equals(0)
+  t:expect(blind.note, "the empty answer names its own limit"):contains("package")
+
+  local aimed, aimed_err = tool_json(by_id[3])
+  t:expect(aimed_err):never():is_truthy()
+  t:expect(#aimed.held, "the same server, aimed, sees the hold"):equals(1)
+  t:expect(aimed.held[1].name):equals("orders")
+  t:expect(aimed.held[1].holder, "not this server's — a process's"):equals("detached")
+  t:expect(aimed.held[1].pid):gt(0)
+  t:expect(aimed.held[1].resources[1].url):equals("http://127.0.0.1:19999")
+  t:expect(aimed.held[1].package):contains(leaf(root))
+  t:expect(aimed.packages[1]):contains(leaf(root))
+
+  t:expect(by_id[4].result.isError, "a package that resolves to nothing is refused"):is_truthy()
+  t:expect(by_id[4].result.content[1].text):contains("no prova.toml found")
 end)
 
 -- ── warm re-run: resolve, never provision ────────────────────────────────────────────────────

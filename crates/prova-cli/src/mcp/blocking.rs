@@ -411,6 +411,115 @@ pub(super) fn down_blocking(warm: &WarmRegistry, name: &str) -> Result<(serde_js
     Ok((json!({ "name": name, "down": true }), false))
 }
 
+/// `status` — every held topology this call can see, from BOTH holders, plus the packages it
+/// actually read, so an empty `held` can never be mistaken for "nothing is up"
+/// (docs/design/agent-ergonomics.md#mcp-status-cannot-be-aimed-at-a-package).
+///
+/// The two holders differ in where their held-ness LIVES, and that is the whole reason `package`
+/// exists here:
+///
+///   * **warm** — this server's own `up`. In memory only; it writes no `running/` record
+///     (docs/design/mcp-mode.md#held-visible-via-status-not-ps). Always listed, each naming the
+///     package its `up` resolved against: `down { name }` is package-blind, so hiding a warm hold
+///     behind a package filter would recreate the wrong answer in mirror image.
+///   * **detached** — a terminal `prova up` or a `prova start`. Held-ness is a
+///     `<home>/.prova/var/running/<name>.json` record under the PACKAGE it belongs to (see
+///     `runstate`), readable by any process on the machine but findable only once a package is
+///     named. Hence: the package this call aims at, plus every package this server already holds
+///     something for.
+///
+/// A read, and only a read: a record whose holder is gone is skipped, not deleted. `prova ps` and
+/// `prova down` are the reapers.
+pub(super) fn status_blocking(
+    env: &McpEnv,
+    warm: &WarmRegistry,
+    req: StatusRequest,
+) -> Result<(serde_json::Value, bool), String> {
+    let mut held: Vec<serde_json::Value> = Vec::new();
+    // The packages whose on-disk records get read, in the order they are reported. `aimed` heads
+    // the list so the answer leads with the package the caller asked about.
+    let mut consult: Vec<Home> = Vec::new();
+    // Two spellings of one package (the aimed path, a warm hold's home) must read its records
+    // once, so dedup on the CANONICAL path rather than on how it was written.
+    fn push_consult(home: Home, consult: &mut Vec<Home>) {
+        let canonical = |h: &Home| h.dir.canonicalize().unwrap_or_else(|_| h.dir.clone());
+        let key = canonical(&home);
+        if !consult.iter().any(|h| canonical(h) == key) {
+            consult.push(home);
+        }
+    }
+
+    // An explicitly named package that resolves to nothing is an error, exactly as it is for every
+    // sibling verb — an aim that missed must never answer as if it had landed.
+    match env.locate(req.package.as_deref())? {
+        Some(home) => push_consult(home, &mut consult),
+        None => {
+            if let Some(p) = &req.package {
+                return Err(format!("no prova.toml found in {p:?} or any parent"));
+            }
+        }
+    }
+
+    {
+        // Recover a poisoned registry: status is a read, and the names are plain data.
+        let registry = warm
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut names: Vec<&String> = registry.keys().collect();
+        names.sort();
+        for name in names {
+            let handle = &registry[name];
+            held.push(json!({
+                "name": name,
+                "holder": "server",
+                "package": handle.home.dir.display().to_string(),
+                "resources": endpoints_json(&handle.endpoints),
+            }));
+            push_consult(handle.home.clone(), &mut consult);
+        }
+    }
+
+    let now = crate::runstate::now_secs();
+    for home in &consult {
+        for rec in crate::runstate::list(home) {
+            if !crate::runstate::is_alive(rec.pid) {
+                continue;
+            }
+            let resources: Vec<serde_json::Value> = rec
+                .endpoints
+                .iter()
+                .map(|e| json!({ "name": e.name, "url": e.url }))
+                .collect();
+            held.push(json!({
+                "name": rec.name,
+                "holder": "detached",
+                "package": home.dir.display().to_string(),
+                "pid": rec.pid,
+                "uptime_s": now.saturating_sub(rec.started_at),
+                "resources": resources,
+            }));
+        }
+    }
+    // Stable by name, so a warm hold and a same-named detached one in another package read
+    // together — and the warm one, listed first above, stays first.
+    held.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+
+    let packages: Vec<String> = consult
+        .iter()
+        .map(|h| h.dir.display().to_string())
+        .collect();
+    let mut result = json!({ "held": held, "packages": packages });
+    if consult.is_empty() {
+        result["note"] = json!(
+            "no package was consulted: this server started outside a package and none was named, \
+             so `held` is this server's warm holds only. A detached `prova up`/`prova start` \
+             records its hold under the PACKAGE it belongs to — pass `package` (a directory or \
+             manifest path) to read one."
+        );
+    }
+    Ok((result, false))
+}
+
 /// A warm run: resolve the holder for `topology` (an un-held name is an explicit error — warm runs
 /// NEVER provision implicitly) and execute the run on its thread, where the Lua lives.
 pub(super) fn warm_run_blocking(

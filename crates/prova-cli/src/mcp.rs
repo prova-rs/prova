@@ -58,7 +58,7 @@ mod blocking;
 use blocking::{
     attest_blocking, capabilities_blocking, down_blocking, eval_blocking, evidence_blocking,
     capture_blocking, list_blocking, owed_blocking, packages_blocking, reminders_blocking, run_blocking,
-    switches_blocking,
+    status_blocking, switches_blocking,
     specs_blocking, up_blocking, warm_eval_blocking, warm_run_blocking,
 };
 
@@ -480,6 +480,16 @@ struct UpRequest {
 struct DownRequest {
     /// The held topology to tear down.
     name: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+#[serde(deny_unknown_fields)]
+struct StatusRequest {
+    /// A directory or manifest path: also read THAT package's DETACHED holds — the
+    /// `running/<name>.json` records a terminal `prova up` / `prova start` writes under the
+    /// package it belongs to. Omit to use the server's startup package. This server's own warm
+    /// holds always list, whatever this says.
+    package: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -1063,27 +1073,13 @@ impl ProvaMcpServer {
 
     #[tool(
         name = "status",
-        description = "List the topologies currently held by `up` (warm mode). Returns compact JSON: { held: [{ name, resources: [{ name, url }] }] }."
+        description = "What topologies are HELD — from both holders, so an empty answer is trustworthy. Two kinds: `holder: \"server\"` is one THIS server's `up` holds warm in memory (tear down with `down { name }`); `holder: \"detached\"` is one a terminal `prova up` / `prova start` holds, recorded on disk under the package it belongs to (attach with CLI `prova --topology <name>`, tear down with `prova down <name>`). Returns compact JSON: { held: [{ name, holder, package, resources: [{ name, url }], pid?, uptime_s? }], packages: [...], note? }. `packages` names every package whose on-disk records were read — the detached half is per-package on disk, so `package` (a directory or manifest path) is how you aim it; warm holds always list because `down` is package-blind. An EMPTY `packages` is the one case where `held: []` does not mean \"nothing is up\": the server started outside a package and none was named, so nothing could be consulted — the `note` says so. The CLI twin of the detached half is `prova ps`."
     )]
-    async fn status(&self) -> CallToolResult {
+    async fn status(&self, Parameters(req): Parameters<StatusRequest>) -> CallToolResult {
         let _serialized = self.run_lock.lock().await;
-        let held: Vec<serde_json::Value> = {
-            // Recover a poisoned registry: status is a read, and the names are plain data.
-            let registry = self
-                .warm
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let mut names: Vec<&String> = registry.keys().collect();
-            names.sort();
-            names
-                .into_iter()
-                .map(|name| {
-                    let handle = &registry[name];
-                    json!({ "name": name, "resources": endpoints_json(&handle.endpoints) })
-                })
-                .collect()
-        };
-        CallToolResult::success(vec![Content::text(json!({ "held": held }).to_string())])
+        let env = self.env.clone();
+        let warm = self.warm.clone();
+        blocking(move || status_blocking(&env, &warm, req)).await
     }
 }
 

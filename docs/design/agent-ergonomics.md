@@ -1304,24 +1304,85 @@ which is the failure mode `first_byte`/`idle_timeout` already exist to prevent f
 
 ## 31. `status` is the one MCP verb that cannot be aimed at a package
 
-Every discovery verb on the MCP surface — `run`, `tests`, `switches`, `learn`, `specs` — takes a
-`package` parameter, so a server started anywhere can answer for any package on disk. `status`
-takes nothing. A server started outside a package (the common case for an agent harness, whose
-MCP config lives per-user, not per-repo) answers `{"held": []}` unconditionally — while the
-topology in question is demonstrably held: the CLI in the package directory attaches to it warm
-with `--topology`, and `prova ps` lists it.
+<!-- claim: mcp-status-cannot-be-aimed-at-a-package recorded=2026-08-20 -->
+**`status` takes a `package` like every sibling verb, reports BOTH holders, and names the packages
+it consulted — so `held: []` can never be read as "nothing is up" when the truth is "I could not
+look".** Every other discovery verb on the MCP surface — `run`, `tests`, `switches`, `learn`,
+`specs` — takes a `package`, so a server started anywhere can answer for any package on disk.
+`status` took nothing. A server started outside a package (the common case for an agent harness,
+whose MCP config lives per-user, not per-repo) answered `{"held": []}` unconditionally — while the
+topology in question was demonstrably held: the CLI in the package directory attached to it warm
+with `--topology`, and `prova ps` listed it.
 
-The cost is a wrong answer rather than an error: "nothing is held" reads as "safe to provision /
+The cost was a wrong answer rather than an error: "nothing is held" reads as "safe to provision /
 nothing to attach to", when the truth was "you are asking from the wrong room". An agent that
-trusts it will cold-provision a topology that is already up (minutes, plus a port collision on
-anything with fixed host ports) or report to its human that the demo environment is down.
+trusts it cold-provisions a topology that is already up (minutes, plus a port collision on
+anything with fixed host ports) or reports to its human that the demo environment is down.
 
-Shape: `status { package? }` like every sibling verb — or better, since held state is already
-machine-scoped on disk (`running/<name>.json` is what cross-instance attach reads), report the
-machine's held set regardless of package and name which package each holder belongs to. The
-second shape matches what the question means: "what is up on this machine?" is not a per-package
-question.
+**The fix is one verb answering for two holders, which are not symmetric.** A *warm* hold is the
+server's own `up`, live in its memory, and it always lists — `down { name }` is package-blind, so
+letting a package filter hide a warm hold would recreate the same wrong answer in mirror image. A
+*detached* hold is a terminal `prova up` or a `prova start`, and its held-ness is a
+`running/<name>.json` record on disk. Each entry says which (`holder: "server" | "detached"`) and
+names its package, so the answer also says how to reach and reap it.
+
+**Correcting this item as first drafted: that on-disk state is package-scoped, not machine-scoped.**
+The record lives at `<home>/.prova/var/running/<name>.json` — under the package it belongs to (see
+`var`/`runstate`). Any process on the machine can *read* it, which is what makes cross-instance
+attach work and is what the first draft was reaching for; but nothing can *find* it without being
+told a package. So "report the machine's held set regardless of package" — the shape this item
+preferred, and still the shape the question means — is not reachable by aiming a parameter. It
+needs a machine-wide index that does not exist yet, captured separately as
+[[machine-wide-held-topology-index]]. What ships here is the reachable half: the consulted set is
+the package the call names (defaulting to the server's startup affinity) plus every package this
+server already holds something for, and `packages` in the result names it. An empty `packages` is
+the wrong-room case, stated in a `note` rather than implied by an empty list.
 
 Found live: a held `ybor-studio-k8s` (terminal `prova up`) that `status` could not see from an
 MCP server started in the user's home; the warm `--topology` attach from the package directory
 worked in the same minute.
+
+## 32. "What is up on this machine?" is not a per-package question
+
+<!-- backlog: machine-wide-held-topology-index recorded=2026-08-20 -->
+**"What is up on this machine?" has no answer that does not name a package.** Held-topology
+run-state is package-scoped on disk (`<home>/.prova/var/running/<name>.json`), so `prova ps` and MCP
+`status` can only report packages they are pointed at — see
+[[mcp-status-cannot-be-aimed-at-a-package]], which closed the aiming half and left this one open. An
+agent that has just been handed a repo, or a human wondering what is holding port 5432, is asking
+the machine-wide question, and today the only answer is to visit every package they can think of.
+
+The shape is a machine-wide index a holder registers into alongside its package record — an XDG
+state-dir file per live holder, naming its package and topology, reaped on the same clean-teardown
+path that removes the package record. Then `prova ps --all` and `status` with no package are real
+answers rather than scoped ones.
+
+What makes it more than a one-liner is the second source of truth: two places recording one hold
+means they can disagree, so the package record must stay authoritative and the index must be
+treated as a hint that is re-verified (pid liveness, and the package record still existing) before
+anything is reported as held. Cross-user visibility is the other open question — a hold in another
+user's tree is real contention for a fixed host port, and reporting it means reading state prova
+does not own.
+
+## 33. One verb, two double-provision guards, and only one of them looks on disk
+
+<!-- backlog: mcp-up-does-not-see-a-detached-hold recorded=2026-08-20 -->
+**MCP `up` refuses to double-provision only against its OWN warm registry; the CLI's `up` also
+refuses against the on-disk record, and the two guards should be one.** `cmd_topo.rs` reads
+`runstate::read(&home, &name)` and exits 2 with `already up (pid N)` when a live holder exists (a
+stale record is cleared and it proceeds). `up_blocking` in `mcp/blocking.rs` checks only
+`warm.contains_key(&name)`, so an MCP `up` of a name a terminal `prova up`/`prova start` is already
+holding stands up a SECOND instance of the same topology — the exact cost
+[[mcp-status-cannot-be-aimed-at-a-package]] names (minutes of provisioning, plus a port collision
+for anything on fixed host ports), arriving through the verb rather than through the query.
+
+Now cheap to close: that fix taught `status` to read the aimed package's records, so `up` has the
+same reach — mirror the CLI's guard (refuse a live record, clear a stale one) against `call.home`.
+The refusal should teach both exits, since the holder is not this server's to reap: `prova down
+<name>` in the package, or `--topology` to attach to what is already up.
+
+The open question is whether a warm `up` should instead ATTACH to a live detached hold rather than
+refuse it — the engine already rehydrates from the record's `value` on the CLI attach path
+(docs/design/topologies.md#attach-binds-by-name), so a warm server could hold a topology it did not
+provision. That is a larger call about who the holder is; refusing is the honest interim, and it is
+what the CLI already does.

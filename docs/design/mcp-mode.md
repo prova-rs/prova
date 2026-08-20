@@ -33,7 +33,15 @@ topologies live **in the server's own scope machinery** — the same `ctx:manage
 <!-- claim: held-visible-via-status-not-ps -->
 Held topologies live in the server's **in-memory registry only** — `prova ps` lists *detached*
 topologies (the `<home>/.prova/var/running/*.json` records from `prova start`); a server-held one is
-visible through the MCP `status {}` tool, not `ps`.
+visible through the MCP `status` tool, not `ps`.
+
+`status` reports **both** holders, because "is anything up?" is one question and a partial answer to
+it is a wrong one. A warm hold is the server's own and always lists (with the package its `up`
+resolved against — `down { name }` is package-blind, so a package filter must not be able to hide
+one). A detached hold is only findable once a package is named, since its record lives under that
+package on disk — hence `status { package? }`, and hence `packages` in the result naming what was
+actually read. See `docs/design/agent-ergonomics.md#mcp-status-cannot-be-aimed-at-a-package` for the
+failure this closes.
 
 ### Tool surface — the CLI parity table
 
@@ -47,7 +55,7 @@ doors: `up` stands up a `[topologies]` registration on both transports, and noth
 | Run a selection | `prova -k … --tags … --node … --last-failed` | `run { keywords?, tags?, nodes?, last_failed?, profile?, jobs?, topology?, package? }` | Same `Selection` struct; returns one compact JSON summary `{ passed, failed, skipped, deselected, duration_ms, failures: [{ path, message, file?, line? }] }` |
 | Discover | `prova --list` | `list { selection? }` | MCP returns nodes with path/tags/requires/file |
 | One-shot code | `prova eval '<lua>'` *(new, ships with this work)* | `eval { code, topology? }` | Full environment (modules + packages). In MCP, `topology:` runs the snippet **inside a held env** — interactive queries against live seeded state |
-| Hold an env | `prova up <name>` / `start` / `down` / `ps` | `up { name, fixed?, package? }` / `down { name }` / `status {}` | Server-held; endpoints in the result |
+| Hold an env | `prova up <name>` / `start` / `down` / `ps` | `up { name, fixed?, package? }` / `down { name }` / `status { package? }` | Server-held; endpoints in the result. `status` also reports the *detached* holds under the package it is aimed at — `ps`'s view, from the MCP side |
 | API shape | `prova.help("<filter>")` in eval | `introspect { filter?, package? }` | `{ entries: [{ name, signature, summary }] }`, parsed from the LuaCATS stubs — core + declared packages |
 | The topic catalog | `prova learn [<topic>]` | `learn { topic?, package? }` | Markdown, computed for the package at call time |
 | **Warm re-run** | — (CLI runs are cold by design) | `run { …, topology: name }` | **The MCP-only capability**: tests resolve the named topology against the held instance — milliseconds, not provisioning |

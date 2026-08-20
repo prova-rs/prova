@@ -293,9 +293,11 @@ const MCP_SPELLINGS: &[(&str, &str)] = &[
     // The verified write is lane-scoped at the CLI (drivers are `prova <lane> <driver>`; MCP
     // tools are flat).
     ("capture", "the MCP `capture` tool's CLI spelling is `prova specs capture <id> \"<prose>\" --file <doc>`"),
-    // `status` is the MCP server's held-topology view (warmth). The CLI's view of detached
-    // topologies is `ps`; increment 7 (docs/plans/query-consolidation.md) unifies the vocabulary.
-    ("status", "the MCP `status` tool lists topologies the server holds; detached topologies list via `prova ps`"),
+    // `status` is the MCP server's held-topology view — its own warm holds plus the detached
+    // records under the package it is aimed at. At the CLI that second half is `prova ps` (there
+    // is no warm half: a CLI process holds nothing across invocations); increment 7
+    // (docs/plans/query-consolidation.md) unifies the vocabulary.
+    ("status", "the MCP `status` tool lists held topologies — the server's own, plus the package's detached ones; at the CLI that view is `prova ps`"),
 ];
 
 /// `prova --help`, assembled from the verb table so the two cannot disagree.
