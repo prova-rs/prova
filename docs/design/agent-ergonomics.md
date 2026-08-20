@@ -1301,3 +1301,27 @@ Shape, if it earns a place: `Process:write(str)` plus a bounded read — `Proces
 or an expect-style `Process:await(pattern, {timeout})` — so the exchange is a loop in the proof.
 The bounded read is the load-bearing half; an unbounded one turns a wedged SUT into a hung suite,
 which is the failure mode `first_byte`/`idle_timeout` already exist to prevent for `shell.run`.
+
+## 31. `status` is the one MCP verb that cannot be aimed at a package
+
+Every discovery verb on the MCP surface — `run`, `tests`, `switches`, `learn`, `specs` — takes a
+`package` parameter, so a server started anywhere can answer for any package on disk. `status`
+takes nothing. A server started outside a package (the common case for an agent harness, whose
+MCP config lives per-user, not per-repo) answers `{"held": []}` unconditionally — while the
+topology in question is demonstrably held: the CLI in the package directory attaches to it warm
+with `--topology`, and `prova ps` lists it.
+
+The cost is a wrong answer rather than an error: "nothing is held" reads as "safe to provision /
+nothing to attach to", when the truth was "you are asking from the wrong room". An agent that
+trusts it will cold-provision a topology that is already up (minutes, plus a port collision on
+anything with fixed host ports) or report to its human that the demo environment is down.
+
+Shape: `status { package? }` like every sibling verb — or better, since held state is already
+machine-scoped on disk (`running/<name>.json` is what cross-instance attach reads), report the
+machine's held set regardless of package and name which package each holder belongs to. The
+second shape matches what the question means: "what is up on this machine?" is not a per-package
+question.
+
+Found live: a held `ybor-studio-k8s` (terminal `prova up`) that `status` could not see from an
+MCP server started in the user's home; the warm `--topology` attach from the package directory
+worked in the same minute.
