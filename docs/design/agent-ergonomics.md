@@ -1193,10 +1193,22 @@ any one unit. Whether the sweep is genuinely not happening or merely late is the
 establish, and the proof cannot currently tell those apart — it reports "did not sweep in N
 seconds" for both.
 
-Consequence: [[coverage-denominator-is-not-reproducible]] cannot be re-measured or re-banked until
-this clears, so both coverage items move together or not at all.
+**Update 2026-08-20: intermittent, not deterministic — and no longer blocking.** The full
+instrumented suite ran green the next day (727 passed, the Ctrl-C proof at 273.9ms) with no change
+to the proof, on a machine that had just had two runaway background pollers killed. Three
+consecutive failures then, four consecutive passes now. That reclassifies it: not "fails under
+instrumentation", but "fails under enough contention", where the threshold is somewhere between an
+idle laptop and whatever those pollers were adding.
 
-<!-- backlog: coverage-denominator-is-not-reproducible recorded=2026-08-19 -->
+So it no longer blocks [[coverage-denominator-is-not-reproducible]] — that one is resolved, with the
+lane green. What remains is a proof that measures wall-clock and will fail again on a busy CI box,
+reporting "the reaper did not sweep" when it means "nobody scheduled me". Two attempted fixes
+(widening the bound to 30s, `serial = true`) were tried and REVERTED because they did not work; a
+third that has not been tried is to make the proof distinguish "did not sweep" from "was not
+scheduled" — the message cannot currently tell them apart, which is why an afternoon went into
+reading it as the former.
+
+<!-- claim: coverage-denominator-is-not-reproducible recorded=2026-08-19 -->
 **The coverage ratchet is measuring an unstable denominator, so its floors cannot be re-derived —
 including at the commit that banked them.** Four clean-slate conducts, with
 `target/llvm-cov-target`, `target/exec-stage` and `target/suite-profraws` wiped before each:
@@ -1232,9 +1244,32 @@ change the region count for identical source, and nothing pins any of them — t
 `prova.version`, which does not move when the source does. **A denominator that is not a function of
 the source cannot carry a ratchet.**
 
-Until it is fixed the honest posture is that `prova run all` is this project's gate and
-`prova run release` has one leg measuring noise — worth saying out loud rather than discovering it
-at the next tag.
+**RESOLVED 2026-08-20.** The denominator was not drifting at random — the black-box layer was being
+measured against a *different* basis from the other two, and which one it got depended on whether
+the exec staging had actually cleared `deps/` before the report. Two regimes: ~25,300 lines when
+bare, ~29,800 when the test executables were still in the scan, reading 73.6% and 62.5% for
+identical code. Its numerator never moved between them (18,623 covered either way) — only what it
+was divided by. So "merged" was unioning layers measured against different denominators, which is
+not a number that means anything.
+
+Three parts to the fix, and the first is the actual repair:
+
+1. **The staging is checked on its RESULT, not its action.** `stage()` had always returned a moved
+   count its caller checked; `stage_execs` never got that twin, so it silently moved nothing when
+   `deps/` was absent or already bare and nothing downstream noticed. The check is on state rather
+   than action because moving nothing is correct on the first conduct after a wipe and wrong on
+   every conduct after one — only the state tells those apart. All three layers now report against
+   one basis.
+2. **The basis is banked beside what it measured**, and checked before each ratchet, so drift
+   reports as "your instrument changed, by this much" instead of a coverage collapse.
+3. **The floors are re-banked against that single basis**: unit 71.9, black-box 62.4, merged 80.9,
+   measured twice within 0.04 of each other at 29,814 lines both times.
+
+The black-box floor falling from 73.04 to 62.4 is not lost coverage — it is the same numerator
+divided by the honest denominator. The old floor was banked in the partial-scan regime, which is
+why it was never reachable from a clean tree.
+
+Mutation-tested: banking the old 25,302 regime makes the guard fail naming +17.8% drift.
 
 <!-- claim: stdio-cannot-drive-a-conversational-sut recorded=2026-08-18 -->
 **A spawned process cannot be driven: `Process` has no stdin, so a request/response SUT is

@@ -116,6 +116,31 @@ local function stage_execs(back)
   end
 end
 
+--- The linked executables still sitting in `deps/` — what the black-box report would scan.
+---
+--- `stage()` has always returned its moved count and its caller has always checked it ("a silent
+--- no-op staging is how three identical layers passed for a merge"). `stage_execs` never got that
+--- twin, and the asymmetry is the whole bug: it silently moves nothing when `deps/` is absent or
+--- already bare, and nothing downstream notices.
+---
+--- The check belongs on the resulting STATE rather than on the action, because moving nothing is
+--- CORRECT on the first conduct after a wipe (nextest has not built yet) and WRONG on every
+--- conduct after one. Only the state tells those apart.
+---
+--- Why it matters, measured 2026-08-19/20: the black-box layer has two basis regimes — ~25,300
+--- lines when `deps/` is bare and ~31,300 when the test executables are still in it, which reads
+--- as 73.6% and 56.8% for identical code. The floors were banked in the bare regime; every
+--- "regression" this lane has reported was a conduct that landed in the other one.
+local function staged_execs_remaining()
+  local left = {}
+  for _, f in ipairs(fs.glob(COV_DIR .. "/debug/deps", "*")) do
+    if not f:match("%.%w+$") then
+      left[#left + 1] = f:match("([^/]+)$")
+    end
+  end
+  return left
+end
+
 --- Move every profraw at the scan root into the stage (or back out of it). Loud when a stage
 --- that must move files moves none — a silent no-op staging is how three identical "layers"
 --- passed for a merge, live.
@@ -241,6 +266,18 @@ local conduct = prova.fixture("layered-coverage", Scope.File, function()
       recursion, COV_DIR) }
   end
 
+  -- The basis this layer is about to be measured against, checked BEFORE it is measured. A test
+  -- executable left in the scan is not a small error: it moves the denominator by ~6,000 lines and
+  -- the percentage by ~17 points, and the number still looks perfectly plausible on the way out.
+  local left = staged_execs_remaining()
+  if #left > 0 then
+    return { error = string.format(
+      "%d linked executable(s) are still in the scan at black-box report time (%s). The layer "
+      .. "would be measured against ~31,300 lines instead of ~25,300 — a basis the floor was "
+      .. "never banked against, reading ~17 points low for no change in behavior. Staging out "
+      .. "failed rather than found nothing to do.", #left, table.concat(left, ", ")) }
+  end
+
   local blackbox = fresh_report()
   if stage(false) == 0 then
     return { error = "staging moved no suite profraws — the scan-root assumption broke again" }
@@ -323,17 +360,18 @@ end)
 --- Re-banking is deliberate and reviewable: edit the table below in the same commit that edits the
 --- floors, because the two are one measurement and must move together.
 ---
---- **Unbanked as of 2026-08-19, and honestly so.** Banking a basis requires one conduct that
---- completes, and the lane currently cannot finish
---- (agent-ergonomics.md#coverage-lane-blocked-by-a-contended-timing-proof). Until then this guard
---- reports each layer's measured basis and says it is unbanked — it does not fail the run for a
---- baseline nobody has been able to establish. The first conduct that completes prints the three
---- numbers to put here.
+--- **Banked 2026-08-20**, and the three agreeing is the point: before the staging check above, the
+--- black-box layer reported against ~25,300 lines while unit and merged used ~29,800, so "merged"
+--- was unioning two layers measured against different denominators. Its numerator never moved
+--- (18,623 covered either way) — only what it was divided by. One basis, checked before the report
+--- that depends on it, is what makes the three numbers comparable to each other at all.
+---
+--- Measured twice on this tree: 29,814 both times, with the percentages within 0.04 of each other.
 local BASIS = {
-  -- layer      lines counted at bank time
-  unit     = nil,
-  blackbox = nil,
-  merged   = nil,
+  -- layer      lines counted at bank time (2026-08-20, prova 0.25.0)
+  unit     = 29814,
+  blackbox = 29814,
+  merged   = 29814,
 }
 
 --- How far the basis may drift before the percentages stop being comparable. Small on purpose:
@@ -399,7 +437,7 @@ end)
 prova.test("each layer's coverage holds on its own — and the delta names where unit tests are owed", {
   locks = { prova.writes("cargo") },
   requires = { "cargo-llvm-cov", "cargo-nextest" },
-  covers = "docs/design/verifiers.md#coverage-of-the-whole-bar",
+  covers = "docs/design/agent-ergonomics.md#coverage-denominator-is-not-reproducible",
   proves = "the delta is the signal: proven-black-box but unit-naked files are behavior with no fast local feedback — the granular-unit-test worklist, computed rather than guessed",
 }, function(t)
   local produced = t:use(conduct)
