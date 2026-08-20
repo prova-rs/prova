@@ -1395,3 +1395,31 @@ it. The engine already rehydrates from the record's `value` on the CLI attach pa
 provision — but that is a call about who the holder *is*, and getting it wrong means two processes
 believing they own one teardown. Refusing is the honest answer until that is decided, and it is what
 the CLI already does.
+
+## 34. An unreadable record is treated as no record, which is the wrong way to fail
+
+<!-- backlog: unparseable-runstate-record-reads-as-no-hold recorded=2026-08-20 -->
+**A run-state record prova cannot PARSE reads as no hold at all, which is the fail-open direction.**
+`runstate::read` is `serde_json::from_str(...).ok()` and `list` silently drops anything that will
+not deserialize, so a record that exists but does not parse makes a LIVE holder invisible: `status`
+omits it, and MCP/CLI `up` sail past their guards and provision a second instance — the same cost as
+[[mcp-up-does-not-see-a-detached-hold]] and [[mcp-status-cannot-be-aimed-at-a-package]], reached by a
+third trigger.
+
+Two ways to get there. `runstate::write` is a plain `fs::write` (truncate, then write), so a holder
+killed mid-write leaves a truncated file while its process may still be alive. And version skew:
+`Record.value` carries `#[serde(default)]` specifically so pre-attach records parse, which is the
+right instinct applied by hand — a future required field silently blinds every older binary on the
+machine to newer records.
+
+Found while writing the stale-record proof for the `up` guard, where a fixture wrote `endpoints` as
+a bare empty Lua table (`{}` — an object, see [[a-list-verb-returns-a-list]]). The record was
+unreadable, so `up` proceeded and the proof passed for the wrong reason. A hand-written fixture is
+not a crash, but it reached the production path the same way a crash would, and nothing anywhere
+said the file was unreadable.
+
+Shapes worth weighing: write atomically (temp file + rename) so a record is never half-there; and
+treat unparseable-but-present as LOUD rather than absent — a record whose pid cannot be read cannot
+be liveness-checked, so the safe reading is "something may be held here", reported rather than
+dropped. The second half is the one that closes the fail-open; the first stops manufacturing the
+input.
