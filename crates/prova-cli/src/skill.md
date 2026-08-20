@@ -372,6 +372,8 @@ under the package they belong to. So `status { package = "<dir>" }` is how you s
 not a repo) can only answer for its own warm holds. `packages` in the result names what it read;
 an EMPTY `packages` is the one case where `held: []` does not mean "nothing is up". Getting this
 wrong costs a cold stand-up of an environment that was already up, plus a port collision if it
-binds fixed ports.
+binds fixed ports. `up` now refuses that stand-up rather than performing it — for a detached holder
+it names the pid and the two exits (`prova down <name>` in that package, or CLI `prova --topology
+<name>` to run against the live instance), since a hold it did not create is not its to reap.
 
 Full reference: https://prova-rs.github.io (source: https://github.com/prova-rs/prova)

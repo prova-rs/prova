@@ -1366,23 +1366,32 @@ does not own.
 
 ## 33. One verb, two double-provision guards, and only one of them looks on disk
 
-<!-- backlog: mcp-up-does-not-see-a-detached-hold recorded=2026-08-20 -->
-**MCP `up` refuses to double-provision only against its OWN warm registry; the CLI's `up` also
-refuses against the on-disk record, and the two guards should be one.** `cmd_topo.rs` reads
-`runstate::read(&home, &name)` and exits 2 with `already up (pid N)` when a live holder exists (a
-stale record is cleared and it proceeds). `up_blocking` in `mcp/blocking.rs` checks only
-`warm.contains_key(&name)`, so an MCP `up` of a name a terminal `prova up`/`prova start` is already
-holding stands up a SECOND instance of the same topology — the exact cost
-[[mcp-status-cannot-be-aimed-at-a-package]] names (minutes of provisioning, plus a port collision
-for anything on fixed host ports), arriving through the verb rather than through the query.
+<!-- claim: mcp-up-does-not-see-a-detached-hold recorded=2026-08-20 -->
+**`up` refuses a topology that is already up whichever holder has it — its own warm registry OR a
+live record on disk — and the refusal teaches the two exits that exist.** MCP `up` used to guard
+only against `warm.contains_key(&name)`, while the CLI's `up` (`cmd_topo.rs`) also reads
+`runstate::read(&home, &name)` and exits 2 with `already up (pid N)`. So standing up a name a
+terminal `prova up`/`prova start` was already holding provisioned a SECOND instance of the same
+topology — the exact cost [[mcp-status-cannot-be-aimed-at-a-package]] names (minutes of
+provisioning, plus a port collision for anything on fixed host ports), arriving through the verb
+rather than through the query, and silent because neither holder could see the other.
 
-Now cheap to close: that fix taught `status` to read the aimed package's records, so `up` has the
-same reach — mirror the CLI's guard (refuse a live record, clear a stale one) against `call.home`.
-The refusal should teach both exits, since the holder is not this server's to reap: `prova down
-<name>` in the package, or `--topology` to attach to what is already up.
+**A refusal, not a takeover, and that is what needs teaching.** The detached holder is not this
+server's to reap — `down` here would be reaping something it never provisioned — so the message
+names the two real exits instead: `prova down <name>` in that package, or `prova --topology <name>`
+to run against the live instance. It also names the holder's pid and package, because "already up"
+without saying *where* sends an agent hunting.
 
-The open question is whether a warm `up` should instead ATTACH to a live detached hold rather than
-refuse it — the engine already rehydrates from the record's `value` on the CLI attach path
+**A record is not a hold; a live process is.** A stale record (holder gone) is cleared and the
+stand-up proceeds, exactly as the CLI does — otherwise one ungraceful teardown anywhere in a
+package's history would make that topology permanently un-`up`-able over MCP. That clearing is the
+only thing this verb writes to run-state, and it is a reap of someone else's litter rather than a
+claim: a warm hold still mints no record of its own
+(docs/design/mcp-mode.md#held-visible-via-status-not-ps).
+
+Left open deliberately: whether a warm `up` should ATTACH to a live detached hold rather than refuse
+it. The engine already rehydrates from the record's `value` on the CLI attach path
 (docs/design/topologies.md#attach-binds-by-name), so a warm server could hold a topology it did not
-provision. That is a larger call about who the holder is; refusing is the honest interim, and it is
-what the CLI already does.
+provision — but that is a call about who the holder *is*, and getting it wrong means two processes
+believing they own one teardown. Refusing is the honest answer until that is decided, and it is what
+the CLI already does.

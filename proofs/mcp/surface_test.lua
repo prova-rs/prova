@@ -274,6 +274,77 @@ prova.test("status takes a package, and reports a DETACHED hold the server never
   t:expect(by_id[4].result.content[1].text):contains("no prova.toml found")
 end)
 
+-- ── one guard, both holders: up refuses what is already up ───────────────────────────────────
+
+prova.test("up refuses a topology a detached holder already has, and teaches both exits", {
+  covers = "docs/design/agent-ergonomics.md#mcp-up-does-not-see-a-detached-hold",
+  proves = "the warm `up` guarded only against its OWN registry, so standing up a name a terminal `prova up`/`prova start` already held provisioned a SECOND instance — minutes of work and a port collision for anything on fixed host ports, silent because nothing in either holder could see the other",
+}, function(t)
+  local root = t:use(scratch)()
+  registered(root)
+  local count = root .. "/count.txt"
+
+  local started = shell.run(prova.bin .. " start orders",
+    { cwd = root, env = { PROVA_PROOF_COUNT = count }, merge_stderr = true })
+  t:defer(function() shell.run(prova.bin .. " down orders", { cwd = root, merge_stderr = true }) end)
+  t:expect(started.code, "the detached holder came up"):equals(0)
+  t:expect(fs.read(count), "and provisioned once"):equals("1")
+
+  local by_id = mcp(t, root, {
+    call(2, "up", { name = "orders" }),
+    call(3, "status"),
+  }, { PROVA_PROOF_COUNT = count })
+
+  t:expect(by_id[2].result.isError, "the second stand-up is refused"):is_truthy()
+  local msg = by_id[2].result.content[1].text
+  t:expect(msg, "says what stopped it"):contains("already up")
+  t:expect(msg, "names the holder"):contains("pid " .. json.decode(
+    fs.read(root .. "/.prova/var/running/orders.json")).pid)
+  -- Two exits, and neither is `down` on this server: the holder is not the server's to reap.
+  t:expect(msg, "teaches the reap"):contains("prova down orders")
+  t:expect(msg, "teaches the attach"):contains("--topology orders")
+  -- The load-bearing negative: a refusal that still provisioned would pass every assertion above.
+  t:expect(fs.read(count), "nothing was provisioned a second time"):equals("1")
+
+  -- And the refusal is not a blind one — the same server can see exactly what stopped it.
+  local held = tool_json(by_id[3]).held
+  t:expect(#held, "the detached hold, from the server that was refused"):equals(1)
+  t:expect(held[1].holder):equals("detached")
+end)
+
+prova.test("a STALE record does not block a warm up — the dead holder's litter is cleared", {
+  covers = "docs/design/agent-ergonomics.md#mcp-up-does-not-see-a-detached-hold",
+  proves = "the guard must refuse a LIVE holder, not the file it leaves behind: a record whose process is gone is not a hold, and treating it as one would make an ungraceful teardown anywhere in the package's history permanently un-`up`-able over MCP",
+}, function(t)
+  local root = t:use(scratch)()
+  registered(root)
+  local count = root .. "/count.txt"
+
+  -- A holder that died without cleaning up, spelled as what it leaves on disk. The pid is the
+  -- one `runstate`'s own tests use for "almost certainly not alive". `endpoints` goes through
+  -- `json.decode("[]")` rather than `{}` because a bare empty Lua table encodes as an object and
+  -- the record would not parse at all ([[a-list-verb-returns-a-list]]) — which would make this
+  -- proof pass for the wrong reason: an unreadable record is skipped, not cleared.
+  fs.mkdir(root .. "/.prova/var/running")
+  fs.write(root .. "/.prova/var/running/orders.json", json.encode({
+    name = "orders", pid = 999999999, started_at = 1,
+    endpoints = json.decode("[]"), value = {},
+  }))
+
+  local by_id = mcp(t, root, {
+    call(2, "up", { name = "orders" }),
+  }, { PROVA_PROOF_COUNT = count })
+
+  -- Read the error flag BEFORE decoding: a refusal's content is prose, so decoding first turns a
+  -- real regression into a json.decode traceback instead of naming what went wrong.
+  t:expect(by_id[2].result.isError, "a dead holder is not a hold: " ..
+    by_id[2].result.content[1].text):never():is_truthy()
+  t:expect(tool_json(by_id[2]).name):equals("orders")
+  t:expect(fs.read(count), "it provisioned, exactly once"):equals("1")
+  t:expect(fs.exists(root .. "/.prova/var/running/orders.json"),
+    "and the dead holder's record was cleared, not inherited"):equals(false)
+end)
+
 -- ── warm re-run: resolve, never provision ────────────────────────────────────────────────────
 
 prova.test("run{topology} resolves the held instance: one provision, state accumulating across runs",
