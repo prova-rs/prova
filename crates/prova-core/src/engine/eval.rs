@@ -150,6 +150,9 @@ pub fn eval_snippet(code: &str, config: &RunConfig) -> mlua::Result<serde_json::
         conducts: config.conducts.clone(),
         progress: std::sync::Arc::clone(config.progress()),
         project_dir: config.project_dir.clone(),
+        // An `eval` provisions for itself: a snippet is not a run, and routing it through a run's
+        // topology pool would hand it an instance nothing here reaps.
+        interned: None,
     });
 
     let rt = new_runtime()?;

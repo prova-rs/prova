@@ -181,6 +181,26 @@ pub(super) async fn resolve_use(lua: &Lua, this: &Ctx, target: Value) -> mlua::R
         )));
     }
 
+    // A run-wide topology (`[topologies] … scope = "run"`) resolves through the run's pool: one
+    // instance for the whole run, provisioned by a holder that outlives every suite, and shared
+    // with every declaring file as data (docs/design/topologies.md#run-wide-topology-is-provisioned-once).
+    // Below the cache check on purpose: an ATTACHED instance (a detached holder this run bound to)
+    // was already seeded there, and live state a run did not create outranks one it would.
+    if def.is_topology {
+        if let Some(pool) = this.state.interned.clone() {
+            if pool.covers(&def.name) {
+                // A failure is NOT memoized in this scope: the pool already memoizes it run-wide,
+                // so every consumer — this file's next test included — replays one verdict in one
+                // wording instead of two.
+                let value = pool.resolve(lua, &def.name, &this.state.progress).await?;
+                // Cached as a VALUE with no teardown registered: the pool's holder is the one true
+                // reaper, exactly as with an attached topology.
+                ss.borrow_mut().cache.insert(id, value.clone());
+                return Ok(value);
+            }
+        }
+    }
+
     // Build lazily: a child context bound to the fixture's own scope.
     let child = Ctx {
         run: this.run.clone(),

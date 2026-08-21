@@ -271,6 +271,77 @@ The run record carries `attached: [names]` — live-state evidence is legitimate
 hermetic evidence (the environment predates the run and may carry state from prior ones), so the
 provenance is durable where `attest`/`evidence` read.
 
+## Run-wide topologies — the run is a holder too (done)
+
+A `prova.topology(...)` in a proof file is a **fixture**, local to the files that declare it. So a
+package whose proofs span several files, each declaring the same registered topology, built that
+environment **once per file**. Measured on ybor-studio: three proof files declaring the docker
+topology and two declaring the kind topology turned an eleven-container world into **33 container
+creations plus a cluster** for one bare `prova` — 364s to answer one question. The machine-scoped
+locks serialized the duplicates, which made the waste safe and also made it slower.
+
+Held topologies already dedupe — every file attaches to the one live instance — so the field
+workaround was to hold first (`prova start <name> && prova`). That inverts the promise of the cold
+path: CI and a fresh checkout pay N× for the suite the author runs warm, and nothing in the output
+says so, because each provision narrates independently and nothing frames the repetition as
+repetition.
+
+<!-- claim: run-wide-topology-is-provisioned-once -->
+A `[topologies]` entry may declare **`scope = "run"`**: the topology is provisioned **once for the
+whole run** and every declaring file binds that instance. The run itself becomes the holder — a
+pool thread outside every suite owns the instance, hands each declaring state the same JSON
+projection attach uses, and reaps it after the last suite. Evidence stays hermetic: the run created
+what it tested, so this is not an attachment and the run record carries none.
+
+<!-- claim: file-local-is-still-the-default -->
+Absent the key, nothing changes: a topology is file-local, provisioned per declaring file, exactly
+as before. The opt-in is deliberate and belongs to the package rather than the invocation — a
+run-wide environment **accumulates state across files**, and the value each file sees is the JSON
+projection (closures and userdata do not cross a Lua state; clients attach by `url`). Only the
+package's own author can weigh that against N× provisioning.
+
+<!-- claim: unknown-sharing-scope-is-refused -->
+A `scope` value that is neither `"run"` nor `"file"` is **refused**, naming both honorable values,
+whether or not this run would have used that topology — never quietly read as file-local, which
+would hand back N× provisioning under a key that says otherwise
+(docs/design/agent-ergonomics.md#unknown-test-opts-silently-ignored).
+
+<!-- claim: run-wide-is-still-demand-driven -->
+Run-wide does not mean eager. Nothing is provisioned until a test asks, so `-k` on one unrelated
+proof pays nothing — the property that lets an honestly-minutes environment be declared run-wide
+without taxing every narrow run.
+
+<!-- claim: run-wide-provisioning-is-single-flight -->
+<!-- claim: run-wide-failure-is-memoized -->
+Provisioning is **single-flight** across workers, the same shape a `Scope.Run` conduct uses
+(docs/plans/shared-deputies.md): whoever asks first claims the slot, everyone else waits on it —
+and the wait is narrated, because it lands inside the waiting test's own duration. A failure
+settles the slot exactly as success does, so a second file replays the recorded error as a memoized
+verdict instead of re-paying a provision that just failed
+(docs/design/lifecycle.md#fixture-failure-memoization).
+
+**Why the definition comes from `[topologies]` and not from the file.** The holder rebuilds the
+factory in a fresh Lua state, and the only definition a fresh state can reach is the registration
+(`require("<package>").<factory>`) — a closure living in a proof file cannot travel to another
+thread, and neither can the teardowns a factory parks on its scope. That is also why this cannot be
+written in user-land: each proof file evaluates in its own state, and `require` cannot smuggle one
+live instance across them. A file's declaration of a run-wide name is therefore the **demand**, not
+the definition — precisely as it is when a run attaches to a detached holder.
+
+<!-- claim: attach-outranks-interning -->
+A live holder still wins. An attached instance is seeded before any fixture resolves, so a run
+declaring a run-wide name attaches to the detached holder rather than provisioning its own, and it
+reaps nothing it did not create. Ownership stays a single rule at every layer: the holder reaps.
+
+<!-- claim: fresh-over-a-holder-is-announced -->
+`--fresh` beside a live holder is **announced**. It means "provision my own", which is harmless for
+a definition whose resources are per-instance (two random-port stacks coexist) and destructive for
+one that is not: a fixed-name cluster (`kind create --name ybor-studio`) collides on creation, and
+then this run's teardown reaps the *holder's* cluster, because both spell the same name. Prova
+cannot see from here which kind of definition it has, so it warns rather than refuses, and names
+both exits (`prova down <name>`, or drop `--fresh`). Run-wide sharing reduces the multiplicity of
+that hazard; it does not remove it, which is why the warning is its own thing.
+
 ## Remaining work (bounded, and named)
 
 - **Per-resource addressing** — whole-topology addressing across the verbs is done; standing up or

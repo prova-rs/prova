@@ -46,9 +46,15 @@ also inherits the `requires` its package advertises, so it gates on the environm
 
 **`startup = "15m"`** declares how long this topology needs to come up: `prova start` waits that
 long for it to register (default 300s, `--timeout` overrides for one invocation). The definition
-knows its own cost — a kind cluster with eight rollouts is honestly minutes — and a budget that
-expires stops the holder gracefully, so whatever it already created is torn down rather than
-orphaned.
+knows its own cost — a kind cluster with eight rollouts is honestly minutes — and an expired budget
+stops the holder gracefully, so whatever it created is torn down rather than orphaned.
+
+**`scope = "run"`** shares ONE instance across the whole run: five files declaring an
+eleven-container stack otherwise build 55 containers to answer one question. Say it in the
+registration and the run provisions it once, holds it, and reaps it after the last file — still
+demand-driven, and a live `prova start`ed holder still outranks it. Opt-in per package because of
+the trades: state **accumulates across files**, and each file sees **data** (the JSON projection —
+urls, hosts, ports), since a `client` userdata cannot cross a Lua state.
 
 ## The verbs over the same definition
 

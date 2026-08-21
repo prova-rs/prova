@@ -218,6 +218,11 @@ pub(super) struct RunState {
     pub(super) conducts: crate::engine::ConductRegistry,
     /// The package root, for resolving a declared identity's relative input globs.
     pub(super) project_dir: Option<PathBuf>,
+    /// The run-wide topology pool, when this run has one
+    /// (docs/design/topologies.md#run-wide-topology-is-provisioned-once): a declaring file's
+    /// `t:use` of a run-wide name binds the pool's single instance instead of running the factory.
+    /// Cloned from the config exactly as `conducts` is.
+    pub(super) interned: Option<crate::engine::InternedTopologies>,
     /// The run's progress channel, so a fixture that WAITS can say so
     /// (docs/design/agent-ergonomics.md#narrate-lock-waits) — a `Scope.Run` reader queued behind
     /// another worker's conduct is the one wait that lands inside the reader's own duration.

@@ -369,10 +369,12 @@ fn resolve_run_home(cli: &Cli) -> Result<Option<Home>, ExitCode> {
 
 /// The resolved environment a run executes in: where proofs anchor, what to run, and the
 /// manifest's answers (or ad-hoc defaults when no package owns the named paths).
-struct RunEnv {
+pub(crate) struct RunEnv {
     base_dir: PathBuf,
     paths: Vec<String>,
-    env: ManifestRun,
+    /// The manifest's answers for this run — read by the topology helpers, which need the
+    /// `[topologies]` registrations and the resolved packages a factory's `require` goes through.
+    pub(crate) env: ManifestRun,
 }
 
 /// Resolve the run. Explicit path args are the SELECTION (literal paths relative to cwd, no
@@ -567,6 +569,7 @@ fn attach_held(
             eprintln!("prova: --topology and --fresh contradict each other — pick one");
             return Err(ExitCode::from(2));
         }
+        warn_fresh_over_a_holder(home);
         return Ok((config, attached));
     }
     if let Some(h) = &home {
@@ -604,6 +607,28 @@ fn attach_held(
     }
     config = config.with_attached_tracking(attached.clone());
     Ok((config, attached))
+}
+
+/// IDE integration: on a manifest run (not a read-only discovery — `--list`, or the `backfill`
+/// gate), refresh the annotation folder (core + plugin `---@meta` stubs) and manage `.luarc.json`
+/// per `[luals] manage`, so `require("<plugin>")` completes in the editor with no manual wiring.
+/// Never blocks the run — a sync error is a warning, not a failure — and all output goes to stderr
+/// so `--format json` stdout stays a clean event stream.
+fn sync_ide_annotations(cli: &Cli, home: &Option<Home>, env: &RunEnv, layout: &XdgSystemLayout) {
+    if cli.list || cli.backfill {
+        return;
+    }
+    let Some(home) = home else { return };
+    match annotations::setup(
+        home,
+        &env.env.dependencies.roots,
+        env.env.manage,
+        layout,
+        PROVA_VERSION,
+    ) {
+        Ok(outcome) => report_annotations(&outcome),
+        Err(err) => eprintln!("prova: IDE annotations: {err}"),
+    }
 }
 
 /// The opt-in classes, listed: the census from collection (bodies never execute), the
@@ -1276,20 +1301,14 @@ pub(crate) fn run(cli_args: Vec<String>) -> ExitCode {
 
     let snapshot_registry = track_snapshots(&cli, &mut config);
 
-    // IDE integration: on a manifest run (not a read-only discovery — `--list`, or the `backfill`
-    // gate), refresh the annotation folder (core + plugin `---@meta` stubs) and manage `.luarc.json`
-    // per `[luals] manage`, so `require("<plugin>")` completes in the editor with no manual wiring.
-    // Never blocks the run — a sync error is a warning, not a failure — and all output goes to stderr
-    // so `--format json` stdout stays a clean event stream.
-    if !cli.list && !cli.backfill {
-        if let Some(home) = &home {
-            match annotations::setup(home, &env.env.dependencies.roots, env.env.manage, &layout, PROVA_VERSION)
-            {
-                Ok(outcome) => report_annotations(&outcome),
-                Err(err) => eprintln!("prova: IDE annotations: {err}"),
-            }
-        }
-    }
+    // Run-wide topologies: the pool is started before the query verbs answer (a bad `scope` value
+    // is refused whatever the verb) and provisions nothing until a test asks.
+    let run_wide = match cmd_topo::intern_run_wide_topologies(&env, &mut config) {
+        Ok(pool) => pool,
+        Err(code) => return code,
+    };
+
+    sync_ide_annotations(&cli, &home, &env, &layout);
 
     // The query verbs answer from the collection (bodies never execute) and exit here.
     if cli.switches_list {
@@ -1325,7 +1344,12 @@ pub(crate) fn run(cli_args: Vec<String>) -> ExitCode {
     };
 
     let mut reporter = reporter;
-    match run_suites(&suites, &mut reporter, &config) {
+    let outcome = run_suites(&suites, &mut reporter, &config);
+    // The run is over, so the run-wide instances are reaped here — before the summary, because a
+    // teardown that takes a minute must not look like a hung reporter, and after every suite,
+    // because that is what "run-wide" means.
+    cmd_topo::reap_run_wide_topologies(run_wide);
+    match outcome {
         Ok(summary) => conclude_run(
             &cli,
             &home,

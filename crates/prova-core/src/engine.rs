@@ -323,6 +323,11 @@ pub struct RunConfig {
     /// (the deputed-registry pattern), so the caller can announce it and file it into the run
     /// record as provenance: an attached run's evidence is live-state, not hermetic.
     attached_registry: Option<AttachedRegistry>,
+    /// The run-wide topology pool's worker handle (docs/design/topologies.md#run-wide-topology-is-provisioned-once):
+    /// the names declared `scope = "run"` and the line to the holder that provisions each ONCE for
+    /// the whole run. Absent — the default, and every package that declares nothing — leaves every
+    /// topology file-local, provisioned per declaring file exactly as before.
+    pub(crate) interned: Option<InternedTopologies>,
 }
 
 /// A held topology a run may attach to: its name plus the holder's recorded JSON projection of
@@ -389,6 +394,7 @@ impl Default for RunConfig {
             prova_bin: None,
             attached: Vec::new(),
             attached_registry: None,
+            interned: None,
         }
     }
 }
@@ -597,6 +603,16 @@ impl RunConfig {
     /// announce attachment and file live-state provenance into the run record.
     pub fn with_attached_tracking(mut self, registry: AttachedRegistry) -> Self {
         self.attached_registry = Some(registry);
+        self
+    }
+
+    /// Make this run's run-wide topologies (`[topologies] … scope = "run"`) resolve through
+    /// `pool`: a declaring file's `t:use` binds the pool's ONE instance instead of provisioning its
+    /// own (docs/design/topologies.md#run-wide-topology-is-provisioned-once). The pool owns the
+    /// instances and reaps them when the caller shuts it down, so the handle carries no lifetime of
+    /// its own into the run.
+    pub fn with_interned_topologies(mut self, pool: InternedHandle) -> Self {
+        self.interned = Some(pool.0);
         self
     }
 
@@ -1092,6 +1108,7 @@ fn execute_collected(
             conducts: config.conducts.clone(),
             progress: std::sync::Arc::clone(config.progress()),
             project_dir: config.project_dir.clone(),
+            interned: config.interned.clone(),
         });
         (plan, deselected, dropped, switched_off, state)
     };
@@ -1158,6 +1175,10 @@ pub use eval::*;
 
 mod topology;
 pub use topology::*;
+
+
+mod interning;
+pub use interning::*;
 
 
 mod discover;

@@ -504,6 +504,42 @@ pub struct TopologyDecl {
     /// so, `prova start` could only ever inhabit topologies faster than its fixed default. Absent
     /// → 300s; `prova start --timeout` overrides either.
     pub startup: Option<String>,
+    /// How widely one instance is shared inside a RUN
+    /// (docs/design/topologies.md#run-wide-topology-is-provisioned-once): `"file"` — the default,
+    /// and every entry already in the wild — leaves the declaring file's fixture semantics
+    /// untouched, so a package whose proofs span N files builds this environment N times.
+    /// `"run"` provisions it ONCE per run and shares that instance with every declaring file.
+    ///
+    /// A package-level decision, deliberately: run-wide means the environment accumulates state
+    /// across files and the value each file sees is the JSON projection (clients attach by `url`),
+    /// which is a trade only the package's own author can make.
+    pub scope: Option<String>,
+}
+
+/// How widely a registered topology is shared within one run — the parsed `scope` key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TopologyScope {
+    /// One instance per declaring file (the fixture's own `Scope.File`) — the default.
+    File,
+    /// One instance for the whole run, held by the run and shared with every declaring file.
+    Run,
+}
+
+impl TopologyDecl {
+    /// The declared sharing scope, or the file-local default. An unrecognized value is REFUSED
+    /// rather than dropped (docs/design/agent-ergonomics.md#unhonorable-option-is-refused): silently
+    /// reading `scope = "session"` as file-local would hand back N× provisioning under a key that
+    /// says otherwise.
+    pub fn sharing(&self, alias: &str) -> Result<TopologyScope, String> {
+        match self.scope.as_deref() {
+            None | Some("file") => Ok(TopologyScope::File),
+            Some("run") => Ok(TopologyScope::Run),
+            Some(other) => Err(format!(
+                "topology {alias:?}: scope = {other:?} is not a sharing scope — say \"run\" (one \
+                 instance for the whole run) or \"file\" (one per declaring file, the default)"
+            )),
+        }
+    }
 }
 
 /// An explicitly-declared suite: its `paths` are discovered into one suite (sharing an optional
@@ -1336,6 +1372,31 @@ redis = "acme:prova-redis@v1"
         assert_eq!(t["vm"].package, "parallels");
         assert_eq!(t["vm"].factory.as_deref(), Some("topologies.linux_vm"));
         assert_eq!(t["vm"].topology, None);
+    }
+
+    /// The sharing scope a registration declares (docs/design/topologies.md#run-wide-topology-is-provisioned-once):
+    /// silence is the file-local default every entry in the wild already means, `"run"` is the
+    /// opt-in, and anything else is REFUSED naming both honorable values — reading `scope =
+    /// "session"` as file-local would hand back N× provisioning under a key that says otherwise.
+    #[test]
+    fn topology_sharing_scope_is_declared_and_a_wrong_value_is_refused() {
+        let m = Manifest::parse(
+            "[run]\nproofs = [\"proofs\"]\n\n\
+             [topologies]\n\
+             plain = { package = \"kitchen\", factory = \"orders\" }\n\
+             once  = { package = \"kitchen\", factory = \"orders\", scope = \"run\" }\n\
+             filed = { package = \"kitchen\", factory = \"orders\", scope = \"file\" }\n\
+             wrong = { package = \"kitchen\", factory = \"orders\", scope = \"session\" }\n",
+        )
+        .unwrap();
+        let t = &m.resolve(None).unwrap().topologies;
+        assert_eq!(t["plain"].sharing("plain"), Ok(TopologyScope::File));
+        assert_eq!(t["once"].sharing("once"), Ok(TopologyScope::Run));
+        assert_eq!(t["filed"].sharing("filed"), Ok(TopologyScope::File));
+        let err = t["wrong"].sharing("wrong").expect_err("refused, not dropped");
+        assert!(err.contains("\"run\""), "{err}");
+        assert!(err.contains("\"file\""), "{err}");
+        assert!(err.contains("wrong"), "names the entry: {err}");
     }
 
     /// `plugin_root` is the whole of ambient on-disk plugin resolution, so each half matters: absent

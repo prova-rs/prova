@@ -1424,32 +1424,41 @@ be liveness-checked, so the safe reading is "something may be held here", report
 dropped. The second half is the one that closes the fail-open; the first stops manufacturing the
 input.
 
-## 32. A topology fixture is file-local, so a full run builds the same world N times
+## 35. A topology fixture is file-local, so a full run built the same world N times
 
-`prova learn topologies` states it plainly: a `prova.topology(...)` in a test file "is a
-fixture — local to the files that declare it". The consequence at suite scale: a package whose
-proofs span several files, each declaring the SAME registered topology, provisions that
-environment once per file in a cold full run. The ybor-studio package hits this today — three
-proof files declare the docker topology (ten containers each) and two declare the kind
-topology (a cluster that is honestly minutes) — so a bare `prova` builds the same world five
-times to answer one question. The machine-scoped locks serialize the kind copies, which makes
-the duplication safe and also makes it slower.
+<!-- claim: topology-fixture-is-file-local -->
+**A registered topology can say `scope = "run"`, and then a run provisions it ONCE and every
+declaring file binds that instance** (docs/design/topologies.md#run-wide-topology-is-provisioned-once).
+`prova learn topologies` states the default plainly: a `prova.topology(...)` in a proof file "is a
+fixture — local to the files that declare it". At suite scale that meant a package whose proofs
+span several files, each declaring the same registered topology, provisioned that environment once
+per file. Measured on ybor-studio via `docker events`: three proof files declaring the docker
+topology and two declaring the kind topology turned an eleven-container world into **33 container
+creations plus a cluster**, 364s, for one bare `prova`. The machine-scoped locks serialized the
+duplicates, which made the waste safe and also made it slower.
 
-Held topologies already dedupe — every file attaches to the one live instance — so the field
-workaround is to hold before a full run (`prova start <name> && prova`). But that inverts the
-promise of the cold path: CI and a fresh checkout pay N× for the suite the author runs warm,
-and nothing in the run output says so (each provision narrates independently; nothing frames
-the repetition as repetition).
+Held topologies already deduped — every file attaches to the one live instance — so the field
+workaround was to hold first (`prova start <name> && prova`). That inverts the promise of the cold
+path: CI and a fresh checkout pay N× for the suite the author runs warm, and nothing in the output
+says so (each provision narrates independently; nothing frames the repetition as repetition).
 
-Shape: run-wide interning keyed by the REGISTERED name. When a fixture declaration resolves to
-a `[topologies]` entry (same package + factory), a run provisions it once and every declaring
-file shares the instance — the attach path that held topologies already exercise, applied
-within a single run. Files declaring genuinely private fixtures (unregistered names) keep
-file-local semantics. If implicit sharing is too strong a default, an explicit
-`scope = "run"` on the declaration (or the registration) carries the intent; either way the
-capability belongs in the engine — user-land cannot express it, because each proof file
-evaluates in its own state and `require` cannot smuggle one live instance across them.
+**Why the engine, and why the registration.** User-land cannot express this: each proof file
+evaluates in its own Lua state, and `require` cannot smuggle one live instance across them. Nor can
+the asking worker provision it — a state (and the teardown closures a factory parks on its scope)
+dies with its suite, so whoever holds a run-wide instance must outlive every suite. Hence a holder
+thread, and hence the definition must be the `[topologies]` REGISTRATION: a fresh state can only
+reach a factory through `require`. A file's declaration of a run-wide name is the demand, not the
+definition — exactly as under attach.
 
-Found live: `prova` on ybor-studio after the suite grew its second kind-topology file; the
-author's own report was "it appears to create the same topology more than once — ideally this
-would be run wide."
+**Why opt-in rather than automatic for every registered name.** Implicit sharing would silently
+change two things under working suites: the environment starts accumulating state across files, and
+the value each file sees becomes the JSON projection (a `client` userdata does not cross a state).
+Both are real trades, and only the package's own author can make them — so the intent lives in the
+manifest, one line, per package.
+
+Found live: `prova` on ybor-studio after the suite grew its second kind-topology file; the author's
+own report was "it appears to create the same topology more than once — ideally this would be run
+wide." The same report surfaced a neighbour, now warned about rather than discovered:
+`--fresh` beside a live holder of a FIXED-name topology (`kind create --name ybor-studio`) collides
+on creation, and the fresh run's teardown then reaps the holder's cluster
+(docs/design/topologies.md#fresh-over-a-holder-is-announced).

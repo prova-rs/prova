@@ -92,7 +92,7 @@ pub use engine::{
     inspect_package, is_builtin_capability, list_topologies, load_project_config, obligations_for_suite,
     qualify_leaf_path, run_path, ProofObligation,
     run_path_with, unreferenced_snapshots, up, watch, AttachedRegistry, AttachedTopology,
-    Capabilities, Endpoint, HeldTopology, Module,
+    Capabilities, Endpoint, HeldTopology, InternedHandle, Module, TopologyPool,
     ListNode, PackageReport, PackageShape, PortMode, RunConfig, Selection, SnapshotRegistry,
     TopologyRegistration,
 };

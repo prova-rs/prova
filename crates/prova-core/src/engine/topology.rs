@@ -229,6 +229,10 @@ pub(super) fn load_topology(
         conducts: config.conducts.clone(),
         progress: std::sync::Arc::clone(config.progress()),
         project_dir: config.project_dir.clone(),
+        // A holder PROVISIONS; it never resolves through a pool. This is the state the run-wide
+        // pool's own holder thread runs in, so routing it back through the pool would have a
+        // topology wait on itself.
+        interned: None,
     });
     Ok((lua, col, state, id))
 }
@@ -416,6 +420,15 @@ impl HeldTopology {
         &self.endpoints
     }
 
+    /// The JSON projection of the held value — the rehydration payload a consumer that cannot share
+    /// this Lua state seeds instead of provisioning. The detached holder records it in
+    /// `running/<name>.json` (see `provision_and_hold`); a run-wide instance hands it to every
+    /// declaring suite through the pool. Same projection, same rule: closures and userdata do not
+    /// survive it, because clients attach by `url`.
+    pub fn snapshot(&self) -> serde_json::Value {
+        eval_value_to_json(&self.lua, &self.value, 0)
+    }
+
     /// A **warm run**: re-read `files` from disk (edits since `up` take effect), collect them into
     /// this holder's Lua state (collector reset, same VM), and run the plan with the held topology
     /// instance injected — `t:use(<topology>)` resolves the very same live Lua values the holder
@@ -491,6 +504,7 @@ impl HeldTopology {
                 conducts: self.config.conducts.clone(),
                 progress: std::sync::Arc::clone(self.config.progress()),
                 project_dir: self.config.project_dir.clone(),
+                interned: self.config.interned.clone(),
             });
 
             // Held-instance injection, keyed by topology NAME (topologies are name-addressable by
@@ -568,6 +582,7 @@ impl HeldTopology {
             conducts: self.config.conducts.clone(),
             progress: std::sync::Arc::clone(self.config.progress()),
             project_dir: self.config.project_dir.clone(),
+            interned: None,
         });
         if let Some(&id) = self.col.borrow().topologies.get(&self.name) {
             state

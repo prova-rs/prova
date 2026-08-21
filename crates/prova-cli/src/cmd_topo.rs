@@ -878,6 +878,99 @@ pub(crate) fn parse_topology_args(
     }
 }
 
+/// `--fresh` over a LIVE holder: this run provisions its own instance of a name something else is
+/// already holding (docs/design/topologies.md#fresh-over-a-holder-is-announced). Harmless when the
+/// definition names its resources per-instance — two random-port stacks coexist — and destructive
+/// when it does not: a fixed-name cluster (`kind create --name ybor-studio`) collides on creation,
+/// and this run's teardown then reaps the HOLDER's cluster, because both spell the same name.
+///
+/// A warning rather than a refusal: prova cannot see from here whether the definition uses fixed
+/// names, and `--fresh` beside a holder is legitimate for every definition that does not. The
+/// warning names both exits so the destructive case is a choice rather than a surprise.
+pub(crate) fn warn_fresh_over_a_holder(home: &Option<Home>) {
+    let Some(h) = home else { return };
+    for rec in runstate::list(h) {
+        if !runstate::is_alive(rec.pid) {
+            continue;
+        }
+        eprintln!(
+            "prova: --fresh with topology {:?} held (pid {}): this run provisions its OWN instance \
+             — if the definition uses fixed names or fixed host ports, the two collide and THIS \
+             run's teardown reaps the holder's resources. `prova down {}` first, or drop --fresh to \
+             attach.",
+            rec.name, rec.pid, rec.name
+        );
+    }
+}
+
+/// Run-wide topologies (docs/design/topologies.md#run-wide-topology-is-provisioned-once): each
+/// `[topologies]` entry declaring `scope = "run"` is provisioned ONCE for this run, by a pool whose
+/// holder outlives every suite, and every declaring file binds that instance instead of building
+/// its own. Returns the pool so the caller can reap it when the run ends — dropping it reaps too,
+/// so no exit path can leak the environment.
+///
+/// Nothing is provisioned here: the pool is demand-driven, so a `-k` run that reaches no test using
+/// the topology pays nothing. That is what makes declaring an expensive environment run-wide safe.
+pub(crate) fn intern_run_wide_topologies(
+    env: &dispatch::RunEnv,
+    config: &mut prova_core::RunConfig,
+) -> Result<Option<prova_core::TopologyPool>, ExitCode> {
+    let mut names: Vec<String> = Vec::new();
+    // The holder's config is this run's, plus the registrations it must be able to rebuild: a
+    // fresh Lua state can only reach a factory through `require`, so the REGISTRATION is the
+    // definition a run-wide instance is built from (a proof file's declaration of the same name is
+    // the demand, exactly as under attach).
+    let mut holder = config.clone();
+    for (alias, decl) in &env.env.topologies {
+        // Every entry is validated, whether or not this run would use it: a refusal that depends
+        // on the selection is not a refusal.
+        match decl.sharing(alias) {
+            Ok(manifest::TopologyScope::File) => continue,
+            Ok(manifest::TopologyScope::Run) => {}
+            Err(e) => {
+                eprintln!("prova: {e}");
+                return Err(ExitCode::from(2));
+            }
+        }
+        let resolved = match packages::resolve_topology(alias, decl, &env.env.dependencies) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("prova: {e}");
+                return Err(ExitCode::from(2));
+            }
+        };
+        holder = holder.with_topology_registration(
+            alias,
+            &decl.package,
+            resolved.factory,
+            topology_options_to_lua(&decl.options),
+        );
+        names.push(alias.clone());
+    }
+    if names.is_empty() {
+        return Ok(None);
+    }
+    let pool = prova_core::TopologyPool::start(names, &holder);
+    let installed = std::mem::take(config).with_interned_topologies(pool.handle());
+    *config = installed;
+    Ok(Some(pool))
+}
+
+/// Reap whatever the run-wide pool provisioned, and say so: tearing down a cluster takes long
+/// enough that silence reads as a hang, and a leaked one must never read as a clean exit.
+pub(crate) fn reap_run_wide_topologies(pool: Option<prova_core::TopologyPool>) {
+    let Some(mut pool) = pool else { return };
+    let held = pool.provisioned();
+    if !held.is_empty() {
+        eprintln!(
+            "prova: tearing down run-wide topolog{} {}",
+            if held.len() == 1 { "y" } else { "ies" },
+            held.join(", ")
+        );
+    }
+    pool.shutdown();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
