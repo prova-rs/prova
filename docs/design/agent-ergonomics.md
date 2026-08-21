@@ -1423,3 +1423,33 @@ treat unparseable-but-present as LOUD rather than absent — a record whose pid 
 be liveness-checked, so the safe reading is "something may be held here", reported rather than
 dropped. The second half is the one that closes the fail-open; the first stops manufacturing the
 input.
+
+## 32. A topology fixture is file-local, so a full run builds the same world N times
+
+`prova learn topologies` states it plainly: a `prova.topology(...)` in a test file "is a
+fixture — local to the files that declare it". The consequence at suite scale: a package whose
+proofs span several files, each declaring the SAME registered topology, provisions that
+environment once per file in a cold full run. The ybor-studio package hits this today — three
+proof files declare the docker topology (ten containers each) and two declare the kind
+topology (a cluster that is honestly minutes) — so a bare `prova` builds the same world five
+times to answer one question. The machine-scoped locks serialize the kind copies, which makes
+the duplication safe and also makes it slower.
+
+Held topologies already dedupe — every file attaches to the one live instance — so the field
+workaround is to hold before a full run (`prova start <name> && prova`). But that inverts the
+promise of the cold path: CI and a fresh checkout pay N× for the suite the author runs warm,
+and nothing in the run output says so (each provision narrates independently; nothing frames
+the repetition as repetition).
+
+Shape: run-wide interning keyed by the REGISTERED name. When a fixture declaration resolves to
+a `[topologies]` entry (same package + factory), a run provisions it once and every declaring
+file shares the instance — the attach path that held topologies already exercise, applied
+within a single run. Files declaring genuinely private fixtures (unregistered names) keep
+file-local semantics. If implicit sharing is too strong a default, an explicit
+`scope = "run"` on the declaration (or the registration) carries the intent; either way the
+capability belongs in the engine — user-land cannot express it, because each proof file
+evaluates in its own state and `require` cannot smuggle one live instance across them.
+
+Found live: `prova` on ybor-studio after the suite grew its second kind-topology file; the
+author's own report was "it appears to create the same topology more than once — ideally this
+would be run wide."
