@@ -1462,3 +1462,21 @@ wide." The same report surfaced a neighbour, now warned about rather than discov
 `--fresh` beside a live holder of a FIXED-name topology (`kind create --name ybor-studio`) collides
 on creation, and the fresh run's teardown then reaps the holder's cluster
 (docs/design/topologies.md#fresh-over-a-holder-is-announced).
+
+## 36. The run-wide projection turns a container handle into its debug string
+
+Under `scope = "run"` (and presumably in the attach record it reuses), a `ContainerResource`'s
+`container` field crosses the projection as a STRING — which reads as data and invites use —
+but the string is the handle's tostring (`Container: 0xbb30c84e8`), a Lua address with no
+meaning to anything. A proof that fed it to `docker exec` got "No such container", one step
+after the type check said string-and-therefore-fine.
+
+`prova.Container` already carries `{ id: string }`, so the honest projections are: the id
+itself (then `docker exec <id>` works from any file, which is exactly the escape hatch a
+data-only projection wants to leave open), or omitting the field entirely (nil fails the
+reach at the source instead of two layers later). The debug string is the one wrong choice —
+it is the shape of usable data with none of its meaning.
+
+Found adapting ybor-studio to scope = "run": the workaround is factory-exported id scalars
+(`containers = { crdb = crdb.container.id }`), which works but re-states per package what the
+projection could state once.
