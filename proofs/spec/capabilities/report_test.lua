@@ -1,9 +1,15 @@
 --- `prova capabilities` — what in my world that VARIES is available to me? The variable host
---- probes (docker / github / OS), then what THIS package's manifest and companion reference,
---- probed the same way. A fact that cannot be false on any machine is not a capability check:
---- the compiled-in batteries appear only when a slim build lacks one, and the unprobed
---- assumptions (network/internet) do not appear at all. A report (exit 0), never a gate — the
---- gate is `must_run` at run time. Host-agnostic assertions only.
+--- probes (docker / github / OS), then everything THIS package declares in `[capabilities]` or
+--- references (`must_run`, topology `requires`), probed with the factory a RUN would use. A fact
+--- that cannot be false on any machine is not a capability check: the compiled-in batteries appear
+--- only when a slim build lacks one, and the unprobed assumptions (network/internet) do not appear
+--- at all. A report (exit 0), never a gate — the gate is `must_run` at run time.
+---
+--- Two questions, and the report has to answer both: does it HOLD, and what does the name MEAN here.
+--- The second is new — a package may override a built-in (docs/design/capabilities.md) — so the
+--- rows carry the factory kind, and `prova capabilities <name>` explains one in full.
+---
+--- Host-agnostic assertions only: these run wherever prova is developed.
 
 prova.test("the report is the VARIABLE world: probes yes, batteries and assumptions no",
   function(t)
@@ -112,4 +118,36 @@ removed by renaming the registry field to `keywords`; the topic teaches the sing
   t:expect(topic.code):equals(0)
   t:expect(topic.stdout, "the two directions"):contains("must_run")
   t:expect(topic.stdout, "discovery is keywords, not capabilities"):contains("keywords")
+end)
+
+prova.test("`learn capabilities` answers what a name MEANS here, not just whether it holds", {
+  requires = { "unix" },
+  proves = "an agent reading `requires = { \"docker\" }` in a proof cannot know what it means without \
+the declaration, now that a package may override a built-in. The topic carries the vocabulary so the \
+answer arrives with the doctrine rather than requiring a second verb — and calls the override out \
+explicitly, since that is the row a reader would otherwise misread.",
+}, function(t)
+  local proj = t:tempdir() .. "/pkg"
+  fs.mkdir(proj .. "/proofs")
+  fs.write(proj .. "/prova.toml", table.concat({
+    '[run]', 'proofs = ["proofs"]',
+    '[capabilities]',
+    '"*" = "error"',
+    'docker = { command = "sh", version = false }',
+    'kind = { intrinsic = "unix" }',
+  }, "\n"))
+  fs.write(proj .. "/proofs/one_test.lua", 'prova.test("g", function(t) t:expect(1):equals(1) end)\n')
+  local r = shell.run(prova.bin .. " learn capabilities", { cwd = proj, merge_stderr = true })
+  t:expect(r.code):equals(0)
+  t:expect(r.stdout, "the declared name and its factory"):contains("command probe `sh`")
+  t:expect(r.stdout, "an override is called out, never left to inference"):contains("OVERRIDES the built-in")
+  t:expect(r.stdout, "an intrinsic declaration is NOT an override"):contains("prova's built-in `unix`")
+  t:expect(r.stdout, "and a closed vocabulary says so"):contains("CLOSED")
+end)
+
+prova.test("`learn capabilities` degrades honestly with no package in reach", function(t)
+  -- A heading over nothing reads as a rendering bug, so the slot says why it is empty.
+  local r = shell.run(prova.bin .. " learn capabilities", { cwd = t:tempdir(), merge_stderr = true })
+  t:expect(r.code):equals(0)
+  t:expect(r.stdout):contains("no package in reach")
 end)

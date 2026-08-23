@@ -1,4 +1,4 @@
-# package-authoring — package a capability others require()
+# package-authoring — package a module others require()
 
 Scaffold: `prova init package` (see `prova learn init`). ONE archetype, two shapes, decided by
 WHERE you run it: inside a package it scaffolds a LOCAL package into the `packages` directory

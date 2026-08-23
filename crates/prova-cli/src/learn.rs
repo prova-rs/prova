@@ -300,6 +300,8 @@ enum Slot {
     Profiles,
     /// `[[specs.source]]` — where prose obligations live, and where a new one should be written.
     Specs,
+    /// `[capabilities]` — what each capability NAME means in this package.
+    Capabilities,
     /// The opt-in classes thrown by config, with the pointer at `prova switches` for the live set.
     Switches,
     /// Where prova's own files live: the manifest variant, the config companion, the state dir.
@@ -317,6 +319,7 @@ impl Slot {
             "packages" => Some(Slot::Packages),
             "registries" => Some(Slot::Registries),
             "topologies" => Some(Slot::Topologies),
+            "capabilities" => Some(Slot::Capabilities),
             "profiles" => Some(Slot::Profiles),
             "specs" => Some(Slot::Specs),
             "switches" => Some(Slot::Switches),
@@ -620,6 +623,80 @@ fn render_topologies(env: &RenderEnv, transport: Transport) -> String {
     }
 }
 
+/// This package's declared capability vocabulary (`[capabilities]`) — what each name MEANS here.
+///
+/// The most load-bearing row is an override: `requires = { "docker" }` in one repo and the next can
+/// name different facts now (docs/design/capabilities.md#overriding-a-builtin-is-declared), and the
+/// only way an agent knows which is to read the declaration. So the override is called out in the
+/// row rather than left for the reader to infer from the factory kind.
+///
+/// Reads the manifest declarations, never the resolved verdicts: this is "what does this name mean",
+/// not "does it hold" — `prova capabilities` answers the second, and probing here would make a
+/// documentation topic shell out.
+fn render_capabilities(env: &RenderEnv, transport: Transport) -> String {
+    let verb = match transport {
+        Transport::Cli => "`prova capabilities` probes them; `prova capabilities <name>` explains one",
+        Transport::Mcp => "the `capabilities` tool probes them, and flags any that override a built-in",
+    };
+    match &env.package {
+        Some(p) if !p.resolved.capabilities.registrations.is_empty() => {
+            let rows: Vec<String> = p
+                .resolved
+                .capabilities
+                .registrations
+                .iter()
+                .map(|reg| {
+                    let what = match &reg.factory {
+                        prova_core::CapabilityFactory::Command(probe) => {
+                            format!("command probe `{}`", probe.command)
+                        }
+                        prova_core::CapabilityFactory::Package { package, factory, .. } => {
+                            format!("package `{package}` predicate `{factory}`")
+                        }
+                        prova_core::CapabilityFactory::Intrinsic(preset) => {
+                            format!("prova's built-in `{preset}`")
+                        }
+                    };
+                    let overrides = if !matches!(
+                        reg.factory,
+                        prova_core::CapabilityFactory::Intrinsic(_)
+                    ) && prova_core::is_builtin_capability(&reg.name)
+                    {
+                        "  — OVERRIDES the built-in of that name"
+                    } else {
+                        ""
+                    };
+                    format!("  {}  → {what}{overrides}", reg.name)
+                })
+                .collect();
+            let policy = match p.resolved.capabilities.undeclared {
+                prova_core::UndeclaredPolicy::Probe => String::new(),
+                prova_core::UndeclaredPolicy::Warn => {
+                    "\n  `\"*\" = \"warn\"`: an undeclared name is probed on PATH and taught."
+                        .to_string()
+                }
+                prova_core::UndeclaredPolicy::Error => {
+                    "\n  `\"*\" = \"error\"`: the vocabulary is CLOSED — an undeclared name fails \
+                     the run, so declare a tool before requiring it."
+                        .to_string()
+                }
+            };
+            format!(
+                "**Capabilities declared here**:\n{}{policy}\n  {verb}.",
+                rows.join("\n")
+            )
+        }
+        Some(_) => format!(
+            "**Capabilities**: none declared — every name in `requires` resolves by built-in or \
+             PATH probe. Declare one in `[capabilities]` when the PATH heuristic gets a version \
+             wrong, or when the fact needs code. {verb}."
+        ),
+        // Same one-liner shape as the Topologies slot: this sits under a heading, and a heading
+        // over nothing reads as a rendering bug.
+        None => "(no package in reach — declared capabilities unknown)".into(),
+    }
+}
+
 /// Project context: an inlined `CONTEXT.md` and the declared `context = [...]` docs.
 fn render_context_files(env: &RenderEnv) -> String {
     match &env.package {
@@ -792,6 +869,7 @@ fn render_slot(slot: Slot, env: &RenderEnv, transport: Transport) -> String {
         Slot::Registries => crate::registry::learn_lines(transport == Transport::Cli),
         Slot::Packages => render_packages(env),
         Slot::Topologies => render_topologies(env, transport),
+        Slot::Capabilities => render_capabilities(env, transport),
         Slot::ContextFiles => render_context_files(env),
         Slot::Agent => match &env.package {
             // The spec-first nudge — on by default (`[agent] spec_first = false` silences it). Kept to
@@ -838,10 +916,12 @@ fn render_slot(slot: Slot, env: &RenderEnv, transport: Transport) -> String {
                     .as_deref()
                     .unwrap_or("prova.lua (beside the manifest, if present)");
                 format!(
-                    "**Prova's own files**: manifest `{}` · Lua companion `{config}` \
-                     (`runtime.capability` lives there) · state under `.prova/var/` at the root \
-                     (run records, baselines — machine-local, never committed). Host check: \
-                     `prova capabilities` reports the built-in vocabulary MET/UNMET on this box.",
+                    "**Prova's own files**: manifest `{}` (capabilities are declared in its \
+                     `[capabilities]`) · Lua companion `{config}` (DEPRECATED — it only ever held \
+                     `runtime.capability`) · state under `.prova/var/` at the root (run records, \
+                     baselines — machine-local, never committed). Host check: `prova capabilities` \
+                     reports what varies on this box MET/UNMET, and `prova capabilities <name>` \
+                     explains one.",
                     p.manifest_name
                 )
             }

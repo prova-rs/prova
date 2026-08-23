@@ -271,8 +271,13 @@ pytest's package ecosystem did, while the core stays small and correct.
 3. ~~Randomize-by-default~~ **Decided**: deterministic definition order + isolation by
    construction; `--shuffle[=seed]` is opt-in hardening (not yet shipped), never the default. (See api.md →
    Execution model.)
-4. **Capability registry** — how `requires = {"docker"}` resolves to a probe; are capabilities
-   first-party-only or package-registerable?
+4. ~~**Capability registry** — how `requires = {"docker"}` resolves to a probe; are capabilities
+   first-party-only or package-registerable?~~ **Decided**: both, declared in the manifest's
+   `[capabilities]` as a name plus a factory — a declarative command probe, a Lua predicate exported
+   from a package, or a first-party intrinsic named out loud. An undeclared name still resolves by
+   PATH probe; `"*"` chooses whether that is allowed, warned, or refused. A package-declared
+   capability may even override a first-party one, because the manifest is where a reader looks to
+   learn what a name means. See [capabilities.md](capabilities.md).
 5. **Hermeticism depth** — how far the per-test sandbox goes (cwd/env always; temp HOME opt-in?).
 6. **Package API shape** — the hook points (collection, before/after each scope, reporter,
    selector, matcher) and whether v1 exposes Lua packages only or Rust too.

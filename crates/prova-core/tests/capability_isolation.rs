@@ -120,3 +120,86 @@ fn a_capability_predicate_can_make_an_async_call() {
         std::fs::read_to_string(&errfile).unwrap_or_else(|_| "<probe never ran>".into())
     );
 }
+
+/// The same isolation, on the CURRENT mechanism. The test above guards the deprecated companion
+/// path; `[capabilities]` is what the warm MCP will resolve going forward, and the property has to
+/// hold there or the bug simply moves.
+///
+/// Two shapes of leak are possible now that were not before, because a declaration carries more than
+/// a verdict:
+///
+///   1. the DECLARATIONS themselves — B must not see a name only A declared;
+///   2. the memoized ANSWERS — the lazily-probed kinds cache per `Capabilities`, and a shared cache
+///      would let A's "absent" answer for B. Each resolve mints its own memo (a fresh `Arc`), and
+///      only clones of ONE set share it — which is what makes a run's worker threads probe once
+///      while two projects stay independent.
+#[test]
+fn declared_capabilities_do_not_leak_across_resolves() {
+    use prova_core::{
+        resolve_capabilities, CapabilityFactory, CapabilityRegistration, CommandProbe,
+        UndeclaredPolicy, VersionQuery,
+    };
+
+    // A command probe, so this exercises the LAZY kind — the one with a cache to leak through.
+    // `sh` on unix / `cmd` on windows: present either way, so the answer is a real MET, not a
+    // vacuous agreement between two absent tools.
+    let present = if cfg!(windows) { "cmd" } else { "sh" };
+    let decl = |name: &str, command: &str| CapabilityRegistration {
+        name: name.to_string(),
+        factory: CapabilityFactory::Command(CommandProbe {
+            command: command.to_string(),
+            version: VersionQuery::None,
+            ..Default::default()
+        }),
+    };
+
+    let cfg = RunConfig::new(1);
+    let caps_a = resolve_capabilities(
+        &[decl("iso_decl_a", present)],
+        UndeclaredPolicy::Error,
+        &cfg,
+    )
+    .expect("resolve A");
+    let caps_b = resolve_capabilities(
+        &[decl("iso_decl_b", present)],
+        UndeclaredPolicy::Error,
+        &cfg,
+    )
+    .expect("resolve B");
+
+    // Sanity legs: each set answers for its own declaration, and answers MET (so the proof below is
+    // not two absent tools agreeing).
+    assert!(caps_a.available("iso_decl_a"), "A answers for its own");
+    assert!(caps_b.available("iso_decl_b"), "B answers for its own");
+
+    // THE PROOF, part 1: the declaration did not travel.
+    assert!(
+        caps_b.declaration("iso_decl_a").is_none(),
+        "project B sees a capability only project A declared"
+    );
+    // …and under a CLOSED vocabulary an undeclared name is a config error, which is the sharpest
+    // form of the same statement: B does not merely answer "unavailable", it refuses the name.
+    assert!(
+        caps_b.expr_status("iso_decl_a").is_err(),
+        "B must refuse a name it never declared, not silently answer for it"
+    );
+
+    // THE PROOF, part 2: the memo did not travel either. A has now probed `iso_decl_a` (the
+    // assertions above forced it), so a shared cache would surface it here under B.
+    assert!(
+        !caps_b.available("iso_decl_a"),
+        "project B read project A's memoized answer — the probe cache is not per-resolve"
+    );
+
+    // The other half of the memo contract: CLONES of one set DO share it. That is what lets a run's
+    // worker threads (each holding a cloned `RunConfig`) probe the host once instead of N times.
+    let clone_a = caps_a.clone();
+    assert!(
+        clone_a.available("iso_decl_a"),
+        "a clone answers from the shared memo"
+    );
+    assert!(
+        clone_a.declaration("iso_decl_a").is_some(),
+        "a clone carries the declarations"
+    );
+}

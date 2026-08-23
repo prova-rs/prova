@@ -389,6 +389,11 @@ impl Capabilities {
     /// Take everything else's declarations into this one, letting `other` win. Used to layer the
     /// manifest's `[capabilities]` over the deprecated companion's registrations — the manifest is
     /// the current mechanism, so it is the one that wins.
+    ///
+    /// The policy is taken **unconditionally**, not "only if non-default". Skipping a default-valued
+    /// policy would treat an explicit `"*" = "probe"` as "unset", so a manifest that deliberately
+    /// re-opened its vocabulary could be overruled by whatever the receiver happened to hold. `other`
+    /// is the authoritative side by definition; its answer is the answer, default-valued or not.
     pub fn absorb(&mut self, other: Capabilities) {
         for (name, version) in other.resolved {
             self.register(&name, version);
@@ -398,9 +403,7 @@ impl Capabilities {
         }
         self.probes.extend(other.probes);
         self.intrinsics.extend(other.intrinsics);
-        if other.undeclared != UndeclaredPolicy::default() {
-            self.undeclared = other.undeclared;
-        }
+        self.undeclared = other.undeclared;
     }
 
     /// The names a package predicate registered — the report's "declared by a predicate" rows, and

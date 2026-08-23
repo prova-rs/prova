@@ -51,10 +51,12 @@ return M
 package, never a proof file: `must_run` is checked **before** any proof loads, and an exported
 function is one a proof can **call directly** — which makes it testable.
 
-**`intrinsic`** — says "not overridden" in the one file a reader consults, and aliases a built-in
-(`dockerd = { intrinsic = "docker" }`). Built-ins work undeclared: `docker` (a daemon that answers *and*
-runs Linux containers), `github` (`GITHUB_TOKEN`), `unix`/`windows`, `network`/`internet`, the compiled-in
+**`intrinsic`** — says "not overridden", and aliases a built-in (`dockerd = { intrinsic = "docker" }`).
+Built-ins work undeclared: `docker` (a daemon that answers *and* runs Linux containers), `github`
+(`GITHUB_TOKEN`), `unix`/`windows`, `network`/`internet`, the compiled-in
 `http`/`sqlite`/`grpc`/`graphql`/`yaml` — and **anything on `PATH`**, with no declaration at all.
+
+{{capabilities}}
 
 ## Two directions: requires (skip) and must_run (fail)
 
@@ -78,13 +80,11 @@ the report marks the row `OVERRIDES the built-in`: never assume a name means wha
 
 **Not a capability: intent.** "Someone asked for this expensive class" — use `switch = "<class>"` (off
 unless thrown with `-s`); `requires` stays for what the WORLD must provide. There is deliberately no
-env-var selector: that is the pattern switches replaced. Nor is this the registry's discovery
-vocabulary — a package advertises `keywords` for `prova packages <query>`.
+env-var selector (switches replaced it), nor is this the registry's `keywords` discovery vocabulary.
 
 **Migrating off `prova.lua`:** `runtime.capability(name, fn)` is deprecated and still works. Declare
-`gpu = { package = "<pkg>", capability = "gpu" }`, move the predicate into that package under
-`capabilities`, and drop the companion — it, `runtime`, `[run] config`, `--config`, and `PROVA_CONFIG`
-retire together (a name declared in both resolves from the manifest).
+`gpu = { package = "<pkg>", capability = "gpu" }` and move the predicate into that package under
+`capabilities`; the companion, `runtime`, `[run] config`, `--config`, and `PROVA_CONFIG` retire together.
 
 See also: `prova learn topologies` (what a capability gates) · `prova learn running` (switches,
 which these are not) · `prova learn drivers` (tools a driver needs)
