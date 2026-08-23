@@ -8,8 +8,11 @@ prova.test("core matchers behave", function(t)
   t:expect("x"):never():equals("y")
 end)
 
-prova.test("gated on the companion capability", { requires = { "prova_selftest" } }, function(t)
-  t:expect(true):is_true()   -- runs only because config.lua registered `prova_selftest`
+-- The marker capability: this test RUNS only because `.prova.toml`'s `[capabilities]` resolved
+-- `prova_selftest` through the `env` package's predicate. A vocabulary that stopped resolving turns
+-- this into a skip, which is visible — rather than into nothing, which is not.
+prova.test("gated on the declared marker capability", { requires = { "prova_selftest" } }, function(t)
+  t:expect(true):is_true()
 end)
 
 -- `exists` is polymorphic: present for whatever the subject IS. It sits next to `is_nil` in every

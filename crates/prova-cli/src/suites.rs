@@ -563,30 +563,42 @@ fn resolve_manifest_packages(
     Ok(packages_resolved)
 }
 
-/// Load the optional `prova.lua` companion and return the capabilities it registered.
-fn load_companion(
+/// Resolve the project's capability vocabulary: the manifest's `[capabilities]` layered over
+/// whatever the deprecated `prova.lua` companion still registers.
+///
+/// Both are resolved BEFORE the `must_run` precondition. That order is the whole reason this is
+/// package-level rather than something in `suite.lua`: a capability registered at suite-load time
+/// would not exist yet at the moment a profile's guarantee is checked, so `must_run = ["gpu"]` could
+/// never work (docs/design/capabilities.md#predicate-lives-in-a-package).
+fn resolve_capabilities(
     config_override: Option<String>,
     resolved: &manifest::Resolved,
     home: &Home,
     packages_resolved: &packages::ResolvedPackages,
 ) -> Result<prova_core::Capabilities, ExitCode> {
-    // The optional `prova.lua` companion — loaded with the manifest, and BEFORE the `must_run`
-    // precondition below. That order is the whole reason this is a package-level companion rather
-    // than something in `suite.lua`: a capability registered at suite-load time would not exist yet
-    // at the moment a profile's guarantee is checked, so `must_run = ["gpu"]` could never work.
-    // The companion config file, by precedence: `--config` flag, then `PROVA_CONFIG` env, then the
+    let engine = engine_config(1, packages_resolved, Some(home), prova_core::progress::null());
+
+    // The companion first, so the manifest can be layered ON TOP of it: while both mechanisms exist,
+    // the current one wins (docs/design/capabilities.md#manifest-wins-over-the-companion).
+    //
+    // The companion file, by precedence: `--config` flag, then `PROVA_CONFIG` env, then the
     // manifest's `config`, then the `prova.lua` default. The flag and env are chiefly for tests.
     let companion_rel = config_override
         .or_else(|| std::env::var("PROVA_CONFIG").ok())
         .or_else(|| resolved.config.clone())
         .unwrap_or_else(|| "prova.lua".to_string());
     let companion = home.dir.join(&companion_rel);
-    let capabilities = if companion.is_file() {
-        match prova_core::load_project_config(
-            &companion,
-            &engine_config(1, packages_resolved, Some(home), prova_core::progress::null()),
-        ) {
-            Ok(caps) => caps,
+    let mut capabilities = if companion.is_file() {
+        match prova_core::load_project_config(&companion, &engine) {
+            Ok(caps) => {
+                // Teach the replacement for each registration. The companion still WORKS — this is a
+                // bridge, not a removal — but every name it holds is one an author has to move, and
+                // the migration is per capability, so the teaching is too.
+                for name in caps.registered_names() {
+                    crate::deprecations::warn_companion_capability(name, &companion);
+                }
+                caps
+            }
             // An error, never a warning: a companion that failed to load would leave every
             // capability it meant to register silently missing, so every gated test would skip and
             // the run would be green. That is the vacuous green, one level out from the suite.
@@ -598,6 +610,22 @@ fn load_companion(
     } else {
         prova_core::Capabilities::default()
     };
+
+    let declared = prova_core::resolve_capabilities(
+        &resolved.capabilities.registrations,
+        resolved.capabilities.undeclared,
+        &engine,
+    )
+    .map_err(|e| {
+        eprintln!("prova: {e}");
+        ExitCode::from(2)
+    })?;
+    for reg in &resolved.capabilities.registrations {
+        if capabilities.registered_names().any(|n| n == &reg.name) {
+            crate::deprecations::warn_companion_shadowed(&reg.name);
+        }
+    }
+    capabilities.absorb(declared);
 
     Ok(capabilities)
 }
@@ -630,8 +658,9 @@ fn check_must_run(
             Ok(Some(reason)) => unmet.push(format!(
                 "prova: profile {where_:?} guarantees {cap:?}, but {reason}"
             )),
-            // The expression itself is broken — a config error, not an environment one.
-            Err(e) => unmet.push(format!("prova: profile {where_:?} declares an {e}")),
+            // The declaration itself is broken — a config error, not an environment one: a
+            // malformed expression, or a name this package's closed vocabulary never declared.
+            Err(e) => unmet.push(format!("prova: profile {where_:?}: {e}")),
         }
     }
     if !unmet.is_empty() {
@@ -757,7 +786,8 @@ pub(crate) fn resolve_from_manifest(
 
     let packages_resolved =
         resolve_manifest_packages(&resolved, home, layout, force_update, offline)?;
-    let capabilities = load_companion(config_override, &resolved, home, &packages_resolved)?;
+    let capabilities =
+        resolve_capabilities(config_override, &resolved, home, &packages_resolved)?;
     check_must_run(profile.as_deref(), &resolved, &capabilities)?;
     let jobs = cli_jobs.or(resolved.jobs).unwrap_or(1);
     let (format, color, progress, github) = parse_output_modes(cli_format, &resolved)?;

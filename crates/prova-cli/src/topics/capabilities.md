@@ -1,60 +1,90 @@
 # capabilities — what the host can do, and what a test needs it to
 
 A **capability** is a fact about the *environment*, not the code: a daemon that answers, a tool on
-`PATH`, a client compiled in, an OS. Tests state what they need; prova checks it against the host.
+`PATH`, a client compiled in, an OS. Tests say what they need; prova checks the host.
 
 ```
-prova capabilities        # what VARIES: the host probes, plus everything THIS package's
-                          # manifest and companion reference — each MET or UNMET (and why)
+prova capabilities          # the host probes + everything THIS package declares or references
+prova capabilities docker   # explain ONE: what it means here, what ran, what came back
 ```
 
-The report answers "what in my world that varies is available to me?" — a fact that cannot be
-false on any machine is not a check, so compiled-in batteries appear only when a slim build
-lacks one, and unprobed assumptions (network/internet) are not reported as facts.
+## Declaring one: `[capabilities]` in prova.toml
 
-## The vocabulary
+A name plus a **factory** — the grammar `[topologies]` uses. Exactly one selector per entry.
 
-- **Named host probes:** `docker` (a daemon that answers *and* runs Linux containers — not just
-  `docker info`), `github` (`GITHUB_TOKEN` present), `unix` / `windows` (this OS), `network` /
-  `internet`.
-- **Native clients** (compiled into this build): `http`, `sqlite`, `grpc`, `graphql`, `yaml`.
-- **Anything on `PATH`:** an unknown name is a binary probe — `requires = { "kubectl" }` just works,
-  no registration.
-- **Registered:** a package adds its own with `runtime.capability("gpu", …)` in `prova.lua` — a
-  fact prova cannot probe (a license, a device), reported by the project itself.
+```toml
+[capabilities]
+docker  = { intrinsic = "docker" }                       # prova's own checker, said out loud
+gpu     = { package = "env", capability = "gpu" }        # a Lua predicate, from a package
+java    = { command = "java", version = ["-version"], stream = "stderr" }
+kubectl = { command = "kubectl", version = ["version", "--client"],
+            pattern = "GitVersion:\"v([0-9.]+)\"" }
+kind    = { command = "kind" }                           # PATH + the `--version` heuristic
+"*"     = "error"                                        # probe (default) | warn | error
+```
 
-A capability is an *expression*, so a version can ride along: `"docker"`, `"dotnet >= 9"`,
-`"node ^20"`. The same parser serves both directions below — one vocabulary, never two.
+**`command`** — reach for this first; most capabilities are "is this tool here, which version".
+
+| key | meaning |
+|---|---|
+| `command` | the executable (also the PATH-presence check when `probe` is absent) |
+| `probe` / `expect` | args for the availability check (exit 0 ⇒ available) / require this output |
+| `version` | args for the version query; `false` = no version concept |
+| `stream` | where the tool talks: `stdout` (default), `stderr`, `both` |
+| `pattern` | regex over that output; first capture group, else the whole match |
+
+`{ command = "kind" }` behaves exactly as an undeclared `kind` already did — declaring a tool is never
+a behavior change. `stream = "stderr"` is how `java -version` becomes readable at all; a `pattern`
+narrows, and the parser still normalizes (`v1.30` → `1.30.0`). `retries` is for a daemon that hiccups.
+
+**`package`** — for a fact no name-and-version can express (a GPU, a licence, a kind cluster).
+Export it under `capabilities` in a package; return `true`, a version string, or `false`:
+
+```lua
+local M = { capabilities = {} }
+function M.capabilities.gpu() return probe_cuda() end   -- true | "2.4.0" | false
+return M
+```
+
+`capability = "gpu"` resolves to `capabilities.gpu` — the namespace *is* the advertisement. Use
+`factory = "other.path"` to reach elsewhere, `options = {...}` to pass an argument. It lives in a
+package, never a proof file: `must_run` is checked **before** any proof loads, and an exported
+function is one a proof can **call directly** — which makes it testable.
+
+**`intrinsic`** — says "not overridden" in the one file a reader consults, and aliases a built-in
+(`dockerd = { intrinsic = "docker" }`). Built-ins work undeclared: `docker` (a daemon that answers *and*
+runs Linux containers), `github` (`GITHUB_TOKEN`), `unix`/`windows`, `network`/`internet`, the compiled-in
+`http`/`sqlite`/`grpc`/`graphql`/`yaml` — and **anything on `PATH`**, with no declaration at all.
 
 ## Two directions: requires (skip) and must_run (fail)
 
-- `requires = { "docker" }` on a test/suite/topology — **skip** when unmet. Graceful degradation:
-  the box without docker runs everything else and stays green.
-- `[run] must_run = ["docker"]` / `[profiles.ci] must_run = [...]` — **fail** when unmet. A named
-  profile's *guarantee* about its environment: `prova run ci` on a box missing docker is a broken
-  environment (exit 2), not a quiet skip. Only bare `prova` is opportunistic; a profile is a contract.
+- `requires = { "docker" }` on a test/suite/topology — **skip** when unmet. The box without docker
+  runs everything else and stays green. A version rides along: `"dotnet >= 9"`, `"node ^20"`.
+- `[run] must_run` / `[profiles.ci] must_run` — **fail** (exit 2) when unmet, before anything runs.
+  A profile's *guarantee* about its environment. Only bare `prova` is opportunistic.
 
-The one rule both obey: an unmet capability is never silently "green". `requires` skips loudly (the
-reason is in the report); `must_run` fails loudly. A typo'd constraint is a config **error**, not a
-skip — a gate that never matched would read as passing, the vacuous green this contract exists to remove.
+Neither is ever silently green. A **misconfigured** capability — typo'd constraint, bad regex, or an
+undeclared name under `"*" = "error"` — errors rather than skips: a gate that never matched reads green.
 
-## Not a capability: the opt-in switch
+## Closing the vocabulary, and overriding a built-in
 
-"Someone asked for this expensive class" is **intent**, not a host fact — so it is never a
-capability. A test that must not fire unasked carries `switch = "<class>"` (off unless thrown
-with `-s <class>` or a profile's `switches = [...]`), and keeps `requires` for what the WORLD
-must provide. Two facts, two remedies: `prova run ut` on a box without nextest fails the
-`must_run` guarantee (install it); bare `prova` simply holds the class back (throw it when you
-mean it). Registering an env-var-probing capability to gate a test class is the old pattern this
-replaced (docs/design/manifest.md#switches-not-env-capabilities).
+`"*"` chooses what an undeclared name means: `probe` (the open default), `warn` (probe, and print
+pasteable TOML for each), `error` (refuse). `warn` is the migration rung. Strictness governs only
+names **prova does not define** — a bare `unix` still needs no declaration.
 
-## One meaning — the registry uses `keywords`
+An entry may redefine `docker` (or any built-in) here — refused once, because a companion predicate
+changed a word's meaning silently and a manifest entry does not. Only the root manifest governs, and
+the report marks the row `OVERRIDES the built-in`: never assume a name means what it does elsewhere.
 
-"Capability" names exactly this: a host fact a test needs. It is deliberately NOT the registry's
-discovery vocabulary — a package advertises `keywords` for `prova packages <query>` search
-("kafka", "messaging"), pure catalog metadata unrelated to whether *your* host can do a thing. What
-a package needs from the host still lives in its `requires` (the same words as here). So the word
-has one job: `prova capabilities` and `requires`/`must_run` probe the host; `keywords` find a package.
+**Not a capability: intent.** "Someone asked for this expensive class" — use `switch = "<class>"` (off
+unless thrown with `-s`); `requires` stays for what the WORLD must provide. There is deliberately no
+env-var selector: that is the pattern switches replaced. Nor is this the registry's discovery
+vocabulary — a package advertises `keywords` for `prova packages <query>`.
+
+**Migrating off `prova.lua`:** `runtime.capability(name, fn)` is deprecated and still works. Declare
+`gpu = { package = "<pkg>", capability = "gpu" }`, move the predicate into that package under
+`capabilities`, and drop the companion — it, `runtime`, `[run] config`, `--config`, and `PROVA_CONFIG`
+retire together (a name declared in both resolves from the manifest).
 
 See also: `prova learn topologies` (what a capability gates) · `prova learn running` (switches,
 which these are not) · `prova learn drivers` (tools a driver needs)

@@ -54,7 +54,7 @@ Where a CLI flag or environment variable exists for the same knob, precedence is
 |---|---|---|
 | `proofs = ["proofs"]` | `["proofs"]` | Directory-**NAME** patterns (basename globs, NOT paths): every matching directory anywhere below the root holds `*_test.lua` / `*.test.lua` proofs. A matched directory owns its whole subtree (no re-matching inside). Discovery skips hidden dirs, `prova`, `target`, `node_modules`, `vendor`, `dist`, `build`, `testdata`, and nested packages. The pattern `"."` is the flat escape hatch: the root itself is a proof dir. |
 | `packages` | *none* | THE directory of this package's own packages, root-relative. Deliberately singular, and no default — undeclared means nothing is scanned. Anything from elsewhere gets a name and a pinned source in `[dependencies]`. A profile's value replaces (never adds). |
-| `config` | `prova.lua` | The Lua companion loaded once, pre-suite, with the manifest — where `runtime.capability(name, fn)` registers package-wide capability predicates. Path is home-relative. Override per run: `--config PATH` > `PROVA_CONFIG` env > this key. |
+| `config` | `prova.lua` | **DEPRECATED** ([capabilities.md](capabilities.md), [deprecations.md](deprecations.md#retire-capability-companion)). The Lua companion loaded once, pre-suite — where `runtime.capability(name, fn)` registered package-wide capability predicates before `[capabilities]` existed. Still honored, and every registration teaches its replacement. Path is home-relative; override per run with `--config PATH` > `PROVA_CONFIG` > this key. The key, the flag, the env var, and the companion retire together. |
 | `jobs` | `1` | Concurrent **suites** (`-j/--jobs` wins). Throughput only — it can never change what a run means. |
 | `format` | `console` | `"console"` \| `"json"` (JSONL event stream) \| `"tap"`. `--format`/`--json` win. Never auto-switched when piped. |
 | `color` | `auto` | `"auto"` \| `"always"` \| `"never"` — console color. `--color` > `PROVA_COLOR` > this key; `auto` additionally honors `NO_COLOR`/`CLICOLOR_FORCE` and never styles a non-terminal. |
@@ -100,7 +100,7 @@ key.
 <!-- claim: switches-not-env-capabilities -->
 **Opt-in test classes want a first-class switch, not an env-var capability.** Three gates in this
 repo (`soak`, `quality`, `ut`) express the same intent fact — "someone asked for this expensive
-class" — by conscripting the capability axis: a `runtime.capability` probing an env var, the env
+class" — by conscripting the capability axis: a capability predicate probing an env var, the env
 var set in a profile's `[env]`, `requires = { "<class>" }` on every test, `must_run` in the
 profile. Four pieces, three files, and `prova capabilities` misreports intent as a host gap ("ut
 UNMET" on a machine that lacks nothing). Capabilities are for **world** facts; intent belongs on

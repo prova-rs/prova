@@ -422,6 +422,12 @@ impl RunConfig {
         }
     }
 
+    /// The run's capability vocabulary — read after a run to drain what the `"*" = "warn"` policy
+    /// collected (see [`Capabilities::take_fell_through`]).
+    pub fn capabilities(&self) -> &Capabilities {
+        &self.capabilities
+    }
+
     /// Attach the project's registered capabilities (from `prova.lua`), so `requires` resolution
     /// during the run sees the same vocabulary the `must_run` precondition did.
     pub fn with_capabilities(mut self, caps: Capabilities) -> Self {

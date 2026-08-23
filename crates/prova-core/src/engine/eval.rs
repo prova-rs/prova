@@ -63,31 +63,11 @@ pub fn load_project_config(
                 )));
             }
             // The predicate runs NOW, at load; only its answer survives (see `Capabilities`).
+            // Recorded through the same function the manifest path uses, so a predicate migrated
+            // from here to a package keeps its body AND its meaning.
             let verdict: Value = f.call_async(()).await?;
-            match verdict {
-                // Unavailable → not registered, so it reads as absent everywhere.
-                Value::Nil | Value::Boolean(false) => {}
-                // Available, no version.
-                Value::Boolean(true) => caps_w.borrow_mut().register(&name, None),
-                // Available, and it reported a version to compare against.
-                Value::String(s) => {
-                    let raw = s.to_str()?.to_string();
-                    let v = parse_first_version(&raw).ok_or_else(|| {
-                        mlua::Error::RuntimeError(format!(
-                            "runtime.capability({name:?}): returned {raw:?}, which is not a version \
-                             (expected true/false, or a version string like \"2.4.0\")"
-                        ))
-                    })?;
-                    caps_w.borrow_mut().register(&name, Some(v));
-                }
-                other => {
-                    return Err(mlua::Error::RuntimeError(format!(
-                        "runtime.capability({name:?}): the predicate returned {}, expected a boolean \
-                         or a version string",
-                        other.type_name()
-                    )))
-                }
-            }
+            record_verdict(&mut caps_w.borrow_mut(), &name, verdict)
+                .map_err(mlua::Error::RuntimeError)?;
             Ok(())
             }
         })
@@ -133,6 +113,147 @@ pub fn load_project_config(
 
     let out = caps.borrow().clone();
     Ok(out)
+}
+
+/// Resolve the manifest's `[capabilities]` declarations into the run's vocabulary
+/// (docs/design/capabilities.md).
+///
+/// The declarative kinds (`command`, `intrinsic`) are pure data: validated here, probed later, on
+/// first reference. Only the `package` kind needs Lua — and only if at least one entry uses it,
+/// which is why the state is built lazily. A project with no Lua predicates pays nothing: no state,
+/// no runtime, no package searcher.
+///
+/// A declaration that cannot be resolved is an **error**, never a warning. Every capability it meant
+/// to declare would otherwise go silently missing, so every gated test would skip and the run would
+/// be green — the vacuous green, one level out from the suite.
+pub fn resolve_capabilities(
+    registrations: &[CapabilityRegistration],
+    policy: UndeclaredPolicy,
+    config: &RunConfig,
+) -> Result<Capabilities, String> {
+    let mut caps = Capabilities::default();
+    caps.set_undeclared_policy(policy);
+
+    // Pass one: the data-only kinds, and validation for everything.
+    let mut lua_needed: Vec<&CapabilityRegistration> = Vec::new();
+    for reg in registrations {
+        if !is_capability_name(&reg.name) {
+            return Err(format!(
+                "[capabilities] {:?}: a capability name must be [A-Za-z0-9_-]+ (the one other key \
+                 is \"*\", the fall-through policy)",
+                reg.name
+            ));
+        }
+        match &reg.factory {
+            CapabilityFactory::Command(probe) => {
+                probe.validate(&reg.name)?;
+                caps.declare_command(&reg.name, probe.clone());
+            }
+            CapabilityFactory::Intrinsic(preset) => {
+                // A preset that is not a built-in is a typo, and a typo that resolved to "absent"
+                // would skip every gated test forever while reading as a deliberate declaration.
+                if !is_builtin_capability(preset) {
+                    return Err(format!(
+                        "[capabilities] {}: intrinsic = {preset:?} is not one of prova's built-in \
+                         checkers — they are: {}",
+                        reg.name,
+                        builtin_capability_names().join(", ")
+                    ));
+                }
+                caps.declare_intrinsic(&reg.name, preset);
+            }
+            CapabilityFactory::Package { package, factory, .. } => {
+                if !is_ident_path(package) || !is_ident_path(factory) {
+                    return Err(format!(
+                        "[capabilities] {}: package and factory must be dotted identifier paths \
+                         (got package={package:?}, factory={factory:?})",
+                        reg.name
+                    ));
+                }
+                lua_needed.push(reg);
+            }
+        }
+    }
+    if lua_needed.is_empty() {
+        return Ok(caps);
+    }
+
+    // Pass two: the Lua predicates. One state for all of them — they are a project's vocabulary, so
+    // they share a state the way the companion's registrations did.
+    let (lua, _col) = build_lua("capabilities".to_string(), config)
+        .map_err(|e| format!("resolving [capabilities]: {e}"))?;
+    // Inside a runtime, and as a coroutine, because a predicate is exactly where you probe a real
+    // dependency (`http`, `grpc`, `docker`) — and an async-backed probe can only yield from one. A
+    // sync call leaves the predicate no way to await, which surfaces as the baffling "attempt to
+    // yield from outside a coroutine".
+    let rt = new_runtime().map_err(|e| format!("resolving [capabilities]: {e}"))?;
+    block_on_local(&rt, async {
+        for reg in &lua_needed {
+            let CapabilityFactory::Package {
+                package,
+                factory,
+                options,
+            } = &reg.factory
+            else {
+                continue;
+            };
+            let call = match options {
+                None => format!("return (require(\"{package}\")).{factory}()"),
+                Some(opts) => format!("return (require(\"{package}\")).{factory}({opts})"),
+            };
+            let verdict: Value = lua
+                .load(&call)
+                .set_name(format!("@[capabilities].{}", reg.name))
+                .eval_async()
+                .await
+                .map_err(|e| {
+                    format!(
+                        "capability {:?} (require(\"{package}\").{factory}): {e}",
+                        reg.name
+                    )
+                })?;
+            record_verdict(&mut caps, &reg.name, verdict)?;
+        }
+        Ok::<(), String>(())
+    })?;
+
+    Ok(caps)
+}
+
+/// Store what a Lua predicate answered. The contract is the same one the companion's registrar had,
+/// which is what lets a migrated predicate keep its body unchanged:
+///   - `true`            → available, no version
+///   - a version string  → available, and comparable (`requires = { "gpu >= 2.0" }`)
+///   - `false` / `nil`   → unavailable
+///
+/// Anything else is an error rather than a coerced truthy value: Lua's truthiness would make a typo'd
+/// return (a table, a number) read as "available", which is the direction that produces a false green.
+fn record_verdict(caps: &mut Capabilities, name: &str, verdict: Value) -> Result<(), String> {
+    match verdict {
+        // Recorded as a DECLARED no, so it never falls through to a PATH probe that could answer yes
+        // about an unrelated binary of the same name
+        // (docs/design/capabilities.md#a-declared-no-is-final).
+        Value::Nil | Value::Boolean(false) => caps.register_absent(name),
+        Value::Boolean(true) => caps.register(name, None),
+        Value::String(s) => {
+            let raw = s.to_str().map_err(|e| e.to_string())?.to_string();
+            let v = parse_first_version(&raw).ok_or_else(|| {
+                format!(
+                    "capability {name:?}: the predicate returned {raw:?}, which is not a version \
+                     (expected true/false, or a version string like \"2.4.0\")"
+                )
+            })?;
+            caps.register(name, Some(v));
+        }
+        other => {
+            return Err(format!(
+                "capability {name:?}: the predicate returned {}, expected a boolean or a version \
+                 string",
+                other.type_name()
+            ))
+        }
+    }
+    Ok(())
 }
 
 pub fn eval_snippet(code: &str, config: &RunConfig) -> mlua::Result<serde_json::Value> {

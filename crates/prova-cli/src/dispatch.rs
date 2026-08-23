@@ -1349,6 +1349,10 @@ pub(crate) fn run(cli_args: Vec<String>) -> ExitCode {
     // teardown that takes a minute must not look like a hung reporter, and after every suite,
     // because that is what "run-wide" means.
     cmd_topo::reap_run_wide_topologies(run_wide);
+    // What `"*" = "warn"` collected, taught as one block. After the run (the set is only complete
+    // once every `requires` has been resolved) and before the summary, so it reads as advice about
+    // the run rather than a footnote after the verdict.
+    crate::capabilities::teach_undeclared(&config.capabilities().take_fell_through());
     match outcome {
         Ok(summary) => conclude_run(
             &cli,

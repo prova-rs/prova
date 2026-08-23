@@ -81,11 +81,13 @@ pub(crate) fn package_subcommand(args: Vec<String>) -> ExitCode {
 /// never a gate; the gate is `must_run` at run time. Always-available facts are not checks:
 /// compiled-in batteries appear only when a slim build lacks one, and unprobed assumptions
 /// (network/internet) are not reported at all.
-/// The package context, when a manifest is in reach: profiles' must_run, topology requires, and
-/// the companion's registered capabilities as `(expr, where it is referenced)` rows. Parsed raw —
-/// never resolve_from_manifest, whose must_run gate would FAIL on exactly the unmet guarantee
-/// this report exists to show. Loading the companion replaces `caps` so a registered name probes
-/// with the project's own predicate.
+/// The package context, when a manifest is in reach: the declared `[capabilities]` vocabulary, plus
+/// every capability this package *references* (profiles' `must_run`, topology `requires`) as
+/// `(expr, where it comes from)` rows.
+///
+/// Parsed raw — never `resolve_from_manifest`, whose `must_run` gate would FAIL on exactly the unmet
+/// guarantee this report exists to show. `caps` is replaced with the project's own vocabulary, so
+/// every row below probes with the factory a run would use.
 fn package_capability_refs(caps: &mut prova_core::Capabilities) -> Vec<(String, String)> {
     let mut package: Vec<(String, String)> = Vec::new();
     let Some(home) = home::find(std::path::Path::new(".")).ok().flatten() else {
@@ -110,36 +112,83 @@ fn package_capability_refs(caps: &mut prova_core::Capabilities) -> Vec<(String, 
             package.push((cap.clone(), format!("topology `{name}`")));
         }
     }
-    let companion_rel = m.run.config.clone().unwrap_or_else(|| "prova.lua".to_string());
-    let companion = home.dir.join(&companion_rel);
-    if companion.is_file() {
-        if let Ok(loaded) = prova_core::load_project_config(
-            &companion,
-            &engine_config(1, &packages::ResolvedPackages::default(), Some(&home), prova_core::progress::null()),
-        ) {
-            for name in loaded.registered_names() {
-                package.push((name.clone(), "registered in the companion".to_string()));
-            }
-            *caps = loaded;
-        }
-    }
+    // The declared vocabulary, from the one resolver the MCP tool also calls — so the two surfaces
+    // cannot disagree about what a name means here.
+    let (vocabulary, origins) = crate::capabilities::project_vocabulary(&home, &m);
+    package.extend(origins);
+    *caps = vocabulary;
     package
+}
+
+/// `prova capabilities <name>` — everything known about ONE capability: what the name means here,
+/// what was run to decide, the raw output, and the parsed version.
+///
+/// This closes a real diagnostic gap. An unmet capability used to report only `"foo" is
+/// unavailable`, and a wrong-version skip only the numbers — with no way to see which command
+/// produced them. The version came from somewhere, and "somewhere" was unprintable.
+fn explain_capability(name: &str) -> ExitCode {
+    let mut caps = prova_core::Capabilities::default();
+    let _ = package_capability_refs(&mut caps);
+    let e = caps.explain(name);
+    // One column width for every row, wide enough for the longest label the explanation can carry —
+    // a ragged report is harder to scan than a wide one.
+    const W: usize = 14;
+    println!("{}", e.name);
+    println!("  {:<W$}{}", "kind", e.kind);
+    for (label, value) in &e.detail {
+        // Multi-line command output stays readable: indent continuation lines under the column.
+        let value = value.replace('\n', &format!("\n  {:<W$}", ""));
+        println!("  {label:<W$}{value}");
+    }
+    println!(
+        "  {:<W$}{}",
+        "status",
+        if e.available { "MET" } else { "UNMET" }
+    );
+    match e.version {
+        Some(v) => println!("  {:<W$}{v}", "version"),
+        None => println!(
+            "  {:<W$}(none — a constraint cannot be confirmed)",
+            "version"
+        ),
+    }
+    ExitCode::SUCCESS
 }
 
 pub(crate) fn capabilities_subcommand(args: Vec<String>) -> ExitCode {
     if args.iter().any(|a| a == "-h" || a == "--help") {
         println!(
-            "usage: prova capabilities\n\n\
-             Lists prova's built-in capability vocabulary with each one's status on THIS host — MET,\n\
-             or UNMET with the reason. Beyond these, any executable on PATH is a capability, and a\n\
-             package registers its own with `runtime.capability` in prova.lua. A report, never a gate\n\
-             (the gate is `must_run` at run time). See `prova learn capabilities`."
+            "usage: prova capabilities [<name>]\n\n\
+             With no argument: lists what VARIES on this host, plus everything this package's\n\
+             manifest declares or references, each MET or UNMET with the reason.\n\n\
+             With a name: explains that one capability — what the name means here (declared how, or\n\
+             a built-in, or undeclared), what prova ran to decide, the raw output, and the parsed\n\
+             version.\n\n\
+             Beyond the built-ins, any executable on PATH is a capability, and a package declares\n\
+             its own in `[capabilities]`. A report, never a gate (the gate is `must_run` at run\n\
+             time). See `prova learn capabilities`."
         );
         return ExitCode::SUCCESS;
     }
-    if let Some(bad) = args.iter().find(|a| !a.starts_with('-')) {
-        eprintln!("prova: capabilities: unexpected argument {bad:?} (this verb takes none)");
+    // One positional argument is the explain form; two is a mistake worth naming, since a
+    // capability expression with a constraint (`"dotnet >= 9"`) must be quoted as one word.
+    let positional: Vec<&String> = args.iter().filter(|a| !a.starts_with('-')).collect();
+    if positional.len() > 1 {
+        eprintln!(
+            "prova: capabilities: expected at most one capability name, got {} — quote an \
+             expression with a constraint as one argument (\"dotnet >= 9\")",
+            positional.len()
+        );
         return ExitCode::from(2);
+    }
+    if let Some(name) = positional.first() {
+        // The name, not the expression: `capabilities "dotnet >= 9"` explains `dotnet` and reports
+        // the version it found, which is what the caller is trying to see.
+        let bare = name
+            .split(|c: char| c.is_whitespace() || "<>=^~".contains(c))
+            .next()
+            .unwrap_or(name);
+        return explain_capability(bare);
     }
     // The report answers "what in my world that VARIES is available to me?" — a fact that cannot
     // be false on any machine is not a capability check. So: the variable host probes, then what
@@ -169,7 +218,17 @@ pub(crate) fn capabilities_subcommand(args: Vec<String>) -> ExitCode {
         }
     };
     for name in VARIABLE_HOST {
-        report(name, None, &caps);
+        // A built-in this package REDEFINED must never print as an ordinary row: the name no longer
+        // means what a reader of another repo would assume, and that is exactly what makes declaring
+        // an override safe (docs/design/capabilities.md#overriding-a-builtin-is-declared).
+        let origin = caps.declaration(name).map(|kind| {
+            if caps.overrides_builtin(name) {
+                format!("{} — OVERRIDES the built-in", kind.label())
+            } else {
+                format!("declared: {}", kind.label())
+            }
+        });
+        report(name, origin.as_deref(), &caps);
     }
     // What this package references — deduped, first origin wins the label.
     let mut seen: std::collections::BTreeSet<String> = VARIABLE_HOST.iter().map(|s| s.to_string()).collect();
@@ -295,7 +354,19 @@ mod tests {
         assert_eq!(code(package_subcommand(argv(&["lint"]))), usage, "lint with no files");
         assert_eq!(code(package_subcommand(argv(&["publish"]))), usage, "unknown subcommand");
 
-        assert_eq!(code(capabilities_subcommand(argv(&["docker"]))), usage, "this verb takes none");
+        // `capabilities` takes an OPTIONAL name (the explain form), so one positional is valid and
+        // two is the shell-quoting mistake — a constraint must arrive as one argument
+        // (`capabilities "dotnet >= 9"`).
+        assert_eq!(
+            code(capabilities_subcommand(argv(&["docker", "unix"]))),
+            usage,
+            "at most one capability name"
+        );
+        assert_eq!(
+            code(capabilities_subcommand(argv(&["docker"]))),
+            code(ExitCode::SUCCESS),
+            "explaining one capability is a report"
+        );
         assert_eq!(code(capabilities_subcommand(argv(&["--help"]))), code(ExitCode::SUCCESS));
 
         assert_eq!(code(introspect_subcommand(argv(&["--bogus"]))), usage, "unknown flag");

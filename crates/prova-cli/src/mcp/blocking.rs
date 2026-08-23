@@ -657,18 +657,55 @@ fn not_held(topology: &str) -> String {
     )
 }
 
-/// `capabilities` tool body — the host capability report as JSON, the twin of `prova capabilities`.
-/// Host-only (no manifest/package resolution), reading the same single sources the CLI verb does
-/// (`builtin_capability_names` + `Capabilities::expr_status`), so the two cannot disagree on which
-/// capabilities exist or whether each is met — only on rendering (JSON vs. text).
-pub(super) fn capabilities_blocking() -> Result<(serde_json::Value, bool), String> {
-    let caps = prova_core::Capabilities::default();
-    let rows: Vec<serde_json::Value> = prova_core::builtin_capability_names()
-        .iter()
-        .map(|name| match caps.expr_status(name) {
-            Ok(None) => json!({ "name": name, "met": true }),
-            Ok(Some(reason)) => json!({ "name": name, "met": false, "reason": reason }),
-            Err(e) => json!({ "name": name, "met": false, "reason": e }),
+/// `capabilities` tool body — the capability report as JSON, the twin of `prova capabilities`.
+///
+/// The built-in vocabulary, PLUS whatever this package declares in `[capabilities]`, resolved
+/// through the same `project_vocabulary` the CLI verb calls. Both halves matter to an agent: a
+/// package may override what a built-in name means (docs/design/capabilities.md), and a host-only
+/// report would then confidently answer the wrong question — `docker` met per the daemon while the
+/// project's `docker` is something else entirely.
+///
+/// Reading one source with the CLI verb is what keeps the two from disagreeing on which capabilities
+/// exist or whether each is met — leaving only rendering (JSON vs. text) to differ.
+pub(super) fn capabilities_blocking(env: &McpEnv) -> Result<(serde_json::Value, bool), String> {
+    // A package is optional here: without one this is the host report, exactly as before.
+    let (caps, origins) = match env.locate(None) {
+        Ok(Some(home)) => match std::fs::read_to_string(&home.manifest)
+            .map_err(|e| e.to_string())
+            .and_then(|t| crate::manifest::Manifest::parse(&t))
+        {
+            Ok(m) => crate::capabilities::project_vocabulary(&home, &m),
+            Err(_) => (prova_core::Capabilities::default(), Vec::new()),
+        },
+        _ => (prova_core::Capabilities::default(), Vec::new()),
+    };
+    let declared: std::collections::BTreeMap<String, String> = origins.into_iter().collect();
+    // Declared names first, then the built-ins that are not already covered by one — so an
+    // overridden name appears once, carrying the fact that it was overridden.
+    let names: Vec<String> = caps
+        .declared_names()
+        .into_iter()
+        .map(|(name, _)| name)
+        .chain(
+            prova_core::builtin_capability_names()
+                .iter()
+                .map(|n| n.to_string()),
+        )
+        .collect();
+    let mut seen = std::collections::BTreeSet::new();
+    let rows: Vec<serde_json::Value> = names
+        .into_iter()
+        .filter(|name| seen.insert(name.clone()))
+        .map(|name| {
+            let mut row = match caps.expr_status(&name) {
+                Ok(None) => json!({ "name": name, "met": true }),
+                Ok(Some(reason)) => json!({ "name": name, "met": false, "reason": reason }),
+                Err(e) => json!({ "name": name, "met": false, "reason": e }),
+            };
+            if let (Some(obj), Some(origin)) = (row.as_object_mut(), declared.get(&name)) {
+                obj.insert("declared".to_string(), json!(origin));
+            }
+            row
         })
         .collect();
     Ok((json!({ "capabilities": rows }), false))

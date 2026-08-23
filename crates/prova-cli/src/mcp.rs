@@ -993,11 +993,12 @@ impl ProvaMcpServer {
 
     #[tool(
         name = "capabilities",
-        description = "What can prova detect on THIS host? The built-in capability vocabulary — docker (a daemon that answers AND runs linux containers), github (GITHUB_TOKEN), the OS (unix/windows), network/internet, and the compiled-in native clients (http/sqlite/grpc/graphql/yaml) — each with its status: met, or unmet with the reason. Beyond these, any executable on PATH is a capability, and a package registers its own via runtime.capability in prova.lua. Returns compact JSON: { capabilities: [{ name, met, reason? }] }. A report, never a gate — the gate is a profile's must_run at run time. The CLI twin is `prova capabilities`. See learn { topic = \"capabilities\" }."
+        description = "What capabilities are available here? The built-in vocabulary — docker (a daemon that answers AND runs linux containers), github (GITHUB_TOKEN), the OS (unix/windows), network/internet, and the compiled-in native clients (http/sqlite/grpc/graphql/yaml) — PLUS whatever this package declares in [capabilities], each with its status: met, or unmet with the reason. Beyond these, any executable on PATH is a capability. Returns compact JSON: { capabilities: [{ name, met, reason?, declared? }] }, where `declared` says how the package declared it (command probe / package predicate / intrinsic) and flags a name that OVERRIDES a built-in — so never assume a name means what it would elsewhere. A report, never a gate — the gate is a profile's must_run at run time. The CLI twin is `prova capabilities`. See learn { topic = \"capabilities\" }."
     )]
     async fn capabilities(&self) -> CallToolResult {
         let _serialized = self.run_lock.lock().await;
-        blocking(capabilities_blocking).await
+        let env = self.env.clone();
+        blocking(move || capabilities_blocking(&env)).await
     }
 
     #[tool(

@@ -31,11 +31,19 @@
 //!
 //! ```
 //!
-//! An optional `prova.lua` beside this file is the package's Lua companion (the pairing archetect
-//! uses for archetype.yaml + archetype.lua). It is where `runtime.capability(name, fn)` registers a
-//! package-wide predicate — a GPU, a kind cluster — for a capability no name-and-version can
-//! express. It loads WITH the manifest, which is what lets `must_run` guarantee one: the
-//! precondition is checked before any suite exists, so a suite-registered capability would not yet.
+//! ```toml
+//! [capabilities]                # the capability vocabulary (docs/design/capabilities.md)
+//! docker  = { intrinsic = "docker" }                      # prova's own checker, said out loud
+//! gpu     = { package = "env", capability = "gpu" }       # a Lua predicate, from a package
+//! java    = { command = "java", version = ["-version"], stream = "stderr" }
+//! "*"     = "error"             # what an undeclared name means: probe | warn | error
+//! ```
+//!
+//! It resolves WITH the manifest, which is what lets `must_run` guarantee one: the precondition is
+//! checked before any suite exists, so a suite-declared capability would not yet. (An optional
+//! `prova.lua` companion hosting `runtime.capability(name, fn)` is the DEPRECATED predecessor —
+//! docs/design/deprecations.md#retire-capability-companion. A name declared in both resolves from
+//! the manifest.)
 //!
 //! ```toml
 //! [suites.grpc]                 # an explicit suite: these files share one state (Scope.Suite)
@@ -80,6 +88,12 @@ pub struct Manifest {
     /// `prova.topology(<name>, require(<package>).<factory>)`. A property of the package, not a profile.
     #[serde(default)]
     pub topologies: BTreeMap<String, TopologyDecl>,
+    /// `[capabilities]` — the capability vocabulary (docs/design/capabilities.md): name → factory,
+    /// plus the `"*"` fall-through policy. A property of the package, not a profile: letting the
+    /// *meaning* of a name vary by profile would rebuild the drift the old built-in refusal
+    /// prevented, except invisibly. See `crate::capabilities` for the shape and its rules.
+    #[serde(default)]
+    pub capabilities: BTreeMap<String, crate::capabilities::CapabilityEntry>,
     /// How prova manages the package's LuaLS IDE integration (`.luarc.json` + synced annotations).
     /// Not profile-specific — a property of the package.
     #[serde(default)]
@@ -701,6 +715,9 @@ pub struct Resolved {
     pub sources: BTreeMap<String, String>,
     /// Named topologies (`[topologies]`) — name → the package factory it exposes.
     pub topologies: BTreeMap<String, TopologyDecl>,
+    /// The resolved `[capabilities]` vocabulary — the registrations and the `"*"` fall-through
+    /// policy (docs/design/capabilities.md).
+    pub capabilities: crate::capabilities::ResolvedCapabilities,
     /// LuaLS IDE-integration policy (`[luals]`).
     pub luals: Luals,
     /// Git-source update policy (`[updates]`), applied to every run.
@@ -775,91 +792,6 @@ fn diagnose_unknown_key(err: &str) -> Option<String> {
     let known = expected.split('`').skip(1).step_by(2);
     let best = suggest(field, known)?;
     Some(format!("unknown key `{field}` — did you mean `{best}`?"))
-}
-
-/// One warning per deprecated spelling per process, on stderr. The serde `alias` attributes keep
-/// the old spellings PARSING for one release; this is what keeps them TEACHING. Everything here
-/// retires together at 1.0 with the other pre-1.0 spellings.
-///
-/// Runs against the generic TOML (same trick as the version gate), because serde aliases are
-/// silent by design — after a successful parse there is no way to know which spelling was used.
-/// Only the project's OWN manifest warns; a dependency's manifest is not the consumer's to fix.
-fn warn_deprecated_spellings(text: &str) {
-    fn warn_once(key: &'static str, msg: &str) {
-        use std::collections::BTreeSet;
-        use std::sync::{Mutex, OnceLock};
-        static WARNED: OnceLock<Mutex<BTreeSet<&'static str>>> = OnceLock::new();
-        // Recover a poisoned lock: the set is plain data, and a lost dedup only repeats a warning.
-        let mut set = WARNED
-            .get_or_init(|| Mutex::new(BTreeSet::new()))
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if set.insert(key) {
-            eprintln!("prova: {msg}");
-        }
-    }
-
-    let Ok(value) = text.parse::<toml::Value>() else {
-        return; // unparseable text already failed phase two with a real diagnostic
-    };
-    if value.get("plugins").is_some() {
-        warn_once(
-            "plugins",
-            "`[plugins]` is deprecated — rename the table to `[dependencies]` (every dependency \
-             is a package; retires at 1.0)",
-        );
-    }
-    if value.get("claims").is_some() {
-        warn_once(
-            "claims",
-            "`[claims]` is deprecated — rename the table to `[specs]` (the section declares the \
-             prose that holds claims AND backlog items; retires at 1.0)",
-        );
-    }
-    if value.get("plugin").is_some() {
-        warn_once(
-            "plugin",
-            "`[plugin]` is deprecated — rename the table to `[package]` (a package declares \
-             itself; retires at 1.0)",
-        );
-    }
-    let mut overlays: Vec<&toml::Value> = Vec::new();
-    overlays.extend(value.get("run"));
-    if let Some(table) = value.get("profiles").and_then(|p| p.as_table()) {
-        overlays.extend(table.values());
-    }
-    for overlay in &overlays {
-        if overlay.get("plugin_root").is_some() {
-            warn_once(
-                "plugin_root",
-                "`plugin_root` is deprecated — rename the key to `packages` (the directory of \
-                 this package's own packages; retires at 1.0)",
-            );
-        }
-    }
-    if overlays
-        .iter()
-        .skip(usize::from(value.get("run").is_some())) // profile tables only
-        .any(|p| p.get("plugins").is_some())
-    {
-        warn_once(
-            "profile-plugins",
-            "`[profiles.<name>.dependencies]` is deprecated — rename to \
-             `[profiles.<name>.dependencies]` (retires at 1.0)",
-        );
-    }
-    if let Some(topologies) = value.get("topologies").and_then(|t| t.as_table()) {
-        if topologies
-            .values()
-            .any(|decl| decl.get("plugin").is_some())
-        {
-            warn_once(
-                "topology-plugin",
-                "`plugin =` in a [topologies] entry is deprecated — rename the key to `package =` \
-                 (retires at 1.0)",
-            );
-        }
-    }
 }
 
 /// The version this binary reports, for the `[requires] prova` gate.
@@ -953,7 +885,7 @@ impl Manifest {
                 None => format!("invalid prova.toml: {raw}"),
             }
         })?;
-        warn_deprecated_spellings(text);
+        crate::deprecations::warn_deprecated_spellings(text);
         Ok(manifest)
     }
 
@@ -1145,6 +1077,7 @@ impl Manifest {
             dependencies,
             sources: self.sources.clone(),
             topologies: self.topologies.clone(),
+            capabilities: crate::capabilities::resolve(&self.capabilities)?,
             luals: self.luals.clone(),
             updates: self.updates.clone(),
             globals_inject,
@@ -1209,6 +1142,7 @@ proofs = ["tests/smoke"]
                 dependencies: BTreeMap::new(),
                 sources: BTreeMap::new(),
                 topologies: BTreeMap::new(),
+                capabilities: crate::capabilities::ResolvedCapabilities::default(),
                 luals: Luals::default(),
                 updates: UpdatesSection::default(),
                 globals_inject: prova_core::default_inject(),

@@ -504,31 +504,45 @@ pub(super) fn build_plan(col: &Collector, caps: &Capabilities) -> mlua::Result<P
             });
         }
     }
-    // Resolve `requires`: a leaf with an unavailable capability is pre-skipped (not failed).
+    // Resolve `requires`: a leaf with an unavailable capability is pre-skipped (not failed), while a
+    // capability that is misconfigured rather than absent fails the plan.
     // Detect each distinct capability once — some detectors shell out (e.g. `docker info`).
-    resolve_requires(&mut leaves, caps);
+    resolve_requires(&mut leaves, caps)?;
     Ok(Plan { leaves })
 }
 
 /// Set `precondition_skip` on any leaf whose `requires` are not satisfied.
 ///
-/// A capability is an expression, not just a name: `"docker"` or `"dotnet >= 9"`. The skip reason
-/// distinguishes the three ways it can go unmet, because they call for different actions — install
-/// the tool, upgrade it, or fix the typo:
+/// A capability is an expression, not just a name: `"docker"` or `"dotnet >= 9"`. The outcome
+/// distinguishes the ways it can go wrong, because they call for different actions — install the
+/// tool, upgrade it, or fix the config:
 ///
-/// - **absent**    → "requires \"docker\" (unavailable)"
-/// - **too old**   → "requires \"dotnet >= 9\" (dotnet 8.0.421 does not satisfy >= 9)"
-/// - **malformed** → an error, not a skip: a constraint that can never parse would skip forever
+/// - **absent**    → skip: "requires \"docker\" (unavailable)"
+/// - **too old**   → skip: "requires \"dotnet >= 9\" (dotnet 8.0.421 does not satisfy >= 9)"
+/// - **malformed** → an ERROR, not a skip: a constraint that can never parse would skip forever
 ///   and read as green, which is the vacuous green this contract exists to remove.
-pub(super) fn resolve_requires(leaves: &mut [Leaf], caps: &Capabilities) {
-    let mut cache: HashMap<String, Option<String>> = HashMap::new();
+/// - **undeclared under a closed vocabulary** (`[capabilities] "*" = "error"`) → an ERROR, same
+///   reasoning: a package that closed its vocabulary asked to be told, and a skip would leave the
+///   run green while the name it never declared quietly gated a test out of existence.
+///
+/// The last two are the reason this returns a `Result`. It used to fold every outcome into a skip
+/// whose *reason* was the error text — which made this function's own doc comment false, and made
+/// `"*" = "error"` a noisier `"warn"` rather than a gate.
+pub(super) fn resolve_requires(leaves: &mut [Leaf], caps: &Capabilities) -> mlua::Result<()> {
+    let mut cache: HashMap<String, Result<Option<String>, String>> = HashMap::new();
     for leaf in leaves.iter_mut() {
         for cap in &leaf.requires {
-            // `None` = satisfied; `Some(reason)` = not, and why. Memoized: version probes shell out.
-            let unmet = cache
+            // `Ok(None)` = satisfied; `Ok(Some(reason))` = unmet, and why; `Err` = misconfigured.
+            // Memoized: version probes shell out.
+            let status = cache
                 .entry(cap.clone())
-                .or_insert_with(|| caps.unmet_reason(cap))
+                .or_insert_with(|| caps.expr_status(cap))
                 .clone();
+            let unmet = match status {
+                Err(e) => return Err(mlua::Error::RuntimeError(e)),
+                Ok(None) => None,
+                Ok(Some(reason)) => Some(format!("requires {cap:?} ({reason})")),
+            };
             if let Some(reason) = unmet {
                 // An unmet `requires` wins over the spec flag — nothing was observed, so there is
                 // no outcome to invert. But "not applicable on this machine" and "not built
@@ -543,4 +557,5 @@ pub(super) fn resolve_requires(leaves: &mut [Leaf], caps: &Capabilities) {
             }
         }
     }
+    Ok(())
 }

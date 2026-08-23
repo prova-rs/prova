@@ -90,11 +90,12 @@ pub use engine::{
     builtin_capability_names, collect_reminders, collect_switch_census, discover_path, discover_path_with, docker_runs_linux_containers, eval_snippet,
     evaluate_reminders, hold_topology,
     inspect_package, is_builtin_capability, list_topologies, load_project_config, obligations_for_suite,
-    qualify_leaf_path, run_path, ProofObligation,
+    qualify_leaf_path, resolve_capabilities, run_path, ProofObligation,
     run_path_with, unreferenced_snapshots, up, watch, AttachedRegistry, AttachedTopology,
-    Capabilities, Endpoint, HeldTopology, InternedHandle, Module, TopologyPool,
+    Capabilities, CapabilityExplanation, CapabilityFactory, CapabilityRegistration, CommandProbe,
+    DeclKind, Endpoint, HeldTopology, InternedHandle, Module, Stream, TopologyPool,
     ListNode, PackageReport, PackageShape, PortMode, RunConfig, Selection, SnapshotRegistry,
-    TopologyRegistration,
+    TopologyRegistration, UndeclaredPolicy, VersionQuery,
 };
 pub use lanes::{Lane, LANES};
 pub use layout::{RootedSystemLayout, SystemLayout, XdgSystemLayout};

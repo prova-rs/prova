@@ -50,8 +50,9 @@ end)
   `t:expect_all(fn)` collects soft failures; `t:skip(why)`.
 - `requires = { "docker", "dotnet >= 9" }`: a capability is a tool name checked on PATH
   (`docker` probes the daemon; version constraints compare). Missing → the node SKIPS with the
-  reason shown, never fails — so a TYPO'D NAME SILENTLY SKIPS; read skip reasons. Custom
-  predicates: `runtime.capability(name, fn)` in the `prova.lua` companion.
+  reason shown, never fails — so a TYPO'D NAME SILENTLY SKIPS; read skip reasons, or close the
+  vocabulary with `[capabilities] "*" = "error"` so an undeclared name is red instead. Declare
+  anything the PATH heuristic gets wrong in `[capabilities]` (`prova learn capabilities`).
 - Snapshots: `t:expect(tree):matches_snapshot{ level = "layout"|"content" }`; `-u` rewrites;
   review `.snap` diffs like code; `--unreferenced warn` catches orphans in CI.
 - There are NO before_each/after_each hooks — a fixture is the setup that produces a value;

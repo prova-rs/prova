@@ -113,13 +113,15 @@ unit cancels its future at the deadline (`timed out after …`); teardown still 
 ## Capability gating: `requires` (skip) vs `must_run` (fail)
 
 `requires = { "docker", "dotnet >= 9" }` states a **fact about the test** — what it needs. The
-vocabulary is open: a name is a binary probed on `PATH` (special cases: `docker` probes the live
-daemon; `github` checks `GITHUB_TOKEN`; native names like `http`/`grpc` check compiled
-features), and `runtime.capability(name, fn)` in the companion registers package-specific
-predicates. Unavailable ⇒ the node **skips with the reason shown, never fails** — which also
-means a typo'd name silently skips: read skip reasons. A profile's `must_run = [...]` is the
-other half — **policy about the environment**: same expressions, but unmet ⇒ the run FAILS
-(exit 2) before anything executes. See [`test-topology.md`](test-topology.md).
+vocabulary is open by default: a name is a binary probed on `PATH` (special cases: `docker` probes
+the live daemon; `github` checks `GITHUB_TOKEN`; native names like `http`/`grpc` check compiled
+features), and `[capabilities]` in the manifest declares the rest — a declarative command probe, a
+Lua predicate from a package, or a built-in named out loud. Unavailable ⇒ the node **skips with the
+reason shown, never fails** — which also means a typo'd name silently skips unless the package
+closes its vocabulary with `[capabilities] "*" = "error"`, which turns an undeclared name red. A
+profile's `must_run = [...]` is the other half — **policy about the environment**: same expressions,
+but unmet ⇒ the run FAILS (exit 2) before anything executes. See
+[`capabilities.md`](capabilities.md).
 
 ## Modules (built-ins) and packages
 
@@ -145,10 +147,11 @@ current surface — core and every package this package declares — is one call
 - **`suite.lua`** — in a directory, groups that directory's test files into one suite sharing a
   Lua state (`Scope.Suite` fixtures live here; `suite.config{ name?, requires? }` names/gates
   the whole suite). Directory-scoped: subdirectories are discovered independently.
-- **`prova.lua`** (or the manifest's `config` path) — the package **companion**, loaded once
-  with the manifest, *before* any suite: `runtime.capability(name, fn)` registrations live
-  here. It is NOT a conftest — shared fixtures belong in `suite.lua`; shared helpers in a
-  `require`d package under `packages`.
+- **`prova.lua`** (or the manifest's `config` path) — the package **companion**: DEPRECATED, and
+  the only thing it ever held was `runtime.capability(name, fn)`, which is now `[capabilities]` in
+  the manifest ([capabilities.md](capabilities.md)). It was never a conftest — shared fixtures
+  belong in `suite.lua`; shared helpers, and now capability predicates, in a `require`d package
+  under `packages`.
 
 ## Running (pointer)
 

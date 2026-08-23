@@ -646,13 +646,21 @@ function prova.containerized(spec) end
 ---@class prova.runtime
 runtime = {}
 
---- Register a project-wide capability — a fact about what THIS system, as configured, can test: its
---- OS, hardware, and software. A property of the environment, not the code. Built-ins cover the
---- common cases (`unix`/`windows`, `docker`, `dotnet >= 9`, any tool on PATH); this is the escape
---- hatch for the rest — a GPU, a kind cluster, a licence file. The name (not the closure) is what
---- lets a skip say what was missing; the predicate is only how it is detected. Once registered the
+--- DEPRECATED — declare capabilities in `prova.toml`'s `[capabilities]` instead:
+---
+---     [capabilities]
+---     gpu = { package = "env", capability = "gpu" }
+---
+--- and move this predicate into that package as an exported `capabilities.gpu` function, where a
+--- proof can call it directly. The companion file, this function, the `runtime` global, `[run]
+--- config`, `--config`, and `PROVA_CONFIG` retire together
+--- (docs/design/deprecations.md#retire-capability-companion).
+---
+--- Registers a project-wide capability — a fact about what THIS system, as configured, can test: its
+--- OS, hardware, and software. A property of the environment, not the code. The name (not the
+--- closure) is what lets a skip say what was missing; the predicate is only how it is detected. The
 --- name works in both directions: `requires = { "gpu" }` (skip if unmet) and `must_run = ["gpu"]`
---- (fail if unmet). See docs/design/test-topology.md.
+--- (fail if unmet). See docs/design/capabilities.md.
 ---@param name string                          # the capability name used in `requires` / `must_run`
 ---@param predicate fun(): boolean|string|nil  # true = available · a version string = comparable (`gpu >= 2`) · false/nil = unavailable
 function runtime.capability(name, predicate) end

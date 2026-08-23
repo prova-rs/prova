@@ -23,7 +23,9 @@ mod broker;
 // `claims` moved to prova-core (`prova_core::ledger::claims`) so an embedding host can
 // read what a project owes; the CLI is one renderer over that ledger, not its owner.
 use prova_core::ledger::claims;
+mod capabilities;
 mod catalog;
+mod deprecations;
 mod home;
 mod ide;
 mod init;

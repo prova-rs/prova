@@ -258,57 +258,65 @@ closure reports as `function: 0x7f9a…`. It also cannot be memoized by identity
 `resolve_requires` caches per expression string), cannot appear in a CLI flag or an MCP argument, and
 cannot be validated by a package browser.
 
-### So an arbitrary predicate gets a NAME — in `prova.lua`
+### So an arbitrary predicate gets a NAME — declared in `prova.toml`
 
-```lua
--- prova.lua — OPTIONAL, project-level, loaded with the manifest
-runtime.capability("gpu",          function() return probe_cuda() end)
-runtime.capability("kind-cluster", function() return #kind_clusters() > 0 end)
+The full design is [capabilities.md](capabilities.md); what belongs here is the constraint that
+fixed its shape.
+
+```toml
+[capabilities]
+gpu          = { package = "env", capability = "gpu" }
+kind-cluster = { package = "env", capability = "kind_cluster" }
 ```
 
-Then `requires = { "gpu" }` and `must_run = ["gpu"]` both work, skips stay attributable, and the
-escape hatch exists without forking the vocabulary. The two-layer move again: the convenience never
-removes the primitive.
+`requires = { "gpu" }` and `must_run = ["gpu"]` both work, skips stay attributable, and the escape
+hatch exists without forking the vocabulary. The two-layer move again: the convenience never removes
+the primitive.
 
-**It must be a project-level companion, not `suite.lua`** — for two reasons, the second structural:
+**It must be declared at package level, and it cannot live in a proof file** — for two reasons, the
+second structural:
 
-1. **Scope.** A capability is a project-wide vocabulary. Registered per-suite it would be invisible to
+1. **Scope.** A capability is a project-wide vocabulary. Declared per-suite it would be invisible to
    sibling suites and to `must_run` (which lives in `prova.toml`, project-level), and N copies could
    silently disagree — the copy-paste failure that produced both the duplicated docker probes and the
    near-miss on the test semaphore's lock path.
-2. **Ordering.** `must_run` is a PRECONDITION, checked before suites load. A suite-registered
-   capability does not exist yet at that moment, so `must_run = ["gpu"]` could never work. A
-   project-level companion loads with the manifest:
+2. **Ordering.** `must_run` is a PRECONDITION, checked before suites load. A suite-declared
+   capability does not exist yet at that moment, so `must_run = ["gpu"]` could never work. The
+   manifest plus the resolved package set is what the precondition can see:
 
    ```
-   prova.toml  → what to run, pins, must_run     (declaration; machine-editable)
-   prova.lua   → runtime.capability("gpu", fn)     (behavior; project-global)
+   prova.toml  → what to run, pins, must_run, [capabilities]   (declaration; machine-editable)
+   packages/   → the predicate bodies, as exported functions   (behavior; require-able, testable)
      ↓ precondition check — now sees "gpu"
    suites      → collect, then execute
    ```
 
 **The split stays the one this codebase already keeps: TOML declares, Lua computes.** TOML keeps the
-properties the registry/package-browser arc needs — an agent can add a package with `toml_edit`
-(comments preserved), and CI can read what a package runs without executing it. Lua gets only what
-TOML structurally cannot hold. It is the same pairing as `archetype.yaml` + `archetype.lua`, so it is
-one fewer idiom to learn.
+properties the registry/package-browser arc needs — an agent can add a capability with `toml_edit`
+(comments preserved), and CI can read what a package needs without executing it. Lua gets only what
+TOML structurally cannot hold, and it lives in a package rather than a bespoke config file, so it is
+`require`-able and a proof can call it.
 
-**The entry test, so it does not become a dumping ground:** *does this need to exist before any suite
-loads AND be visible to every suite?* Capabilities pass. Fixtures do not (they are suite state).
-`prova.lua` is optional — no file means today's behavior, exactly.
+This is where the design changed (2026-08). The predicate used to live in a `prova.lua` **companion**
+holding a `runtime` global valid nowhere else — one concept with its own file, its own namespace, and
+its own resolution path, and the only piece of project configuration that could not be tested. The
+ordering argument above was always right; the conclusion "therefore a separate Lua file" was not. A
+manifest section plus a package satisfies the same constraint and deletes a concept. The companion is
+a dated deprecation bridge ([deprecations.md](deprecations.md#retire-capability-companion)).
 
-The one caveat worth stating out loud: **`suite.config{}` already is Lua config**, so the package
-runs two config languages today. That split is defensible (the suite is the *program*; the manifest is
-the *declaration*), but if it ever reads as arbitrary rather than principled, this decision reopens —
-and `runtime.capability()` deepens the Lua side rather than shrinking it.
+That also settles the caveat this section used to end on — that `runtime.capability()` deepened the
+Lua config side while `suite.config{}` was already Lua config, leaving the package running two config
+languages for no principled reason. It does not any more: `runtime` is gone, and what remains in Lua
+is program (a suite, a predicate), not configuration.
 
 ## Open
 
-- **The capability vocabulary is open by design** (binary-on-PATH fallback), which makes
-  `requires = { "kubectl" }` work with no registration — and makes `requires = { "dokcer" }` skip
-  silently forever. Measured: a typo'd capability skips, exit 0. `must_run` covers the capabilities a
-  context cares about; whether typos deserve more (a warned-on known-name set) is deferred — the open
-  vocabulary is worth more than the typo protection.
+- ~~**The capability vocabulary is open by design**, which makes `requires = { "dokcer" }` skip
+  silently forever; whether typos deserve more is deferred.~~ **Resolved** (2026-08): the openness is
+  now a *policy* rather than a property. `[capabilities] "*"` chooses `probe` (the open default — the
+  ergonomic is still worth having), `warn` (probe, and teach the missing declaration), or `error` (an
+  undeclared name is a config error and fails the run). A typo is silent only in a package that chose
+  to leave it so. See [capabilities.md](capabilities.md#wildcard-declares-the-fall-through).
 - **Registry + package browser + `prova init` placement** — a companion arc, not this doc: a
   user-level registry config, `prova package search/add`, and MCP tools so an agent can do it. One
   constraint up front: an agent adding a package is a **supply-chain action**, so user consent is part

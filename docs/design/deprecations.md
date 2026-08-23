@@ -12,3 +12,11 @@ date deliberately. Do not let it rot silently — that is the whole point of the
 <!-- backlog: retire-specs-docs-shim recorded=2026-08-08 due=2027-01-01 -->
 The `[specs] docs = [...]` shorthand is a deprecation bridge for the pre-`[[specs.source]]` config;
 remove it, and its warning, once consumers have migrated. (`prova learn spec`.)
+
+<!-- backlog: retire-capability-companion recorded=2026-08-23 due=2027-02-01 -->
+The `prova.lua` companion is a deprecation bridge for the pre-`[capabilities]` config
+(docs/design/capabilities.md). Retiring it removes one concept and everything it needed: the
+companion file, the `runtime` global and `runtime.capability`, `install_runtime_stub` in
+`engine/setup.rs`, `load_project_config` in `engine/eval.rs`, the `[run] config` manifest key, and
+the `--config` flag with its `PROVA_CONFIG` env override. Remove them, and the teaching warning,
+once consumers have migrated. (`prova learn capabilities`.)

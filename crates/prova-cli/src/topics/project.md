@@ -34,7 +34,8 @@ anchor repo paths on them, never on cwd.
 |---|---|
 | `[run] proofs = ["proofs"]` | directory-NAME patterns (not paths): every matching dir below the root holds `*.prova.lua` declaration files (`*_test.lua` also accepted) |
 | `[run] packages` | THE directory of this package's own local packages; no default — undeclared means none scanned |
-| `[run] config` | Lua companion loaded pre-suite (defaults to `prova.lua` beside the manifest) — `runtime.capability` lives there |
+| `[capabilities]` | the capability vocabulary: name → factory (`command` / `package` / `intrinsic`), plus `"*"` for what an undeclared name means (`prova learn capabilities`) |
+| `[run] config` | DEPRECATED — the `prova.lua` companion that used to host `runtime.capability`; declare capabilities in `[capabilities]` instead |
 | `[run] jobs / format / env` | concurrency (throughput only), output format (`console`\|`json`\|`tap`), run environment |
 | `[run] color / quiet` | console color (`auto`\|`always`\|`never`) · only failures + recap + tally |
 | `[run] github / junit` | GitHub Actions annotations sink (`auto`\|`on`\|`off`) · also write JUnit XML to this path |

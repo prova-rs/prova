@@ -2963,6 +2963,7 @@ dependencies = [
  "prost-types",
  "protox",
  "quick-xml",
+ "regex",
  "reqwest",
  "semver",
  "serde",

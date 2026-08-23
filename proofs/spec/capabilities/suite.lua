@@ -1,0 +1,16 @@
+-- The capability vocabulary's own black-box surface (docs/design/capabilities.md).
+--
+-- Its own suite, not part of `spec/engine` (whose `suite.lua` names it "promise-engine"): these
+-- proofs share nothing with that feature, and a file in a named suite joins that suite's Lua state.
+--
+-- `vocabulary_test.lua` holds the declaration surface — the three selectors, the `"*"` policy, the
+-- built-in override, and the `prova.lua` deprecation bridge. `report_test.lua` holds what
+-- `prova capabilities` answers. Both drive prova through `prova.bin` against scratch projects, which
+-- is the only honest way to prove a manifest section: the vocabulary resolves before any proof file
+-- loads, so it cannot be exercised from inside the run it configures.
+--
+-- Moved here from `crates/prova-cli/selftest/` in 2026-08. That tree runs via an explicit-path Rust
+-- launcher, so it is invisible to proof DISCOVERY — and therefore to the claim ledger, which scans
+-- what discovery finds. Every `covers` in it bound nothing, and `prova owed` reported the claims
+-- UNPROVEN with the proofs sitting right there.
+suite.config{ name = "capabilities" }

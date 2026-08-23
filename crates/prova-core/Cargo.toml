@@ -22,6 +22,10 @@ humantime = "2"
 toml = "0.8"
 # Filesystem globbing for the `fs` module (fs.glob(root, "**/*.rs")).
 glob = "0.3"
+# `[capabilities] pattern = "..."` — picking a version out of a tool's output when the
+# first-version-shaped-token heuristic can't (`kubectl version --client`, `terraform version -json`).
+# Already in the graph transitively; this is a declaration, not new weight.
+regex = "1"
 # The `junit` module (docs/design/verifiers.md) — JUnit XML is the de facto lingua franca of
 # test results, and its escaping/entity rules are the classic place to hand-roll a quiet bug.
 quick-xml = "0.37"

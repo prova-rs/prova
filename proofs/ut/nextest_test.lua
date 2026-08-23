@@ -62,3 +62,17 @@ prova.test("selection-axes parity holds at the unit level, bound to its claim", 
   local report = junit.load(t:use(deputy))
   expect_passed(t, report, "mcp::tests::selection_axes_parity")
 end)
+
+prova.test("the declarative vocabulary can express prova's own docker checker", {
+  locks = { prova.writes("cargo") },
+  requires = { "cargo-nextest" },
+  covers = "docs/design/capabilities.md#intrinsics-are-expressible",
+  proves = "the property lives at the unit level because it compares two IMPLEMENTATIONS on this \
+host — the declarative CommandProbe against the built-in probe — which no black-box run can reach. \
+If the intrinsics were not expressible in the vocabulary offered to users, `intrinsic` would be a \
+privileged escape hatch rather than a named preset, and every gap in the declarative form would be \
+invisible from inside prova.",
+}, function(t)
+  local report = junit.load(t:use(deputy))
+  expect_passed(t, report, "engine::capabilities::tests::the_declarative_docker_agrees_with_the_intrinsic")
+end)
