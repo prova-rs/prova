@@ -1271,6 +1271,28 @@ why it was never reachable from a clean tree.
 
 Mutation-tested: banking the old 25,302 regime makes the guard fail naming +17.8% drift.
 
+**Refined 2026-08-24, while fixing a separate break in the same harness**
+([verifiers.md#coverage-proves-its-own-instrument](verifiers.md#coverage-proves-its-own-instrument)).
+The two regimes are real, and the floors above are banked in the right one — but what *selects* the
+regime is not the exec staging. Staging moves the linked EXECUTABLES out of `deps/`; nextest's
+test-cfg `.rlib`s stay in the scan and carry their `#[cfg(test)]` lines into the denominator
+regardless. So the bare basis is reachable only on the **first conduct after the generation is wiped
+or the workspace is `cargo clean`ed**, when nextest has never built there — every conduct after one
+lands in the larger regime. Measured back to back with an identical numerator (19,665): a first
+conduct read 74.31% against ~26,500 lines, the next read 62.83% against ~31,300.
+
+Two consequences worth carrying. A wipe before measuring is not a clean-room courtesy — it flatters
+the black-box number by ~11 points, and flattering is the direction nobody investigates. And the
+`staged_execs_remaining` guard can pass while the denominator is still the large one, so it must not
+be read as *producing* the bare basis; it prevents a different skew and is worth keeping on its own
+terms. Both are now stated at the code.
+
+This does not resolve the claim's deeper point — codegen-unit count, incremental state and dead-code
+stripping are still unpinned, and the pre-resolution table above still shows clean-slate conducts
+counting 35,514 vs 29,016 lines, which this mechanism does not explain. It names one source of the
+instability, not all of them. What it does establish is that *within* the steady state the numbers
+reproduce: two consecutive conducts agreed to 0.03pp on unit and merged.
+
 <!-- claim: stdio-cannot-drive-a-conversational-sut recorded=2026-08-18 -->
 **A spawned process cannot be driven: `Process` has no stdin, so a request/response SUT is
 unprovable without a co-process written in something else.** `Process` exposes `output()`,

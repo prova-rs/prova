@@ -325,5 +325,32 @@ with timeout-reaps-the-conduct (the direct-child half).
 <!-- claim: detached-topologies-hold-no-lease recorded=2026-08-13 -->
 **`prova start` provisions are deliberately unleased.** The lease's whole premise — conducts die with the run — is exactly wrong for the one verb whose purpose is outliving the invocation: a detached topology's processes register nothing, keep their `running/` record + `prova down` lifecycle, and survive prova's exit on purpose. The carve-out is the verb's, not the author's: the same factory leases under a run and detaches under `start`.
 
-<!-- backlog: coverage-harness-uninstrumented-under-llvm-cov-0-8 recorded=2026-08-23 -->
-The coverage harness measures nothing: proofs/coverage/coverage_test.lua fails with "0 suite profraw(s) — the subject is not instrumented", and a direct `cargo build -p prova-cli` under cargo-llvm-cov 0.8.7's own `show-env` environment also produces a binary with zero __llvm_prf symbols. cargo-llvm-cov 0.8.7 instruments through RUSTC_WRAPPER gated on an explicit __CARGO_LLVM_COV_RUSTC_WRAPPER_CRATE_NAMES allowlist and reports a split CARGO_LLVM_COV_BUILD_DIR; the harness's explicit --target-dir pin predates both. This is the same class of break the pin's own comment records surviving once before (show-env stopped setting CARGO_TARGET_DIR). Until it is fixed, `prova run coverage` and `prova run release` are red for a harness reason rather than a coverage reason, and the ratcheted baseline in .prova/baselines/quality.json is unenforced.
+<!-- claim: coverage-proves-its-own-instrument -->
+**The coverage conduct proves its instrument before it measures anything.** It verifies that the
+subject binary actually writes a profile, and that the ordinary build tree does *not*, and refuses
+to report a number when either check fails. A measuring apparatus that cannot confirm it is
+measuring does not fail loudly — it produces a plausible number, which is the vacuous green wearing
+a lab coat. Both halves are load-bearing: an uninstrumented subject reads as lost coverage, and an
+instrumented *ordinary* build litters profiles from every nested prova and can corrupt the scan it
+is not supposed to be part of.
+
+### The aliasing trap that made both symptoms one bug
+
+Recorded because the shape recurs whenever a build tool moves flags out of the fingerprint. cargo
+keeps compilation artifacts in a shared build directory *outside* `--target-dir`, which only decides
+where finished artifacts land. cargo-llvm-cov instruments through `RUSTC_WRAPPER` plus a crate-name
+allowlist — and the wrapper is not part of cargo's fingerprint. So an instrumented build and an
+ordinary one hash identically, alias each other in that shared cache, and whichever compiled last is
+what both get:
+
+- the coverage subject came out **uninstrumented** (the cache held ordinary artifacts) — the tell
+  being that a *fresh* `--target-dir` compiled nothing at all;
+- `target/debug/prova` came out **instrumented** (the cache held coverage artifacts), so every
+  ordinary run littered — 404 `default_*.profraw` reached the repo root before anything noticed.
+
+The fix is to give the coverage build its own cache identity with a fingerprinted flag
+(`--cfg=coverage`, which llvm-cov already passes) so a real compile happens, and to leave the
+instrumenting to the wrapper — which works correctly whenever compilation actually occurs, and keeps
+instrumentation selective to workspace crates rather than dragging every third-party dependency into
+the denominator. Note what does *not* cure a contaminated tree: deleting `target/` re-links the same
+objects straight back out of the shared cache. `cargo clean -p <each workspace member>` is the cure.

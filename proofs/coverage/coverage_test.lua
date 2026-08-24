@@ -49,6 +49,7 @@
 local COV_DIR = prova.root .. "/target/llvm-cov-target"
 local SUITE_STAGE = prova.root .. "/target/suite-profraws"
 local EXEC_STAGE = prova.root .. "/target/exec-stage"
+local PROBE_DIR = prova.root .. "/target/instrument-probe"
 
 --- `cargo llvm-cov show-env` as a table (values are single-quoted).
 local function cov_env()
@@ -58,7 +59,60 @@ local function cov_env()
     local k, v = line:match("^([%w_]+)='?([^']*)'?$")
     if k then env[k] = v end
   end
+  -- SEPARATE THE FINGERPRINT, so the instrumented build is actually COMPILED.
+  --
+  -- cargo keeps compilation artifacts in a shared build directory outside `--target-dir`
+  -- (`~/.cache/cargo/build/<hash>`, 529G of it here), and `--target-dir` only decides where finished
+  -- artifacts are placed. show-env instruments through `RUSTC_WRAPPER` + a crate-name allowlist —
+  -- and **the wrapper is not part of cargo's fingerprint**. So an instrumented build and an ordinary
+  -- one hash identically, alias each other in that cache, and whichever compiled last is what both
+  -- get. One bug, two symptoms, both measured here:
+  --
+  --   * the coverage subject came out UNINSTRUMENTED (the cache held ordinary artifacts) — a fresh
+  --     `--target-dir` compiled *nothing at all*, which is the tell;
+  --   * `target/debug/prova` came out INSTRUMENTED (the cache held coverage artifacts), so every
+  --     ordinary prova run littered — 404 `default_*.profraw` reached the repo root.
+  --
+  -- `--cfg=coverage` is a RUSTFLAG, and rustflags ARE fingerprinted, so adding it gives the coverage
+  -- build its own cache identity and forces a real compile. The wrapper then does the instrumenting
+  -- it already does correctly (verified: it instruments fine whenever compilation actually happens),
+  -- which keeps instrumentation SELECTIVE — workspace crates only, per the allowlist. That
+  -- selectivity is the reason not to just set `-Cinstrument-coverage` globally here: that would
+  -- instrument every third-party dependency too and drag them into the denominator every layer is
+  -- measured against.
+  --
+  -- `--cfg=coverage` is llvm-cov's own flag (it ships in the wrapper's rustflags, and llvm-cov sets
+  -- it by default — `--no-cfg-coverage` opts out), not an invention. `\31` is the encoded-rustflags
+  -- separator.
+  --
+  -- It is chosen partly BECAUSE this tree has no `#[cfg(coverage)]` anywhere (checked: zero uses), so
+  -- it moves the fingerprint without changing a single line of what compiles — coverage measures the
+  -- code that ships. That is the invariant to preserve: the day someone adds a `#[cfg(coverage)]`
+  -- arm, this flag stops being inert and the lane starts measuring something the release never runs.
+  env.CARGO_ENCODED_RUSTFLAGS = "--cfg\31coverage"
   return env
+end
+
+--- Does `bin` actually write a profile when asked to? The harness's own instrument, verified before
+--- anything is measured with it.
+---
+--- This exists because the alternative is a mystery. When the wrapper silently stopped
+--- instrumenting, every layer still produced a number: the black-box percent collapsed, the ratchet
+--- went red, and the failure looked exactly like lost coverage. A measuring apparatus that cannot
+--- confirm it is measuring is the vacuous green wearing a lab coat — so the conduct proves the
+--- instrument first, and says so in the mechanism's own vocabulary when it fails.
+---
+--- `--version` is the probe verb: it answers as the binary you invoked (no trampoline, no manifest
+--- resolution), so what emits the profile is exactly the subject and not something it re-exec'd.
+local function emits_profile(bin)
+  fs.remove_all(PROBE_DIR)
+  fs.mkdir(PROBE_DIR)
+  shell.run({ bin, "--version" },
+    { cwd = PROBE_DIR, merge_stderr = true,
+      env = { LLVM_PROFILE_FILE = PROBE_DIR .. "/probe-%p.profraw" } })
+  local n = #fs.glob(PROBE_DIR, "*.profraw")
+  fs.remove_all(PROBE_DIR)
+  return n > 0
 end
 
 local function purge(dir, pat)
@@ -129,8 +183,15 @@ end
 ---
 --- Why it matters, measured 2026-08-19/20: the black-box layer has two basis regimes — ~25,300
 --- lines when `deps/` is bare and ~31,300 when the test executables are still in it, which reads
---- as 73.6% and 56.8% for identical code. The floors were banked in the bare regime; every
---- "regression" this lane has reported was a conduct that landed in the other one.
+--- as 73.6% and 56.8% for identical code.
+---
+--- **Corrected 2026-08-24: the floors were banked in the ~31,300 regime, not the bare one.** Measured
+--- back to back with an identical numerator (19,665): a first conduct after a wipe read 74.31%, the
+--- next read 62.83% — and the banked floor is 62.4. So the steady state is what the floor holds, and
+--- this staging is not what selects the regime: it removes the linked EXECUTABLES, while the
+--- test-cfg `.rlib`s that carry `#[cfg(test)]` lines into the denominator stay in the scan. Keep the
+--- check — an executable in the scan is still a real skew — but do not read it as producing the bare
+--- basis. Only a wiped generation does that, and it flatters the number by ~11 points.
 local function staged_execs_remaining()
   local left = {}
   for _, f in ipairs(fs.glob(COV_DIR .. "/debug/deps", "*")) do
@@ -194,6 +255,45 @@ local conduct = prova.fixture("layered-coverage", Scope.File, function()
     { cwd = prova.root, env = env, timeout = "1800s", merge_stderr = true })
   if build.code ~= 0 then
     return { error = "instrumented build failed:\n" .. (build.stdout or "") }
+  end
+
+  -- The OTHER half of the isolation contract. `--target-dir` above keeps instrumentation out of
+  -- target/debug; this checks it stayed out. An instrumented trampoline binary is not a harmless
+  -- extra: every nested `prova` the suite spawns then writes a profile into whatever cwd it happens
+  -- to hold, which both litters the tree and can drop profraws into the scan root and silently
+  -- corrupt the numbers this conduct reports. Measured: 404 `default_*.profraw` at the repo root
+  -- accumulated from one contaminated generation before anything noticed.
+  local trampoline = prova.root .. "/target/debug/prova"
+  if fs.exists(trampoline) and emits_profile(trampoline) then
+    return { error =
+      "the ORDINARY build tree is instrumented: " .. trampoline .. " writes a profile.\n" ..
+      "  Coverage isolation is broken — every nested prova in the suite will litter profraws and " ..
+      "may\n" ..
+      "  corrupt this conduct's scan.\n" ..
+      "  Cure: `cargo clean -p prova-core -p prova-cli -p prova-archetect -p xtask`, then " ..
+      "`rm -f default_*.profraw`.\n" ..
+      "  NOT `rm -rf target/debug` alone — cargo keeps compilation artifacts in a shared build dir " ..
+      "outside\n" ..
+      "  target/, so deleting target/ re-links the SAME contaminated objects straight back. " ..
+      "Instrumentation\n" ..
+      "  belongs only under " .. COV_DIR .. "." }
+  end
+
+  -- Prove the instrument before measuring with it. A subject that emits no profile makes every
+  -- number below meaningless while still producing one — which is how this harness once reported a
+  -- collapsed black-box percent and sent two sessions after a ratchet instead of a build flag.
+  if not emits_profile(COV_DIR .. "/debug/prova") then
+    return { error =
+      "the coverage subject is NOT instrumented: " .. COV_DIR .. "/debug/prova wrote no profraw " ..
+      "when run with LLVM_PROFILE_FILE set.\n" ..
+      "  Nothing below would measure anything, so the conduct stops here rather than reporting a " ..
+      "number.\n" ..
+      "  This is a build-flag failure, never a coverage regression. Check that `cargo llvm-cov " ..
+      "show-env`\n" ..
+      "  still exports __CARGO_LLVM_COV_RUSTC_WRAPPER_RUSTFLAGS (this harness forwards it as " ..
+      "CARGO_ENCODED_RUSTFLAGS)\n" ..
+      "  and that a plain `RUSTFLAGS=-Cinstrument-coverage cargo build` still instruments on this " ..
+      "toolchain." }
   end
 
   -- Layer 1, observed: the black-box suite through the instrumented binary — reported BEFORE
@@ -360,18 +460,38 @@ end)
 --- Re-banking is deliberate and reviewable: edit the table below in the same commit that edits the
 --- floors, because the two are one measurement and must move together.
 ---
---- **Banked 2026-08-20**, and the three agreeing is the point: before the staging check above, the
---- black-box layer reported against ~25,300 lines while unit and merged used ~29,800, so "merged"
---- was unioning two layers measured against different denominators. Its numerator never moved
---- (18,623 covered either way) — only what it was divided by. One basis, checked before the report
---- that depends on it, is what makes the three numbers comparable to each other at all.
+--- **Re-banked 2026-08-24 (29,814 → 31,298): one shared value, as before.** The rise is the
+--- capabilities feature landing — ~1,500 coverable lines — and the three still agree, which is the
+--- 2026-08-20 note's point and remains correct.
 ---
---- Measured twice on this tree: 29,814 both times, with the percentages within 0.04 of each other.
+--- What this re-bank also settles: **the black-box layer's two basis regimes are transient vs steady
+--- state, not a per-layer property.** A first attempt banked blackbox separately at 26,464 on the
+--- strength of one conduct; the very next conduct measured it at 31,298 with an IDENTICAL numerator
+--- (19,665 both times), which is the whole tell. The regimes are:
+---
+---   * **~26,500 (transient)** — only on the first conduct after the coverage generation is wiped or
+---     the workspace is `cargo clean`ed, when nextest has never built here. Reads ~74%.
+---   * **~31,300 (steady state)** — every conduct after one, because nextest's test-compiled
+---     artifacts persist in the scan dir. `stage_execs` moves the linked EXECUTABLES out (and
+---     `staged_execs_remaining` proves it), but the test-cfg `.rlib`s stay and carry their
+---     `#[cfg(test)]` lines into the denominator. Reads ~63%.
+---
+--- The floors are banked in the steady state — correctly, and that was always the intent (the
+--- 2026-08-20 re-bank says so: black-box 62.4 came from the regime WITH the test artifacts in scan).
+--- Only the `staged_execs_remaining` comment below misstated it as the bare regime; it is corrected
+--- there. Confirmation here: blackbox measures 62.83% against that 62.4 floor.
+---
+--- So a conduct that lands in the transient regime reads ~11 points HIGH — flattering, which is the
+--- direction nobody investigates. Wiping the generation before measuring is therefore not a
+--- clean-room courtesy; it changes the number.
+---
+--- Measured 2026-08-24 (prova 0.25.0), steady state: unit 22489/31298, blackbox 19665/31298,
+--- merged 25329/31298.
 local BASIS = {
-  -- layer      lines counted at bank time (2026-08-20, prova 0.25.0)
-  unit     = 29814,
-  blackbox = 29814,
-  merged   = 29814,
+  -- layer      lines counted at bank time (2026-08-24, prova 0.25.0)
+  unit     = 31298,
+  blackbox = 31298,
+  merged   = 31298,
 }
 
 --- How far the basis may drift before the percentages stop being comparable. Small on purpose:
@@ -412,7 +532,12 @@ end
 prova.test("whole-bar line coverage — unit AND black-box merged — does not regress past the baseline", {
   locks = { prova.writes("cargo") },
   requires = { "cargo-llvm-cov", "cargo-nextest" },
-  covers = "docs/design/verifiers.md#coverage-of-the-whole-bar",
+  covers = {
+    "docs/design/verifiers.md#coverage-of-the-whole-bar",
+    -- The conduct refuses to produce reports at all unless the subject writes a profile and the
+    -- ordinary build tree does not, so a green assertion here entails a verified instrument.
+    "docs/design/verifiers.md#coverage-proves-its-own-instrument",
+  },
   proves = "unit-only coverage read modules/socket.rs at 2% while it owned a whole proof directory — a number that misleads at the edges is worse than none; the merged total is the bar prova actually holds",
 }, function(t)
   local produced = t:use(conduct)
