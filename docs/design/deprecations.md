@@ -13,6 +13,18 @@ date deliberately. Do not let it rot silently — that is the whole point of the
 The `[specs] docs = [...]` shorthand is a deprecation bridge for the pre-`[[specs.source]]` config;
 remove it, and its warning, once consumers have migrated. (`prova learn spec`.)
 
+<!-- backlog: restore-coverage-to-the-release-gate recorded=2026-08-24 due=2026-10-01 -->
+`prepare-release.yml`'s gate is temporarily narrowed: it runs `ut`, the black-box proofs, and
+`quality` as separate legs instead of one `prova run release`, which excludes the coverage leg.
+Two reasons, both recorded at the workflow. The coverage leg cannot pass on a runner AND a
+developer machine at once — the black-box basis counts ~31,300 lines locally and ~26,500 in CI for
+identical source, so the tripwire fails one by ~18% whichever value is banked
+(agent-ergonomics.md#coverage-denominator-is-not-reproducible, still open). And driving every leg
+from one invocation contended the docker daemon between the black-box suite and the unit lane's
+docker test. Restore the single `prova run release` command once the denominator is a function of
+the source rather than of build state. A gate that stays narrowed is a gate that quietly became a
+lower bar.
+
 <!-- backlog: retire-capability-companion recorded=2026-08-23 due=2027-02-01 -->
 The `prova.lua` companion is a deprecation bridge for the pre-`[capabilities]` config
 (docs/design/capabilities.md). Retiring it removes one concept and everything it needed: the
