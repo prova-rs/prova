@@ -130,7 +130,7 @@ pub fn report_rows(reports: &[prova_core::Report]) -> Vec<ReportRow> {
 pub fn binary_fingerprint() -> String {
     let mut hasher = <Sha256 as Digest>::new();
     hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
-    if let Ok(exe) = std::env::current_exe() {
+    if let Ok(exe) = prova_core::current_exe() {
         hasher.update(exe.to_string_lossy().as_bytes());
         if let Ok(meta) = std::fs::metadata(&exe) {
             hasher.update(meta.len().to_le_bytes());

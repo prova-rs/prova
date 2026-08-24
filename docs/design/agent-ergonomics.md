@@ -692,6 +692,28 @@ then re-banked with bands (see `proofs/coverage/coverage_test.lua`), because the
 this expensive was never the measurement alone — it was a peak-banked ratchet that made a wrong
 number look like a real regression.
 
+<!-- claim: locating-this-prova-survives-its-own-rebuild -->
+**Nothing may exec `std::env::current_exe()` directly: prova replaces its own binary while running,
+and on Linux that path stops being a path.** `[runner]` provisioning rebuilds `target/debug/prova`
+during a run whose conductor *is* that file. Linux resolves `current_exe()` through `/proc/self/exe`,
+which reports a literal `" (deleted)"` suffix once the file has been replaced — a marker, not a
+location. Exec it and you get `not found`, exit 127, from inside a generated shim that mentions none
+of this. Every caller goes through `prova_core::current_exe()`, which strips the marker and prefers
+the canonical path: after a rebuild that is the new binary at the same path, and prova's verbs are
+stable across a rebuild of the same tree.
+
+The cost of not having this: three `proofs/spec/stdio/spawnable_test.lua` proofs failed on
+ubuntu-latest and passed on macOS for four days, because `_NSGetExecutablePath` carries no such
+suffix — so the whole tree was green locally while main's Build was red, and the failure text
+(`exec: … (deleted): not found`) named a file rather than a mechanism. It was in six call sites, not
+just the shim that surfaced it: the reaper's sidecar and the detached-topology respawn would exec the
+same dead path under the same conditions, and neither has a proof that would have caught it.
+
+The rule generalizes past this bug: **a path prova hands to another process must be one that process
+can still resolve.** `current_exe()` answers "where did I come from", which is a different question
+from "what can be run now", and only the second one is safe to write into a shim, a lease, or a
+record.
+
 <!-- backlog: file-locking-is-a-no-op-on-windows recorded=2026-08-16 -->
 **Two subsystems take file locks, and on Windows both compile to nothing.** `locks.rs` has said so
 since it was written — the `LockFileEx` twin "lands with the Windows runner", and until then a

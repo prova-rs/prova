@@ -661,7 +661,7 @@ pub(crate) fn start_subcommand(args: Vec<String>) -> ExitCode {
         return ExitCode::from(2);
     }
 
-    let exe = match std::env::current_exe() {
+    let exe = match prova_core::current_exe() {
         Ok(p) => p,
         Err(e) => {
             eprintln!("prova start: cannot find the prova executable: {e}");

@@ -517,7 +517,7 @@ fn write_relay_shim(
     addr: &str,
 ) -> mlua::Result<std::path::PathBuf> {
     let shim = dir.join(name);
-    let exe = std::env::current_exe()
+    let exe = crate::current_exe()
         .map_err(|e| err(format!("stdio: locating this prova to point the shim at: {e}")))?;
     let script = format!(
         "#!/bin/sh\n\

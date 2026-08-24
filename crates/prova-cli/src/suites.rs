@@ -384,7 +384,7 @@ pub(crate) fn collect_suites(
 /// guessing `"prova"` would reintroduce ambient resolution as a silent default, which is the exact
 /// failure this exists to remove. A proof then fails on a nil, naming the problem.
 pub(crate) fn prova_bin() -> Option<std::path::PathBuf> {
-    std::env::current_exe().ok()
+    prova_core::current_exe().ok()
 }
 
 /// Build the engine `RunConfig` every verb shares: the bundled archetect module, the global plugin

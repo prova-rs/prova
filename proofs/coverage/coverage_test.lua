@@ -241,10 +241,6 @@ local conduct = prova.fixture("layered-coverage", Scope.File, function()
   fs.remove_all(SUITE_STAGE)
   stage_execs(true) -- an aborted conduct leaves executables staged; restore before building
 
-  -- The previous conduct's nextest executables leave the scan before the black-box layer reports
-  -- (see `stage_execs`); the build below then relinks the one executable that layer measures.
-  stage_execs(false)
-
   -- `--target-dir` is EXPLICIT because newer cargo-llvm-cov stopped setting CARGO_TARGET_DIR in
   -- show-env (it instruments via RUSTC_WRAPPER instead): without it this build lands the
   -- instrumented binary in target/debug — the TRAMPOLINE's binary — and every later `prova`
@@ -365,6 +361,20 @@ local conduct = prova.fixture("layered-coverage", Scope.File, function()
       .. "PROVA_SUBJECT_BIN reaches the children and that %s/debug/prova is the build they run.",
       recursion, COV_DIR) }
   end
+
+  -- Stage the linked executables out HERE — after the build and the suite, immediately before the
+  -- report that cares. This used to run *before* the build, which is a state the build then undoes:
+  -- `cargo build` writes `deps/prova-<hash>` and hardlinks it to `debug/prova`, so staging first and
+  -- checking after asked deps to be bare across the one step guaranteed to repopulate it.
+  --
+  -- It passed locally and failed every CI run for four nights, which is the tell for an environment
+  -- difference rather than a flake: cargo's shared build directory means the artifact does not
+  -- always land in `deps/` on this machine, while a CI runner reliably puts it there. The guard was
+  -- right; its position was wrong.
+  --
+  -- Staging the subject out does NOT remove it from the scan: `debug/prova` is a separate directory
+  -- entry, and that hardlink is exactly what the black-box layer is supposed to measure.
+  stage_execs(false)
 
   -- The basis this layer is about to be measured against, checked BEFORE it is measured. A test
   -- executable left in the scan is not a small error: it moves the denominator by ~6,000 lines and

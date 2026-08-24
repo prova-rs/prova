@@ -37,7 +37,7 @@ mod imp {
 
     fn spawn_reaper() -> Option<Mutex<std::process::ChildStdin>> {
         use std::os::unix::process::CommandExt;
-        let exe = std::env::current_exe().ok()?;
+        let exe = crate::current_exe().ok()?;
         let mut child = std::process::Command::new(exe)
             .arg("reap")
             .stdin(std::process::Stdio::piped())

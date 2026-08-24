@@ -318,7 +318,7 @@ pub(crate) fn subject_bin(home: Option<&Home>) -> Option<std::path::PathBuf> {
             return Some(home.dir.join(runner.bin));
         }
     }
-    std::env::current_exe().ok()
+    prova_core::current_exe().ok()
 }
 
 pub(crate) fn switches_subcommand(args: Vec<String>) -> ExitCode {

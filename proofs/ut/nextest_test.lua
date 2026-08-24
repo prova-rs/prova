@@ -76,3 +76,19 @@ invisible from inside prova.",
   local report = junit.load(t:use(deputy))
   expect_passed(t, report, "engine::capabilities::tests::the_declarative_docker_agrees_with_the_intrinsic")
 end)
+
+prova.test("locating this prova survives its own rebuild", {
+  locks = { prova.writes("cargo") },
+  requires = { "cargo-nextest" },
+  covers = "docs/design/agent-ergonomics.md#locating-this-prova-survives-its-own-rebuild",
+  proves = "the decision is a pure function of (reported path, does it exist), so it is proven at the \
+unit level on every platform — including the Linux `/proc/self/exe` marker, which a macOS developer \
+can never reach locally. The integration half is CI's ubuntu job, which replaces the binary mid-run \
+by simply doing what [runner] provisioning always does.",
+}, function(t)
+  local report = junit.load(t:use(deputy))
+  expect_passed(t, report, "exe_path_tests::a_replaced_binary_resolves_to_the_path_without_the_marker")
+  expect_passed(t, report, "exe_path_tests::a_deleted_binary_with_no_replacement_is_an_error_that_explains_itself")
+  expect_passed(t, report, "exe_path_tests::the_marker_is_a_suffix_not_a_substring")
+  expect_passed(t, report, "exe_path_tests::current_exe_resolves_to_something_that_exists_here")
+end)
