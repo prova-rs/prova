@@ -29,6 +29,8 @@ mod deprecations;
 mod home;
 mod ide;
 mod init;
+/// The stop-signal flag `prova start` waits on — the one verb whose child cannot hear Ctrl-C.
+mod interrupt;
 mod learn;
 mod manifest;
 mod mcp;

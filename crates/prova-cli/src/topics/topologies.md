@@ -44,10 +44,10 @@ One definition, addressed twice — they cannot drift, and registering does not 
 declaring. `options` is passed as the factory's second argument. A topology registered this way
 also inherits the `requires` its package advertises, so it gates on the environment it needs.
 
-**`startup = "15m"`** declares how long this topology needs to come up: `prova start` waits that
-long for it to register (default 300s, `--timeout` overrides for one invocation). The definition
+**`startup = "15m"`** declares how long this topology needs to come up: `prova start` relays the
+holder's activity and waits that long (default 300s, `--timeout` overrides once). The definition
 knows its own cost — a kind cluster with eight rollouts is honestly minutes — and an expired budget
-stops the holder gracefully, so whatever it created is torn down rather than orphaned.
+stops the holder gracefully, as a Ctrl-C does: what it created is released, never orphaned.
 
 **`scope = "run"`** shares ONE instance across the whole run: five files declaring an
 eleven-container stack otherwise build 55 containers to answer one question. Say it in the
@@ -61,7 +61,7 @@ urls, hosts, ports), since a `client` userdata cannot cross a Lua state.
 | Verb | Holds it |
 |---|---|
 | `prova up orders` | live, attached: prints endpoints, Ctrl-C tears down |
-| `prova start orders` / `prova down orders` / `prova ps` | detached across processes |
+| `prova start orders` / `prova down orders` / `prova ps` | detached across processes: narrates while it comes up, Ctrl-C stops it |
 | `prova watch orders` | re-applies on definition change (the dev loop) |
 | MCP `up { name }` → `run`/`eval` `{ topology = name }` → `down { name }` | WARM inside the server — millisecond re-runs while iterating; see `prova learn mcp` |
 | `prova up <git-url>` | stand up a topology a remote repo advertises |

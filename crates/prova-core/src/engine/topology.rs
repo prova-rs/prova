@@ -55,6 +55,9 @@ pub fn up(
 /// (re)provision (`reapply` is false the first time). A definition that fails to provision (e.g. a bad
 /// edit) is reported via `on_error` and does *not* exit the loop — the watcher waits for the next
 /// change so the fix is picked up. Use `--fixed` for stable endpoints across re-applies.
+///
+/// A signal arriving *mid-provision* is honored like any other: the partial provision is torn down
+/// rather than orphaned, so an interrupted re-apply leaves nothing behind.
 pub fn watch(
     files: &[PathBuf],
     name: &str,
@@ -69,12 +72,23 @@ pub fn watch(
             // Build a fresh state each pass so a changed definition is actually re-read.
             match load_topology(files, name, config) {
                 Ok((lua, _col, state, id)) => {
-                    let held = async {
-                        let (_value, endpoints) = provision(&lua, &state, id, name).await?;
-                        on_ready(&endpoints, reapply);
-                        Ok::<bool, mlua::Error>(wait_for_change_or_shutdown(files).await)
-                    }
-                    .await;
+                    // The signal is raced against provisioning, exactly as `up` races it and for
+                    // exactly the same reason: until this select existed, a Ctrl-C DURING a
+                    // watch's provisioning found no handler installed, so the watcher died by
+                    // default disposition and every container it had already created outlived it.
+                    // The re-apply loop makes it worse than the one-shot case, not better — a
+                    // watch re-provisions on every save, so it is the verb most likely to be
+                    // interrupted mid-flight. Cancelling the future drops it where it stands;
+                    // whatever it registered is held by the File scope, which is what the
+                    // unconditional teardown below reaps.
+                    let held = tokio::select! {
+                        r = async {
+                            let (_value, endpoints) = provision(&lua, &state, id, name).await?;
+                            on_ready(&endpoints, reapply);
+                            Ok::<bool, mlua::Error>(wait_for_change_or_shutdown(files).await)
+                        } => r,
+                        () = wait_for_shutdown() => Ok(false),
+                    };
                     teardown_all_and_warn(&state).await;
                     match held {
                         // A file changed → loop and re-provision. Shutdown → done.

@@ -561,9 +561,6 @@ pub(crate) fn print_endpoints(name: &str, endpoints: &[prova_core::Endpoint]) {
     }
 }
 
-/// `prova start <topology>` — stand up a topology **detached**: spawn `prova up <topology>` in its own
-/// process group (stdio → a log file), wait for it to self-register (confirming it's up), print the
-/// endpoints, and return, leaving it running. `prova down` stops it.
 /// Pull `--timeout <duration>` out of `start`'s arguments, leaving the rest for the shared parser.
 fn extract_timeout(args: Vec<String>) -> Result<(Vec<String>, Option<Duration>), ExitCode> {
     let mut rest = Vec::with_capacity(args.len());
@@ -608,11 +605,35 @@ fn declared_startup(home: &home::Home, name: &str, manifest_path: Option<&str>) 
 /// and releases what it created (docs/design/agent-ergonomics.md#start-timeout-orphans-containers).
 /// A SIGKILL here is why a timed-out start used to leave its containers behind, and why the NEXT
 /// attempt failed on a host port the orphans still held. Escalates only if the holder will not go.
-fn stop_holder(child: &mut std::process::Child, name: &str) {
+///
+/// Owns the *outcome* line for all three endings, so "what happened to my environment" is answered
+/// in one place whether the stop came from an expired budget or from Ctrl-C. Keeps relaying while it
+/// waits: tearing down a cluster is not instant, and silence during a teardown reads exactly like
+/// silence during a startup — as a wedge.
+fn stop_holder(child: &mut std::process::Child, name: &str, relay: &mut LogRelay) {
+    // A second signal during the grace window means "stop waiting", not "kill it": the holder is
+    // ALREADY running its teardown, and killing it there is precisely how containers get stranded.
+    // So we step back and say where it went, rather than doing the destructive thing faster.
+    let asked_once = interrupt::count();
     runstate::terminate(child.id());
     let grace = Instant::now() + Duration::from_secs(60);
     while Instant::now() < grace {
+        relay.pump_remaining();
         if matches!(child.try_wait(), Ok(Some(_))) {
+            relay.pump_remaining();
+            eprintln!("prova start: {name:?} stopped — what it created was released.");
+            return;
+        }
+        if interrupt::count() > asked_once {
+            // Deliberately NOT `prova ps` / `prova down` here: we only reach this wait before the
+            // holder registered, so there is no record for either verb to find. The pid and the log
+            // are what actually exist, so they are what the line names.
+            eprintln!(
+                "prova start: {name:?} is still releasing what it created — leaving it to finish in \
+                 the background (pid {}); watch {} if it lingers",
+                child.id(),
+                relay.path.display()
+            );
             return;
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -624,6 +645,157 @@ fn stop_holder(child: &mut std::process::Child, name: &str) {
     let _ = child.kill();
 }
 
+/// Streams the detached holder's log to *our* stderr while `start` waits for it to come up.
+///
+/// `prova up` and `prova start` provision through the identical code path, so the holder is already
+/// producing exactly the activity an attached `up` prints — image pulls, builds, readiness waits.
+/// It was simply going somewhere nobody was looking: the child's stdio is redirected to
+/// `<var>/running/<name>.log` so it can outlive us, and `start` then sat silent for however long the
+/// stack took, which for a real cluster is minutes of a cursor. That silence is indistinguishable
+/// from a wedge, which is the reason the activity renderer exists at all
+/// (docs/plans/run-progress-feedback.md) — and detached mode was the one place its output could not
+/// be seen.
+///
+/// Relaying it back is the whole fix: same lines, same order, no second renderer to keep in step
+/// with the first.
+///
+/// # Where it stops, and why that is a marker rather than a race
+///
+/// The log carries both of the holder's streams (`runstate::detach` points them at one file), so it
+/// ends with the *ready block* — the endpoints `print_endpoints` writes. `start` prints that block
+/// itself, on **stdout**, because that is where a caller piping `prova start` has always found the
+/// endpoints and moving them to stderr would be a silent break. So the relay must stop exactly
+/// where the ready block begins, or the endpoints appear twice.
+///
+/// It stops on the block's own first line, which both sides of this file agree on — not on "the
+/// record showed up, so probably nothing more is coming", which loses whatever the holder wrote in
+/// the poll interval before it (in practice the final `— done in 8.3s`, the one line a reader is
+/// most likely to be waiting for). Relaying only COMPLETE lines is what makes the marker reliable:
+/// a boundary can never fall inside it.
+struct LogRelay {
+    path: PathBuf,
+    /// How far into the log we have already echoed.
+    pos: u64,
+    /// The first line of `print_endpoints`' block, with its leading blank line — the boundary
+    /// between "the holder is working" (ours to echo) and "the holder is up" (`start`'s to print).
+    ready_marker: Vec<u8>,
+    /// Set once the marker is seen: everything after it belongs to the ready block.
+    stopped: bool,
+}
+
+impl LogRelay {
+    fn new(path: PathBuf, name: &str) -> LogRelay {
+        LogRelay {
+            path,
+            pos: 0,
+            ready_marker: format!("\n  {name} — up:").into_bytes(),
+            stopped: false,
+        }
+    }
+
+    /// Every complete line written since the last read, consuming them. A trailing partial line is
+    /// left for next time: it keeps `ready_marker` from being split across two reads, and a
+    /// half-written progress line is not worth showing early.
+    fn take_lines(&mut self) -> Vec<u8> {
+        use std::io::{Read, Seek, SeekFrom};
+        let Ok(mut f) = std::fs::File::open(&self.path) else {
+            return Vec::new();
+        };
+        if f.seek(SeekFrom::Start(self.pos)).is_err() {
+            // Truncated under us (a re-created log): start over rather than read from nowhere.
+            self.pos = 0;
+            if f.seek(SeekFrom::Start(0)).is_err() {
+                return Vec::new();
+            }
+        }
+        let mut buf = Vec::new();
+        if f.read_to_end(&mut buf).is_err() {
+            return Vec::new();
+        }
+        match buf.iter().rposition(|b| *b == b'\n') {
+            Some(i) => buf.truncate(i + 1),
+            None => buf.clear(),
+        }
+        self.pos += buf.len() as u64;
+        buf
+    }
+
+    /// Echo the holder's new output, stopping for good at the ready block.
+    fn pump(&mut self) {
+        if self.stopped {
+            return;
+        }
+        let buf = self.take_lines();
+        if buf.is_empty() {
+            return;
+        }
+        match find(&buf, &self.ready_marker) {
+            Some(cut) => {
+                self.write(&buf[..cut]);
+                self.stopped = true;
+                // Leave the ready block unconsumed: an ending that never reaches "up" still wants
+                // it (see `pump_remaining`), and this is the only copy.
+                self.pos -= (buf.len() - cut) as u64;
+            }
+            None => self.write(&buf),
+        }
+    }
+
+    /// Echo everything left, ready block and partial line included — for the endings where the
+    /// topology never came up, so the reason is on screen beside the verdict instead of behind a
+    /// `cat` of a path. Ignores the marker deliberately: a holder that printed endpoints and then
+    /// failed to register is telling us something, and it is the timeout's most useful clue.
+    fn pump_remaining(&mut self) {
+        use std::io::{Read, Seek, SeekFrom};
+        let Ok(mut f) = std::fs::File::open(&self.path) else {
+            return;
+        };
+        if f.seek(SeekFrom::Start(self.pos)).is_err() {
+            return;
+        }
+        let mut buf = Vec::new();
+        if f.read_to_end(&mut buf).is_err() {
+            return;
+        }
+        self.pos += buf.len() as u64;
+        self.write(&buf);
+    }
+
+    /// Best-effort by design: a relay that cannot write must never be the reason a topology fails
+    /// to start. stderr, because this is the holder's activity — stdout stays the ready block's.
+    fn write(&self, bytes: &[u8]) {
+        use std::io::Write;
+        if bytes.is_empty() {
+            return;
+        }
+        let mut err = std::io::stderr();
+        let _ = err.write_all(bytes);
+        let _ = err.flush();
+    }
+
+    /// Whether anything has been relayed at all — the failure paths fall back to a log tail when
+    /// nothing has, so an unreadable log still surfaces the holder's last words.
+    fn relayed_anything(&self) -> bool {
+        self.pos > 0
+    }
+}
+
+/// The first index at which `needle` occurs in `haystack`. Small and local: the only search this
+/// file needs is one short marker against one poll's worth of lines.
+fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    (0..=haystack.len() - needle.len()).find(|&i| &haystack[i..i + needle.len()] == needle)
+}
+
+/// `prova start <topology>` — stand up a topology **detached**: spawn `prova up <topology>` in its
+/// own process group (stdio → a log file), **relay what it says while it comes up**, and once it
+/// self-registers print the endpoints and return, leaving it running. `prova down` stops it.
+///
+/// The two things that make it feel like `up` rather than a black box are both here: the holder's
+/// activity is streamed back (`LogRelay`), and a Ctrl-C is caught and turned into the holder's own
+/// teardown (`interrupt`) instead of a silent orphan.
 pub(crate) fn start_subcommand(args: Vec<String>) -> ExitCode {
     // Detached provisions hold no lease (verifiers.md#detached-topologies-hold-no-lease):
     // everything this invocation spawns is MEANT to outlive it — `prova down` is its reaper.
@@ -668,6 +840,12 @@ pub(crate) fn start_subcommand(args: Vec<String>) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    // Arm BEFORE the spawn: the window between spawning a holder and beginning to watch it is
+    // precisely the window in which an interrupt would orphan one. `exec` resets handled signals to
+    // their default in the child, so the holder still dies of a signal it is sent directly — which
+    // is what `stop_holder` and `prova down` rely on.
+    interrupt::arm();
+
     let log = runstate::log_path(&home, &name);
     let mut cmd = Command::new(exe);
     cmd.arg("up").arg(&name);
@@ -692,7 +870,14 @@ pub(crate) fn start_subcommand(args: Vec<String>) -> ExitCode {
         }
     };
 
-    eprintln!("prova: starting topology {name:?} (detached)…");
+    // Ours to say, and said immediately: the holder's own first line can be seconds away (manifest
+    // resolution, a git package fetch), and dead air before it is the same silence this verb is
+    // being taught not to produce. Naming the log makes the stream that follows attributable, and
+    // leaves the reader something to `tail -f` after we exit.
+    eprintln!(
+        "prova: starting topology {name:?} detached — following {}",
+        log.display()
+    );
     // How long the holder may take to register is the TOPOLOGY's fact, not prova's: a kind cluster
     // with eight rollouts is honestly minutes, and a fixed window made the inhabited half of the
     // inhabited/fixture pair unavailable to it
@@ -703,10 +888,11 @@ pub(crate) fn start_subcommand(args: Vec<String>) -> ExitCode {
     await_registration(&mut child, &home, &name, budget)
 }
 
-/// Wait for the detached holder to self-register (up), exit (failed), or exhaust its budget.
+/// Wait for the detached holder to self-register (up), exit (failed), be interrupted, or exhaust
+/// its budget — relaying what it says while it works.
 ///
 /// Split out so `start_subcommand` stays within the function-length ratchet, and because the wait
-/// is a coherent thing on its own: it owns the budget, the three verdicts, and the graceful stop.
+/// is a coherent thing on its own: it owns the budget, the four verdicts, and the graceful stop.
 fn await_registration(
     child: &mut std::process::Child,
     home: &home::Home,
@@ -714,7 +900,12 @@ fn await_registration(
     budget: Duration,
 ) -> ExitCode {
     let deadline = Instant::now() + budget;
+    let mut relay = LogRelay::new(runstate::log_path(home, name), name);
     loop {
+        // Relay first, then decide. The relay stops itself at the ready block, so this is safe in
+        // either order — but doing it first means the last thing the holder said before coming up
+        // is on screen before the endpoints that answer it.
+        relay.pump();
         if let Some(rec) = runstate::read(home, name) {
             let eps: Vec<prova_core::Endpoint> = rec
                 .endpoints
@@ -731,14 +922,32 @@ fn await_registration(
             );
             return ExitCode::SUCCESS;
         }
+
+        // The interrupt, before the budget and before the child check: the user asked to stop, and
+        // a half-provisioned environment is exactly what must not survive that. This is the same
+        // teardown Ctrl-C gets under an attached `up` — the difference was only ever that our child
+        // lives in its own process group and never hears the terminal.
+        if interrupt::raised() {
+            eprintln!("\nprova start: interrupted — stopping topology {name:?}…");
+            stop_holder(child, name, &mut relay);
+            runstate::remove(home, name);
+            return ExitCode::from(130);
+        }
+
         match child.try_wait() {
             Ok(Some(status)) => {
+                relay.pump_remaining();
                 eprintln!(
                     "prova start: topology {name:?} failed to come up (child exited: {status})"
                 );
-                let tail = runstate::log_tail(home, name, 20);
-                if !tail.trim().is_empty() {
-                    eprintln!("--- {name} log (tail) ---\n{tail}");
+                // The relay has normally already shown the holder's last words in order. The tail
+                // is the fallback for when it could not read the log at all — a failure whose
+                // diagnosis is on disk and not on screen is the one thing worse than the failure.
+                if !relay.relayed_anything() {
+                    let tail = runstate::log_tail(home, name, 20);
+                    if !tail.trim().is_empty() {
+                        eprintln!("--- {name} log (tail) ---\n{tail}");
+                    }
                 }
                 runstate::remove(home, name);
                 return ExitCode::from(2);
@@ -750,12 +959,13 @@ fn await_registration(
             }
         }
         if Instant::now() >= deadline {
+            relay.pump_remaining();
             eprintln!(
                 "prova start: topology {name:?} did not come up within {budget:?} — stopping it. \
                  Declare what it needs (`startup = \"15m\"` on the [topologies] entry — the \
                  definition knows its own cost), or override this invocation with --timeout."
             );
-            stop_holder(child, name);
+            stop_holder(child, name, &mut relay);
             runstate::remove(home, name);
             return ExitCode::from(2);
         }

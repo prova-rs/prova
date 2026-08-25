@@ -149,6 +149,11 @@ reporting "no topologies defined".
   survive-process-exit container semantics, no second teardown implementation. Verified end-to-end with
   a real Postgres container (survives `start` returning; reaped by `down`) and a no-docker CLI
   integration test proving the detached child runs teardown on `down`.
+  **`start` is not silent while it waits**: it relays the holder's log to its own stderr as the
+  holder writes it, stopping at the endpoints block so that block is still printed once, on stdout
+  (agent-ergonomics.md#start-shows-what-up-shows). And **Ctrl-C during a `start` stops the holder**
+  rather than orphaning it — the supervisor is the only process that can hear the signal, since the
+  holder deliberately sits in its own group (agent-ergonomics.md#interrupt-leaves-nothing-behind).
 
 ## Port modes — external reachability (done)
 
@@ -176,6 +181,9 @@ builds a fresh Lua state so edits take effect; a failed edit is reported and the
 rather than exiting. Dependency-free mtime polling with a short settle (one save → one re-apply);
 attached-only, pair with `--fixed` for endpoints stable across re-applies. `up` and `watch` share the
 provisioning path (`load_topology`/`provision`), so there is one definition-to-resources route, not two.
+A shutdown signal is raced against provisioning rather than awaited after it, so interrupting a
+re-apply mid-flight releases what that pass had already created
+(agent-ergonomics.md#interrupt-leaves-nothing-behind).
 
 ## The containerized SUT — `build` instead of `image` (done)
 

@@ -1568,3 +1568,43 @@ it is the shape of usable data with none of its meaning.
 Found adapting ybor-studio to scope = "run": the workaround is factory-exported id scalars
 (`containers = { crdb = crdb.container.id }`), which works but re-states per package what the
 projection could state once.
+
+## 37. `prova start` provisions in silence, and Ctrl-C during it orphans the holder
+
+<!-- claim: start-shows-what-up-shows -->
+**Detached is not silent: `prova start` relays the holder's activity while it comes up.** The
+holder is a `prova up` — same code, same provisioning, same activity renderer — so it was already
+narrating image pulls, builds and readiness waits. That narration simply had nowhere to arrive:
+`start` redirects the child's stdio to `<var>/running/<name>.log` so it can outlive the invocation,
+and then printed one line and waited. For anything real (a kind cluster, a cold pull) that is
+minutes of cursor, which is precisely the "is this thing on?" the activity renderer exists to
+answer (docs/plans/run-progress-feedback.md) — and detached mode was the one place its output could
+not be seen. `start` now streams that log back to its own stderr as it arrives, stopping at the
+endpoints block so the block is still printed once, on **stdout**, where a caller piping
+`prova start` has always found it. The two verbs now differ in their last line and nothing else.
+
+<!-- claim: interrupt-leaves-nothing-behind -->
+**An interrupted inhabited verb takes its environment with it — `start` and `watch` included.**
+Ctrl-C on `prova start` used to kill only the supervisor. Its child is deliberately in its own
+process group (that is what detached means, and it is why the terminal's Ctrl-C never reaches the
+holder) and deliberately unleased (verifiers.md#detached-topologies-hold-no-lease, because
+outliving the invocation is the verb's whole purpose) — so nothing reaped it: `start` vanished, the
+holder kept provisioning, and containers arrived with no one left to report them. Worse before
+registration, where there is not even a run-state record, so `prova down` answers "not running"
+while the stack comes up regardless. So the supervisor — and only the supervisor — catches
+SIGINT/SIGTERM/SIGHUP and stops the holder exactly as `prova down` does: SIGTERM, its own
+in-process teardown, wait for it to release. Same signal, same teardown, same reason as
+[[start-timeout-orphans-containers]] — the budget's expiry and the user's Ctrl-C are one ending
+with two triggers. A second interrupt during the stop means "stop waiting", never "kill it": the
+holder is *already* running its teardown, and killing it there is how containers get stranded.
+
+`prova watch` had the same hole one layer down, and it is the verb most exposed to it: a watch
+re-provisions on every save, so it spends its life mid-flight. It awaited the shutdown signal
+*after* provisioning rather than racing it, so an interrupt during a re-apply found no handler
+installed, the watcher died by default disposition, and everything it had already created outlived
+it. `up` fixed exactly this in its own path and the fix was never carried across.
+
+Unix only, and stated rather than papered over: the graceful stop is `runstate::terminate`, and
+Windows has no signal that makes a detached holder run its teardown. A handler there could only
+kill the holder and strand its containers, which is not an improvement on the orphan. Windows
+detached teardown is one story, told once, when job objects land for the windows lane.

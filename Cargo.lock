@@ -2921,6 +2921,7 @@ dependencies = [
  "hex",
  "humantime",
  "inquire",
+ "libc",
  "prova-archetect",
  "prova-core",
  "rmcp",

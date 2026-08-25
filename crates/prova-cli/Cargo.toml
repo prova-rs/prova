@@ -56,6 +56,13 @@ dirs = "5"
 schemars = "1.2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 
+# `prova start`'s stop-signal handler (see `interrupt`): the supervisor must catch SIGINT/TERM/HUP
+# so an interrupted startup tears its holder down instead of orphaning it — the one verb whose
+# child is deliberately deaf to the terminal's Ctrl-C. Already in the graph (prova-core declares
+# it) — a declaration of what this crate uses, not new weight.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # Detached `prova start` needs one Win32 call std does not expose: clearing HANDLE_FLAG_INHERIT, so
 # the background `prova up` cannot inherit — and then hold open forever — a pipe our caller is
 # reading. Version matches what the tree already resolves transitively. See `runstate::detach`.
