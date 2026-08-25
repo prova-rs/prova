@@ -170,3 +170,81 @@ prova.test("a stale STARTING record warns that resources may be lying around", {
     :contains("residue")
   t:expect(r.code, "…while still letting this attempt proceed"):equals(0)
 end)
+
+-- ── run-state integrity: the record is a contract, not a hint ────────────────────────────────
+
+prova.test("a record that cannot be parsed is refused, not read as nothing held", {
+  requires = { "unix" },
+  covers = "docs/design/agent-ergonomics.md#unparseable-runstate-record-reads-as-no-hold",
+  proves = "the fail-open direction: `read` was `from_str(...).ok()` and `list` dropped anything that would not deserialize, so a corrupt record made a LIVE holder invisible and the guards provisioned a second instance over it. Found twice — the second time while proving the stale-record guard, where a fixture wrote `endpoints` as `{}` and the proof passed for the wrong reason because nothing anywhere said the file was unreadable",
+}, function(t)
+  local root = t:tempdir("corrupt") .. "/pkg"
+  slow_package(root, "garbled", 1)
+  fs.mkdir(root .. "/.prova/var/running")
+  -- Exactly the shape that fooled the earlier proof: `endpoints` as an object, not an array.
+  fs.write(root .. "/.prova/var/running/garbled.json",
+    '{"name":"garbled","pid":1,"started_at":1,"endpoints":{},"value":{}}')
+
+  local up = shell.run({ prova.bin, "start", "garbled" },
+    { cwd = root, merge_stderr = true, timeout = "60s" })
+  t:expect(up.code, "an unreadable record must not read as a free name"):never():equals(0)
+  t:expect(up.stdout, "…the refusal says what it could not do"):contains("cannot be read")
+  t:expect(up.stdout, "…and names the file, since looking at it is the only way out")
+    :contains("garbled.json")
+
+  -- `ps` must not stay quiet about it either: it is the tool people ask "what is up?"
+  local ps = shell.run({ prova.bin, "ps" }, { cwd = root, merge_stderr = true, timeout = "30s" })
+  t:expect(ps.stdout, "ps reports the entry it cannot read"):contains("unreadable")
+  t:expect(ps.stdout, "…by name"):contains("garbled")
+  t:expect(ps.stdout, "…rather than claiming the machine is idle")
+    :never():contains("no topologies running")
+end)
+
+prova.test("concurrent starts of one name reach the factory exactly once", {
+  requires = { "unix" },
+  covers = "docs/design/agent-ergonomics.md#claiming-a-topology-name-is-atomic",
+  proves = "a race that is merely rare is indistinguishable from one that is fixed, right up until it costs a cluster. Read-then-write left both of two simultaneous starts seeing nothing and proceeding; only an atomic claim makes `exactly one` true rather than likely",
+}, function(t)
+  local root = t:tempdir("race") .. "/pkg"
+  fs.mkdir(root .. "/proofs")
+  fs.mkdir(root .. "/plugins")
+  fs.write(root .. "/proofs/a_test.lua",
+    'prova.test("the suite runs", function(t) t:expect(1):equals(1) end)\n')
+  -- The factory appends a line per invocation: the count IS the assertion.
+  fs.write(root .. "/plugins/svc.lua", [[
+local M = {}
+function M.web(ctx)
+  local f = io.open("]] .. root .. [[/factory.log", "a")
+  f:write("ran\n"); f:close()
+  shell.run("sleep 6")
+  return { svc = { url = "http://127.0.0.1:44444" } }
+end
+return M
+]])
+  fs.write(root .. "/prova.toml", table.concat({
+    '[run]', 'proofs = ["proofs"]', '',
+    '[dependencies]', 'svc = "plugins/svc.lua"', '',
+    '[topologies]', 'raced = { package = "svc", factory = "web" }',
+  }, "\n"))
+
+  t:defer(function()
+    shell.run({ prova.bin, "down", "raced" }, { cwd = root, merge_stderr = true, timeout = "60s" })
+    shell.run("pkill -f 'prova up race[d]' 2>/dev/null; true")
+  end)
+
+  -- Fire them together and let them fight over the name.
+  local procs = {}
+  for _ = 1, 6 do
+    table.insert(procs, shell.spawn({ prova.bin, "up", "raced" }, { cwd = root }))
+  end
+  shell.run("sleep 4")
+
+  local ran = 0
+  for _ in (fs.exists(root .. "/factory.log") and fs.read(root .. "/factory.log") or ""):gmatch("ran") do
+    ran = ran + 1
+  end
+  for _, p in ipairs(procs) do p:stop() end
+
+  t:expect(ran, "exactly one of six concurrent starts reached the factory (got " .. ran .. ")")
+    :equals(1)
+end)

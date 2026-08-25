@@ -573,7 +573,21 @@ fn attach_held(
         return Ok((config, attached));
     }
     if let Some(h) = &home {
-        for rec in runstate::list(h) {
+        for entry in runstate::list(h) {
+            let rec = match entry.held {
+                runstate::Held::Record(rec) => *rec,
+                runstate::Held::Unreadable(why) => {
+                    // Not attaching is right; being quiet about it is not. Without this line the
+                    // run looks like one that simply had no holder to attach to.
+                    eprintln!(
+                        "prova: run-state for {:?} cannot be read, so this run will NOT attach to it \
+                         — a holder may still be live.\n  {why}",
+                        entry.name
+                    );
+                    continue;
+                }
+                runstate::Held::Absent => continue,
+            };
             if !attachable(&rec) {
                 continue;
             }
@@ -592,7 +606,7 @@ fn attach_held(
     if let Some(want) = &cli.require_topology {
         let offered = home
             .as_ref()
-            .map(|h| runstate::list(h).iter().any(|r| &r.name == want && attachable(r)))
+            .map(|h| runstate::records(h).iter().any(|r| &r.name == want && attachable(r)))
             .unwrap_or(false);
         if !offered {
             eprintln!(

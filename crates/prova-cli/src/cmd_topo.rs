@@ -114,28 +114,11 @@ pub(crate) fn up_subcommand(args: Vec<String>) -> ExitCode {
         ..
     } = prep;
 
-    if let Err(code) = guard_double_provision("up", &home, &name) {
+    if let Err(code) = claim_the_name("up", &home, &name) {
         return code;
     }
 
     eprintln!("prova: standing up topology {name:?}…");
-    // Register BEFORE the factory runs (docs/design/agent-ergonomics.md#starting-is-a-visible-state).
-    // A record that appeared only on success made a topology *coming* up invisible: `prova ps` said
-    // "no topologies running" while the machine was busy creating a cluster, `prova down` had nothing
-    // to stop, and a second `start` sailed past the guard straight into `kind create`. The starting
-    // record carries no endpoints and a null `value` — it is a claim on the NAME, not an environment
-    // anything may bind to, which is why `attach` skips it (see `attachable`).
-    let starting = runstate::Record {
-        name: name.clone(),
-        pid: std::process::id(),
-        started_at: runstate::now_secs(),
-        status: runstate::Status::Starting,
-        endpoints: Vec::new(),
-        value: serde_json::Value::Null,
-    };
-    if let Err(e) = runstate::write(&home, &starting) {
-        eprintln!("prova up: could not record run-state: {e}");
-    }
 
     let state_home = home.clone();
     let state_name = name.clone();
@@ -175,6 +158,55 @@ pub(crate) fn up_subcommand(args: Vec<String>) -> ExitCode {
     }
 }
 
+/// Take exclusive ownership of a topology's name for the life of this holder, or refuse.
+///
+/// Two things at once, and they have to be one thing to be correct
+/// (docs/design/agent-ergonomics.md#second-start-joins-or-refuses):
+///
+/// 1. **Register before the factory runs.** A record that appeared only on success made a topology
+///    *coming* up invisible — `ps` said "no topologies running" while the machine was creating a
+///    cluster, `down` had nothing to stop, and a second start sailed past the guard.
+/// 2. **Claim atomically.** Checking and then writing leaves both of two simultaneous starts seeing
+///    nothing and proceeding — the same collision the guard exists to prevent, just rarer and so
+///    harder to diagnose. `claim` is `O_EXCL`: the kernel picks the winner, and the loser is told.
+///
+/// The starting record carries no endpoints and a null `value` on purpose. It is a claim on the
+/// NAME, not an environment anything may bind to — see `attachable`.
+fn claim_the_name(verb: &str, home: &Home, name: &str) -> Result<(), ExitCode> {
+    // The advisory pass first: it reads what is there and produces the good messages (already up,
+    // already starting, stale-with-residue), and clears a genuinely stale record so the claim below
+    // can succeed.
+    guard_double_provision(verb, home, name)?;
+
+    let starting = runstate::Record {
+        name: name.to_string(),
+        pid: std::process::id(),
+        started_at: runstate::now_secs(),
+        status: runstate::Status::Starting,
+        endpoints: Vec::new(),
+        value: serde_json::Value::Null,
+    };
+    match runstate::claim(home, &starting) {
+        Ok(true) => Ok(()),
+        // Lost the race: between the guard above and this call, another process claimed the name.
+        // This is the window that used to be a whole provisioning; now it is two syscalls, and it
+        // ends in a refusal instead of a second `kind create`.
+        Ok(false) => {
+            eprintln!(
+                "prova {verb}: topology {name:?} was claimed by another process while this one was \
+                 starting — it is coming up there. `prova ps` to watch it, `prova down {name}` to stop it."
+            );
+            Err(ExitCode::from(2))
+        }
+        Err(e) => {
+            eprintln!("prova {verb}: could not record run-state: {e}");
+            // Not fatal: the holder can still do its job, it just will not be supervisable. Saying
+            // so is the point — silently unsupervisable is how a topology gets orphaned.
+            Ok(())
+        }
+    }
+}
+
 /// Refuse to double-provision a name something else already holds — the one guard `up` and `start`
 /// share, and the one `watch` never had.
 ///
@@ -194,8 +226,23 @@ pub(crate) fn up_subcommand(args: Vec<String>) -> ExitCode {
 /// created), but the starting case says what may be lying around, because a port conflict that is
 /// really residue sends people to diagnose networking.
 fn guard_double_provision(verb: &str, home: &Home, name: &str) -> Result<(), ExitCode> {
-    let Some(rec) = runstate::read(home, name) else {
-        return Ok(());
+    let rec = match runstate::read(home, name) {
+        runstate::Held::Absent => return Ok(()),
+        runstate::Held::Record(rec) => *rec,
+        // Fail CLOSED (docs/design/agent-ergonomics.md#unparseable-runstate-record-reads-as-no-hold).
+        // A record we cannot parse cannot be liveness-checked, so "nothing is held" is a guess, and
+        // it is the guess that provisions a second instance over a live one. Refusing costs a
+        // command; guessing wrong costs a cluster. The message names the file, because the only way
+        // out is to look at it.
+        runstate::Held::Unreadable(why) => {
+            eprintln!(
+                "prova {verb}: refusing to stand up {name:?} — its run-state record exists but \
+                 cannot be read, so whether something is already holding this name is unknown.\n  \
+                 {why}\n  Inspect it, or delete it if you are sure nothing is held: rm {}",
+                runstate::path(home, name).display()
+            );
+            return Err(ExitCode::from(2));
+        }
     };
     if runstate::is_alive(rec.pid) {
         let held = runstate::now_secs().saturating_sub(rec.started_at);
@@ -922,7 +969,9 @@ fn await_registration(
         // came-up signal it used to be. Waiting on presence alone would make `start` return the
         // instant the holder registered its intent: exit 0, an empty endpoint block, and a
         // detached process still creating a cluster nobody was told about.
-        if let Some(rec) = runstate::read(home, name).filter(|r| r.status == runstate::Status::Ready)
+        if let Some(rec) = runstate::read(home, name)
+            .record()
+            .filter(|r| r.status == runstate::Status::Ready)
         {
             let eps: Vec<prova_core::Endpoint> = rec
                 .endpoints
@@ -1003,9 +1052,23 @@ pub(crate) fn down_subcommand(args: Vec<String>) -> ExitCode {
         Err(code) => return code,
     };
 
-    let Some(rec) = runstate::read(&home, &name) else {
-        println!("topology {name:?} is not running");
-        return ExitCode::SUCCESS;
+    let rec = match runstate::read(&home, &name) {
+        runstate::Held::Absent => {
+            println!("topology {name:?} is not running");
+            return ExitCode::SUCCESS;
+        }
+        runstate::Held::Record(rec) => *rec,
+        // "not running" would be a guess here too, and the wrong one to volunteer to someone
+        // trying to STOP something: it reads as "already handled".
+        runstate::Held::Unreadable(why) => {
+            eprintln!(
+                "prova down: {name:?} has a run-state record that cannot be read, so its holder \
+                 cannot be identified or signalled.\n  {why}\n  Find the holder yourself (`ps aux \
+                 | grep 'prova up {name}'`), then delete the record: rm {}",
+                runstate::path(&home, &name).display()
+            );
+            return ExitCode::from(2);
+        }
     };
 
     if !runstate::is_alive(rec.pid) {
@@ -1061,12 +1124,25 @@ pub(crate) fn ps_subcommand(args: Vec<String>) -> ExitCode {
         Err(code) => return code,
     };
 
-    let records = runstate::list(&home);
-    if records.is_empty() {
+    let entries = runstate::list(&home);
+    if entries.is_empty() {
         println!("no topologies running");
         return ExitCode::SUCCESS;
     }
     let now = runstate::now_secs();
+    let mut records = Vec::new();
+    for entry in entries {
+        match entry.held {
+            runstate::Held::Record(rec) => records.push(*rec),
+            // Named, not dropped. `ps` is the tool people use to answer "what is up?", so a file it
+            // cannot read is precisely the thing it must not stay quiet about.
+            runstate::Held::Unreadable(why) => println!(
+                "{}  [unreadable]  {why}\n    a holder may still be running — this record cannot say",
+                entry.name
+            ),
+            runstate::Held::Absent => {}
+        }
+    }
     for rec in &records {
         let alive = runstate::is_alive(rec.pid);
         if !alive {
@@ -1123,7 +1199,7 @@ pub(crate) fn parse_topology_args(
 /// warning names both exits so the destructive case is a choice rather than a surprise.
 pub(crate) fn warn_fresh_over_a_holder(home: &Option<Home>) {
     let Some(h) = home else { return };
-    for rec in runstate::list(h) {
+    for rec in runstate::records(h) {
         if !runstate::is_alive(rec.pid) {
             continue;
         }

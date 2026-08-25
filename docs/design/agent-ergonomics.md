@@ -1486,7 +1486,7 @@ the CLI already does.
 
 ## 34. An unreadable record is treated as no record, which is the wrong way to fail
 
-<!-- backlog: unparseable-runstate-record-reads-as-no-hold recorded=2026-08-20 -->
+<!-- claim: unparseable-runstate-record-reads-as-no-hold -->
 **A run-state record prova cannot PARSE reads as no hold at all, which is the fail-open direction.**
 `runstate::read` is `serde_json::from_str(...).ok()` and `list` silently drops anything that will
 not deserialize, so a record that exists but does not parse makes a LIVE holder invisible: `status`
@@ -1511,6 +1511,24 @@ treat unparseable-but-present as LOUD rather than absent — a record whose pid 
 be liveness-checked, so the safe reading is "something may be held here", reported rather than
 dropped. The second half is the one that closes the fail-open; the first stops manufacturing the
 input.
+
+**Both landed 2026-08-25.** `write` is temp-file-plus-rename, so a reader sees the old record or the
+new one and never a prefix. `read` returns `Absent` / `Record` / `Unreadable(why)` instead of an
+`Option` that flattened the first and third together, and `list` yields unreadable entries rather
+than dropping them. The consumers then chose deliberately: the `up`/`start`/MCP guards **fail
+closed** — refusing to provision over a name whose record cannot be parsed, and naming the file,
+since the only way out is to look at it — `down` refuses rather than volunteering "not running" to
+someone trying to stop something, `ps` prints the entry as `[unreadable]`, and a run says out loud
+that it is declining to attach. `await_registration` is the one place unreadable still means "not
+yet": it is waiting on its own child's record, and the startup budget already bounds it.
+
+The prescription's own framing held up: the atomic write stops manufacturing the input, and it was
+the fail-closed guards that closed the hole. Worth noting the failure this was found through
+recurred, exactly as written, while proving a *different* fix five days later — a fixture wrote
+`endpoints` as `{}` again, the record was unreadable again, and `prova start` proceeded again. The
+second time it was caught only because the assertion happened to be on the warning text rather than
+on the outcome. A defect that reproduces itself during the work that documents it is the argument
+for closing it rather than describing it more carefully.
 
 ## 35. A topology fixture is file-local, so a full run built the same world N times
 
@@ -1680,11 +1698,20 @@ the identical collision. This is the case that actually recurs — the live race
 at once, this one needs one crash — and it should say what may be lying around rather than
 silently proceed.
 
-**Write-at-birth narrows the race; it does not close it.** Two starts in the same millisecond
-still both read nothing and both write. That is a good trade — microseconds of exposure instead
-of fifteen minutes — and it should be described as such rather than as mutual exclusion. A real
-guarantee is `O_EXCL` create-or-fail, or the flock already in `locks.rs`/`barrier.rs`, which is
-the engine-side version of the `prova.writes("kind:<cluster>")` consumers hand-roll today.
+<!-- claim: claiming-a-topology-name-is-atomic -->
+**Write-at-birth narrows the race; the claim closes it.** Read-then-write leaves two starts in the
+same millisecond both seeing nothing and both proceeding, which is the collision the guard exists
+to prevent, made rarer and so harder to diagnose rather than fixed. So registering the name is
+`create_new` — `O_EXCL`, where the kernel picks one winner — and the loser is told the name was
+claimed while it was starting. The read-then-check guard stays in front of it, because that is
+where the *good* messages live (already up, already starting, stale-with-residue) and where a
+genuinely stale record gets cleared; the claim is the backstop that makes the answer true rather
+than likely.
+
+Measured both ways, since a race that is merely rare looks identical to one that is fixed: eight
+concurrent `prova up` of one name run the factory **once**, and the seven losers all lose at the
+claim rather than at the guard — so the guard alone would not have caught any of them. Swap
+`claim` back to `write` and seven of the eight reach the factory.
 
 **The spectator option is nearly free.** `LogRelay` (§37) already takes a log path and a topology
 name, streams the holder's output, and stops at the ready block. Pointing a second `start` at the

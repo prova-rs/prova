@@ -105,17 +105,96 @@ pub fn log_path(home: &Home, name: &str) -> PathBuf {
     var::path(home).join("running").join(format!("{name}.log"))
 }
 
-/// Write (or overwrite) a topology's record.
+/// Write (or overwrite) a topology's record **atomically** — full contents to a temp file in the
+/// same directory, then `rename` over the target.
+///
+/// A plain `fs::write` truncates and then writes, so a holder killed in that window leaves a
+/// half-written file while its process may still be alive
+/// (docs/design/agent-ergonomics.md#unparseable-runstate-record-reads-as-no-hold). A truncated
+/// record does not parse, and an unparseable record used to read as *no record at all* — so the
+/// crash that produced it also hid the holder it belonged to. Rename is atomic on the same
+/// filesystem, so a reader sees either the old record or the new one, never a prefix.
 pub fn write(home: &Home, record: &Record) -> std::io::Result<()> {
-    dir(home)?;
+    let d = dir(home)?;
     let text = serde_json::to_string_pretty(record).map_err(std::io::Error::other)?;
-    std::fs::write(path(home, &record.name), text)
+    // Same directory, so the rename cannot cross a filesystem. The pid keeps concurrent writers
+    // (a holder and a supervisor) off each other's temp file.
+    let tmp = d.join(format!(".{}.{}.tmp", record.name, std::process::id()));
+    std::fs::write(&tmp, text)?;
+    match std::fs::rename(&tmp, path(home, &record.name)) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
 }
 
-/// Read a topology's record, if present and parseable.
-pub fn read(home: &Home, name: &str) -> Option<Record> {
-    let text = std::fs::read_to_string(path(home, name)).ok()?;
-    serde_json::from_str(&text).ok()
+/// **Claim** a topology's name: write the record only if no file is there yet, atomically.
+///
+/// `Ok(true)` means this process owns the name; `Ok(false)` means someone else got there first.
+/// This is what makes the double-provision guard a guarantee rather than a narrow window
+/// (docs/design/agent-ergonomics.md#second-start-joins-or-refuses): read-then-write leaves two
+/// starts in the same spawn window both seeing nothing and both proceeding, which is exactly the
+/// collision the guard exists to prevent, just harder to hit. `create_new` is `O_EXCL` — the
+/// kernel picks one winner.
+pub fn claim(home: &Home, record: &Record) -> std::io::Result<bool> {
+    use std::io::Write;
+    dir(home)?;
+    let text = serde_json::to_string_pretty(record).map_err(std::io::Error::other)?;
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path(home, &record.name))
+    {
+        Ok(mut f) => {
+            f.write_all(text.as_bytes())?;
+            Ok(true)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// What is at a record's path. Absent and unreadable are **different answers**, and conflating them
+/// is the fail-open direction (docs/design/agent-ergonomics.md#unparseable-runstate-record-reads-as-no-hold):
+/// a file that exists but will not parse cannot be liveness-checked, so the honest reading is
+/// "something may be held here", reported — not "nothing is held here", which sends the guards
+/// straight past a live holder into a second instance.
+#[derive(Debug)]
+pub enum Held {
+    /// No record at this name.
+    Absent,
+    /// A record that parsed.
+    Record(Box<Record>),
+    /// A file is there and cannot be read or parsed. Carries the reason, for a message that names
+    /// what to look at rather than leaving someone to guess.
+    Unreadable(String),
+}
+
+impl Held {
+    /// The record, if it parsed. Callers that use this are choosing to treat unreadable as absent,
+    /// which is only correct where "not ready yet" and "not there" lead to the same action.
+    pub fn record(self) -> Option<Record> {
+        match self {
+            Held::Record(r) => Some(*r),
+            _ => None,
+        }
+    }
+}
+
+/// Read a topology's record, distinguishing absent from unreadable.
+pub fn read(home: &Home, name: &str) -> Held {
+    let p = path(home, name);
+    let text = match std::fs::read_to_string(&p) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Held::Absent,
+        Err(e) => return Held::Unreadable(format!("{}: {e}", p.display())),
+    };
+    match serde_json::from_str::<Record>(&text) {
+        Ok(rec) => Held::Record(Box::new(rec)),
+        Err(e) => Held::Unreadable(format!("{}: {e}", p.display())),
+    }
 }
 
 /// Remove a topology's record (ignored if absent).
@@ -123,25 +202,51 @@ pub fn remove(home: &Home, name: &str) {
     let _ = std::fs::remove_file(path(home, name));
 }
 
-/// Every recorded topology in this project, sorted by name.
-pub fn list(home: &Home) -> Vec<Record> {
+/// One entry in the run-state directory. The name comes from the FILE NAME, which is legible even
+/// when the contents are not — so an unreadable record can still be reported by name.
+#[derive(Debug)]
+pub struct Entry {
+    pub name: String,
+    pub held: Held,
+}
+
+/// Every entry in this project's run-state directory, sorted by name — **including the ones that
+/// do not parse**. `list` used to drop those silently, which made a corrupt record equivalent to no
+/// record for every consumer at once: `ps` omitted it, the guards sailed past it, and nothing
+/// anywhere said a file was unreadable.
+pub fn list(home: &Home) -> Vec<Entry> {
     let mut out = Vec::new();
     let d = var::path(home).join("running");
     if let Ok(entries) = std::fs::read_dir(&d) {
         for entry in entries.flatten() {
             let p = entry.path();
-            if p.extension().and_then(|e| e.to_str()) == Some("json") {
-                if let Some(rec) = std::fs::read_to_string(&p)
-                    .ok()
-                    .and_then(|t| serde_json::from_str::<Record>(&t).ok())
-                {
-                    out.push(rec);
-                }
+            if p.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
             }
+            let Some(name) = p.file_stem().and_then(|s| s.to_str()).map(str::to_string) else {
+                continue;
+            };
+            let held = match std::fs::read_to_string(&p) {
+                Ok(t) => match serde_json::from_str::<Record>(&t) {
+                    Ok(rec) => Held::Record(Box::new(rec)),
+                    Err(e) => Held::Unreadable(format!("{}: {e}", p.display())),
+                },
+                Err(e) => Held::Unreadable(format!("{}: {e}", p.display())),
+            };
+            out.push(Entry { name, held });
         }
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
+}
+
+/// The parsed records only — for consumers where an unreadable entry has already been handled, or
+/// genuinely does not change the answer.
+pub fn records(home: &Home) -> Vec<Record> {
+    list(home)
+        .into_iter()
+        .filter_map(|e| e.held.record())
+        .collect()
 }
 
 /// Current unix seconds.
@@ -302,7 +407,7 @@ mod tests {
             "nothing generated at the package root"
         );
 
-        let got = read(&home, "orders").expect("record present");
+        let got = read(&home, "orders").record().expect("record present");
         assert_eq!(got.pid, 4242);
         assert_eq!(got.endpoints[0].url, "postgres://x");
 
@@ -311,7 +416,7 @@ mod tests {
         assert_eq!(all[0].name, "orders");
 
         remove(&home, "orders");
-        assert!(read(&home, "orders").is_none());
+        assert!(read(&home, "orders").record().is_none());
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -343,7 +448,7 @@ mod tests {
             value: serde_json::Value::Null,
         };
         write(&home, &rec).unwrap();
-        assert_eq!(read(&home, "orders").unwrap().status, Status::Starting);
+        assert_eq!(read(&home, "orders").record().unwrap().status, Status::Starting);
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -360,7 +465,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(read(&home, "orders").is_none(), "not a record location");
+        assert!(read(&home, "orders").record().is_none(), "not a record location");
         assert!(list(&home).is_empty(), "ps must not see it");
         std::fs::remove_dir_all(&root).ok();
     }

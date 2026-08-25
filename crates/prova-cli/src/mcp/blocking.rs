@@ -286,6 +286,42 @@ pub(super) fn eval_blocking(
 // Warm tool bodies (each runs under `blocking`, talking to a holder thread where needed)
 // ---------------------------------------------------------------------------------------------
 
+/// Refuse a warm `up` when a DETACHED holder already has the name
+/// (docs/design/agent-ergonomics.md#mcp-up-does-not-see-a-detached-hold). Same rule as the CLI
+/// guard, and split out so `up_blocking` stays inside the function-length ratchet.
+fn guard_detached_holder(home: &crate::home::Home, name: &str) -> Result<(), String> {
+    let existing = match crate::runstate::read(home, name) {
+        crate::runstate::Held::Record(rec) => Some(*rec),
+        // Fail closed, exactly as the CLI guard does: a record we cannot parse cannot be
+        // liveness-checked, so provisioning over it is a guess with a cluster on the line
+        // (docs/design/agent-ergonomics.md#unparseable-runstate-record-reads-as-no-hold).
+        crate::runstate::Held::Unreadable(why) => {
+            return Err(format!(
+                "up {name:?}: a run-state record exists for this name but cannot be read, so \
+                 whether a holder already has it is unknown. Inspect or remove {}, then retry.\n{why}",
+                crate::runstate::path(home, name).display()
+            ));
+        }
+        crate::runstate::Held::Absent => None,
+    };
+    let Some(rec) = existing else { return Ok(()) };
+    if crate::runstate::is_alive(rec.pid) {
+        return Err(format!(
+            "up {name:?}: already up — a detached holder (pid {}) has it in {}. This server did \
+             not provision it, so it is not this server's to reap: tear it down with `prova \
+             down {name}` in that package, or run against the live instance with `prova \
+             --topology {name}` (a warm `up` cannot adopt a hold it did not create).",
+            rec.pid,
+            home.dir.display()
+        ));
+    }
+    // The one thing this verb writes to run-state, and it is a reap rather than a claim: the
+    // record is a dead holder's litter, and leaving it would keep refusing forever. A warm hold
+    // still mints no record of its own (docs/design/mcp-mode.md#held-visible-via-status-not-ps).
+    crate::runstate::remove(home, name);
+    Ok(())
+}
+
 pub(super) fn up_blocking(
     env: &McpEnv,
     warm: &WarmRegistry,
@@ -327,23 +363,7 @@ pub(super) fn up_blocking(
     //
     // Deliberately before the `requires` gate below: if it is already up, whether THIS host could
     // have stood it up is moot — the holder that did had what it needed.
-    if let Some(rec) = crate::runstate::read(&call.home, &name) {
-        if crate::runstate::is_alive(rec.pid) {
-            return Err(format!(
-                "up {name:?}: already up — a detached holder (pid {}) has it in {}. This server did \
-                 not provision it, so it is not this server's to reap: tear it down with `prova \
-                 down {name}` in that package, or run against the live instance with `prova \
-                 --topology {name}` (a warm `up` cannot adopt a hold it did not create).",
-                rec.pid,
-                call.home.dir.display()
-            ));
-        }
-        // The one thing this verb writes to run-state, and it is a reap rather than a claim: the
-        // record is a dead holder's litter, and leaving it would keep refusing forever. A warm
-        // hold still mints no record of its own
-        // (docs/design/mcp-mode.md#held-visible-via-status-not-ps).
-        crate::runstate::remove(&call.home, &name);
-    }
+    guard_detached_holder(&call.home, &name)?;
 
     let mut config = crate::engine_config(1, &call.dependencies, Some(&call.home), prova_core::progress::null())
         .with_capabilities(call.capabilities.clone())
@@ -508,7 +528,7 @@ pub(super) fn status_blocking(
 
     let now = crate::runstate::now_secs();
     for home in &consult {
-        for rec in crate::runstate::list(home) {
+        for rec in crate::runstate::records(home) {
             if !crate::runstate::is_alive(rec.pid) {
                 continue;
             }
