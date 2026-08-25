@@ -22,7 +22,7 @@ A topology has exactly two consumers, and each enters differently:
 
 - **A test** builds one in-process with `prova.topology(...)`. That is a fixture — local to the
   files that declare it, and never addressable from outside the run.
-- **The inhabited verbs** (`up`/`start`/`watch`/`ps`) stand up a **registered** factory, resolved
+- **The inhabited verbs** (`up`/`start`/`down`/`ps`) stand up a **registered** factory, resolved
   from `[topologies]` in the manifest and **nowhere else**. They do not load or scan proof files.
 
 So `prova.topology("orders", ...)` sitting in a test file is *not* visible to `prova up orders` —
@@ -62,7 +62,6 @@ urls, hosts, ports), since a `client` userdata cannot cross a Lua state.
 |---|---|
 | `prova up orders` | live, attached: prints endpoints, Ctrl-C tears down |
 | `prova start orders` / `prova down orders` / `prova ps` | detached across processes: narrates while it comes up, Ctrl-C stops it |
-| `prova watch orders` | re-applies on definition change (the dev loop) |
 | MCP `up { name }` → `run`/`eval` `{ topology = name }` → `down { name }` | WARM inside the server — millisecond re-runs while iterating; see `prova learn mcp` |
 | `prova up <git-url>` | stand up a topology a remote repo advertises |
 

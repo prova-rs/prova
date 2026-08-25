@@ -137,7 +137,7 @@ pub use engine::{
     evaluate_reminders, hold_topology,
     inspect_package, is_builtin_capability, list_topologies, load_project_config, obligations_for_suite,
     qualify_leaf_path, resolve_capabilities, run_path, ProofObligation,
-    run_path_with, unreferenced_snapshots, up, watch, AttachedRegistry, AttachedTopology,
+    run_path_with, unreferenced_snapshots, up, AttachedRegistry, AttachedTopology,
     Capabilities, CapabilityExplanation, CapabilityFactory, CapabilityRegistration, CommandProbe,
     DeclKind, Endpoint, HeldTopology, InternedHandle, Module, Stream, TopologyPool,
     ListNode, PackageReport, PackageShape, PortMode, RunConfig, Selection, SnapshotRegistry,

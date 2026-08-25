@@ -1584,7 +1584,7 @@ endpoints block so the block is still printed once, on **stdout**, where a calle
 `prova start` has always found it. The two verbs now differ in their last line and nothing else.
 
 <!-- claim: interrupt-leaves-nothing-behind -->
-**An interrupted inhabited verb takes its environment with it — `start` and `watch` included.**
+**An interrupted inhabited verb takes its environment with it.**
 Ctrl-C on `prova start` used to kill only the supervisor. Its child is deliberately in its own
 process group (that is what detached means, and it is why the terminal's Ctrl-C never reaches the
 holder) and deliberately unleased (verifiers.md#detached-topologies-hold-no-lease, because
@@ -1598,11 +1598,11 @@ in-process teardown, wait for it to release. Same signal, same teardown, same re
 with two triggers. A second interrupt during the stop means "stop waiting", never "kill it": the
 holder is *already* running its teardown, and killing it there is how containers get stranded.
 
-`prova watch` had the same hole one layer down, and it is the verb most exposed to it: a watch
-re-provisions on every save, so it spends its life mid-flight. It awaited the shutdown signal
-*after* provisioning rather than racing it, so an interrupt during a re-apply found no handler
-installed, the watcher died by default disposition, and everything it had already created outlived
-it. `up` fixed exactly this in its own path and the fix was never carried across.
+`prova watch` had the same hole one layer down and was fixed the same way, then removed outright
+a few hours later (topologies.md "`prova watch` — removed"): its re-apply loop had never fired, so
+the verb had never been used and the interrupt path was the only part of it that worked. Worth
+recording that the fix came first and the deletion second — the investigation that made the leak
+visible is what surfaced that the verb around it was inert.
 
 Unix only, and stated rather than papered over: the graceful stop is `runstate::terminate`, and
 Windows has no signal that makes a detached holder run its teardown. A handler there could only

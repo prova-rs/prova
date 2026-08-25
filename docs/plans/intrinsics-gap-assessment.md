@@ -130,8 +130,12 @@ failure diagnosis + readiness timeout), plugins (searcher/git/private-deps/lint)
 (JUnit/TAP/JSONL content-verified in selftest), MCP (cold+warm), init/ide/eval all rate **good**.
 The soft spots, ranked:
 
-1. **`prova watch` — zero tests of any kind** (`main.rs:884` dispatched, never invoked by a
-   test). An advertised workflow verb with unproven supervise/re-run behavior.
+1. ~~**`prova watch` — zero tests of any kind**~~ **CLOSED 2026-08-25, by deletion.** The
+   untested verb turned out to be an inert one: its re-apply loop had been comparing two empty
+   file lists since 2026-07-28 and could never fire. Removed rather than tested
+   (topologies.md "`prova watch` — removed"). Worth keeping the entry: "advertised workflow verb
+   with unproven behavior" was the correct read, and the cost of leaving it unproven was a month
+   of shipping a documented feature that did nothing.
 2. **`--last-failed` — no behavioral test.** Nothing writes a failure set then proves the rerun
    selects exactly it. This is the PDD loop's own crank — it deserves a selftest.
 3. **`graphql` — one Rust test, no testdata, no proof, no example.** Variables/headers untested.

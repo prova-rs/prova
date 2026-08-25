@@ -1,15 +1,14 @@
 --- An interrupted inhabited verb takes its environment with it
 --- (docs/design/agent-ergonomics.md#interrupt-leaves-nothing-behind).
 ---
---- Two holes, one shape. `prova start`'s child is deliberately in its own process group and
+--- The shape of it. `prova start`'s child is deliberately in its own process group and
 --- deliberately unleased — that is what "detached" means, and it is why `prova down` is its reaper
 --- (verifiers.md#detached-topologies-hold-no-lease). Both facts are right, and together they meant
 --- nothing at all reaped a holder whose supervisor was interrupted: `start` died of the Ctrl-C, the
 --- `prova up` it spawned kept provisioning, and containers arrived with nobody left to report them.
 --- Before registration there is not even a run-state record, so `prova down` answered "not running"
---- while the stack came up anyway. `prova watch` had the same hole one layer down: it awaited the
---- shutdown signal AFTER provisioning instead of racing it, so an interrupt during a re-apply found
---- no handler installed and everything already created outlived the watcher.
+--- while the stack came up anyway. (`prova watch` had the same hole one layer down and was removed
+--- rather than fixed — it had never re-applied, and nobody had ever used it.)
 ---
 --- The marker is a FILE the factory writes and its teardown removes — deliberately not a spawned
 --- process, which the conduct lease sweeps even on a death that runs no teardown
@@ -120,24 +119,4 @@ prova.test("a second Ctrl-C stops the WAITING, never the holder mid-release", {
   t:expect(wait_until(function() return fs.exists(root .. "/released.txt") end, 60),
     "the holder finished releasing on its own"):is_true()
   t:expect(holder_alive("lingering"), "…and then exited"):is_false()
-end)
-
-prova.test("Ctrl-C during a `prova watch` provision releases what it provisioned", {
-  requires = { "unix" },
-  covers = "docs/design/agent-ergonomics.md#interrupt-leaves-nothing-behind",
-  proves = "watch is the verb most exposed to this: it re-provisions on every save, so it spends its life mid-flight — and it awaited the shutdown signal after provisioning rather than racing it, so an interrupt DURING a re-apply found no handler installed, the watcher died by default disposition, and every resource it had already created outlived it. `up` fixed exactly this in its own path and the fix was never carried across",
-}, function(t)
-  local root = t:tempdir("watch") .. "/pkg"
-  hanging_package(root, "watched")
-
-  local proc = shell.spawn({ prova.bin, "watch", "watched" }, { cwd = root })
-  t:defer(function() proc:stop() end)
-
-  t:expect(wait_until(function() return fs.exists(root .. "/created.txt") end, 60),
-    "the factory got far enough to create the resource"):is_true()
-  shell.run("kill -INT " .. proc.pid)
-  proc:wait()
-
-  t:expect(wait_until(function() return fs.exists(root .. "/released.txt") end, 60),
-    "the interrupted watch released what it had provisioned"):is_true()
 end)

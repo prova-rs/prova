@@ -1,4 +1,4 @@
-//! The topology verbs: up, watch, start, down, ps — and their shared plumbing.
+//! The topology verbs: up, start, down, ps — and their shared plumbing.
 
 use super::*;
 
@@ -289,7 +289,7 @@ pub(crate) fn up_from_git(name: Option<&str>, url: &str, fixed: bool) -> ExitCod
     }
 }
 
-/// Everything the `up`/`watch` verbs need to stand a topology up: the located package, the files that
+/// Everything the `up` verbs need to stand a topology up: the located package, the files that
 /// may declare topologies, and the engine config (plugins resolved, port mode set).
 pub(crate) struct TopologyRun {
     pub(crate) home: Home,
@@ -354,7 +354,7 @@ pub(crate) fn lua_quote(s: &str) -> String {
 }
 
 /// Resolve the manifest, discover the topology files, and build the engine config for an inhabited
-/// verb (`up`/`watch`). Shared so both consume one definition the same way; `verb` only labels errors.
+/// verb (`up`, and its listing form). `verb` only labels errors.
 pub(crate) fn build_topology_run(
     verb: &str,
     name: Option<&str>,
@@ -472,62 +472,6 @@ pub(crate) fn check_topology_requires(prep: &TopologyRun, name: &str) -> Result<
         }
     }
     Ok(())
-}
-
-/// `prova watch <topology>` — the inhabited dev loop: stand the topology up, print its endpoints, and
-/// re-provision whenever its definition files change, holding until Ctrl-C. Attached-only (no detached
-/// supervisor); pair with `--fixed` for endpoints that stay put across re-applies.
-pub(crate) fn watch_subcommand(args: Vec<String>) -> ExitCode {
-    const USAGE: &str = "usage: prova watch <topology> [--fixed] [--profile NAME] [--manifest PATH]\n\
-        \n\
-        stand up a topology and re-provision it whenever its definition files change,\n\
-        holding until Ctrl-C. A live dev loop over the same definition your tests use.\n\
-        \n\
-        --fixed  keep endpoints on canonical ports so they stay stable across re-applies.";
-    let (mut positionals, profile, manifest_path, fixed) =
-        match topology_flags("watch", USAGE, 1, args) {
-            Ok(parsed) => parsed,
-            Err(code) => return code,
-        };
-    let Some(name) = positionals.pop() else {
-        eprintln!("usage: prova watch <topology>");
-        return ExitCode::from(2);
-    };
-
-    let TopologyRun { files, config, .. } =
-        match build_topology_run("watch", Some(&name), profile, manifest_path, fixed) {
-            Ok(p) => p,
-            Err(code) => return code,
-        };
-
-    eprintln!("prova: watching topology {name:?} (Ctrl-C to stop)…");
-    let result = prova_core::watch(
-        &files,
-        &name,
-        &config,
-        |endpoints, reapply| {
-            if reapply {
-                println!("\n  change detected — re-applied:");
-            }
-            print_endpoints(&name, endpoints);
-            println!("\n  watching — edit the definition to re-apply, Ctrl-C to tear down");
-        },
-        |err| {
-            eprintln!(
-                "\n  prova watch: provisioning failed — fix the definition to retry:\n    {err}"
-            );
-        },
-    );
-    match result {
-        Ok(()) => {
-            println!("\n  torn down.");
-            ExitCode::SUCCESS
-        }
-        Err(err) => {
-            eprintln!("prova watch: {err}");
-            ExitCode::from(2)
-        }
-    }
 }
 
 /// Locate the prova package home from `--manifest` or by walking up from the current directory.
@@ -1202,7 +1146,7 @@ mod tests {
         assert_eq!(manifest, None);
         assert!(fixed);
 
-        assert!(topology_flags("watch", "usage", 1, args(&["a", "b"])).is_err(), "over the cap");
+        assert!(topology_flags("down", "usage", 1, args(&["a", "b"])).is_err(), "over the cap");
         assert!(topology_flags("up", "usage", 2, args(&["--bogus"])).is_err(), "unknown flag");
         assert!(topology_flags("up", "usage", 2, args(&["--help"])).is_err(), "help exits early");
     }

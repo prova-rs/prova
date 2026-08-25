@@ -225,11 +225,6 @@ const VERBS: &[Verb] = &[
         run: broker_subcommand,
     },
     Verb {
-        name: "watch",
-        help: "  prova watch <topology>    stand up a topology and re-apply on definition change (dev loop)",
-        run: watch_subcommand,
-    },
-    Verb {
         name: "start",
         help: "  prova start <topology>    stand up a topology detached (returns; use `down` to stop)",
         run: start_subcommand,

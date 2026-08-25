@@ -31,7 +31,8 @@ the *same* definition:
 - **`prova`** (the run path) — bring it up, drive it, **assert**, tear down. *(today)*
 - **`prova up`** — bring it up, print the endpoints, **hold it running** for you to develop against,
   tear down on signal. *(the reveal)*
-- **`prova watch`** — the above plus a live re-apply loop. *(done — see below)*
+- **Live component development** — hand the held architecture to a tool that already does
+  rebuild-and-redeploy well (Tilt), rather than growing one. *(direction — see below)*
 
 The point is not "it does both." It is that the **same definition powers your tests and your dev
 environment, so they cannot drift.** Today a compose file, a testcontainers setup, k8s manifests, and
@@ -95,7 +96,7 @@ test scope; `prova up orders` instantiates the identical object under a held env
 
 A topology has exactly two consumers, and they enter by different doors. A **test** builds one
 in-process (`prova.topology(...)`); the **inhabited verbs** stand up a **registered** factory.
-`up`/`start`/`watch`/`ps` originally did both — loading every proof file and standing up any
+`up`/`start`/`down`/`ps` originally did both — loading every proof file and standing up any
 `prova.topology` call found there — and two problems followed.
 
 A test-local fixture became silently addressable as a shared environment, which is not what
@@ -173,17 +174,64 @@ reachable on `5432`/`6379`; default `up` uses random ports. This settles the **e
 question for the common case; the Kafka advertised-listener recipe is a package-side follow-up that
 now has the core signal it needs.
 
-## `prova watch` — the inhabited dev loop (done)
+## `prova watch` — removed (2026-08-25)
 
-`prova watch <name>` stands the topology up, prints its endpoints, and re-provisions whenever the
-definition files change — the Tilt-ish live loop, over the *same* definition the tests use. Each pass
-builds a fresh Lua state so edits take effect; a failed edit is reported and the loop waits for the fix
-rather than exiting. Dependency-free mtime polling with a short settle (one save → one re-apply);
-attached-only, pair with `--fixed` for endpoints stable across re-applies. `up` and `watch` share the
-provisioning path (`load_topology`/`provision`), so there is one definition-to-resources route, not two.
-A shutdown signal is raced against provisioning rather than awaited after it, so interrupting a
-re-apply mid-flight releases what that pass had already created
-(agent-ergonomics.md#interrupt-leaves-nothing-behind).
+`prova watch <name>` promised the Tilt-ish loop: stand the topology up and re-provision whenever the
+definition changed. **It never did that.** The re-apply was driven by mtime polling over the file
+list `build_topology_run` returns, and when "registration is the only door" landed (2026-07-28) that
+list became `Vec::new()` for every inhabited verb — correctly, since a `[topologies]` entry is now
+the whole surface and no proof files are loaded. `up` does not care what is in `files`; `watch`'s
+entire premise was in there. The comparison became `[] != []`, which is never true, so the loop could
+not fire. It shipped that way for a month, advertised in the CLI help, the learn card, the skill
+card and the public docs site, and nothing tested it — the one unit test asserted the *unknown
+topology* path and its comment claimed the happy path was "verified via the CLI", which it was not.
+
+Worse than dead: it had no double-provision guard. `up` refuses when a live record exists; `watch`
+went straight to the factory, so running it beside a held topology provisioned a **second** instance.
+On a fixed-name definition that is the collision [[fresh-over-a-holder-is-announced]] warns about —
+observed for real against a live `ybor-studio` kind cluster, where `kind create cluster --name
+ybor-studio` failed with "node(s) already exist". The cluster survived only because that definition
+registers its `ctx:defer(kind delete cluster)` *after* the create returns; register the cleanup first
+— the more defensive-looking order — and the interrupted watcher's teardown would have deleted a
+cluster another process was holding. It was also invisible to `ps`/`down`, having never registered
+run-state.
+
+It was removed rather than repaired, and removed **silently** (no tombstone): it had never been run
+in anger, so there is no muscle memory to be kind to.
+
+### What replaces it: hand off, don't rebuild
+
+The need behind `watch` is real and is two needs wearing one name:
+
+1. **The topology definition changed** — a service added, seed data edited. That is a
+   re-provision, not a hot reload. `prova down && prova start` is the honest spelling, and
+   pretending otherwise was most of what made `watch` a lie.
+2. **An application inside the architecture changed** — the component under active development.
+   This is rebuild-image-and-redeploy-into-the-running-cluster, with file watching, live update and
+   port forwarding. **Tilt already does this well, and prova should not grow a second one.**
+
+So the intended shape: **prova owns the architecture, Tilt owns the components under development.**
+`prova start` brings up the whole thing (cluster, datastores, identity, gateway); Tilt then replaces
+one or two deployments in that same cluster while everything around them stays put. Both point at
+one environment, and `prova down` remains the single reaper.
+
+What prova owes that handoff — none of it built yet, and this is the bounded list:
+
+- **A machine-readable "where is it".** The holder already records the factory's JSON projection in
+  `<var>/running/<name>.json` (the same payload an attaching run seeds — [[attach-binds-by-name]]),
+  but nothing emits it for a consumer: `prova ps` is human text only. A Tiltfile should be able to
+  ask prova for the kube context / kubeconfig / endpoints rather than re-deriving them by
+  convention.
+- **A convention for what a k8s topology returns**, so that answer is uniform across packages
+  rather than each Tiltfile knowing one factory's shape.
+- **The double-provision guard on every inhabited verb**, which is the defect above and is owed
+  regardless of Tilt.
+
+Explicitly not prova's job: building images, live-updating containers, watching source trees.
+
+Note the symmetry worth keeping: the MCP warm path (`up` → `run`/`eval` → `down`) is the *agent's*
+interactive loop over a held topology, and Tilt is the *human's*. Two consumers, one held
+architecture, no second provisioning path.
 
 ## The containerized SUT — `build` instead of `image` (done)
 
@@ -248,7 +296,7 @@ it at the same seam. Closures and userdata do not survive the projection, and mu
 resource grammar's standing answer is that clients attach by `url`.
 
 Testing the *current state of things* is the point: hold the stack, swap a work-in-progress SUT
-into it (Tilt, `watch`, by hand), and the same suite that gates CI judges the live instance.
+into it (Tilt, by hand), and the same suite that gates CI judges the live instance.
 Idempotency under accumulation is **test design**, not framework mechanics — upsert-or-error
 seeding, count-then-delta assertions, and a `[profiles.live]` lane are the sanctioned tools.
 

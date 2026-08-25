@@ -162,8 +162,7 @@ its object: `promises` lists nodes, `owed` lists obligations, `reminders` lists 
 what the world made due. The lane scopes the adjective, so the rhyme cannot collide. **WATCHING**
 replaced the draft's QUIET — quiet named the *output behavior* rather than the state, and misread
 as muted/snoozed; watching says what the reminder is doing and makes the armed/disarmed pair
-against UNEVALUATED legible at a glance. Its consonance with `prova watch` is the `--due` kind:
-both mean "respond when it changes".)
+against UNEVALUATED legible at a glance.)
 
 <!-- claim: reminders-state-filters -->
 States are adjectives on their lane, here as everywhere: `prova reminders --due` and

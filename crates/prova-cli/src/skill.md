@@ -252,7 +252,7 @@ end)
 ```
 
 Tests `t:use(env)` it; `prova up orders` holds the same environment live (prints endpoints, tears
-down on Ctrl-C); `prova start/down/ps` manage it detached; `prova watch` re-applies on change.
+down on Ctrl-C); `prova start/down/ps` manage it detached.
 Your tests and the dev environment are one description — they cannot drift.
 
 Inside a topology factory (and ONLY there) `ctx.network` is an ambient managed network: resources

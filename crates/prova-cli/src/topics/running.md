@@ -60,7 +60,6 @@ fully-skipped suite from exiting 0. `prova learn project` shows this package's p
   it provisions tears down on return. `-` reads from stdin (unquotable payloads).
 - Snapshots: `-u` rewrites; `--unreferenced warn|delete` on full runs.
 - Plugin sources: `-U/--update` force-refresh, `--offline` cache-only.
-- Watch mode for topologies: `prova watch <name>` (see `prova learn topologies`).
 
 CI is the same binary and the same suite: `uses: prova-rs/run-action@v1` — byte-identical to
 your local run; that is the point.

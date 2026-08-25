@@ -177,7 +177,6 @@ impl Topic {
         ("up", Topic::Topologies),
         ("down", Topic::Topologies),
         ("start", Topic::Topologies),
-        ("watch", Topic::Topologies),
         ("ps", Topic::Topologies),
         ("broker", Topic::Topologies),
         // The spawnable-mock adapter: what it exists FOR is the doubles story.

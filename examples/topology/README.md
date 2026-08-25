@@ -49,17 +49,6 @@ prova up orders --fixed
 Same definition — the *verb* chooses the port strategy. Only one fixed instance of a port can run at
 a time.
 
-## Watch it (dev loop)
-
-```
-prova watch orders --fixed
-```
-
-Stands the topology up and **re-applies whenever you edit the definition** — tear down, re-provision
-from the fresh definition, re-print endpoints — holding until Ctrl-C. With `--fixed`, the endpoints
-stay put across re-applies, so your app's config never changes. A live dev loop over the exact
-description your tests assert against.
-
 ## Inhabit it (detached)
 
 ```

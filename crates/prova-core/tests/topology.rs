@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use prova_core::{run_path, run_path_with, watch, NullReporter, PortMode, RunConfig};
+use prova_core::{run_path, run_path_with, NullReporter, PortMode, RunConfig};
 
 fn testdata(file: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -39,30 +39,3 @@ fn port_mode_is_exposed_to_lua_as_prova_ports() {
     std::env::remove_var("EXPECTED_PORTS");
 }
 
-/// `watch` on a topology that does not exist fails fast with a helpful error — it never enters the
-/// hold loop (so this test can't hang) and never calls the ready/error callbacks. The happy path
-/// (provision → re-apply on file change → teardown) blocks on a signal and is verified via the CLI.
-#[test]
-fn watch_errors_immediately_on_unknown_topology() {
-    let files = [testdata("topology.lua")]; // defines "web", not "nope"
-    let config = RunConfig::new(1);
-    let mut ready_calls = 0;
-    let mut error_calls = 0;
-    let result = watch(
-        &files,
-        "nope",
-        &config,
-        |_, _| ready_calls += 1,
-        |_| error_calls += 1,
-    );
-    let err = result.expect_err("unknown topology is an error");
-    assert!(
-        err.to_string().contains("no topology named"),
-        "helpful message, got: {err}"
-    );
-    assert_eq!(ready_calls, 0, "never provisioned");
-    assert_eq!(
-        error_calls, 0,
-        "load failure is returned, not sent to on_error"
-    );
-}

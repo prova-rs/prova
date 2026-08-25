@@ -48,71 +48,8 @@ pub fn up(
     })
 }
 
-/// `prova watch <name>` — the inhabited dev loop. Provision the topology, report its endpoints, and
-/// hold; when any of `files` changes on disk, tear down and re-provision from the *fresh* definition
-/// (a new Lua state, so edits take effect), reporting the new endpoints. Repeats until a shutdown
-/// signal, then tears down and returns. `on_ready(endpoints, reapply)` is called after each successful
-/// (re)provision (`reapply` is false the first time). A definition that fails to provision (e.g. a bad
-/// edit) is reported via `on_error` and does *not* exit the loop — the watcher waits for the next
-/// change so the fix is picked up. Use `--fixed` for stable endpoints across re-applies.
-///
-/// A signal arriving *mid-provision* is honored like any other: the partial provision is torn down
-/// rather than orphaned, so an interrupted re-apply leaves nothing behind.
-pub fn watch(
-    files: &[PathBuf],
-    name: &str,
-    config: &RunConfig,
-    mut on_ready: impl FnMut(&[Endpoint], bool),
-    mut on_error: impl FnMut(&mlua::Error),
-) -> mlua::Result<()> {
-    let rt = new_runtime()?;
-    block_on_local(&rt, async {
-        let mut reapply = false;
-        loop {
-            // Build a fresh state each pass so a changed definition is actually re-read.
-            match load_topology(files, name, config) {
-                Ok((lua, _col, state, id)) => {
-                    // The signal is raced against provisioning, exactly as `up` races it and for
-                    // exactly the same reason: until this select existed, a Ctrl-C DURING a
-                    // watch's provisioning found no handler installed, so the watcher died by
-                    // default disposition and every container it had already created outlived it.
-                    // The re-apply loop makes it worse than the one-shot case, not better — a
-                    // watch re-provisions on every save, so it is the verb most likely to be
-                    // interrupted mid-flight. Cancelling the future drops it where it stands;
-                    // whatever it registered is held by the File scope, which is what the
-                    // unconditional teardown below reaps.
-                    let held = tokio::select! {
-                        r = async {
-                            let (_value, endpoints) = provision(&lua, &state, id, name).await?;
-                            on_ready(&endpoints, reapply);
-                            Ok::<bool, mlua::Error>(wait_for_change_or_shutdown(files).await)
-                        } => r,
-                        () = wait_for_shutdown() => Ok(false),
-                    };
-                    teardown_all_and_warn(&state).await;
-                    match held {
-                        // A file changed → loop and re-provision. Shutdown → done.
-                        Ok(true) => {}
-                        Ok(false) => return Ok(()),
-                        // Provisioning itself failed: report, then wait for the next edit or a signal.
-                        Err(e) => {
-                            on_error(&e);
-                            if !wait_for_change_or_shutdown(files).await {
-                                return Ok(());
-                            }
-                        }
-                    }
-                }
-                // The files don't even load / no such topology — a hard error worth surfacing to exit.
-                Err(e) => return Err(e),
-            }
-            reapply = true;
-        }
-    })
-}
-
 /// Load `files` into a fresh Lua state and resolve the named topology's fixture id, returning the
-/// state pieces `provision` needs. Shared by `up`, `watch`, and `hold_topology` (which keeps the
+/// state pieces `provision` needs. Shared by `up` and `hold_topology` (which keeps the
 /// collector so warm runs can reset and re-collect in the same state).
 /// A manifest topology (`[topologies]`), desugared to `prova.topology(alias, require(plugin).factory)`.
 #[derive(Debug, Clone)]
@@ -272,8 +209,8 @@ pub(super) async fn provision_and_hold(
 
 /// Instantiate the topology under a held `Scope.File` and return its live value plus its endpoints.
 /// The provisioned resources stay alive via the File scope's teardowns (held in `state`) until the
-/// caller reaps them; separated from the wait/hold so `up` (hold until signal), `watch` (hold until
-/// change), and `hold_topology` (hold across MCP tool calls) all reuse it.
+/// caller reaps them; separated from the wait/hold so `up` (hold until signal) and
+/// `hold_topology` (hold across MCP tool calls) both reuse it.
 pub(super) async fn provision(
     lua: &Lua,
     state: &Rc<RunState>,
@@ -650,37 +587,6 @@ pub(super) async fn wait_for_shutdown() {
     {
         let _ = tokio::signal::ctrl_c().await;
     }
-}
-
-/// Block until either a watched file changes on disk (returns `true` — re-apply) or a shutdown signal
-/// arrives (returns `false` — stop). Dependency-free: polls the files' modification times against a
-/// snapshot taken at entry. A short settle after a detected change lets an editor's multi-write save
-/// finish before we re-provision, so one save triggers one re-apply.
-pub(super) async fn wait_for_change_or_shutdown(files: &[PathBuf]) -> bool {
-    let baseline = snapshot_mtimes(files);
-    let mut ticker = tokio::time::interval(std::time::Duration::from_millis(400));
-    ticker.tick().await; // the first tick completes immediately; skip it
-    loop {
-        tokio::select! {
-            _ = wait_for_shutdown() => return false,
-            _ = ticker.tick() => {
-                if snapshot_mtimes(files) != baseline {
-                    // Let a burst of writes settle, then confirm before re-provisioning.
-                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-                    return true;
-                }
-            }
-        }
-    }
-}
-
-/// Each file's last-modified time (`None` if it can't be stat'd — e.g. mid-rename), positional so a
-/// simple `!=` against a baseline detects any change, appearance, or disappearance.
-pub(super) fn snapshot_mtimes(files: &[PathBuf]) -> Vec<Option<std::time::SystemTime>> {
-    files
-        .iter()
-        .map(|f| std::fs::metadata(f).and_then(|m| m.modified()).ok())
-        .collect()
 }
 
 #[cfg(test)]
