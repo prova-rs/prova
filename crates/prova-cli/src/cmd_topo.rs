@@ -114,29 +114,38 @@ pub(crate) fn up_subcommand(args: Vec<String>) -> ExitCode {
         ..
     } = prep;
 
-    // Refuse to double-provision: if a live record for this name exists, it is already up. A stale
-    // record (the holder is gone) is cleared and we proceed.
-    if let Some(rec) = runstate::read(&home, &name) {
-        if runstate::is_alive(rec.pid) {
-            eprintln!(
-                "prova up: topology {name:?} is already up (pid {})",
-                rec.pid
-            );
-            return ExitCode::from(2);
-        }
-        runstate::remove(&home, &name);
+    if let Err(code) = guard_double_provision("up", &home, &name) {
+        return code;
     }
 
     eprintln!("prova: standing up topology {name:?}…");
-    // Self-register run-state once provisioned, so `prova down`/`ps` can supervise this holder (the
-    // same for an attached `up` here and the detached child a `prova start` spawns).
+    // Register BEFORE the factory runs (docs/design/agent-ergonomics.md#starting-is-a-visible-state).
+    // A record that appeared only on success made a topology *coming* up invisible: `prova ps` said
+    // "no topologies running" while the machine was busy creating a cluster, `prova down` had nothing
+    // to stop, and a second `start` sailed past the guard straight into `kind create`. The starting
+    // record carries no endpoints and a null `value` — it is a claim on the NAME, not an environment
+    // anything may bind to, which is why `attach` skips it (see `attachable`).
+    let starting = runstate::Record {
+        name: name.clone(),
+        pid: std::process::id(),
+        started_at: runstate::now_secs(),
+        status: runstate::Status::Starting,
+        endpoints: Vec::new(),
+        value: serde_json::Value::Null,
+    };
+    if let Err(e) = runstate::write(&home, &starting) {
+        eprintln!("prova up: could not record run-state: {e}");
+    }
+
     let state_home = home.clone();
     let state_name = name.clone();
     let result = prova_core::up(&files, &name, &config, |endpoints, snapshot| {
+        // Flip to ready, now that endpoints and the rehydration payload are real.
         let record = runstate::Record {
             name: state_name.clone(),
             pid: std::process::id(),
             started_at: runstate::now_secs(),
+            status: runstate::Status::Ready,
             endpoints: endpoints
                 .iter()
                 .map(|e| runstate::Endpoint {
@@ -164,6 +173,57 @@ pub(crate) fn up_subcommand(args: Vec<String>) -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+/// Refuse to double-provision a name something else already holds — the one guard `up` and `start`
+/// share, and the one `watch` never had.
+///
+/// Two states refuse, not one (docs/design/agent-ergonomics.md#second-start-joins-or-refuses). A
+/// **ready** holder is the obvious case. A **starting** one is the case that bit: before the record
+/// was written at birth, a topology mid-`kind create` was invisible here, so a second invocation
+/// walked past this check and into the factory, where it met kind's own
+/// `node(s) already exist for a cluster with the name "…"` — a collision reported by the tool being
+/// driven, three layers from the cause.
+///
+/// A dead record is stale and cleared, but the two states clear differently
+/// (docs/design/agent-ergonomics.md#a-stale-starting-record-implies-residue). A dead *ready* holder
+/// got as far as being up, so its teardown either ran or its resources are the user's known problem.
+/// A dead *starting* holder was killed with the factory half-done, and removing its record deletes
+/// the evidence without deleting the half-built cluster — so the next attempt fails on a collision
+/// whose real cause is the previous crash. We proceed either way (we cannot know what a factory
+/// created), but the starting case says what may be lying around, because a port conflict that is
+/// really residue sends people to diagnose networking.
+fn guard_double_provision(verb: &str, home: &Home, name: &str) -> Result<(), ExitCode> {
+    let Some(rec) = runstate::read(home, name) else {
+        return Ok(());
+    };
+    if runstate::is_alive(rec.pid) {
+        let held = runstate::now_secs().saturating_sub(rec.started_at);
+        match rec.status {
+            runstate::Status::Ready => eprintln!(
+                "prova {verb}: topology {name:?} is already up (pid {}, up {held}s)",
+                rec.pid
+            ),
+            runstate::Status::Starting => eprintln!(
+                "prova {verb}: topology {name:?} is already starting (pid {}, {held}s in) — wait for \
+                 it, watch {}, or `prova down {name}` to stop it",
+                rec.pid,
+                runstate::log_path(home, name).display()
+            ),
+        }
+        return Err(ExitCode::from(2));
+    }
+    if rec.status == runstate::Status::Starting {
+        eprintln!(
+            "prova {verb}: clearing a stale STARTING record for {name:?} (pid {} is gone) — that \
+             holder died with its factory half-run, so whatever it had already created is still \
+             out there and unowned. If this attempt fails on a name or port that is already taken, \
+             that is the residue, not a new conflict.",
+            rec.pid
+        );
+    }
+    runstate::remove(home, name);
+    Ok(())
 }
 
 /// `prova up` with no name — list the topologies this package defines, so you can see what's there
@@ -762,15 +822,8 @@ pub(crate) fn start_subcommand(args: Vec<String>) -> ExitCode {
         Err(code) => return code,
     };
 
-    if let Some(rec) = runstate::read(&home, &name) {
-        if runstate::is_alive(rec.pid) {
-            eprintln!(
-                "prova start: topology {name:?} is already up (pid {})",
-                rec.pid
-            );
-            return ExitCode::from(2);
-        }
-        runstate::remove(&home, &name);
+    if let Err(code) = guard_double_provision("start", &home, &name) {
+        return code;
     }
     if let Err(e) = runstate::dir(&home) {
         eprintln!("prova start: cannot create run-state dir: {e}");
@@ -832,6 +885,20 @@ pub(crate) fn start_subcommand(args: Vec<String>) -> ExitCode {
     await_registration(&mut child, &home, &name, budget)
 }
 
+/// Drop the run-state record — but only if the holder is actually gone.
+///
+/// The holder removes its own record on the way out, so this is the belt-and-braces for when it
+/// cannot. Conditioning it on the child being dead matters now that the record appears at birth: a
+/// holder we stopped but which is STILL RELEASING owns its record until it exits, and a holder that
+/// never exits leaves a starting-record behind on purpose — that record is the evidence a factory
+/// got half-way (docs/design/agent-ergonomics.md#a-stale-starting-record-implies-residue). Deleting
+/// it here would erase the one signal that tells the next attempt its collision is residue.
+fn forget_if_gone(child: &mut std::process::Child, home: &home::Home, name: &str) {
+    if matches!(child.try_wait(), Ok(Some(_))) {
+        runstate::remove(home, name);
+    }
+}
+
 /// Wait for the detached holder to self-register (up), exit (failed), be interrupted, or exhaust
 /// its budget — relaying what it says while it works.
 ///
@@ -850,7 +917,13 @@ fn await_registration(
         // either order — but doing it first means the last thing the holder said before coming up
         // is on screen before the endpoints that answer it.
         relay.pump();
-        if let Some(rec) = runstate::read(home, name) {
+        // READY, not merely present. The record now appears at birth so the topology is visible
+        // and guarded while it provisions — which means "a record exists" stopped being the
+        // came-up signal it used to be. Waiting on presence alone would make `start` return the
+        // instant the holder registered its intent: exit 0, an empty endpoint block, and a
+        // detached process still creating a cluster nobody was told about.
+        if let Some(rec) = runstate::read(home, name).filter(|r| r.status == runstate::Status::Ready)
+        {
             let eps: Vec<prova_core::Endpoint> = rec
                 .endpoints
                 .iter()
@@ -874,7 +947,7 @@ fn await_registration(
         if interrupt::raised() {
             eprintln!("\nprova start: interrupted — stopping topology {name:?}…");
             stop_holder(child, name, &mut relay);
-            runstate::remove(home, name);
+            forget_if_gone(child, home, name);
             return ExitCode::from(130);
         }
 
@@ -910,7 +983,7 @@ fn await_registration(
                  definition knows its own cost), or override this invocation with --timeout."
             );
             stop_holder(child, name, &mut relay);
-            runstate::remove(home, name);
+            forget_if_gone(child, home, name);
             return ExitCode::from(2);
         }
         std::thread::sleep(Duration::from_millis(200));
@@ -999,11 +1072,18 @@ pub(crate) fn ps_subcommand(args: Vec<String>) -> ExitCode {
         if !alive {
             runstate::remove(&home, &rec.name);
         }
-        let status = if alive { "running" } else { "stale" };
-        let uptime = now.saturating_sub(rec.started_at);
+        // A live holder reports its own state; a dead one is stale whatever it claimed to be.
+        // "up 90s" for something still creating a cluster was the lie worth removing: the elapsed
+        // time is real, what it measures is not the same thing in both states.
+        let status = if alive { rec.status.label() } else { "stale" };
+        let elapsed = now.saturating_sub(rec.started_at);
+        let verb = match (alive, rec.status) {
+            (true, runstate::Status::Starting) => "starting for",
+            _ => "up",
+        };
         println!(
-            "{}  [{}]  pid {}  up {}s",
-            rec.name, status, rec.pid, uptime
+            "{}  [{}]  pid {}  {} {}s",
+            rec.name, status, rec.pid, verb, elapsed
         );
         for e in &rec.endpoints {
             println!("    {}  {}", e.name, e.url);
@@ -1047,8 +1127,15 @@ pub(crate) fn warn_fresh_over_a_holder(home: &Option<Home>) {
         if !runstate::is_alive(rec.pid) {
             continue;
         }
+        // A STARTING holder is the sharper edge of the same warning: it is actively creating the
+        // very names this run is about to create, so the collision is not hypothetical timing — it
+        // is two factories in the same seconds.
+        let state = match rec.status {
+            runstate::Status::Starting => "still STARTING",
+            runstate::Status::Ready => "held",
+        };
         eprintln!(
-            "prova: --fresh with topology {:?} held (pid {}): this run provisions its OWN instance \
+            "prova: --fresh with topology {:?} {state} (pid {}): this run provisions its OWN instance \
              — if the definition uses fixed names or fixed host ports, the two collide and THIS \
              run's teardown reaps the holder's resources. `prova down {}` first, or drop --fresh to \
              attach.",

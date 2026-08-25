@@ -1637,3 +1637,57 @@ so the second invoker becomes a spectator of the first instead of a competitor f
 name. The workaround consumers carry today (archetect-server's suite takes a machine-scoped
 `prova.writes("kind:<cluster>")` lock around its fixture) is the engine's job done in userland,
 and it only protects proofs — the inhabited verbs race unguarded.
+
+### What `starting` breaks if it is added naively
+
+Three of these were found by reading the record's *other* consumers rather than the verb that
+writes it. The record is not `ps`'s private note — it is a serialized contract with five readers
+— and the change above is only safe once each one knows about the new state.
+
+<!-- claim: attach-must-not-bind-a-starting-topology -->
+**Attach binds on aliveness alone, so a starting record would silently bind every run to nothing.**
+`dispatch.rs` scans run-state on every run, and its only gate is `is_alive(rec.pid)` — a
+mid-startup holder passes it. It then calls `with_attached_topology(rec.name, rec.value)`, and a
+starting record's `value` is `null`, which `json_to_lua` turns into `nil`. So the moment starting
+records exist, an ordinary `prova` run beside a starting topology announces *"held topology X is
+running — runs that declare it attach to its LIVE state"* and hands `t:use(env)` a nil. That is a
+strictly worse failure than the one being fixed: it moves the damage from the inhabited verbs
+(where a collision is loud and immediate) to the run path (where it is quiet), and it fires for
+one person alone rather than needing two at once. `--require-topology` has the same hole a few
+lines down — `offered` also tests only aliveness — which would let a starting topology satisfy a
+requirement that [[require-topology-is-strict]] says must be strict. **Attach must skip a
+starting record**, and `--require-topology` must not count one as offered. Whether it should
+instead *wait* for ready is a real question and a separate one; refusing to bind is the floor.
+
+<!-- claim: run-state-is-a-versioned-contract -->
+**Adding a field to the record is the migration `runstate` said it would owe.** That module's
+docs commit to one location and no fallback, with the caveat: *"If an upgrade ever needs to
+survive a live hold, that is a migration to write then, with a reason."* This is that moment.
+`status` must be `#[serde(default)]`-ing to `ready`, because the records on disk during the
+upgrade were written by holders that only ever wrote on success. Without the default, an old
+record fails to deserialize, `read` returns `None`, and a live holder becomes invisible to
+`ps`/`down`/the guard — which is precisely the bug this section exists to fix, reintroduced by
+its own fix, and only for people mid-upgrade with something held.
+
+<!-- claim: a-stale-starting-record-implies-residue -->
+**A dead starting record means resources may still exist, so clearing it is not enough.** The
+guard today treats a record whose pid is gone as stale: remove it and proceed. For a *ready*
+record that is right — the holder got to teardown or died after everything came up. For a
+*starting* one it is the §17 residue shape ([[start-timeout-orphans-containers]]): a holder
+killed mid-`kind create` leaves the record AND a half-built cluster, and deleting the record
+removes the evidence without removing the cluster, so the next `start` sails past the guard into
+the identical collision. This is the case that actually recurs — the live race needs two actors
+at once, this one needs one crash — and it should say what may be lying around rather than
+silently proceed.
+
+**Write-at-birth narrows the race; it does not close it.** Two starts in the same millisecond
+still both read nothing and both write. That is a good trade — microseconds of exposure instead
+of fifteen minutes — and it should be described as such rather than as mutual exclusion. A real
+guarantee is `O_EXCL` create-or-fail, or the flock already in `locks.rs`/`barrier.rs`, which is
+the engine-side version of the `prova.writes("kind:<cluster>")` consumers hand-roll today.
+
+**The spectator option is nearly free.** `LogRelay` (§37) already takes a log path and a topology
+name, streams the holder's output, and stops at the ready block. Pointing a second `start` at the
+*first* holder's log needs only a wait on someone else's record and `is_alive(pid)` in place of a
+child handle — so "join as spectator" is a small increment on shipped machinery, not a new
+subsystem.

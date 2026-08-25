@@ -517,9 +517,13 @@ pub(super) fn status_blocking(
                 .iter()
                 .map(|e| json!({ "name": e.name, "url": e.url }))
                 .collect();
+            // `status` distinguishes a topology that is UP from one still coming up. An agent
+            // reading this list decides whether to run against it, and "starting" with an empty
+            // `resources` is a different answer from "ready" with an empty one.
             held.push(json!({
                 "name": rec.name,
                 "holder": "detached",
+                "status": rec.status.label(),
                 "package": home.dir.display().to_string(),
                 "pid": rec.pid,
                 "uptime_s": now.saturating_sub(rec.started_at),

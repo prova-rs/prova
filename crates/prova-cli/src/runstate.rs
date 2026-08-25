@@ -30,6 +30,42 @@ pub struct Endpoint {
     pub url: String,
 }
 
+/// How far along a holder is. A record used to exist only once a topology was fully up, which made
+/// a topology *coming* up invisible: `ps` said "no topologies running" while the machine was busy
+/// creating a cluster, and a second `start` sailed past the guard straight into the factory
+/// (docs/design/agent-ergonomics.md#starting-is-a-visible-state).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Status {
+    /// The factory is running. Endpoints and `value` are not populated yet.
+    Starting,
+    /// Provisioned: endpoints and the rehydration payload are real.
+    Ready,
+}
+
+impl Default for Status {
+    /// **The migration, and the reason it is `Ready`**
+    /// (docs/design/agent-ergonomics.md#run-state-is-a-versioned-contract). Every record written
+    /// before this field existed was written on success and only on success, so an absent `status`
+    /// means ready. Getting this wrong is not cosmetic: without the default, a record from a live
+    /// pre-upgrade holder fails to deserialize, `read` returns `None`, and that holder becomes
+    /// invisible to `ps`, `down` and the double-provision guard — the exact defect this field was
+    /// added to fix, reintroduced by its own fix, for anyone upgrading with something held.
+    fn default() -> Status {
+        Status::Ready
+    }
+}
+
+impl Status {
+    /// The word `ps` and the refusals use.
+    pub fn label(self) -> &'static str {
+        match self {
+            Status::Starting => "starting",
+            Status::Ready => "running",
+        }
+    }
+}
+
 /// One held topology's record: what it is, the pid holding it, when it came up, and its endpoints.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Record {
@@ -37,6 +73,10 @@ pub struct Record {
     pub pid: u32,
     /// Unix seconds when the topology came up (for `ps` uptime).
     pub started_at: u64,
+    /// Whether the holder is still provisioning. Defaulted so pre-`status` records parse — see
+    /// [`Status::default`], which is load-bearing rather than tidy.
+    #[serde(default)]
+    pub status: Status,
     pub endpoints: Vec<Endpoint>,
     /// The holder's JSON projection of the factory's returned value — the rehydration payload an
     /// attaching run seeds into its scope caches instead of provisioning
@@ -240,6 +280,7 @@ mod tests {
             name: "orders".into(),
             pid: 4242,
             started_at: 100,
+            status: Status::Ready,
             endpoints: vec![Endpoint {
                 name: "db".into(),
                 url: "postgres://x".into(),
@@ -271,6 +312,38 @@ mod tests {
 
         remove(&home, "orders");
         assert!(read(&home, "orders").is_none());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The migration (docs/design/agent-ergonomics.md#run-state-is-a-versioned-contract): a record
+    /// written by a holder from before `status` existed must still parse, and must read as READY —
+    /// those holders wrote on success and only on success. If this regresses, the symptom is not a
+    /// parse error anyone sees; it is `read` returning `None` for a live holder, which makes it
+    /// invisible to `ps`, `down` and the guard.
+    #[test]
+    fn a_pre_status_record_parses_and_reads_as_ready() {
+        let old = r#"{"name":"orders","pid":7,"started_at":100,
+                      "endpoints":[{"name":"db","url":"postgres://x"}],
+                      "value":{"db":{"url":"postgres://x"}}}"#;
+        let rec: Record = serde_json::from_str(old).expect("a pre-status record must still parse");
+        assert_eq!(rec.status, Status::Ready, "no status means it came up");
+        assert_eq!(rec.endpoints[0].url, "postgres://x");
+    }
+
+    /// And the new spelling round-trips, so a `starting` record survives write→read.
+    #[test]
+    fn status_round_trips_through_the_file() {
+        let (home, root) = tmp_home("status");
+        let rec = Record {
+            name: "orders".into(),
+            pid: 4242,
+            started_at: 100,
+            status: Status::Starting,
+            endpoints: vec![],
+            value: serde_json::Value::Null,
+        };
+        write(&home, &rec).unwrap();
+        assert_eq!(read(&home, "orders").unwrap().status, Status::Starting);
         std::fs::remove_dir_all(&root).ok();
     }
 

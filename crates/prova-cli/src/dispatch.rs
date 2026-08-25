@@ -574,7 +574,7 @@ fn attach_held(
     }
     if let Some(h) = &home {
         for rec in runstate::list(h) {
-            if !runstate::is_alive(rec.pid) {
+            if !attachable(&rec) {
                 continue;
             }
             if let Some(want) = &cli.require_topology {
@@ -592,11 +592,7 @@ fn attach_held(
     if let Some(want) = &cli.require_topology {
         let offered = home
             .as_ref()
-            .map(|h| {
-                runstate::list(h)
-                    .iter()
-                    .any(|r| &r.name == want && runstate::is_alive(r.pid))
-            })
+            .map(|h| runstate::list(h).iter().any(|r| &r.name == want && attachable(r)))
             .unwrap_or(false);
         if !offered {
             eprintln!(
@@ -607,6 +603,24 @@ fn attach_held(
     }
     config = config.with_attached_tracking(attached.clone());
     Ok((config, attached))
+}
+
+/// Is this record something a run may BIND to?
+///
+/// Alive is necessary and not sufficient
+/// (docs/design/agent-ergonomics.md#attach-must-not-bind-a-starting-topology). A holder that is
+/// still provisioning is alive, and its record deliberately carries no endpoints and a null
+/// `value` — the payload attach seeds into scope caches. Binding to it would put a `nil` where a
+/// proof expects a url, while announcing "attach to its LIVE state", so the failure would read as
+/// the topology being broken rather than as not being up yet. Worse, it would fire on the RUN
+/// path, for one person alone, where the collision this state exists to prevent at least needed
+/// two actors and said kind's own name out loud.
+///
+/// A starting record is a claim on the NAME, honored by the inhabited verbs' guard. It is not an
+/// environment. Whether a run should WAIT for ready instead of provisioning its own is a real
+/// question and a separate one; not binding to nothing is the floor.
+fn attachable(rec: &runstate::Record) -> bool {
+    rec.status == runstate::Status::Ready && runstate::is_alive(rec.pid)
 }
 
 /// IDE integration: on a manifest run (not a read-only discovery — `--list`, or the `backfill`
