@@ -1608,3 +1608,32 @@ Unix only, and stated rather than papered over: the graceful stop is `runstate::
 Windows has no signal that makes a detached holder run its teardown. A handler there could only
 kill the holder and strand its containers, which is not an improvement on the orphan. Windows
 detached teardown is one story, told once, when job objects land for the windows lane.
+
+## 38. A starting topology is invisible, so two starts race the world
+
+Field evidence (2026-08-25, ybor-studio): one agent ran `prova start ybor-studio`; while its
+holder was mid-`kind create`, a human ran the same verb. The second start was not told "already
+starting" — it raced straight into the factory and died on kind's own
+`node(s) already exist for a cluster with the name "ybor-studio"`. In between, `prova ps` said
+**no topologies running**, which is true by the letter (the hold record lands only when the
+holder reaches ready) and useless in the moment: the machine was very much occupied, and the
+one tool that answers "what is up?" had no idea.
+
+Two gaps, one seam:
+
+<!-- claim: starting-is-a-visible-state -->
+**Starting is a state `ps` can name.** The holder should write its running-record at birth with
+`status: starting` (pid, topology, started-at), flip it to `ready` where it writes the record
+today, and remove it on teardown as now. `prova ps` then shows `starting (2m14s)` instead of
+nothing, and every "is this thing on?" during a fifteen-minute kind budget answers itself. A
+crashed holder leaves a starting-record whose pid is dead — exactly the shape §34 already knows
+how to treat honestly.
+
+<!-- claim: second-start-joins-or-refuses -->
+**A second `start` of the same name must not reach the factory.** With the starting-record on
+disk, the verb can refuse in second zero — "already starting (pid N, 2m14s in); follow with
+`prova ps`, or wait" — or better, follow the existing log the way §37's streaming already does,
+so the second invoker becomes a spectator of the first instead of a competitor for the kind
+name. The workaround consumers carry today (archetect-server's suite takes a machine-scoped
+`prova.writes("kind:<cluster>")` lock around its fixture) is the engine's job done in userland,
+and it only protects proofs — the inhabited verbs race unguarded.
