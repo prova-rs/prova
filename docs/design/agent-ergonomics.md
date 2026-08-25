@@ -1293,6 +1293,50 @@ why it was never reachable from a clean tree.
 
 Mutation-tested: banking the old 25,302 regime makes the guard fail naming +17.8% drift.
 
+**ROOT CAUSE FOUND 2026-08-24 — measured, not inferred. The scan directory is not the one every fix
+has been operating on.**
+
+`cargo llvm-cov report` does not scan `--target-dir`. It scans cargo's **shared build directory**.
+Asked what objects it was actually handed, on this machine:
+
+```
+86 objects   ~/.cache/cargo/build/<hash>/llvm-cov-target/debug/deps
+ 1 object    target/llvm-cov-target/debug
+```
+
+That shared directory accumulates every test binary ever built for this workspace, indefinitely. So
+the denominator has been, literally, *what have you compiled here lately* — which is why a fresh
+runner and a months-old developer machine could never agree, and why every banked number was correct
+exactly once.
+
+This reframes the whole history. Every fix so far — staging executables out, guarding that `deps/` is
+bare, wiping `deps/` — operated on `target/llvm-cov-target/debug/deps`, **which holds one object**.
+`stage_execs` "silently moving nothing" was never a staging bug: the staging worked perfectly, on a
+directory nothing reads. `staged_execs_remaining` is an honest guard watching the wrong door. And the
+two "basis regimes" were never regimes — they were two different amounts of accumulated cache.
+
+It is new cargo 1.94 behavior, so the harness's assumptions were right when written. That makes it
+the same class as two other breaks found the same night: `show-env` moving instrumentation into
+`RUSTC_WRAPPER`, and `/proc/self/exe` gaining a `" (deleted)"` marker
+([[locating-this-prova-survives-its-own-rebuild]]). **Three separate subsystems broke because a
+toolchain moved something the harness had pinned by assumption rather than by name.** That is the
+generalizable lesson, and it is worth more than any of the three fixes.
+
+**The fix, and where the attempt stopped.** Pin `CARGO_BUILD_BUILD_DIR` under the coverage
+generation so the scan is exactly what this conduct built. Verified working on cargo 1.94, and it
+does what it should: the unit basis went from 31,298 (local, contaminated) to **26,489** against CI's
+**26,486** — three lines apart, where the two environments previously differed by ~4,800.
+
+What remains is that the pin must reach three different cargo front-ends, and they do not accept the
+same environment. Passing `show-env`'s vars to `cargo llvm-cov nextest` breaks it outright (exit 102:
+the `RUSTC_WRAPPER` fails on `rustc -vV`, because that subcommand manages its own instrumentation and
+cannot run nested inside show-env's). The conduct also never checks nextest's exit code, so that
+failure surfaced only as all three layers reporting identical numbers — the "identical three ways"
+symptom this file's header already records. Finishing this means composing a per-front-end
+environment (subject build / nextest / report) rather than one shared table, and checking the exit
+code of every conduct step. Not attempted at the tail of a long session, deliberately: two floors were
+banked wrong that same night by continuing past the point of good judgement.
+
 **Refined 2026-08-24, while fixing a separate break in the same harness**
 ([verifiers.md#coverage-proves-its-own-instrument](verifiers.md#coverage-proves-its-own-instrument)).
 The two regimes are real, and the floors above are banked in the right one — but what *selects* the
