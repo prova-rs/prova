@@ -659,6 +659,33 @@ provision are the two callers that would feel it first.
 unknown duration is the verb's whole job, so a default would abort legitimate work; `idle_timeout`
 and `first_byte` exist as the opt-in liveness bounds for the cases where silence IS the signal.
 
+**Witness (2026-09-01, external — substrate).** A real cost was paid: a `prova lock cargo --`
+conduct queued behind another instance waited **50,925 s (~14 h)** before acquiring, then ran in
+9.2 s. The wait banked correctly (`waited 50925.4s for lock "cargo"`), which is the diagnosis this
+item asks for — but 14 h is long past any generous default bound, and no line named the holder
+while it starved. This is the production data point the suggested shape wants; a minutes-scale
+default would have failed loudly a day earlier and named the holder below.
+
+<!-- backlog: a-hung-holder-never-releases recorded=2026-09-01 -->
+**The safety argument above has a hole: a holder can be LIVE and yet doing no work, and the flock
+protects only against DEAD holders.** The reasoning that downgrades the unbounded wait — "the
+kernel releases a flock when its holder dies, so the wait is always behind a live process doing
+real work" — assumes liveness implies progress. It does not. Witnessed 2026-09-01 (substrate): a
+conducted proof that shelled `cargo test` 13× hung on one invocation and held `cargo` for **1 day
+22 h**, doing nothing; the waiter above is the same incident from the other side. The kernel never
+released, because the holder never died — it hung. Manual `kill` of the holder freed the lock
+instantly, confirming the flock mechanism itself is sound and the gap is that **nothing bounds a
+live-but-hung holder.**
+
+The same watchdog the unbounded-wait item suggests closes this too, applied to the HOLD rather
+than the WAIT: a max-hold wall bound on `locks::hold` (or the `prova lock` conduct) that kills the
+held command and releases the lock when it is exceeded, naming the token, the elapsed hold, and the
+pid. Severity is higher than the wait item assumed — a hung holder starves every instance on the
+box across workspaces and CI, not just one queued run, and its blast radius is bounded only by
+someone noticing. Cross-owner note: the specific hang originated in a *caller* that spawned the
+conduct and failed to reap it on teardown (substrate's session-abort, fixed there); prova cannot
+prevent callers from leaking children, but a hold watchdog bounds the damage no matter who leaks.
+
 <!-- claim: a-measurement-must-prove-it-measured recorded=2026-08-16 -->
 **A number that stops being produced correctly must fail loudly, not keep reporting.** The
 black-box coverage layer measures the RECURSION — the instrumented binary runs the suite and
