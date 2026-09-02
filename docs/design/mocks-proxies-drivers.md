@@ -302,3 +302,6 @@ it, and every other platform replays it deterministically without a Windows box.
   separate decision).
 - **Cleanup:** re-point or retire `examples/aspirational` against this model; sweep comments that
   still say "mocking" generically.
+
+<!-- backlog: http-driver-speaks-no-tls recorded=2026-09-02 -->
+The http driver refuses any https:// URL — reqwest answers 'invalid URL, scheme is not http' (client built without TLS), so http.get/post/wait_for and http.client cannot reach a TLS endpoint at all. Surfaced 2026-09-02 by prova-ybor-studio's live E2E lane: the first suite to drive a DEPLOYED target (the dev Studio gateway, https-only) rather than a topology-local http://localtest.me service. This bites every suite that graduates from topology to deployed-target proofs — exactly the 'works everywhere' direction — and the workaround (curl via shell.run, with bearer and body smuggled through env so they never reach argv) forfeits the driver's response ergonomics (:json(), status, wait_for) and re-opens the quoting/secret-handling hazards the driver exists to close. Fix shape: build reqwest with rustls, accept https in the scheme check; consider a tls option ({ insecure, ca }) for self-signed topology endpoints while at it.
