@@ -77,8 +77,13 @@ type ClientOpts = (String, Vec<(String, String)>, Option<std::time::Duration>);
 /// `headers`, optional `timeout`. `who` names the verb in the teaching error.
 #[cfg(any(feature = "http", feature = "graphql"))]
 pub(super) fn client_opts(opts: &Table, who: &str, url_key: &str) -> mlua::Result<ClientOpts> {
-    // The URL key differs per constructor, so the closed set is built rather than declared.
-    crate::opts::reject_unknown(opts, &[url_key, "headers", "timeout"], who)?;
+    // The URL key differs per constructor, so the closed set is built rather than declared. The
+    // TLS keys are spliced in from one place (`tls::TLS_OPTS`) rather than spelled here, so a
+    // constructor cannot end up accepting an option the policy parser does not read — or reading
+    // one the closed set still rejects, which is the same bug from the other side.
+    let mut accepted = vec![url_key, "headers", "timeout"];
+    accepted.extend_from_slice(tls::TLS_OPTS);
+    crate::opts::reject_unknown(opts, &accepted, who)?;
     let url = opts
         .get::<Option<String>>(url_key)?
         .ok_or_else(|| mlua::Error::RuntimeError(format!("{who} requires a `{url_key}`")))?;
@@ -824,7 +829,17 @@ fn make_net(lua: &Lua) -> mlua::Result<Table> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// http (async; HTTP-only in v1 — https lands behind a later `tls` feature)
+// tls — one certificate policy, shared by http/graphql, websocket and grpc
+// ---------------------------------------------------------------------------------------------
+
+/// Not a namespace and deliberately not a global: TLS is not a thing an author *calls*, it is two
+/// options on the calls they already make (docs/design/architecture.md#tls-everywhere). Compiled
+/// unconditionally so a build without the `tls` feature can still recognise those options and a
+/// `https`/`wss` URL well enough to name what is missing.
+mod tls;
+
+// ---------------------------------------------------------------------------------------------
+// http (async; `https://` with the `tls` feature — docs/design/architecture.md#tls-everywhere)
 // ---------------------------------------------------------------------------------------------
 
 #[cfg(feature = "http")]

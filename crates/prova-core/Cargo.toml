@@ -55,15 +55,24 @@ vt100 = "0.15"
 # transitively via portable-pty/tokio — a declaration, not new weight.
 libc = "0.2"
 # The `websocket` kernel transport: full-duplex message turns over the http upgrade path.
-# ws:// only (matching http's no-TLS stance); the protocol frames messages natively, so unlike
+# `ws://` and — with the `tls` feature — `wss://`; the protocol frames messages natively, so unlike
 # raw `socket` there is no framing strategy to choose.
+#
+# `__rustls-tls` rather than tungstenite's own `rustls-tls-*-roots`: those pull webpki-roots **0.26**
+# while the rest of this graph is on **1.x**, so taking them would compile a second copy of Mozilla's
+# root bundle that nothing reads — prova builds the `ClientConfig` itself (modules/tls.rs) and hands
+# it over as an explicit `Connector`, which is also what makes one root policy serve all three
+# transports rather than three that drift.
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake"] }
-# The `http` module. v1 is HTTP-only (no TLS) to stay light — covers localhost service
-# boot-and-probe; an https feature can layer rustls on later. Feature-gated so builds can opt out.
+# The `http` module (and `graphql`, which shares the client). TLS arrives via the `tls` feature
+# below rather than `default-tls`: native-tls would put OpenSSL and a C toolchain between prova and
+# its single-static-binary promise. Feature-gated so builds can opt out.
 reqwest = { version = "0.12", optional = true, default-features = false }
-# The `postgres`/`mysql`/`sqlite` modules — one general Connection API over sqlx's `Any` driver
-# (backend chosen by URL scheme). Heavy, so feature-gated per engine (default on). No TLS in v1
-# (local/CI containers).
+# The `sqlite` module — one general Connection API over sqlx's `Any` driver (backend chosen by URL
+# scheme). Heavy, so feature-gated (default on). **No TLS, and that is not a gap**: only the
+# `sqlite` feature is compiled here, and a file/memory database has no network layer to secure.
+# Server databases are external docker-exec packages driving `psql`/`mysql` inside a container,
+# where TLS is that CLI's argument to take (docs/design/architecture.md#tls-everywhere).
 sqlx = { version = "0.8", optional = true, default-features = false, features = [
     "runtime-tokio",
     "any",
@@ -75,8 +84,12 @@ bollard = { version = "0.18", optional = true }
 # server's schema at runtime via gRPC Server Reflection (`tonic-reflection`'s client), builds request
 # messages from Lua tables against the fetched descriptors (`prost-reflect`'s `DynamicMessage`), and
 # invokes with a generic tonic codec. Versions track archetect-core's tonic/prost (0.14) so the
-# workspace lockfile dedupes to a single build. Plaintext-only in v1 (local/CI containers), matching
-# `http`'s no-TLS stance. Feature-gated (default on); `prova-core` still builds `--no-default-features`.
+# workspace lockfile dedupes to a single build. TLS comes from the `tls` feature below, which adds
+# tonic's `tls-ring` + both root sets. Feature-gated (default on).
+#
+# (The old note here claimed `prova-core` still builds `--no-default-features`. It does not, and not
+# because of TLS: `tokio` is declared without `sync` while `wiretap.rs` uses `tokio::sync`
+# unconditionally — captured as agent-ergonomics.md#no-default-features-build-is-broken.)
 tonic = { version = "0.14", default-features = false, features = ["channel"], optional = true }
 tonic-reflection = { version = "0.14", default-features = false, optional = true }
 # `grpc.mock` — the server half. `tonic/server` brings the framing+trailers machinery (`server::Grpc`)
@@ -138,6 +151,29 @@ form_urlencoded = { version = "1", optional = true }
 # than hand-rolled because a tar header written by hand gets modes, parent entries and long paths
 # subtly wrong, and the symptom is a container that boots with the wrong bytes.
 tar = { version = "0.4", optional = true }
+# The `tls` feature (docs/design/architecture.md#tls-everywhere) — one certificate policy behind
+# `http`/`graphql`, `websocket` and `grpc`.
+#
+# **Every one of these is already compiled into this binary**, which is why TLS everywhere costs a
+# declaration rather than a stack: archetect-core's octocrab pulls `hyper-rustls`, and its `tonic`
+# already carries `tls-ring` + `tls-webpki-roots` — feature unification means prova-core's tonic is
+# built with them today and simply never asked for TLS. `cargo tree -i rustls` is the receipt.
+#
+# Declared directly because prova constructs the `ClientConfig` for the transports whose crates do
+# not expose one (`websocket`, and the custom verifier `insecure` needs on `grpc`). rustls' provider
+# is named explicitly at that call site rather than left to `CryptoProvider::get_default()`: with two
+# providers in a dep graph that function panics, so a crate elsewhere enabling `aws-lc-rs` would turn
+# a working build into a startup crash with nothing in this tree to explain it.
+rustls = { version = "0.23", optional = true, default-features = false, features = [
+    "ring",
+    "std",
+] }
+rustls-pki-types = { version = "1", optional = true }
+# Mozilla's bundle AND the platform store, together — a scratch CI container has no system trust at
+# all, a laptop behind a TLS-inspecting proxy has a CA that exists nowhere else, and picking one
+# breaks the other with a handshake error rather than a missing feature.
+webpki-roots = { version = "1", optional = true }
+rustls-native-certs = { version = "0.8", optional = true }
 
 [dev-dependencies]
 # A cross-process file lock, for serializing the docker-heavy integration tests (tests/common/mod.rs).
@@ -154,8 +190,33 @@ fs2 = "0.4"
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [features]
-default = ["http", "sqlite", "docker", "grpc", "graphql", "yaml", "mock", "grpc-mock"]
+default = ["http", "sqlite", "docker", "grpc", "graphql", "yaml", "mock", "grpc-mock", "tls"]
 http = ["dep:reqwest", "dep:form_urlencoded"]
+# `https://` · `wss://` · gRPC over TLS, with `insecure` and `ca_cert` spelled the same on all three
+# (docs/design/architecture.md#tls-everywhere). **Default on**: what consumers get is `run-action`'s
+# published binary, not a build they configured, so a released prova that cannot reach `https` makes
+# the capability theoretical.
+#
+# Additive and independent of which transports are compiled — the `?/` forms are no-ops when their
+# optional crate is absent, so `--no-default-features --features tls` is a coherent (if inert)
+# build, and every transport-plus-tls pair works without a combinatorial feature list.
+tls = [
+    "dep:rustls",
+    "dep:rustls-pki-types",
+    "dep:webpki-roots",
+    "dep:rustls-native-certs",
+    # Both root sets on the reqwest side too; reqwest's builder defaults both to enabled once their
+    # features are on, and `add_root_certificate` ADDS to that store rather than replacing it —
+    # which is exactly `ca_cert`'s documented meaning.
+    "reqwest?/rustls-tls-webpki-roots",
+    "reqwest?/rustls-tls-native-roots",
+    # See the tokio-tungstenite comment above for why this is the private feature and not the
+    # `rustls-tls-*-roots` pair (a duplicate webpki-roots 0.26 nothing would read).
+    "tokio-tungstenite/__rustls-tls",
+    "tonic?/tls-ring",
+    "tonic?/tls-webpki-roots",
+    "tonic?/tls-native-roots",
+]
 # The `mock` facet on protocol namespaces — `http.mock` today; `grpc.mock`/`net.mock` later. Implies
 # `http`: a mock is asserted on through the same journal the `http` client's types already describe,
 # and there is no coherent build with a mock server but no client to drive it.

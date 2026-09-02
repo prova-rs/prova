@@ -96,6 +96,10 @@ struct HttpClient {
     base_url: String,
     headers: Vec<(String, String)>,
     timeout: Option<Duration>,
+    /// Declared once for the whole client — the ergonomic that matters, since a suite pointed at
+    /// one self-signed service would otherwise repeat `insecure = true` on every call and only
+    /// have to miss it once to get a confusing handshake failure instead of a result.
+    tls: super::tls::Tls,
 }
 
 impl UserData for HttpClient {
@@ -112,9 +116,14 @@ impl UserData for HttpClient {
             |lua, this, (path, opts): (String, Option<Table>)| {
                 let url = join_url(&this.base_url, &path);
                 let base_headers = this.headers.clone();
+                let base_tls = this.tls.clone();
                 let params = wait_params(&opts);
                 async move {
                     let p = params?;
+                    // Same precedence as `build_prepared`: a per-call policy REPLACES the
+                    // client's, so `client:get` and `client:wait_for` cannot disagree about which
+                    // certificate policy a request ran under.
+                    let tls = if p.tls.is_default() { base_tls } else { p.tls.clone() };
                     // Per-call headers layer OVER the client's defaults by name — the same
                     // precedence `build_prepared` gives an ordinary request, so `client:get` and
                     // `client:wait_for` cannot disagree about whose Authorization wins.
@@ -132,6 +141,7 @@ impl UserData for HttpClient {
                             body: None,
                             timeout: Some(every),
                             redirects: None,
+                            tls: tls.clone(),
                         };
                         if let Ok(resp) = send(prepared).await {
                             if resp.status == expected {
@@ -154,10 +164,16 @@ impl UserData for HttpClient {
 fn client_fn(lua: &Lua) -> mlua::Result<Function> {
     lua.create_function(|lua, opts: Table| {
         let (base_url, headers, timeout) = super::client_opts(&opts, "http.client", "base_url")?;
+        let tls = super::tls::Tls::from_opts(&opts, "http.client")?;
+        // Refused at CONSTRUCTION, not at the first call: a client is often built in a fixture and
+        // used many tests later, and an error there names the request rather than the base_url
+        // that was actually wrong.
+        super::tls::Tls::require_for_url("http.client", &base_url)?;
         lua.create_userdata(HttpClient {
             base_url,
             headers,
             timeout,
+            tls,
         })
     })
 }
@@ -177,6 +193,7 @@ fn client_method<M: UserDataMethods<HttpClient>>(
                 url,
                 this.headers.clone(),
                 this.timeout,
+                this.tls.clone(),
                 opts,
             );
             async move {
@@ -212,12 +229,24 @@ struct Prepared {
     /// How many redirects to follow. `None` is reqwest's default policy; `Some(0)` returns the
     /// 3xx itself (docs/design/agent-ergonomics.md#http-redirect-control).
     redirects: Option<usize>,
+    /// The certificate policy for this request (docs/design/architecture.md#tls-everywhere).
+    /// Resolved here rather than at `send` so a per-call `insecure` and a client default are
+    /// layered by the same code that layers headers and timeouts.
+    tls: super::tls::Tls,
 }
 
 fn method_fn(lua: &Lua, method: reqwest::Method) -> mlua::Result<Function> {
     lua.create_async_function(move |lua, (url, opts): (String, Option<Table>)| {
         let name = format!("http.{}", method.as_str().to_ascii_lowercase());
-        let prepared = build_prepared(&lua, method.clone(), url, Vec::new(), None, opts);
+        let prepared = build_prepared(
+            &lua,
+            method.clone(),
+            url,
+            Vec::new(),
+            None,
+            super::tls::Tls::default(),
+            opts,
+        );
         async move {
             super::runtime_only(&name)?;
             let resp = send(prepared?).await?;
@@ -233,9 +262,11 @@ fn method_fn(lua: &Lua, method: reqwest::Method) -> mlua::Result<Function> {
 /// passes.
 const REQUEST_OPTS: &[&str] = &[
     "body",
+    "ca_cert",
     "content_type",
     "form",
     "headers",
+    "insecure",
     "json",
     "redirects",
     "timeout",
@@ -254,7 +285,7 @@ const BODY_OPTS: &[&str] = &["json", "form", "body"];
 /// module exists to remove (docs/design/agent-ergonomics.md#http-wait-for-cannot-authenticate).
 /// `client:wait_for` always carried the CLIENT's defaults, so the two verbs disagreed about
 /// whether polling could authenticate at all.
-const WAIT_OPTS: &[&str] = &["every", "headers", "status", "timeout"];
+const WAIT_OPTS: &[&str] = &["ca_cert", "every", "headers", "insecure", "status", "timeout"];
 
 /// Build an owned request spec from `opts`, layered over optional defaults (a client's base
 /// headers/timeout). Per-call `headers` override defaults by name; the body (exactly one of
@@ -266,6 +297,7 @@ fn build_prepared(
     url: String,
     mut headers: Vec<(String, String)>,
     mut timeout: Option<Duration>,
+    mut tls: super::tls::Tls,
     opts: Option<Table>,
 ) -> mlua::Result<Prepared> {
     let mut body = None;
@@ -342,7 +374,18 @@ fn build_prepared(
             timeout = Some(crate::model::require_duration("http", "timeout", &s).map_err(mlua::Error::RuntimeError)?);
         }
         redirects = parse_redirects(&opts)?;
+        // A per-call `insecure`/`ca_cert` REPLACES the client's policy rather than merging into
+        // it: the two options are already mutually exclusive, so a merge would have to invent a
+        // rule for "client says ca_cert, call says insecure" that no author could guess. Naming
+        // either one per call is a complete statement about that request.
+        let called = super::tls::Tls::from_opts(&opts, "http request options")?;
+        if !called.is_default() {
+            tls = called;
+        }
     }
+    // Checked once, here, for every verb and every client — so `https` in a build without the
+    // feature says so instead of surfacing reqwest's "invalid URL, scheme is not http".
+    super::tls::Tls::require_for_url("http", &url)?;
     Ok(Prepared {
         method,
         url,
@@ -350,6 +393,7 @@ fn build_prepared(
         body,
         timeout,
         redirects,
+        tls,
     })
 }
 
@@ -407,19 +451,27 @@ fn why(e: &(dyn std::error::Error + 'static)) -> String {
 }
 
 async fn send(prepared: Prepared) -> mlua::Result<HttpResponse> {
-    // The redirect policy is a CLIENT property in reqwest, not a per-request one, so a bounded
-    // request builds its own client. The default path keeps the shared-nothing client it always
-    // had — this adds a branch, not a cost.
-    let client = match prepared.redirects {
-        None => reqwest::Client::new(),
-        Some(0) => reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|e| mlua::Error::RuntimeError(format!("http: building client: {e}")))?,
-        Some(n) => reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::limited(n))
-            .build()
-            .map_err(|e| mlua::Error::RuntimeError(format!("http: building client: {e}")))?,
+    // The redirect policy AND the certificate policy are both CLIENT properties in reqwest, not
+    // per-request ones, so a request that bounds either builds its own client. The default path
+    // keeps the shared-nothing client it always had — this adds a branch, not a cost.
+    let default_tls = prepared.tls.is_default();
+    let client = match (prepared.redirects, default_tls) {
+        (None, true) => reqwest::Client::new(),
+        (redirects, _) => {
+            let mut builder = reqwest::Client::builder();
+            match redirects {
+                None => {}
+                Some(0) => builder = builder.redirect(reqwest::redirect::Policy::none()),
+                Some(n) => builder = builder.redirect(reqwest::redirect::Policy::limited(n)),
+            }
+            #[cfg(feature = "tls")]
+            {
+                builder = prepared.tls.apply_reqwest(builder, "http")?;
+            }
+            builder
+                .build()
+                .map_err(|e| mlua::Error::RuntimeError(format!("http: building client: {e}")))?
+        }
     };
     let mut req = client.request(prepared.method, &prepared.url);
     for (k, v) in prepared.headers {
@@ -458,12 +510,14 @@ async fn send(prepared: Prepared) -> mlua::Result<HttpResponse> {
 /// `http.wait_for(url, { status = 200, headers = {…}, timeout = "30s", every = "500ms" })` — poll
 /// GET until the endpoint returns the expected status or the deadline elapses. The boot-then-probe
 /// primitive, and `headers` is what lets it be pointed at a health endpoint behind auth.
+/// `insecure`/`ca_cert` are what let it be pointed at one behind a certificate.
 fn wait_for_fn(lua: &Lua) -> mlua::Result<Function> {
     lua.create_async_function(|lua, (url, opts): (String, Option<Table>)| {
         let params = wait_params(&opts);
         async move {
             super::runtime_only("http.wait_for")?;
             let p = params?;
+            super::tls::Tls::require_for_url("http.wait_for", &url)?;
             let (expected, timeout, every) = (p.status, p.timeout, p.every);
             let deadline = Instant::now() + timeout;
             loop {
@@ -474,6 +528,7 @@ fn wait_for_fn(lua: &Lua) -> mlua::Result<Function> {
                     body: None,
                     timeout: Some(every),
                     redirects: None,
+                    tls: p.tls.clone(),
                 };
                 if let Ok(resp) = send(prepared).await {
                     if resp.status == expected {
@@ -500,6 +555,10 @@ struct WaitParams {
     every: Duration,
     /// Layered OVER a client's defaults by name, exactly as a per-call request's headers are.
     headers: Vec<(String, String)>,
+    /// Readiness is where TLS matters MOST: `wait_for` is the first thing to touch a service prova
+    /// just booted, so a poll that could not accept a self-signed certificate would make the
+    /// boot-then-probe primitive the one place TLS stops working.
+    tls: super::tls::Tls,
 }
 
 fn wait_params(opts: &Option<Table>) -> mlua::Result<WaitParams> {
@@ -508,6 +567,7 @@ fn wait_params(opts: &Option<Table>) -> mlua::Result<WaitParams> {
         timeout: Duration::from_secs(30),
         every: Duration::from_millis(500),
         headers: Vec::new(),
+        tls: super::tls::Tls::default(),
     };
     if let Some(opts) = opts {
         crate::opts::reject_unknown(opts, WAIT_OPTS, "http.wait_for")?;
@@ -526,6 +586,7 @@ fn wait_params(opts: &Option<Table>) -> mlua::Result<WaitParams> {
                 upsert_header(&mut p.headers, k, v);
             }
         }
+        p.tls = super::tls::Tls::from_opts(opts, "http.wait_for")?;
     }
     Ok(p)
 }

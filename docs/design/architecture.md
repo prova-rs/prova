@@ -217,7 +217,11 @@ left open by good architecture; we are not walking through it.
   — a *fixed* host port (else random), needed by Kafka (its advertised listener). Both surface through
   `prova.containerized` (`spec.command`, a `{ container, host }` ports entry), which every resource
   package is built on.
-- **Deferred: attach-to-secured-external / TLS+auth.** Everything connects **plaintext** in v1 — right
+- **Partly landed: attach-to-secured-external.** The TLS half shipped — every network client now
+  speaks it, with one shared policy (see [TLS — every client, one policy](#tls--every-client-one-policy)
+  below). What is still deferred is **auth**: tokens, mTLS identities, and the credential plumbing a
+  secured *remote* endpoint needs beyond a verified certificate. Original note, kept because the
+  reasoning still applies to the auth half: everything connected **plaintext** in v1 — right
   for the local/CI ephemeral-container mission, but a secured *remote* endpoint (a dev k8s cluster /
   cloud broker with TLS + tokens) needs auth. In the package model this is a per-package concern (a
   client-container or a native option) plus the network-drive primitives growing an `https`/TLS
@@ -235,8 +239,8 @@ left open by good architecture; we are not walking through it.
   `:exists()`/`:is_file()`/`:is_dir()` take a path-string **or handle-table** subject. This is the
   slice that lets prova test a real rendered workspace and a running service.
   *(`proofs/shell/shell_fs_test.lua`; `proofs/http/probe_test.lua` boots a server + probes it.)*
-  `http` is feature-gated (default on) and HTTP-only in v1 — an `https`/rustls feature layers on
-  later; the rest of the stack needs no TLS. Also **`docker`** (`docker.run{image, ports, env,
+  `http` is feature-gated (default on); `https://` arrives with the `tls` feature (also default on),
+  which carries `insecure`/`ca_cert` (#tls--every-client-one-policy). Also **`docker`** (`docker.run{image, ports, env,
   wait}` → a `Container`: `.id`, `:host_port(p)`/`:endpoint(p)`, async `:logs()`/`:exec(cmd)`/
   `:stop()`) — testcontainers-style ephemeral deps via the typed **bollard** daemon client (not CLI
   parsing): pull, create + start with random host-port bindings, inspect for the mapped ports,
@@ -268,7 +272,8 @@ left open by good architecture; we are not walking through it.
   `client:call_status(...)` returns `{ok, code, message, response}` for status-code assertions;
   `grpc.wait_for(addr)` is the boot-then-probe poll. Built on `tonic` + `prost-reflect`'s
   `DynamicMessage` with a generic tonic codec; reflection negotiates v1, falling back to the older
-  v1alpha many servers still speak. Plaintext-only in v1 (matching `http`'s no-TLS stance);
+  v1alpha many servers still speak. TLS via the `tls` feature — an `https://` address, or `tls =
+  true` on a bare `host:port` (#tls--every-client-one-policy);
   feature-gated `grpc` (default on). Chosen over shelling to `grpcurl` to preserve prova's
   single-self-contained-binary promise. *(`proofs/grpc/grpc_test.lua` + `tests/grpc.rs` run the three
   round-trips — unary, field echo, and a `NotFound` status — against a real reflection-enabled server
@@ -465,5 +470,47 @@ dozen dependency-free lines, which is the demonstration that the format is joina
 prova-only privilege.) A holder record is deliberately not a lease: nothing here can release
 another process's flock — only ending that process can — so naming the holder IS the recourse.
 
-<!-- backlog: tls-everywhere recorded=2026-09-02 -->
-Every network client in prova connects plaintext — http/graphql (reqwest with no TLS backend), websocket (ws:// only, hard-rejected at the call), grpc (tonic plaintext), and sqlx. A real system under test is reached over TLS, so black-box testing one means TLS is a capability, not a deferral.
+## TLS — every client, one policy
+
+<!-- claim: tls-everywhere recorded=2026-09-02 -->
+**Every network client speaks TLS, and they all take the same two options.** `https://` on
+`http`/`graphql`, `wss://` on `websocket`, and `https://` (or a bare `host:port` promoted by an
+explicit `tls = true`) on `grpc` — each accepting `insecure = true` and `ca_cert = "<path>"`,
+spelled identically, meaning identically, refusing identically. The plaintext-only stance was
+right for the local-container mission and wrong the moment a real system under test sat behind a
+certificate: v1's `http.get("https://…")` failed with reqwest's *"invalid URL, scheme is not
+http"*, which names neither TLS nor the way out.
+
+**The two options are the feature, not a footnote.** A test runner's most common TLS subject is a
+service it just booted with a self-signed certificate, and its second is a corporate endpoint
+behind a private CA. Verified-only TLS would leave prova's core mission — boot it, then probe it —
+untestable over TLS, so `insecure` is a supported option rather than an escape hatch to be
+ashamed of. It is per-call and per-client, never a global or an env var: "which connection stopped
+verifying" must be answerable from the proof source alone.
+
+**`insecure` and `ca_cert` together is an error.** They are contradictory intents — *trust this
+one CA* and *trust anything* — and one silently winning is how a proof keeps passing after its
+certificate pinning stops meaning anything. tonic enforces this at the type level (a custom
+verifier replaces the root store), and rather than let one transport be stricter than its
+neighbors, the refusal is lifted into the shared option parser so all three agree.
+
+**Both root sets, always.** rustls with the bundled webpki roots *and* the platform's native
+store, because prova runs in two places that disagree: a scratch CI container that has no system
+trust store at all, and a developer laptop behind a TLS-inspecting proxy whose CA exists only in
+the platform store. Picking one breaks the other, and the failure is a confusing handshake error
+rather than a missing feature. **rustls with `ring`, never native-tls** — OpenSSL would put a C
+toolchain and a system library between prova and its single-static-binary promise, and the
+provider is named explicitly (`builder_with_provider`) rather than left to rustls' default, so a
+second provider entering the dep graph cannot turn a working build into a startup panic.
+
+**Default on** (`tls` in the default feature set). A released binary that cannot reach `https` makes
+the capability theoretical, since what consumers get is `run-action`'s published artifact and not
+a build they configured.
+
+**`sqlite` is deliberately excluded, and that is not a gap.** The `sqlx` dependency carried the
+same "No TLS in v1" comment as the rest, but this tree compiles only the `sqlite` feature — a
+file/memory database with no network layer to secure. Server databases are external docker-exec
+packages (`prova-postgres`, `prova-mysql`) driving `psql`/`mysql` inside a container, where TLS is
+that CLI's argument to take. Adding sqlx's TLS features here would compile a stack nothing can
+reach. The stale comment is corrected instead; if a native `postgres` module ever lands, its TLS
+arrives with it.

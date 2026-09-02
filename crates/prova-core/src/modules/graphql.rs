@@ -13,6 +13,10 @@ struct GraphqlClient {
     url: String,
     headers: Vec<(String, String)>,
     timeout: Option<Duration>,
+    /// Declared once, on the client — graphql has no free verbs, so unlike `http` there is no
+    /// per-call layer to reconcile and one endpoint means one certificate policy
+    /// (docs/design/architecture.md#tls-everywhere).
+    tls: super::tls::Tls,
 }
 
 /// An owned request spec (Lua-free) so nothing borrows Lua across the await.
@@ -21,6 +25,7 @@ struct Request {
     headers: Vec<(String, String)>,
     timeout: Option<Duration>,
     body: Vec<u8>,
+    tls: super::tls::Tls,
 }
 
 fn build_request(
@@ -44,11 +49,26 @@ fn build_request(
         headers: client.headers.clone(),
         timeout: client.timeout,
         body,
+        tls: client.tls.clone(),
     })
 }
 
 async fn send(req: Request) -> mlua::Result<(u16, serde_json::Value)> {
-    let http = reqwest::Client::new();
+    // The default policy keeps the shared-nothing client this always built; a configured one is
+    // a client property in reqwest, so `insecure`/`ca_cert` means building it.
+    let http = if req.tls.is_default() {
+        reqwest::Client::new()
+    } else {
+        #[cfg(feature = "tls")]
+        {
+            req.tls
+                .apply_reqwest(reqwest::Client::builder(), "graphql.client")?
+                .build()
+                .map_err(|e| err(format!("graphql: building client: {e}")))?
+        }
+        #[cfg(not(feature = "tls"))]
+        unreachable!("a non-default policy cannot be parsed without the `tls` feature")
+    };
     let mut r = http
         .post(&req.url)
         .header("content-type", "application/json")
@@ -162,10 +182,13 @@ pub(crate) fn make(lua: &Lua) -> mlua::Result<Table> {
         lua.create_function(|lua, opts: Table| {
             let (url, headers, timeout) =
                 super::client_opts(&opts, "graphql.client", "url")?;
+            let tls = super::tls::Tls::from_opts(&opts, "graphql.client")?;
+            super::tls::Tls::require_for_url("graphql.client", &url)?;
             lua.create_userdata(GraphqlClient {
                 url,
                 headers,
                 timeout,
+                tls,
             })
         })?,
     )?;

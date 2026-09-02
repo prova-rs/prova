@@ -6,7 +6,9 @@
 //! `on_connect` lets the server side PUSH unprompted (the scripted-conversation model, not VCR).
 //! Journals speak the §6 spine (seq/source/matched) from day one.
 //!
-//! ws:// only, matching http's no-TLS stance. Single-threaded `spawn_local`, like every mock.
+//! `ws://` and — with the `tls` feature — `wss://`, with the same `insecure`/`ca_cert` options
+//! every other client takes (docs/design/architecture.md#tls-everywhere). Single-threaded
+//! `spawn_local`, like every mock.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -137,7 +139,60 @@ impl UserData for ClientUd {
 }
 
 /// Every option `websocket.connect` honors.
-const CONNECT_OPTS: &[&str] = &["codec", "url"];
+const CONNECT_OPTS: &[&str] = &["ca_cert", "codec", "insecure", "url"];
+
+/// Refuse a URL that is neither `ws://` nor `wss://`, and refuse `wss://` in a build without TLS.
+///
+/// One function for `connect` and `proxy` because they had drifted into two near-identical
+/// messages, and the pair is exactly where a scheme rule gets fixed in one place and not the other.
+fn require_ws_scheme(who: &str, url: &str) -> mlua::Result<()> {
+    if !url.starts_with("ws://") && !url.starts_with("wss://") {
+        return Err(err(format!(
+            "{who}: url must be ws:// or wss://, got {url:?}"
+        )));
+    }
+    super::tls::Tls::require_for_url(who, url)
+}
+
+/// Connect, terminating TLS ourselves for `wss://`.
+///
+/// tokio-tungstenite would build its own root store from its own feature flags, which is precisely
+/// the per-transport drift `modules/tls.rs` exists to prevent — so the `ClientConfig` is always
+/// prova's, and `wss://` gets the same anchors, the same `ca_cert` and the same `insecure`
+/// semantics as an `https://` request.
+async fn connect(
+    url: &str,
+    tls: &super::tls::Tls,
+) -> Result<
+    (
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+        tokio_tungstenite::tungstenite::handshake::client::Response,
+    ),
+    tokio_tungstenite::tungstenite::Error,
+> {
+    #[cfg(feature = "tls")]
+    if url.starts_with("wss://") {
+        let config = tls.rustls_config("websocket").map_err(|e| {
+            // The policy error is already a teaching one; carry its text rather than a generic
+            // handshake failure, since "your ca_cert path is wrong" must not read as "the server
+            // rejected the connection".
+            tokio_tungstenite::tungstenite::Error::Io(std::io::Error::other(e.to_string()))
+        })?;
+        let connector =
+            tokio_tungstenite::Connector::Rustls(std::sync::Arc::new(config));
+        return tokio_tungstenite::connect_async_tls_with_config(
+            url,
+            None,
+            false,
+            Some(connector),
+        )
+        .await;
+    }
+    let _ = tls;
+    tokio_tungstenite::connect_async(url).await
+}
 
 fn connect_fn(lua: &Lua) -> mlua::Result<Function> {
     lua.create_async_function(|lua, (ctx, opts): (Value, Option<Table>)| async move {
@@ -160,12 +215,9 @@ fn connect_fn(lua: &Lua) -> mlua::Result<Function> {
             .get::<Option<String>>("url")?
             .ok_or_else(|| err("websocket.connect(ctx, { url = \"ws://…\" }): url is required"))?;
         let codec = Codec::parse("websocket.connect", opts.get::<Option<Value>>("codec")?)?;
-        if !url.starts_with("ws://") {
-            return Err(err(format!(
-                "websocket.connect: url must be ws:// (no TLS in v1), got {url:?}"
-            )));
-        }
-        let (ws, _resp) = tokio_tungstenite::connect_async(&url)
+        let tls = super::tls::Tls::from_opts(&opts, "websocket.connect")?;
+        require_ws_scheme("websocket.connect", &url)?;
+        let (ws, _resp) = connect(&url, &tls)
             .await
             .map_err(|e| err(format!("websocket.connect {url}: {e}")))?;
         let ud = lua.create_userdata(ClientUd {
@@ -266,7 +318,11 @@ super::wiretap::impl_shutdown!(MockUd);
 const MOCK_OPTS: &[&str] = &[];
 
 /// Every option `websocket.proxy` honors.
-const PROXY_OPTS: &[&str] = &["upstream"];
+///
+/// The TLS keys apply to the UPSTREAM leg. The tap itself always listens plaintext on loopback:
+/// a proxy exists to be read, and terminating TLS on the side a proof connects to would mean
+/// generating a certificate for a hop that never leaves the machine.
+const PROXY_OPTS: &[&str] = &["ca_cert", "insecure", "upstream"];
 
 fn mock_fn(lua: &Lua) -> mlua::Result<Function> {
     lua.create_function(|lua, (ctx, opts): (Value, Option<Table>)| {
@@ -448,11 +504,8 @@ fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
         let upstream = opts
             .get::<Option<String>>("upstream")?
             .ok_or_else(|| err("websocket.proxy(ctx, { upstream = … }): upstream is required"))?;
-        if !upstream.starts_with("ws://") {
-            return Err(err(format!(
-                "websocket.proxy: upstream must be ws:// (no TLS in v1), got {upstream:?}"
-            )));
-        }
+        let tls = super::tls::Tls::from_opts(&opts, "websocket.proxy")?;
+        require_ws_scheme("websocket.proxy", &upstream)?;
 
         let std_listener = std::net::TcpListener::bind(("127.0.0.1", 0))
             .map_err(|e| err(format!("websocket.proxy: bind: {e}")))?;
@@ -472,9 +525,10 @@ fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
         super::wiretap::spawn_accept_loop(listener, rx, move |stream| {
             let state = accept_state.clone();
             let upstream = upstream.clone();
+            let tls = tls.clone();
             tokio::task::spawn_local(async move {
                 let Ok(client) = tokio_tungstenite::accept_async(stream).await else { return };
-                let Ok((up, _)) = tokio_tungstenite::connect_async(&upstream).await else { return };
+                let Ok((up, _)) = connect(&upstream, &tls).await else { return };
                 let (client_sink, client_stream) = client.split();
                 let (up_sink, up_stream) = up.split();
                 let client_sink: DynSink = Rc::new(RefCell::new(Some(Box::new(client_sink))));

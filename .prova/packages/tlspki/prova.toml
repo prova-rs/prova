@@ -1,0 +1,3 @@
+[package]
+name = "tlspki"
+description = "Test PKI and a TLS terminator for proving prova's TLS clients: a real CA, a leaf it signed, and a python TLS front end that any plaintext loopback port can sit behind."

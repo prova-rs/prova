@@ -1793,3 +1793,8 @@ slow-timeout-style warn-then-terminate budget, tunable per test), so a
 looping case reds with teaching instead of wedging the whole account. The
 tally should name the case it was inside when terminated — a looping case
 is currently invisible in the account.
+
+## Backlog — `--no-default-features` does not build
+
+<!-- backlog: no-default-features-build-is-broken recorded=2026-09-02 -->
+`prova-core` does not build with `--no-default-features`, though its Cargo.toml claims it does: `tokio` is declared without the `sync` feature while `wiretap.rs` uses `tokio::sync::oneshot` unconditionally, so 24 E0603s land the moment no optional dep is there to enable it transitively. Nothing gates the claim, so it rotted silently.

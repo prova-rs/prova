@@ -192,16 +192,22 @@ function HttpResponse:save(path) end
 ---@field content_type? string   # media type; overrides the one `json`/`form` imply
 ---@field timeout? string
 ---@field redirects? boolean|integer  # false = return the 3xx; N = follow at most N; default follows
+---@field insecure? boolean     # accept any certificate — no chain, hostname or expiry check. The supported way to probe a service you just booted with a self-signed cert; the handshake is still encrypted, only identity goes unchecked. Mutually exclusive with `ca_cert`.
+---@field ca_cert? string        # PEM file whose certificates are ADDED to the default trust anchors (Mozilla's bundle + the platform store) — for an endpoint behind a private CA. Mutually exclusive with `insecure`.
 
---- Deliberately NOT an extension of `prova.HttpOpts`: the polling verbs honor these four keys and
+--- Deliberately NOT an extension of `prova.HttpOpts`: the polling verbs honor these keys and
 --- nothing else, and since an option prova cannot honor is refused rather than dropped
 --- (docs/design/agent-ergonomics.md#module-opts-silently-ignored), advertising `json` or
---- `redirects` here would hand an author a call that fails.
+--- `redirects` here would hand an author a call that fails. The TLS pair IS here: readiness is the
+--- first thing to touch a service prova just booted, so a poll that could not accept a self-signed
+--- certificate would make boot-then-probe the one place TLS stops (architecture.md#tls-everywhere).
 ---@class prova.WaitOpts
 ---@field status? integer        # expected status (default 200)
 ---@field headers? table<string,string>  # sent on every poll — how a health endpoint behind auth is waited on; on `client:wait_for` these layer OVER the client's defaults by name
 ---@field timeout? string        # give up after this long, e.g. "30s"
 ---@field every? string          # poll interval, e.g. "500ms"
+---@field insecure? boolean     # accept any certificate — no chain, hostname or expiry check. The supported way to probe a service you just booted with a self-signed cert; the handshake is still encrypted, only identity goes unchecked. Mutually exclusive with `ca_cert`.
+---@field ca_cert? string        # PEM file whose certificates are ADDED to the default trust anchors (Mozilla's bundle + the platform store) — for an endpoint behind a private CA. Mutually exclusive with `insecure`.
 
 ---@class prova.http
 http = {}
@@ -250,6 +256,10 @@ function http.wait_for(url, opts) end
 ---@field base_url string                  # prefixed onto each call's path
 ---@field headers? table<string,string>    # default headers (per-call headers override by name)
 ---@field timeout? string                  # default per-call timeout
+---@field insecure? boolean     # accept any certificate — no chain, hostname or expiry check. The supported way to probe a service you just booted with a self-signed cert; the handshake is still encrypted, only identity goes unchecked. Mutually exclusive with `ca_cert`.
+---@field ca_cert? string        # PEM file whose certificates are ADDED to the default trust anchors (Mozilla's bundle + the platform store) — for an endpoint behind a private CA. Mutually exclusive with `insecure`.
+--- (A per-call `insecure`/`ca_cert` REPLACES the client's policy rather than merging with it — the
+--- two options are already mutually exclusive, so a merge would need a rule nobody could guess.)
 
 --- A reusable REST client: base URL + default headers declared once. `path` is joined onto
 --- `base_url` (an absolute URL is used verbatim); per-call `opts` override the defaults.
@@ -641,15 +651,26 @@ function GrpcClient:call_status(method, request) end
 
 ---@class prova.GrpcClientOpts
 ---@field timeout? string      # per-call deadline, e.g. "30s"
+---@field tls? boolean         # ask for TLS on a bare `"host:port"` — the only way to request VERIFIED TLS without writing a scheme. Unnecessary with an `https://` address, or when `insecure`/`ca_cert` already imply TLS.
+---@field insecure? boolean     # accept any certificate — no chain, hostname or expiry check. The supported way to probe a service you just booted with a self-signed cert; the handshake is still encrypted, only identity goes unchecked. Mutually exclusive with `ca_cert`.
+---@field ca_cert? string        # PEM file whose certificates are ADDED to the default trust anchors (Mozilla's bundle + the platform store) — for an endpoint behind a private CA. Mutually exclusive with `insecure`.
 
 ---@class prova.GrpcWaitOpts
 ---@field timeout? string      # overall deadline (default "30s")
 ---@field every? string        # poll interval (default "500ms")
+---@field tls? boolean         # as on `grpc.client`
+---@field insecure? boolean     # accept any certificate — no chain, hostname or expiry check. The supported way to probe a service you just booted with a self-signed cert; the handshake is still encrypted, only identity goes unchecked. Mutually exclusive with `ca_cert`.
+---@field ca_cert? string        # PEM file whose certificates are ADDED to the default trust anchors (Mozilla's bundle + the platform store) — for an endpoint behind a private CA. Mutually exclusive with `insecure`.
 
 ---@class prova.grpc
 grpc = {}
---- A client for the gRPC server at `addr` (`"host:port"` or `"http://host:port"`), performing
---- reflection once to discover its services. Must be called inside a fixture or test body (async).
+--- A client for the gRPC server at `addr` (`"host:port"`, `"http://host:port"` or, over TLS,
+--- `"https://host:port"`), performing reflection once to discover its services. Must be called
+--- inside a fixture or test body (async).
+---
+--- Three ways to say TLS, all equivalent: an `https://` address, `tls = true` on a bare
+--- `"host:port"`, or `insecure`/`ca_cert` (which imply it). An `http://` address with any of them
+--- is a contradiction and raises (architecture.md#tls-everywhere).
 ---@param addr string
 ---@param opts? prova.GrpcClientOpts
 ---@return prova.GrpcClient
@@ -1032,6 +1053,8 @@ function GraphqlClient:execute(query, variables) end
 ---@field url string
 ---@field headers? table<string,string>
 ---@field timeout? string
+---@field insecure? boolean     # accept any certificate — no chain, hostname or expiry check. The supported way to probe a service you just booted with a self-signed cert; the handshake is still encrypted, only identity goes unchecked. Mutually exclusive with `ca_cert`.
+---@field ca_cert? string        # PEM file whose certificates are ADDED to the default trust anchors (Mozilla's bundle + the platform store) — for an endpoint behind a private CA. Mutually exclusive with `insecure`.
 
 ---@class prova.graphql
 graphql = {}
@@ -1466,9 +1489,12 @@ function WsMock:stop() end
 
 ---@class prova.websocket
 websocket = {}
---- Connect (originate): dial a `ws://` url. Async. Closed with the scope.
+--- Connect (originate): dial a `ws://` or `wss://` url. Async. Closed with the scope.
+---
+--- `insecure`/`ca_cert` mean exactly what they mean on `http` — one policy, one spelling
+--- (architecture.md#tls-everywhere).
 ---@param ctx any
----@param opts { url: string, codec?: prova.Codec }
+---@param opts { url: string, codec?: prova.Codec, insecure?: boolean, ca_cert?: string }
 ---@return prova.WsConn
 function websocket.connect(ctx, opts) end
 --- Terminate (and push): a real ws server in this process, stubbed and asserted on.
@@ -1536,8 +1562,12 @@ function WsProxy:stop() end
 
 --- Interpose on a real ws dependency: forward message turns, record a direction-tagged transcript,
 --- and apply the fault vocabulary (the last cell in the transport matrix).
+---
+--- `insecure`/`ca_cert` apply to the UPSTREAM leg (which may be `wss://`). The tap itself always
+--- listens plaintext on loopback: a proxy exists to be read, and terminating TLS on the side your
+--- proof connects to would mean generating a certificate for a hop that never leaves the machine.
 ---@param ctx any
----@param opts { upstream: string }
+---@param opts { upstream: string, insecure?: boolean, ca_cert?: string }
 ---@return prova.WsProxy
 function websocket.proxy(ctx, opts) end
 

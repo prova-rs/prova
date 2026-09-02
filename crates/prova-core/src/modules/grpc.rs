@@ -23,7 +23,8 @@ pub(crate) fn make(lua: &Lua) -> mlua::Result<Table> {
         lua.create_async_function(|lua, (addr, opts): (String, Option<Table>)| async move {
             super::runtime_only("grpc.client")?;
             let timeout = opt_duration(&opts, "timeout")?;
-            let channel = connect_channel(&addr).await?;
+            let (tls, tls_requested) = tls_opts(&opts, "grpc.client")?;
+            let channel = connect_channel_tls(&addr, &tls, tls_requested).await?;
             let pool = build_pool(&channel).await?;
             lua.create_userdata(Client {
                 channel,
@@ -40,9 +41,12 @@ pub(crate) fn make(lua: &Lua) -> mlua::Result<Table> {
             super::runtime_only("grpc.wait_for")?;
             let timeout = opt_duration(&opts, "timeout")?.unwrap_or(Duration::from_secs(30));
             let every = opt_duration(&opts, "every")?.unwrap_or(Duration::from_millis(500));
+            // Parsed BEFORE the loop: a contradictory address/policy must fail immediately, not
+            // after burning the whole readiness budget retrying something that cannot work.
+            let (tls, tls_requested) = tls_opts(&opts, "grpc.wait_for")?;
             let deadline = Instant::now() + timeout;
             loop {
-                if let Ok(channel) = connect_channel(&addr).await {
+                if let Ok(channel) = connect_channel_tls(&addr, &tls, tls_requested).await {
                     if list_services(&channel).await.is_ok() {
                         return Ok(());
                     }
@@ -117,14 +121,49 @@ impl UserData for Client {
 }
 
 pub(super) async fn connect_channel(addr: &str) -> mlua::Result<Channel> {
-    // Accept "host:port" or a full "http://host:port"; plaintext only in v1.
+    connect_channel_tls(addr, &super::tls::Tls::default(), false).await
+}
+
+/// Connect, deciding plaintext against TLS from the address and the policy
+/// (docs/design/architecture.md#tls-everywhere).
+///
+/// **Three spellings, one meaning, no ambiguity.** `https://host:port` says TLS in the address;
+/// `tls = true` promotes a bare `host:port` (the only way to ask for *verified* TLS without
+/// writing a scheme); and `insecure`/`ca_cert` imply it, because neither option means anything
+/// over plaintext and making an author write `tls = true` beside `insecure = true` would be
+/// ceremony. What is NOT allowed is a contradiction — `http://` with a TLS option — since the
+/// alternative is picking a winner the author cannot predict, and the loser here is silent.
+pub(super) async fn connect_channel_tls(
+    addr: &str,
+    tls: &super::tls::Tls,
+    tls_requested: bool,
+) -> mlua::Result<Channel> {
+    let wants_tls = tls_requested || !tls.is_default() || addr.starts_with("https://");
+    if wants_tls && addr.starts_with("http://") {
+        return Err(err(format!(
+            "grpc: {addr:?} is an http:// address but TLS was asked for — drop the TLS options for              plaintext, or name the endpoint as https://"
+        )));
+    }
     let uri = if addr.contains("://") {
         addr.to_string()
+    } else if wants_tls {
+        format!("https://{addr}")
     } else {
         format!("http://{addr}")
     };
-    Channel::from_shared(uri)
-        .map_err(|e| err(format!("grpc: invalid address {addr:?}: {e}")))?
+    let endpoint = Channel::from_shared(uri)
+        .map_err(|e| err(format!("grpc: invalid address {addr:?}: {e}")))?;
+    let endpoint = if wants_tls {
+        #[cfg(feature = "tls")]
+        {
+            tls.apply_tonic(endpoint, "grpc")?
+        }
+        #[cfg(not(feature = "tls"))]
+        return Err(super::tls::unavailable("grpc", "a TLS endpoint"));
+    } else {
+        endpoint
+    };
+    endpoint
         .connect()
         .await
         .map_err(|e| err(format!("grpc: could not connect to {addr}: {e}")))
@@ -524,6 +563,25 @@ macro_rules! reflection_ops {
 
 reflection_ops!(v1, list_services_v1, files_for_symbol_v1, files_for_filename_v1, drain_fds_v1);
 reflection_ops!(v1alpha, list_services_v1alpha, files_for_symbol_v1alpha, files_for_filename_v1alpha, drain_fds_v1alpha);
+
+/// The TLS policy plus whether `tls = true` was written, which a bare `host:port` needs in order
+/// to ask for verified TLS (there is no scheme to carry it).
+///
+/// `tls = false` is honored as "plaintext, stated" rather than ignored: an author who writes it
+/// beside `insecure = true` has contradicted themselves, and that is worth a message.
+fn tls_opts(opts: &Option<Table>, who: &str) -> mlua::Result<(super::tls::Tls, bool)> {
+    let Some(t) = opts else {
+        return Ok((super::tls::Tls::default(), false));
+    };
+    let tls = super::tls::Tls::from_opts(t, who)?;
+    match t.get::<Option<bool>>("tls")? {
+        Some(false) if !tls.is_default() => Err(err(format!(
+            "{who}: `tls = false` contradicts the TLS options beside it — drop one"
+        ))),
+        Some(requested) => Ok((tls, requested)),
+        None => Ok((tls, false)),
+    }
+}
 
 fn opt_duration(opts: &Option<Table>, key: &str) -> mlua::Result<Option<Duration>> {
     match opts {
