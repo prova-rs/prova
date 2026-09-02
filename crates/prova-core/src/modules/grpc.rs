@@ -15,6 +15,17 @@ fn err(msg: impl Into<String>) -> mlua::Error {
     mlua::Error::RuntimeError(msg.into())
 }
 
+/// Every option `grpc.client` honors — closed, like every other module's
+/// (docs/design/agent-ergonomics.md#module-opts-silently-ignored).
+///
+/// This namespace was the one that still accepted anything, which mattered little while `timeout`
+/// was the only key. It stops being harmless with TLS in the table: a misspelled `insecure` would
+/// be dropped, and the resulting handshake failure names the server rather than the typo.
+const CLIENT_OPTS: &[&str] = &["ca_cert", "insecure", "timeout", "tls"];
+
+/// Every option `grpc.wait_for` honors — `client`'s set plus the poll interval.
+const WAIT_OPTS: &[&str] = &["ca_cert", "every", "insecure", "timeout", "tls"];
+
 pub(crate) fn make(lua: &Lua) -> mlua::Result<Table> {
     let grpc = lua.create_table()?;
     // grpc.client(addr, { timeout = "30s" }) → a Client (reflection is performed here, once).
@@ -22,6 +33,7 @@ pub(crate) fn make(lua: &Lua) -> mlua::Result<Table> {
         "client",
         lua.create_async_function(|lua, (addr, opts): (String, Option<Table>)| async move {
             super::runtime_only("grpc.client")?;
+            reject_unknown(&opts, CLIENT_OPTS, "grpc.client")?;
             let timeout = opt_duration(&opts, "timeout")?;
             let (tls, tls_requested) = tls_opts(&opts, "grpc.client")?;
             let channel = connect_channel_tls(&addr, &tls, tls_requested).await?;
@@ -39,6 +51,7 @@ pub(crate) fn make(lua: &Lua) -> mlua::Result<Table> {
         "wait_for",
         lua.create_async_function(|_, (addr, opts): (String, Option<Table>)| async move {
             super::runtime_only("grpc.wait_for")?;
+            reject_unknown(&opts, WAIT_OPTS, "grpc.wait_for")?;
             let timeout = opt_duration(&opts, "timeout")?.unwrap_or(Duration::from_secs(30));
             let every = opt_duration(&opts, "every")?.unwrap_or(Duration::from_millis(500));
             // Parsed BEFORE the loop: a contradictory address/policy must fail immediately, not
@@ -580,6 +593,15 @@ fn tls_opts(opts: &Option<Table>, who: &str) -> mlua::Result<(super::tls::Tls, b
         ))),
         Some(requested) => Ok((tls, requested)),
         None => Ok((tls, false)),
+    }
+}
+
+/// `crate::opts::reject_unknown` over an OPTIONAL table — absent options are the common call and
+/// must not be a special case at three sites.
+fn reject_unknown(opts: &Option<Table>, accepted: &[&str], who: &str) -> mlua::Result<()> {
+    match opts {
+        Some(t) => crate::opts::reject_unknown(t, accepted, who),
+        None => Ok(()),
     }
 }
 

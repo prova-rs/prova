@@ -23,15 +23,23 @@ local M = {}
 --- the endpoint either way — a certificate valid for only one of them turns a hostname choice into
 --- a mysterious verification failure. `CA:FALSE` + `serverAuth` on the leaf keeps it a leaf.
 ---
+--- `opts.san` / `opts.cn` override the leaf's subjectAltName and subject, for the
+--- hostname-mismatch case. A mismatch is worth its own fixture because it is the half of TLS that
+--- is NOT the chain: a certificate can be perfectly signed by a CA you trust and still be the
+--- wrong certificate for the host you dialed. `insecure` has to tolerate that on every transport
+--- and `ca_cert` has to keep rejecting it on every transport — and those are different code paths
+--- in three different crates.
+---
 --- Returns `{ dir, ca, ca_key, cert, key }` — paths, all absolute.
-function M.mint(t, key)
+function M.mint(t, key, opts)
+  opts = opts or {}
   local dir = t:tempdir(key or "tlspki")
   local ca, ca_key = dir .. "/ca.pem", dir .. "/ca-key.pem"
   local cert, cert_key = dir .. "/srv.pem", dir .. "/srv-key.pem"
   local csr, ext = dir .. "/srv.csr", dir .. "/srv.ext"
 
   fs.write(ext, table.concat({
-    "subjectAltName=DNS:localhost,IP:127.0.0.1",
+    "subjectAltName=" .. (opts.san or "DNS:localhost,IP:127.0.0.1"),
     "basicConstraints=critical,CA:FALSE",
     "extendedKeyUsage=serverAuth",
   }, "\n") .. "\n")
@@ -50,7 +58,8 @@ function M.mint(t, key)
             "-subj", "/CN=Prova Test CA",
             "-addext", "basicConstraints=critical,CA:TRUE" })
   openssl({ "req", "-newkey", "rsa:2048", "-nodes",
-            "-keyout", cert_key, "-out", csr, "-subj", "/CN=localhost" })
+            "-keyout", cert_key, "-out", csr,
+            "-subj", "/CN=" .. (opts.cn or "localhost") })
   openssl({ "x509", "-req", "-in", csr, "-CA", ca, "-CAkey", ca_key,
             "-out", cert, "-days", "1", "-extfile", ext })
 

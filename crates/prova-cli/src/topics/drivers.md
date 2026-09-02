@@ -10,6 +10,7 @@ filesystem. Green must mean "a real caller would succeed."
 | HTTP/REST | `http` | `http.get/post(url, { headers, json\|form\|body, content_type, timeout, redirects })` → `.status`, `.body` (bytes-exact), `:json()`, `:save(path)` · `http.client{ base_url }` · `http.wait_for(url, { status, headers, timeout })` |
 | gRPC | `grpc` | `grpc.client(addr)` → `:call(method, req)`, `:call_status` (needs server reflection) · `grpc.wait_for` |
 | GraphQL | `graphql` | `graphql.client{ url }` → `:query`, `:execute` |
+| WebSocket | `websocket` | `websocket.connect(ctx, { url })` → `:send`, `:recv` |
 | CLI / processes | `shell` | `shell.run(cmd_or_argv, { cwd, env, timeout, check })` → `{ code, stdout, stderr }` · `shell.spawn` for long-running |
 | stdio conversations (MCP, LSP, REPLs) | `stdio` | `stdio.spawn(ctx, { cmd, framing, codec })` → `:send`, `:recv{ where }`, `:expect`, `:stderr`, `:eof`, `:wait` |
 | Byte streams (tcp/unix) | `socket` | `socket.connect(ctx, { addr, framing, codec })` → `:send`, `:recv{ where }` |
@@ -32,6 +33,28 @@ filesystem. Green must mean "a real caller would succeed."
   a pty mangles a byte protocol through line discipline and column wrapping.
 - Proving a rendered/built artifact → `fs` + `matches_snapshot` (layout or content level).
 - Readiness is a driver call that HOLDS (`http.wait_for`, a query succeeding) — never a sleep.
+
+## TLS — two options, the same everywhere
+
+Every driver above that speaks a network protocol reaches a TLS endpoint the same way: an
+`https://` / `wss://` URL, plus at most one of
+
+| Option | Means |
+|---|---|
+| `insecure = true` | accept any certificate — no chain, hostname or expiry check. **The one you want** for a service you just booted with a self-signed cert; the handshake is still encrypted, only identity goes unchecked. |
+| `ca_cert = "<path>"` | a PEM whose certificates are **added** to the default anchors (Mozilla's bundle + the platform store) — for an endpoint behind a private CA. |
+
+Both at once is an error, at every call site: `ca_cert` says *trust this one CA* and `insecure`
+says *trust anything*, so together the CA goes unchecked while the proof still reads as pinned.
+
+They go wherever the call's other options go — `http.get(url, { insecure = true })`,
+`http.client{ base_url, ca_cert = … }` (declared once, inherited by every call),
+`http.wait_for(url, { ca_cert = … })`, `graphql.client{ url, … }`,
+`websocket.connect(ctx, { url = "wss://…", … })`, `grpc.client("https://host:443", { … })`.
+
+`grpc` is the one with no scheme in its usual address form, so it takes a third spelling:
+`tls = true` promotes a bare `"host:port"`. `insecure`/`ca_cert` imply TLS on their own; an
+`http://` address with any of them is a refused contradiction.
 - Every stream driver shares one turn model: `framing` cuts bytes into turns (`"line"`,
   `"content_length"`, `{ delimiter }`, `{ length_prefixed }`), `codec = "json"` decodes them, and
   `recv{ where = { id = 3 } }` then reads on until the turn that MATCHES — the same structural

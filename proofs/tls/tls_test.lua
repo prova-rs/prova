@@ -307,3 +307,63 @@ return http.get(%q).status
   t:expect(out.code, "the subject ran: " .. out.stdout):equals(0)
   t:expect(out.stdout:match("%d+"), "a plaintext GET still works, with no options at all"):equals("200")
 end)
+
+--- `insecure` and `ca_cert` disagreeing about a HOSTNAME is the drift that would be hardest to see.
+---
+--- A certificate can be perfectly signed by a CA you trust and still be the wrong certificate for
+--- the host you dialed — the name is not the chain. Each transport checks it somewhere different:
+--- reqwest has a `danger_accept_invalid_hostnames` knob SEPARATE from
+--- `danger_accept_invalid_certs`, while prova's own verifier ignores the name outright. So "one
+--- policy" could quietly have meant "http still checks the name, websocket and grpc do not," and
+--- nothing above this line would have noticed.
+local mismatch = prova.fixture("hostname-mismatched service", Scope.File, function(ctx)
+  -- Signed by the SAME CA as `rig`, valid only for a name nothing will dial. So a failure here is
+  -- unambiguously about the name: the chain is genuinely good.
+  local pki = tlspki.mint(ctx, "mismatch-pki", { san = "DNS:wrong.example", cn = "wrong.example" })
+  local python = package.config:sub(1, 1) == "\\" and "python" or "python3"
+  local script = pki.dir .. "/service.py"
+  fs.write(script, SERVICE_PY)
+  local plain_port = net.free_port()
+  local proc = ctx:manage(shell.spawn({ python, "-u", script, tostring(plain_port) }))
+  for _ = 1, 600 do
+    if (proc:output() or ""):find("listening", 1, true) then break end
+    if not proc:running() then
+      error("the plaintext service exited before listening: " .. (proc:output() or ""), 0)
+    end
+    prova.sleep(50)
+  end
+  local front = tlspki.terminate(ctx, ctx, { pki = pki, upstream_port = plain_port })
+  return { pki = pki, url = front.url }
+end)
+
+prova.test("ca_cert still rejects a good chain presented for the wrong hostname", {
+  covers = "docs/design/architecture.md#tls-everywhere",
+  proves = "the name is not the chain: a certificate this CA really signed is still the wrong certificate for this host, and a `ca_cert` that accepted it would have turned trust-this-CA into trust-anything-this-CA-ever-signed — including for a host the author never meant to reach",
+  requires = GATES,
+}, function(t)
+  local m = t:use(mismatch)
+  local out = eval(string.format([==[
+local ok, e = pcall(function() return http.get(%q, { ca_cert = %q }) end)
+return tostring(ok) .. " " .. tostring(e)
+]==], m.url .. "/health", m.pki.ca))
+
+  t:expect(out.stdout:find("false", 1, true) ~= nil,
+    "the request fails: " .. out.stdout):equals(true)
+  t:expect(out.stdout:find("wrong.example", 1, true) ~= nil,
+    "…naming the certificate's actual name, so the diagnosis is one read: " .. out.stdout):equals(true)
+end)
+
+prova.test("insecure tolerates a hostname mismatch, and does so on every transport", {
+  covers = "docs/design/architecture.md#tls-everywhere",
+  proves = "reqwest checks the hostname behind a knob SEPARATE from the chain, while prova's own verifier ignores the name entirely — so `insecure` could have meant two different things on two transports, which is exactly the policy drift one shared parser is supposed to make impossible. Asserting it on http here and on wss/grpc in transports_test is what makes 'meaning identically' a measurement",
+  requires = GATES,
+}, function(t)
+  local m = t:use(mismatch)
+  local out = eval(string.format([==[
+return http.get(%q, { insecure = true }).status
+]==], m.url .. "/health"))
+
+  t:expect(out.code, "the subject ran: " .. out.stdout):equals(0)
+  t:expect(out.stdout:match("%d+"),
+    "insecure ignores the name as well as the chain"):equals("200")
+end)

@@ -223,3 +223,92 @@ prova.test("grpc promotes a bare host:port only when asked, and refuses a contra
   t:expect(r.stdout:find("https://", 1, true) ~= nil,
     "…and the spelling that would have worked: " .. r.stdout):equals(true)
 end)
+
+--- The other half of "meaning identically": a HOSTNAME mismatch.
+---
+--- `tls_test.lua` asserts this on `http`, where reqwest checks the name behind a knob separate
+--- from the chain. Here it is asserted on the two transports that go through prova's own verifier
+--- instead — which ignores the name outright. If those two disagreed with `http`, `insecure` would
+--- mean one thing on an https call and another on a wss one, and no test above this line would
+--- have caught it.
+local function mismatched_front(t, key, alpn, upstream_port)
+  -- Signed by a real CA, valid only for a name nothing dials: the chain is good, the name is not.
+  local pki = tlspki.mint(t, key, { san = "DNS:wrong.example", cn = "wrong.example" })
+  return pki, tlspki.terminate(t, t, { pki = pki, upstream_port = upstream_port, alpn = alpn })
+end
+
+prova.test("on wss, insecure tolerates a hostname mismatch and ca_cert still refuses it", {
+  covers = "docs/design/architecture.md#tls-everywhere",
+  proves = "both directions in one test, because either alone is satisfiable by a bug: `insecure` succeeding proves the name is ignored when asked, and `ca_cert` failing on the same server proves it is still CHECKED otherwise — a verifier wired in unconditionally would pass the first and fail the second",
+  requires = GATES,
+}, function(t)
+  local m = websocket.mock(t)
+  m:on("ping"):reply("pong")
+  local pki, front = mismatched_front(t, "ws-mismatch", nil, port_of(m.url))
+
+  local insecure = nested(t, string.format([[
+prova.test("wss, mismatched name, insecure", {}, function(t)
+  local c = websocket.connect(t, { url = %q, insecure = true })
+  c:send("ping")
+  t:expect(c:recv()):equals("pong")
+end)
+]], front.ws_url))
+  t:expect(insecure.code, "insecure ignores the name:\n" .. insecure.stdout):equals(0)
+
+  local verified = nested(t, string.format([[
+prova.test("wss, mismatched name, ca_cert", {}, function(t)
+  websocket.connect(t, { url = %q, ca_cert = %q })
+end)
+]], front.ws_url, pki.ca))
+  t:expect(verified.code, "…and ca_cert still checks it:\n" .. verified.stdout):never():equals(0)
+end)
+
+prova.test("on grpc, insecure tolerates a hostname mismatch and ca_cert still refuses it", {
+  covers = "docs/design/architecture.md#tls-everywhere",
+  proves = "grpc reaches the name check through a third path again — tonic's `tls_config_with_verifier` versus its `ca_certificate` root store — so agreement with http and wss is a property that has to be measured rather than assumed from sharing one options parser",
+  requires = GATES,
+}, function(t)
+  local proto_dir = t:tempdir("grpc-mismatch-proto")
+  local proto = proto_dir .. "/greeter.proto"
+  fs.write(proto, [[
+syntax = "proto3";
+package tlsdemo;
+message Req { string name = 1; }
+message Rep { string greeting = 1; }
+service Greeter { rpc Hello(Req) returns (Rep); }
+]])
+  local m = grpc.mock(t, { proto = proto })
+  m:on({ method = "tlsdemo.Greeter/Hello" }):reply({ response = { greeting = "hi" } })
+  local pki, front = mismatched_front(t, "grpc-mismatch", "h2", port_of(m.url))
+
+  local insecure = nested(t, string.format([[
+prova.test("grpc, mismatched name, insecure", {}, function(t)
+  local c = grpc.client(%q, { insecure = true })
+  t:expect(c:call("tlsdemo.Greeter/Hello", { name = "x" }).greeting):equals("hi")
+end)
+]], front.url))
+  t:expect(insecure.code, "insecure ignores the name:\n" .. insecure.stdout):equals(0)
+
+  local verified = nested(t, string.format([[
+prova.test("grpc, mismatched name, ca_cert", {}, function(t)
+  grpc.client(%q, { ca_cert = %q }):call("tlsdemo.Greeter/Hello", { name = "x" })
+end)
+]], front.url, pki.ca))
+  t:expect(verified.code, "…and ca_cert still checks it:\n" .. verified.stdout):never():equals(0)
+end)
+
+prova.test("grpc refuses an option it cannot honor, so a misspelled insecure is never dropped", {
+  covers = "docs/design/architecture.md#tls-everywhere",
+  proves = "`grpc` was the last namespace with an OPEN options table, which cost nothing while `timeout` was the only key — with TLS in the table a dropped `insecrue` leaves the connection verified and the handshake failure names the SERVER, sending the author to debug a machine that is fine (docs/design/agent-ergonomics.md#module-opts-silently-ignored)",
+  requires = GATES,
+}, function(t)
+  local r = shell.run({ prova.bin, "eval",
+    'local ok, e = pcall(function() return grpc.client("localhost:1", { insecrue = true }) end) ' ..
+    'return tostring(ok) .. " " .. tostring(e)' },
+    { merge_stderr = true, timeout = "60s" })
+
+  t:expect(r.stdout:find("false", 1, true) ~= nil,
+    "the typo is refused rather than ignored: " .. r.stdout):equals(true)
+  t:expect(r.stdout:find("insecrue", 1, true) ~= nil,
+    "…naming the key it could not honor: " .. r.stdout):equals(true)
+end)

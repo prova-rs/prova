@@ -497,11 +497,26 @@ end)
 ---
 --- Measured 2026-08-24 (prova 0.25.0), steady state: unit 22489/31298, blackbox 19665/31298,
 --- merged 25329/31298.
+---
+--- **Re-banked 2026-09-02 (prova 0.26.1)** for the TLS change
+--- (docs/design/architecture.md#tls-everywhere), which added ~1,100 instrumented lines and moved
+--- the basis +3.6%. Steady state: unit 23256/32434, blackbox 20555/32434, merged 26248/32434.
+---
+--- Two consecutive conducts read the black-box layer at 32668 and then 32434 — the same ±0.7%
+--- object-population jitter this whole guard exists to distinguish from a real basis move, and a
+--- reminder that a single measurement is not the basis. All three layers are banked at 32434
+--- rather than at whatever each happened to read: the tolerance below absorbs the jitter, and
+--- three different numbers would have implied a per-layer difference the next conduct disproves.
+---
+--- **The FLOORS were deliberately left where they were.** All three still hold against the new
+--- basis (unit 71.70 vs 71.9 ±1.0 · blackbox 63.37 vs 62.4 ±1.0 · merged 80.93 vs 80.9 ±0.5), so
+--- re-banking them would have LOOSENED the unit floor by 0.2pp for no reason — a basis re-bank is
+--- not an occasion to lower a bar that is being met.
 local BASIS = {
-  -- layer      lines counted at bank time (2026-08-24, prova 0.25.0)
-  unit     = 31298,
-  blackbox = 31298,
-  merged   = 31298,
+  -- layer      lines counted at bank time (2026-09-02, prova 0.26.1)
+  unit     = 32434,
+  blackbox = 32434,
+  merged   = 32434,
 }
 
 --- How far the basis may drift before the percentages stop being comparable. Small on purpose:
