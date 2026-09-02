@@ -159,9 +159,25 @@ fn ensure_cargo_sweep() -> Result<()> {
     Ok(())
 }
 
+/// A held package "cargo" lock, plus the holder record that names who is holding it. Dropping
+/// releases the flock (kernel) and removes the record (here) — record first, so the file never
+/// outlives the hold it describes.
+struct CargoLock {
+    _file: std::fs::File,
+    record: Option<std::path::PathBuf>,
+}
+
+impl Drop for CargoLock {
+    fn drop(&mut self) {
+        if let Some(path) = self.record.take() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 /// Block until this package's "cargo" lock is held (see prova_core::locks — the flock file is
 /// the cross-tool contract). Failure degrades visibly to unlocked, never silently blocks work.
-fn hold_cargo_lock() -> Option<std::fs::File> {
+fn hold_cargo_lock() -> Option<CargoLock> {
     let path = std::path::Path::new(".prova/var/locks/cargo.lock");
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -185,5 +201,54 @@ fn hold_cargo_lock() -> Option<std::fs::File> {
             }
         }
     }
-    Some(file)
+    Some(CargoLock { record: register_holder(path), _file: file })
+}
+
+/// Write the holder record beside the lock, by hand.
+///
+/// xtask deliberately does not depend on prova-core — it is the bootstrap tool, and pulling the
+/// engine in would mean compiling it before you can build anything. Joining the record convention
+/// with a dozen lines of hand-written JSON is the point rather than a compromise: the format is
+/// part of the same public contract the flock file is, and xtask is this repo's most frequent
+/// non-prova holder, so a waiter behind `cargo xtask build` should read "xtask build" instead of
+/// "an unregistered holder" (docs/plans/lock-starvation.md).
+fn register_holder(lock_path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let dir = lock_path.with_extension("holders");
+    std::fs::create_dir_all(&dir).ok()?;
+    let pid = std::process::id();
+    let package = std::env::current_dir().ok()?.display().to_string();
+    let what = std::env::args().collect::<Vec<_>>().join(" ");
+    let acquired_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let json = format!(
+        r#"{{"pid":{pid},"token":"cargo","shared":false,"package":{},"what":{},"acquired_at":{acquired_at}}}"#,
+        quote(&package),
+        quote(&what),
+    );
+    let path = dir.join(format!("{pid}.json"));
+    std::fs::write(&path, json).ok()?;
+    Some(path)
+}
+
+/// The JSON string rules, in full: escape the two structural characters and the control range.
+/// A path or an argument is user-supplied text, so "it will never contain a quote" is the kind of
+/// assumption that produces an unparseable record exactly once, in someone else's tree.
+fn quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }

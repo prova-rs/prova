@@ -435,3 +435,32 @@ forwards the command's exit code, and releases on exit — crashes included, cou
 and it never provisions anything. Exists because macOS ships no flock(1): a Makefile or CI step
 joins a house rule like "one cargo at a time" with one incantation, on any OS. CLI-only by
 design (exec semantics do not map to an MCP tool).
+
+<!-- claim: a-hold-names-its-holder recorded=2026-09-02 -->
+**A hold is nameable, and a wait says whose it is waiting on — for as long as it waits.** A
+`flock(2)` tells the kernel everything and the operator nothing, which is why a 14 h wait behind a
+hung `cargo` holder could report only that it was waiting (2026-09-01, substrate; the two sides
+are `agent-ergonomics.md#lock-waits-are-unbounded` and `#a-hung-holder-never-releases`). Three
+things now hold together:
+
+- **A holder registers itself** in `<token>.holders/<pid>.json` beside the lock — pid, package,
+  mode, its own command line, and when it acquired — removed on release, swept by `kill(pid, 0)`.
+  The record's lifetime is the hold's, because there is exactly one release path (`Hold::drop`),
+  and the record goes first: a record outliving its flock would name a pid that excludes nobody.
+- **The blocking wait leaves the calling thread**, so it can narrate while it waits: the holder by
+  name at the first line, then again every `PROVA_LOCK_NARRATE_EVERY` (60s). The kernel's queue is
+  kept rather than replaced with a `try_hold` poll loop — flock guarantees no fairness, but
+  barging would remove what ordering it does give, which is the wrong direction in an item about
+  starvation. `PROVA_LOCK_WAIT_TIMEOUT` and `prova lock --wait-timeout` bound the wait; **unbounded
+  stays the default**, because the honest fix for a hung holder is to bound the HOLD, not to start
+  failing legitimate queues.
+- **`prova locks`** answers "who holds what" directly, asking the kernel for held-ness and the
+  records for identity.
+
+**The record is a hint; the flock is authority**, and the gap between them is a supported state
+rather than a defect: the lock file is a public convention, so an external tool — this repo's own
+`xtask`, a Makefile, `flock(1)` — can hold a token without knowing this format exists. Held with
+no record is reported as an unregistered holder, never as free. (`xtask` writes one by hand, in a
+dozen dependency-free lines, which is the demonstration that the format is joinable and not a
+prova-only privilege.) A holder record is deliberately not a lease: nothing here can release
+another process's flock — only ending that process can — so naming the holder IS the recourse.

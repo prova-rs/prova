@@ -178,7 +178,7 @@ fn provision_runner(
     // ["cargo"]`): the provision must never race a proof holding `writes("cargo")` in another
     // prova instance — the exact house rule the suite encodes. Blocking hold: waiting for the
     // other holder is the point, and dropping the handles releases.
-    let mut held: Vec<std::fs::File> = Vec::new();
+    let mut held: Vec<prova_core::locks::Hold> = Vec::new();
     for token in &runner.locks {
         // Narrated with its duration (docs/design/agent-ergonomics.md#narrate-lock-waits): the
         // provision is the first thing a run does, so a silent blocking hold here reads as prova
@@ -340,38 +340,158 @@ pub(crate) fn switches_subcommand(args: Vec<String>) -> ExitCode {
     run(full)
 }
 
-/// `prova lock <token> [--reads] [--machine] -- <command…>` — the shell-portable spelling of
-/// the lock contract (docs/design/architecture.md#lock-wrapper-verb): hold the token, run the
-/// command, forward its exit code, release on exit. The suite's own vocabulary: a bare token
-/// is a WRITE hold (exclusive, like `locks = { "cargo" }`); `--reads` is the concurrent hold;
-/// `--machine` widens past the package. Exists because macOS ships no flock(1) — a Makefile or
-/// CI step joins the house rule with this one incantation, and never provisions anything.
-pub(crate) fn lock_subcommand(args: Vec<String>) -> ExitCode {
+/// `--wait-timeout`'s argument, in the one grammar `PROVA_LOCK_WAIT_TIMEOUT` also speaks.
+fn parse_wait_timeout(raw: &str) -> Result<Option<std::time::Duration>, String> {
+    prova_core::locks::parse_bound(raw)
+}
+
+/// `prova locks [--machine|--all]` — who holds what, right now.
+///
+/// The question this answers used to have no answer at all: a `flock` is anonymous, so an
+/// operator staring at a queued build could only reach for `ps` (docs/plans/lock-starvation.md).
+/// Held-ness is asked of the KERNEL and identity of the sidecar records, which is why a token can
+/// legitimately read as held with nobody named — an external tool joining the convention from a
+/// Makefile owes prova no record, and reporting that honestly beats implying the token is free.
+pub(crate) fn locks_subcommand(args: Vec<String>) -> ExitCode {
+    let mut machine = false;
+    let mut all = false;
+    for arg in &args {
+        match arg.as_str() {
+            "-h" | "--help" => {
+                println!(
+                    "usage: prova locks [--machine] [--all]\n\n\
+                     Every lock token in scope, held or free, with who is holding it — the\n\
+                     answer to \"what is my build queued behind?\" (`prova learn locks`).\n\n\
+                     (default)   this package's tokens (<home>/.prova/var/locks/)\n\
+                     --machine   the box-wide tokens instead (ports, cross-repo rules)\n\
+                     --all       both scopes\n\n\
+                     A held token with no holder named is an external tool holding the same\n\
+                     file — supported, and reported as what it is. Nothing here can release\n\
+                     another process's flock; only ending that process does."
+                );
+                return ExitCode::SUCCESS;
+            }
+            "--machine" => machine = true,
+            "--all" => all = true,
+            other => {
+                eprintln!("prova: locks: unknown option {other:?} (see --help)");
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    let home = home::find(std::path::Path::new(".")).ok().flatten();
+    let project_dir = home.as_ref().map(|h| h.dir.as_path());
+    let mut scopes: Vec<(&str, bool)> = Vec::new();
+    if all || !machine {
+        if project_dir.is_none() && !all && !machine {
+            eprintln!(
+                "prova: no prova.toml found walking up — package locks need a package \
+                 (use --machine for the box-wide tokens)"
+            );
+            return ExitCode::from(2);
+        }
+        if project_dir.is_some() {
+            scopes.push(("package", false));
+        }
+    }
+    if all || machine {
+        scopes.push(("machine", true));
+    }
+
+    let mut any = false;
+    for (label, is_machine) in scopes {
+        let rows = prova_core::locks::survey(is_machine, project_dir);
+        if rows.is_empty() {
+            continue;
+        }
+        any = true;
+        // The directory once, not the path per row: every token below is `<token>.lock` inside
+        // it, and that address is the contract — an external tool joins the house rule by
+        // flocking a file here, so printing it is teaching, not decoration.
+        println!("{label}  ({})", prova_core::locks::lock_dir(is_machine, project_dir).display());
+        for row in rows {
+            let state = if row.held { "HELD" } else { "free" };
+            println!("  {state:<4}  {}", row.token);
+            for entry in &row.holders {
+                match entry {
+                    prova_core::locks::holder::Entry::Live(h) => {
+                        let mode = if h.shared { "reader" } else { "writer" };
+                        let held_in = h.package.as_deref().map(|p| format!(" (in {p})"));
+                        println!(
+                            "          {mode} pid {} — {}{}",
+                            h.pid,
+                            h.what,
+                            held_in.unwrap_or_default()
+                        );
+                    }
+                    prova_core::locks::holder::Entry::Unreadable { pid, why } => {
+                        println!("          pid {pid} — record unreadable ({why})");
+                    }
+                }
+            }
+            if row.held && row.holders.is_empty() {
+                println!(
+                    "          held by an unregistered holder (an external tool on the same file)"
+                );
+            }
+        }
+    }
+    if !any {
+        println!("no lock tokens yet (a token's file appears the first time it is held)");
+    }
+    ExitCode::SUCCESS
+}
+
+/// What `prova lock` was asked for: the token, its mode and scope, the wait policy, and the
+/// command to run under the hold.
+type LockRequest = (String, bool, bool, prova_core::locks::WaitPolicy, Vec<String>);
+
+/// Parse `prova lock`'s arguments. `Ok(None)` is `--help` (printed, nothing to do); `Err` carries
+/// the exit code a usage error or a bad duration should produce.
+fn parse_lock_args(args: Vec<String>) -> Result<Option<LockRequest>, ExitCode> {
     let usage = || {
-        eprintln!("usage: prova lock <token> [--reads] [--machine] -- <command> [args…]");
-        ExitCode::from(2)
+        eprintln!(
+            "usage: prova lock <token> [--reads] [--machine] [--wait-timeout <dur>] \
+             -- <command> [args…]"
+        );
+        Err(ExitCode::from(2))
     };
     let mut token: Option<String> = None;
     let mut shared = false;
     let mut machine = false;
+    let mut policy = prova_core::locks::WaitPolicy::default();
     let mut it = args.into_iter();
     let command: Vec<String> = loop {
         match it.next().as_deref() {
             Some("-h") | Some("--help") => {
                 println!(
-                    "usage: prova lock <token> [--reads] [--machine] -- <command> [args…]\n\n\
+                    "usage: prova lock <token> [--reads] [--machine] [--wait-timeout <dur>] \
+                     -- <command> [args…]\n\n\
                      Hold the package lock <token> while <command> runs — the same flock the\n\
                      suite's `locks = {{ … }}` and the [runner] provision hold, so an external\n\
                      build joins the house rule (`prova learn locks`). A bare token is a WRITE\n\
                      hold; --reads is the concurrent hold; --machine spans every repo on the\n\
-                     box. Blocks until held (says so when it waits), forwards the command's\n\
-                     exit code, and the kernel releases on exit — crashes included."
+                     box. Blocks until held, naming the holder while it waits and re-saying so\n\
+                     every 60s; forwards the command's exit code; the kernel releases on exit —\n\
+                     crashes included.\n\n\
+                     --wait-timeout <dur>  give up if the token is not held within <dur> (30m,\n\
+                     2h; 0 waits forever, the default). `prova locks` shows who is holding what.\n\
+                     PROVA_LOCK_WAIT_TIMEOUT sets the same bound for every prova on this box."
                 );
-                return ExitCode::SUCCESS;
+                return Ok(None);
             }
             Some("--reads") => shared = true,
             Some("--writes") => shared = false, // the explicit spelling of the default
             Some("--machine") => machine = true,
+            Some("--wait-timeout") => match it.next().as_deref().map(parse_wait_timeout) {
+                Some(Ok(bound)) => policy.bound = bound,
+                Some(Err(e)) => {
+                    eprintln!("prova: lock: --wait-timeout {e}");
+                    return Err(ExitCode::from(2));
+                }
+                None => return usage(),
+            },
             Some("--") => break it.collect(),
             Some(word) if token.is_none() && !word.starts_with('-') => {
                 token = Some(word.to_string());
@@ -381,6 +501,21 @@ pub(crate) fn lock_subcommand(args: Vec<String>) -> ExitCode {
     };
     let (Some(token), false) = (token, command.is_empty()) else {
         return usage();
+    };
+    Ok(Some((token, shared, machine, policy, command)))
+}
+
+/// `prova lock <token> [--reads] [--machine] -- <command…>` — the shell-portable spelling of
+/// the lock contract (docs/design/architecture.md#lock-wrapper-verb): hold the token, run the
+/// command, forward its exit code, release on exit. The suite's own vocabulary: a bare token
+/// is a WRITE hold (exclusive, like `locks = { "cargo" }`); `--reads` is the concurrent hold;
+/// `--machine` widens past the package. Exists because macOS ships no flock(1) — a Makefile or
+/// CI step joins the house rule with this one incantation, and never provisions anything.
+pub(crate) fn lock_subcommand(args: Vec<String>) -> ExitCode {
+    let (token, shared, machine, policy, command) = match parse_lock_args(args) {
+        Ok(Some(parsed)) => parsed,
+        Ok(None) => return ExitCode::SUCCESS, // --help
+        Err(code) => return code,
     };
 
     let home = home::find(std::path::Path::new(".")).ok().flatten();
@@ -392,16 +527,23 @@ pub(crate) fn lock_subcommand(args: Vec<String>) -> ExitCode {
         return ExitCode::from(2);
     }
     let project_dir = home.as_ref().map(|h| h.dir.as_path());
-    // Try without blocking first, purely so a wait is SAID — then block for real.
+    // Try without blocking first, purely so a wait is SAID — then block for real. The first line
+    // now names the holder rather than just the fact of a queue: "held elsewhere" was true for
+    // fourteen hours once and pointed at nobody (docs/plans/lock-starvation.md).
     let mut waited = std::time::Duration::ZERO;
     let held = match prova_core::locks::try_hold(&token, shared, machine, project_dir) {
         Ok(Some(f)) => Ok(f),
         _ => {
-            eprintln!("prova: waiting for lock {token:?} (held elsewhere)…");
-            prova_core::locks::hold_timed(&token, shared, machine, project_dir).map(|(f, w)| {
-                waited = w;
-                f
-            })
+            match prova_core::locks::lock_path(&token, machine, project_dir) {
+                Some(p) => eprintln!(
+                    "prova: waiting for lock {token:?} — {}",
+                    prova_core::locks::holder::describe_holders(&p)
+                ),
+                None => eprintln!("prova: waiting for lock {token:?}…"),
+            }
+            let before = prova_core::locks::stalled();
+            prova_core::locks::hold_with(&token, shared, machine, project_dir, &policy)
+                .inspect(|_| waited = prova_core::locks::stalled().saturating_sub(before))
         }
     };
     let _held = match held {

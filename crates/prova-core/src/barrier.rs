@@ -36,6 +36,12 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+/// "Is this pid still running?" — the identical question `locks::holder` asks of its sidecar
+/// records, answered in one place: one `kill(pid, 0)`, one conservative Windows answer. Reaping is
+/// an optimization here rather than a correctness requirement (the filename carries the pid, so a
+/// later run never reads a dead one's count), which is why assuming alive is the safe direction.
+use crate::locks::holder::process_is_alive;
+
 /// How long a participant waits for the others before calling it serialized.
 ///
 /// A default rather than a required argument, matching `prova.retry` and `http.wait_for`: the
@@ -76,24 +82,6 @@ fn sweep_orphans(dir: &std::path::Path) {
         }
         let _ = std::fs::remove_file(entry.path());
     }
-}
-
-/// Is `pid` still running? `kill(pid, 0)` asks without signalling — the same check a stale-lock
-/// reaper would use, except the kernel already reclaims flocks and only these count files need it.
-#[cfg(unix)]
-fn process_is_alive(pid: i32) -> bool {
-    // SAFETY: signal 0 performs error checking only; it never delivers anything to the process.
-    unsafe { libc::kill(pid, 0) == 0 }
-}
-
-/// Windows has no `kill(pid, 0)`, and this reaper only ever DELETES state, so the conservative
-/// answer is the safe one: assume alive and leave the file. The cost is a stale count file for a
-/// crashed run; the alternative — assuming dead — would delete a live run's arrivals and turn its
-/// barrier into a timeout. Reaping is an optimization here, not a correctness requirement: the
-/// filename carries the pid, so a later run never reads a dead one's count in the first place.
-#[cfg(not(unix))]
-fn process_is_alive(_pid: i32) -> bool {
-    true
 }
 
 /// Where a barrier's arrival file lives. Beside the locks, and sanitized the same way — two tokens

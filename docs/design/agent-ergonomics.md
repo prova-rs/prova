@@ -666,6 +666,15 @@ item asks for — but 14 h is long past any generous default bound, and no line 
 while it starved. This is the production data point the suggested shape wants; a minutes-scale
 default would have failed loudly a day earlier and named the holder below.
 
+**The diagnosis half landed 2026-09-02** (architecture.md#a-hold-names-its-holder,
+docs/plans/lock-starvation.md): the wait now narrates the holder by name at the first line and
+again every 60s, and a bound exists — `PROVA_LOCK_WAIT_TIMEOUT`, `prova lock --wait-timeout` —
+whose expiry fails with the elapsed time, the holder, and the way out. **This item stays open
+because the bound is off by default**, and that is the deliberate part: the sibling below is the
+reason a 14 h wait happened at all, and bounding the WAIT to cure a hung HOLD would make every
+legitimate queue behind a slow build into a failure. The default turns on when the hold-side
+supervision lands and makes it nearly unreachable — the recommendation on the table is 30m.
+
 <!-- backlog: a-hung-holder-never-releases recorded=2026-09-01 -->
 **The safety argument above has a hole: a holder can be LIVE and yet doing no work, and the flock
 protects only against DEAD holders.** The reasoning that downgrades the unbounded wait — "the
@@ -685,6 +694,27 @@ box across workspaces and CI, not just one queued run, and its blast radius is b
 someone noticing. Cross-owner note: the specific hang originated in a *caller* that spawned the
 conduct and failed to reap it on teardown (substrate's session-abort, fixed there); prova cannot
 prevent callers from leaking children, but a hold watchdog bounds the damage no matter who leaks.
+
+**Design settled 2026-09-02, implementation still owed** (docs/plans/lock-starvation.md §Part 1).
+Two corrections to the shape sketched above, both from writing it down:
+
+- **A wall bound is the backstop, not the mechanism.** The right predicate already exists and is
+  already proven not to false-kill a silent compile: verifiers.md#conduct-heartbeat-not-deadline's
+  bytes-**or**-CPU window, applied to the HOLD rather than to one conduct. So the dial is
+  `locks = { prova.writes("cargo", { idle_timeout = "15m" }) }`, with `max_hold` kept only for a
+  body that spins rather than stalls (a spin accrues CPU, so the heartbeat will never call it
+  idle). This is also what reconciles the wall clock with that claim's "bound the resource, never
+  the work": **a clock is illegitimate as a budget for the work and legitimate as a bound on how
+  long you may exclude everyone else.** Holding `cargo` is not doing work; it is preventing work.
+- **The waiter cannot detect the hang itself.** The obvious design — have the waiter read the
+  holder pid's CPU — is wrong, because the holder is a prova whose CHILD does the work and which
+  burns ~0 CPU while cargo compiles; it would declare every healthy build hung. Progress can only
+  be heartbeated by the holder, which is the party that already supervises its conducts. That is
+  why this item, not its sibling, is the one that actually closes the wound.
+
+What landed instead is the half that made the incident diagnosable at all
+(architecture.md#a-hold-names-its-holder): the holder is now nameable, so when this bound fires it
+can say whose hold it ended, and `prova locks` answers the question that had no answer.
 
 <!-- claim: a-measurement-must-prove-it-measured recorded=2026-08-16 -->
 **A number that stops being produced correctly must fail loudly, not keep reporting.** The

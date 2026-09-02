@@ -388,9 +388,9 @@ pub(super) fn emit_finished(reporter: &mut dyn Reporter, summary: &mut Summary, 
 #[derive(Default)]
 pub(super) struct ResourceTable {
     pub(super) holders: HashMap<String, (u32, u32)>, // token -> (shared, exclusive)
-    /// The cross-instance holds: token -> (descriptor, leaves holding it here). Dropping the
-    /// `File` releases the flock.
-    files: HashMap<String, (std::fs::File, u32)>,
+    /// The cross-instance holds: token -> (hold, leaves holding it here). Dropping the `Hold`
+    /// releases the flock and takes this process's holder record with it.
+    files: HashMap<String, (crate::locks::Hold, u32)>,
     /// Tokens whose lock file could not even be opened — degraded to run-scoped, warned ONCE
     /// (visible, never silent: a cross-instance rule that quietly stopped holding is the
     /// loophole this mechanism exists to close).
@@ -423,8 +423,8 @@ impl ResourceTable {
                 continue; // this process already holds the flock (mode arbitration is the table's)
             }
             match crate::locks::try_hold(&r.token, r.shared, r.machine, project_dir) {
-                Ok(Some(file)) => {
-                    self.files.insert(r.token.clone(), (file, 0));
+                Ok(Some(held)) => {
+                    self.files.insert(r.token.clone(), (held, 0));
                     taken.push(r.token.clone());
                 }
                 Ok(None) if crate::locks::lock_path(&r.token, r.machine, project_dir).is_none() => {

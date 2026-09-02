@@ -213,6 +213,12 @@ const VERBS: &[Verb] = &[
         run: lock_subcommand,
     },
     Verb {
+        name: "locks",
+        help: "  prova locks [--machine]   who holds what, right now — every token, held or free, with the\n\
+               \x20                           pid and command behind each hold (`prova learn locks`)",
+        run: locks_subcommand,
+    },
+    Verb {
         name: "relay",
         help: "  prova relay --to <addr>   pipe this process's stdio to a socket (tcp:// or unix://) — the adapter that makes a\n\
                \x20                           listening mock/proxy SPAWNABLE (`stdio.mock`, `stdio.proxy`)",
