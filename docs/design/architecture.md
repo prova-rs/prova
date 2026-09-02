@@ -464,3 +464,6 @@ no record is reported as an unregistered holder, never as free. (`xtask` writes 
 dozen dependency-free lines, which is the demonstration that the format is joinable and not a
 prova-only privilege.) A holder record is deliberately not a lease: nothing here can release
 another process's flock — only ending that process can — so naming the holder IS the recourse.
+
+<!-- backlog: tls-everywhere recorded=2026-09-02 -->
+Every network client in prova connects plaintext — http/graphql (reqwest with no TLS backend), websocket (ws:// only, hard-rejected at the call), grpc (tonic plaintext), and sqlx. A real system under test is reached over TLS, so black-box testing one means TLS is a capability, not a deferral.
