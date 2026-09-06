@@ -1775,3 +1775,21 @@ name, streams the holder's output, and stops at the ready block. Pointing a seco
 *first* holder's log needs only a wait on someone else's record and `is_alive(pid)` in place of a
 child handle — so "join as spectator" is a small increment on shipped machinery, not a new
 subsystem.
+
+## Backlog — per-case liveness for pure-Lua proofs
+
+<!-- backlog: pure-lua-case-liveness -->
+
+A pure-Lua proof case has no per-case timeout and no heartbeat: a case that
+enters an unbounded loop runs forever, silently. Live witness (2026-09-05,
+Substrate landing gate): a recipe proof case looped a simulated coder leg
+29,000+ rounds over ~90 minutes inside `prova run all` — the conduct kept
+printing, so the RUN looked alive, but no per-case bound ever fired and the
+gate never returned. Cargo-conducted cases get the nextest profile's
+slow-timeout; pure-Lua cases get nothing. Same family as
+`lock-waits-are-unbounded` and `a-hung-holder-never-releases`: alive
+(executing), progressing (asserts/output advancing), bounded (a per-case
+slow-timeout-style warn-then-terminate budget, tunable per test), so a
+looping case reds with teaching instead of wedging the whole account. The
+tally should name the case it was inside when terminated — a looping case
+is currently invisible in the account.
