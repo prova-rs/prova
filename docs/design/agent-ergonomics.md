@@ -1798,3 +1798,31 @@ is currently invisible in the account.
 
 <!-- backlog: no-default-features-build-is-broken recorded=2026-09-02 -->
 `prova-core` does not build with `--no-default-features`, though its Cargo.toml claims it does: `tokio` is declared without the `sync` feature while `wiretap.rs` uses `tokio::sync::oneshot` unconditionally, so 24 E0603s land the moment no optional dep is there to enable it transitively. Nothing gates the claim, so it rotted silently.
+
+## Backlog — the nightly coverage lane has been red for twenty runs
+
+<!-- backlog: coverage-nightly-red-for-twenty-runs recorded=2026-09-09 -->
+The nightly Coverage workflow has failed **~20 consecutive runs since ~2026-08-20** — always on the
+BASIS tripwire, never on a floor — so the floors underneath have not been evaluated on a runner in
+that whole window and nobody has been reading the lane. This is the downstream cost of
+[[coverage-denominator-is-not-reproducible]] being left open, and it is worth its own item because
+the *rot* is now the bigger problem than the defect: twenty red mornings train everyone to expect
+red, which is how a real basis move gets waved through.
+
+**A wrong turn worth recording, so it is not retaken.** The obvious-looking fix is to bank the
+basis per platform, on the theory that Linux and macOS compile different `#[cfg]` populations. That
+theory is wrong in its dominant term. Three consecutive conducts on ONE macOS machine measured the
+black-box denominator at 32668, 32434 and 27313 while the numerator barely moved (20456, 20555,
+20557) — which is exactly the transient-vs-steady-state split this file's own `BASIS` comment
+already documents (~26,500 when nextest has never built in the scan dir, ~31,300 once its test-cfg
+`.rlib`s persist there). CI reads cold, a developer machine reads warm, and that difference would
+survive both machines running the same OS. Platform variance is real but minor (31981 vs 32434 on
+the steady unit layer, ~1.4%); the regime is the ~18% term the release-gate narrowing recorded.
+So the fix has to make the regime deterministic before measuring — not multiply the banks.
+
+One observation that outlives the above and may be a genuine second defect: on the last nightly the
+**unit** layer (which always runs nextest, so it is always steady-state and not subject to the
+regime split) read 66.35% against its 71.9 floor, down from the 71.97% recorded at the 2026-08-24
+narrowing. That may be a real decline, or it may be platform-conditional code and docker-gated unit
+tests skipping on the runner — it is unverified either way, because the tripwire fired first. Worth
+settling once the basis is deterministic enough for the floor to be evaluated at all.
