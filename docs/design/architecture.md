@@ -481,6 +481,16 @@ right for the local-container mission and wrong the moment a real system under t
 certificate: v1's `http.get("https://…")` failed with reqwest's *"invalid URL, scheme is not
 http"*, which names neither TLS nor the way out.
 
+**Found in the field, not by inspection.** prova-ybor-studio's live E2E lane was the first suite to
+drive a **deployed** target — the dev Studio gateway, https-only — rather than a topology-local
+`http://localtest.me` service, and it could not reach it at all. That is the direction every suite
+eventually travels, which is what makes this a capability and not a nicety: the workaround was curl
+through `shell.run`, with the bearer and body smuggled via env so they stayed out of argv, and it
+gives up `:json()`/`status`/`wait_for` while re-opening the very quoting and secret-handling hazards
+the driver exists to close. The witness and the fix shape both come from
+[mocks-proxies-drivers.md](mocks-proxies-drivers.md); its `http-driver-speaks-no-tls` backlog anchor
+is retired into this claim, because one obligation should have one address.
+
 **The two options are the feature, not a footnote.** A test runner's most common TLS subject is a
 service it just booted with a self-signed certificate, and its second is a corporate endpoint
 behind a private CA. Verified-only TLS would leave prova's core mission — boot it, then probe it —
