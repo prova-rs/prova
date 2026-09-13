@@ -771,6 +771,28 @@ can still resolve.** `current_exe()` answers "where did I come from", which is a
 from "what can be run now", and only the second one is safe to write into a shim, a lease, or a
 record.
 
+<!-- backlog: a-lock-wrapper-can-wait-on-its-own-parent recorded=2026-09-12 -->
+**`prova lock cargo -- prova run quality` waits on itself forever, and the wait line names the
+holder as "another prova instance".** Witnessed 2026-09-12 23:31Z (substrate): the outer `prova
+lock cargo --` took the workspace `cargo` flock, then the inner `prova run` — whose manifest
+declares `writes("cargo")` on the very same workspace — queued behind it: `waiting for lock(s)
+cargo (held by another prova instance) — clippy is clean … is queued…`. The holder was the
+waiter's own parent process. Killed by hand after 22 minutes; the wrapper had been machine-scoped
+(`--machine`, a different flock) until that day, which is why the re-entrant shape had never bitten.
+Neither the lock-starvation watchdog (the hold is live and idle: `idle_timeout` would eventually
+kill it, correctly but 15 minutes late and with a misleading name) nor the waiter bound is the
+right fix; the right fix is that **re-entrancy is detectable at acquire time**: the wrapper and
+the engine both know the token, the workspace, and their process ancestry. Proposed: `prova lock`
+exports the held tokens to the child's environment (`PROVA_HELD_LOCKS=<token>@<workspace>`), and
+`ResourceTable::try_acquire` treats a token already held by an ancestor as ALREADY HELD (no
+second flock, no wait), logging one line that names the inheritance. Cheaper alternative that still
+removes the trap: the wait line reads the holder's pid from the lock file and, when that pid is an
+ancestor of the waiter, refuses immediately with `re-entrant hold: <token> is held by your parent
+pid N — drop the wrapper or the manifest lock`. Substrate's side is fixed by never wrapping a
+prova-shaped conduct at workspace scope (`vault/dev/conduct.lua`, proof in
+`proofs/vault/conduct.prova.lua`), but every other caller who composes `prova lock` around
+`prova run` will find this the same way.
+
 <!-- backlog: file-locking-is-a-no-op-on-windows recorded=2026-08-16 -->
 **Two subsystems take file locks, and on Windows both compile to nothing.** `locks.rs` has said so
 since it was written — the `LockFileEx` twin "lands with the Windows runner", and until then a
