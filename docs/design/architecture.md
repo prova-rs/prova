@@ -470,6 +470,23 @@ dozen dependency-free lines, which is the demonstration that the format is joina
 prova-only privilege.) A holder record is deliberately not a lease: nothing here can release
 another process's flock — only ending that process can — so naming the holder IS the recourse.
 
+<!-- backlog: machine-lock-dir-follows-tmpdir recorded=2026-09-14 -->
+**The machine-scoped lock directory is `std::env::temp_dir()/prova-locks`, so two prova processes
+that disagree about `$TMPDIR` take disjoint "machine-wide" holds without either one knowing.**
+`lock_dir(machine, _)` (`crates/prova-core/src/locks.rs`) derives the contract's address from the
+environment, and the environment is not one thing: anything that sets `TMPDIR` for its children — a
+cargo `[env]` table, a CI wrapper, a sandboxed app — forks the address. Surfaced 2026-09-14, not yet
+observed as a failure: leaked test sandboxes filled a developer Mac's disk, and the containment
+forces `TMPDIR=~/.cache/test-tmp` for every cargo-run process under `~/personal` and `~/work`. From
+then on a `prova` launched by a test or by `cargo run` (substrate's `ProvaRunGate` shells out to
+`prova`) takes `--machine` holds in `~/.cache/test-tmp/prova-locks`, while shell-invoked prova take
+them in `/var/folders/…/T/prova-locks` — "one cargo at a time, machine-wide" quietly becomes two.
+Package-scoped holds (`.prova/var/locks`) are unaffected. Proposed: resolve the machine directory
+from something the environment cannot fork — on macOS `confstr(_CS_DARWIN_USER_TEMP_DIR)` (what
+`getconf DARWIN_USER_TEMP_DIR` prints, independent of `$TMPDIR`), elsewhere `$XDG_RUNTIME_DIR`, then
+a fixed per-user path — with `PROVA_LOCK_DIR` as the one explicit override; and have `prova locks`
+print the directory it consulted, so a split is visible instead of silent.
+
 ## TLS — every client, one policy
 
 <!-- claim: tls-everywhere recorded=2026-09-02 -->
