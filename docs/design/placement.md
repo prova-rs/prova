@@ -270,6 +270,19 @@ passes, and proves nothing about the code you meant to test.
 that, a client could fill a node's disk with trees nobody is scheduled to use, and nothing would
 ever clean them up.
 
+<!-- backlog: broker-leaves-its-workspace-root recorded=2026-09-14 -->
+**`materialize` creates `temp_dir()/prova-broker-<pid>/` to hold its workspaces, and nothing ever
+removes it.** `drop_lease` forgets and deletes each `ws-<change>` it bounded
+(`crates/prova-cli/src/broker.rs`), but the per-process root outlives the broker. Found 2026-09-14 on
+a developer Mac: 220 `prova-broker-<pid>` directories in the macOS temp dir, created
+2026-08-20..09-09, together under 10 MB, every owning pid gone. Empty roots cost nothing; they are
+the visible half of a gap in the claim above — the lease bounds a workspace only while the broker
+lives to drop it. A broker that is killed or crashes with leases outstanding strands the `ws-*` trees
+and their `jj workspace` registrations in the source repo, and nothing is scheduled to find them.
+Proposed: remove the root when its last lease drops and at shutdown; and at broker start, sweep
+`prova-broker-<pid>` roots whose pid is dead (forgetting their `prova-broker-<pid>-*` workspaces
+where the source repo is known).
+
 ## Metering
 
 A broker may be licensed; prova contains no licence logic, which is another reason the seam is a
