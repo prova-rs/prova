@@ -60,7 +60,13 @@ function M.mint(t, key, opts)
   openssl({ "req", "-newkey", "rsa:2048", "-nodes",
             "-keyout", cert_key, "-out", csr,
             "-subj", "/CN=" .. (opts.cn or "localhost") })
-  openssl({ "x509", "-req", "-in", csr, "-CA", ca, "-CAkey", ca_key,
+  -- `-CAcreateserial` is REQUIRED, not optional tidiness. OpenSSL 3 creates the `.srl` serial file
+  -- implicitly; LibreSSL — which is what `/usr/bin/openssl` is on a stock macOS — does not, and
+  -- fails with `ca.srl: No such file or directory` several lines into an otherwise successful
+  -- signing ("Signature ok" prints first, which is why this reads as a fixture bug rather than a
+  -- usage one). Found when `/opt/homebrew/bin` left PATH and openssl resolved to LibreSSL 3.3.6
+  -- instead of OpenSSL 3.6.2: the suite had been green only because Homebrew's came first.
+  openssl({ "x509", "-req", "-in", csr, "-CA", ca, "-CAkey", ca_key, "-CAcreateserial",
             "-out", cert, "-days", "1", "-extfile", ext })
 
   return { dir = dir, ca = ca, ca_key = ca_key, cert = cert, key = cert_key }
