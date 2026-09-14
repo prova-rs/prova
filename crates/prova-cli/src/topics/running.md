@@ -47,6 +47,9 @@ classes on one line ("switched off: ut (3) …"). Exact `--node` implies the thr
   **stderr** so it never looks hung (`--progress`, manifest `[run] progress`; `auto` is on for
   a TTY, off when piped). stdout stays exactly the report, so redirection is unaffected.
 - `-j/--jobs N` is throughput ONLY — it can never change what a run means.
+- `--timeout <dur>` caps every unit's wall clock for this run, OVERRIDING what each declares —
+  the lever for a run whose declared bounds are themselves the problem. Per-test `timeout` stays
+  the ordinary spelling; `idle_timeout` is its liveness sibling (`prova learn falsify`).
 
 ## Profiles and guarantees
 

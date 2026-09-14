@@ -177,6 +177,7 @@ pub(super) fn load_topology(
         update_snapshots: false, // snapshots are a test-mode concern, not for inhabited topologies
         snapshot_registry: None,
         falsify: false,
+        timeout_cap: config.timeout_cap,
         conducts: config.conducts.clone(),
         progress: std::sync::Arc::clone(config.progress()),
         project_dir: config.project_dir.clone(),
@@ -452,6 +453,7 @@ impl HeldTopology {
                 update_snapshots: self.config.update_snapshots,
                 snapshot_registry: self.config.snapshot_registry.clone(),
                 falsify: self.config.falsify,
+                timeout_cap: self.config.timeout_cap,
                 conducts: self.config.conducts.clone(),
                 progress: std::sync::Arc::clone(self.config.progress()),
                 project_dir: self.config.project_dir.clone(),
@@ -530,6 +532,7 @@ impl HeldTopology {
             update_snapshots: false,
             snapshot_registry: None,
             falsify: false,
+            timeout_cap: self.config.timeout_cap,
             conducts: self.config.conducts.clone(),
             progress: std::sync::Arc::clone(self.config.progress()),
             project_dir: self.config.project_dir.clone(),

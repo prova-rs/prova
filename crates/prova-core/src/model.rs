@@ -67,6 +67,11 @@ pub struct ResourceReq {
 #[derive(Debug, Clone, Default)]
 pub struct UnitOpts {
     pub timeout: Option<Duration>,
+    /// The LIVENESS bound, spelled as `shell.run` spells it: kill only when a window passes with no
+    /// sign of life, never merely because the work is slow
+    /// (docs/design/lifecycle.md#falsify-bounds-a-hanging-mutant). `timeout` prices the whole task;
+    /// this one bounds death.
+    pub idle_timeout: Option<Duration>,
     pub tags: Vec<String>,
     /// Units this one depends on, as arena indices (resolved from `depends_on` handles). A unit is
     /// skipped (not failed) if any transitive dependency leaf failed or was skipped.

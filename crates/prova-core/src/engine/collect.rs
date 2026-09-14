@@ -178,6 +178,7 @@ pub(super) const UNIT_OPTS: &[&str] = &[
     "covers",
     "depends_on",
     "falsified_by",
+    "idle_timeout",
     "locks",
     "promises",
     "proves",
@@ -266,6 +267,15 @@ pub(super) fn parse_opts(t: &mlua::Table) -> mlua::Result<UnitOpts> {
         ),
         None => None,
     };
+    // Same refusal discipline as `timeout` above, and for the same reason: this is the other
+    // option whose only job is to bound a unit.
+    let idle_timeout = match t.get::<Option<String>>("idle_timeout")? {
+        Some(s) => Some(
+            crate::model::require_duration("prova.test", "idle_timeout", &s)
+                .map_err(mlua::Error::RuntimeError)?,
+        ),
+        None => None,
+    };
     let tags = t.get::<Option<Vec<String>>>("tags")?.unwrap_or_default();
     let depends_on = match t.get::<Option<Vec<Value>>>("depends_on")? {
         None => Vec::new(),
@@ -341,6 +351,7 @@ pub(super) fn parse_opts(t: &mlua::Table) -> mlua::Result<UnitOpts> {
     }
     Ok(UnitOpts {
         timeout,
+        idle_timeout,
         tags,
         depends_on,
         locks,

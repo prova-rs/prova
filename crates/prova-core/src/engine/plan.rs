@@ -13,6 +13,7 @@ pub(super) struct PlanItem {
     /// Applied before the body under `prova falsify`, never on the ordinary path.
     pub(super) falsifier: Option<Function>,
     pub(super) timeout: Option<Duration>,
+    pub(super) idle_timeout: Option<Duration>,
     pub(super) case: Option<Value>,
     /// Source file index — selects this item's `Scope.File` instance.
     pub(super) file: usize,
@@ -59,6 +60,7 @@ pub(super) fn plan_item(node: &Node, ancestors: &[String]) -> PlanItem {
         body: node.body.clone().expect("test/step node has a body"),
         falsifier: node.falsifier.clone(),
         timeout: node.opts.timeout,
+        idle_timeout: node.opts.idle_timeout,
         case: node.case.clone(),
         file: node.file,
         line: node.line,

@@ -16,6 +16,9 @@ struct Cli {
     junit: Option<String>,
     gha: Option<report::GhaMode>,
     jobs: Option<usize>,
+    /// `--timeout <dur>`: cap every unit's wall clock for this run, overriding what each declares
+    /// (docs/design/lifecycle.md#falsify-bounds-a-hanging-mutant).
+    timeout_cap: Option<std::time::Duration>,
     update_snapshots: bool,
     update_baseline: Option<prova_core::baselines::BankSelection>,
     unreferenced: String, // ignore | warn | delete
@@ -77,6 +80,7 @@ impl Default for Cli {
             junit: None,
             gha: None,
             jobs: None,
+            timeout_cap: None,
             update_snapshots: false,
             update_baseline: None,
             unreferenced: String::from("ignore"),
@@ -163,6 +167,17 @@ impl Cli {
         } else if let Some(v) = value_flag(arg, args, &["--switch", "-s"]) {
             for s in v.split(',').map(str::trim).filter(|s| !s.is_empty()) {
                 self.switches.push(s.to_string());
+            }
+        // `--timeout <dur>`: the run-scoped cap. Refused rather than best-effort parsed, exactly
+        // as the per-test option is — this is the flag whose entire job is to bound a run, so a
+        // quietly-dropped value produces the unbounded run it was typed to prevent.
+        } else if let Some(v) = value_flag(arg, args, &["--timeout"]) {
+            match prova_core::model::require_duration("prova", "--timeout", &v) {
+                Ok(d) => self.timeout_cap = Some(d),
+                Err(e) => {
+                    eprintln!("prova: {e}");
+                    return Err(ExitCode::from(2));
+                }
             }
         } else if let Some(v) = value_flag(arg, args, &["--jobs", "-j"]) {
             match v.parse::<usize>() {
@@ -518,6 +533,7 @@ fn build_config(
     .with_promises_only(cli.promises_only)
     .with_proofs_only(cli.proofs_only)
     .with_falsify(cli.falsify)
+    .with_timeout_cap(cli.timeout_cap)
     // Thrown switches: the manifest's ([run] ∪ profile) ∪ the CLI's `-s` — all doors union
     // (docs/design/manifest.md#switches-not-env-capabilities).
     .with_switches(env.env.switches.iter().cloned().chain(cli.switches.iter().cloned()))

@@ -268,6 +268,7 @@ pub fn eval_snippet(code: &str, config: &RunConfig) -> mlua::Result<serde_json::
         update_snapshots: false,
         snapshot_registry: None,
         falsify: false,
+        timeout_cap: config.timeout_cap,
         conducts: config.conducts.clone(),
         progress: std::sync::Arc::clone(config.progress()),
         project_dir: config.project_dir.clone(),

@@ -295,6 +295,11 @@ pub struct RunConfig {
     /// Run the falsification pass: select only leaves declaring `falsified_by`, apply the mutation
     /// before the body, and invert the verdict — a body that survives is vacuous.
     pub falsify: bool,
+    /// The run-scoped wall-clock cap (`--timeout`): it OVERRIDES every unit's declared `timeout`
+    /// (docs/design/lifecycle.md#falsify-bounds-a-hanging-mutant). Overriding rather than taking
+    /// the minimum is the point — the flag exists to rescue a run whose declared bounds are
+    /// themselves the problem, and a cap that lost to a generous declaration could not do that.
+    pub timeout_cap: Option<std::time::Duration>,
     /// The thrown opt-in switches (`-s`, `[run]`/profile `switches` — union across all doors). A
     /// leaf carrying a `switch` not in this set is held back from the run, deselected-not-skipped
     /// (docs/design/manifest.md#switches-not-env-capabilities).
@@ -383,6 +388,7 @@ impl Default for RunConfig {
             promises_only: false,
             proofs_only: false,
             falsify: false,
+            timeout_cap: None,
             switches: std::collections::BTreeSet::new(),
             conducts: ConductRegistry::default(),
             progress: std::sync::Arc::new(crate::progress::NullProgress),
@@ -489,6 +495,12 @@ impl RunConfig {
 
     pub fn with_falsify(mut self, falsify: bool) -> Self {
         self.falsify = falsify;
+        self
+    }
+
+    /// Cap every unit's wall clock for this run, overriding what each declares.
+    pub fn with_timeout_cap(mut self, cap: Option<std::time::Duration>) -> Self {
+        self.timeout_cap = cap;
         self
     }
 
@@ -1111,6 +1123,7 @@ fn execute_collected(
             update_snapshots: config.update_snapshots,
             snapshot_registry: config.snapshot_registry.clone(),
             falsify: config.falsify,
+            timeout_cap: config.timeout_cap,
             conducts: config.conducts.clone(),
             progress: std::sync::Arc::clone(config.progress()),
             project_dir: config.project_dir.clone(),

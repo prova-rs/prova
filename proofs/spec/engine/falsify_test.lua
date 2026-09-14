@@ -132,3 +132,149 @@ end)
   t:expect(r.code):never():equals(0)
   t:expect(r.stdout):contains("falsified_by")
 end)
+
+-- ── bounding the mutant (docs/design/lifecycle.md#falsify-bounds-a-hanging-mutant) ──────────────
+--
+-- The mutation class falsify most exists to catch — delete a terminating condition — is exactly
+-- the class that produces no verdict at all. So `falsify` has to assume the mutant is hostile to
+-- termination, and these proofs are about the verb staying SOUND under that assumption rather than
+-- about a convenience flag.
+
+local hanging = prova.fixture("hanging-mutant-sandbox", Scope.File, function(ctx)
+  local proj = ctx:tempdir("hang") .. "/pkg"
+  fs.mkdir(proj .. "/proofs")
+  fs.write(proj .. "/prova.toml", '[run]\nproofs = ["proofs"]\n')
+  -- A POLLING watcher, which is the witness's shape: it awaits every round, so a deadline can
+  -- reach it. The falsifier removes the end condition, exactly as removing a grace check did in
+  -- Substrate's slot watcher — the unmutated body terminates immediately, the mutated one never
+  -- does. Nothing here declares a `timeout`, because the whole point is that nobody does.
+  fs.write(proj .. "/proofs/watcher_test.lua", [[
+local state = { settled = true }
+
+prova.test("the watcher stops when the slot settles", {
+  falsified_by = function(t) state.settled = false end,
+}, function(t)
+  local rounds = 0
+  while not state.settled do
+    rounds = rounds + 1
+    prova.sleep(20)
+  end
+  t:expect(rounds):equals(0)
+end)
+]])
+  return proj
+end)
+
+prova.test("a mutant that never returns is bounded and reported as VACUOUS-HANG", {
+  covers = "docs/design/lifecycle.md#falsify-bounds-a-hanging-mutant",
+  proves = "the soundness case. `invert_for_falsify` is total over {Passed, Failed, Skipped}, but running a body can also produce no outcome at all — and ⊥ has no inverse. Before this the run simply never came back, which is the one failure an agent cannot distinguish from slow work",
+}, function(t)
+  local proj = t:use(hanging)
+  -- The bound must come from the RUN, not the proof: this sandbox declares no timeout anywhere,
+  -- because an author who remembered to declare one would not have hit the bug.
+  local r = shell.run({ prova.bin, "tests", "falsify", "--timeout", "3s" },
+    { cwd = proj, merge_stderr = true, timeout = "90s" })
+
+  t:expect(r.stdout, "the hang is named as its own verdict, not as a generic timeout"):contains("VACUOUS-HANG")
+  t:expect(r.code, "and it fails the run"):never():equals(0)
+end)
+
+prova.test("a hang is never inverted into a falsification success", {
+  covers = "docs/design/lifecycle.md#falsify-bounds-a-hanging-mutant",
+  proves = "the trap this pins shut. Under falsify a red body inverts to green, so folding the timeout into the ordinary result path would turn every hang into the strongest possible green — one that means nothing. The non-inversion was incidental (an early return) and nothing covered it",
+}, function(t)
+  local proj = t:use(hanging)
+  local r = shell.run({ prova.bin, "tests", "falsify", "--timeout", "3s" },
+    { cwd = proj, merge_stderr = true, timeout = "90s" })
+
+  -- Every assertion here has to be reachable ONLY through the real verdict. Asserting
+  -- "not exit 0" alone was satisfied by `--timeout` being an unknown flag — a usage error is
+  -- also non-zero — so this proof passed before a line of it was implemented. That is the exact
+  -- absence-shaped vacuity `falsified_by` exists to expose, met while writing a falsify proof.
+  t:expect(r.stdout, "the run reached the VERDICT, not a usage error:\n" .. r.stdout)
+    :contains("VACUOUS-HANG")
+  t:expect(r.stdout, "the inversion did not fire — nothing passed"):contains("0 passed")
+  t:expect(r.code, "a hung mutant is never a passing falsification"):never():equals(0)
+end)
+
+prova.test("--timeout caps every test in the run, overriding what each declares", {
+  covers = "docs/design/lifecycle.md#falsify-bounds-a-hanging-mutant",
+  proves = "the affordance the witness reached for and did not find. A per-test `timeout` is the ordinary spelling and stays so; this is the debug-run override, which has to beat a declared bound or it cannot rescue a run whose declared bounds are the problem",
+}, function(t)
+  local proj = t:use(sandbox)
+  -- A declared timeout far larger than the cap: the cap must win, or the override is decorative.
+  fs.write(proj .. "/proofs/slow_test.lua", [[
+prova.test("declares a generous bound of its own", { timeout = "600s" }, function(t)
+  prova.sleep(30000)
+end)
+]])
+  local r = shell.run({ prova.bin, "--timeout", "2s", "-k", "generous" },
+    { cwd = proj, merge_stderr = true, timeout = "90s" })
+  fs.remove_all(proj .. "/proofs/slow_test.lua")
+
+  t:expect(r.code, "the run-scoped cap beats the declared one"):never():equals(0)
+  t:expect(r.stdout, "and says which bound applied"):contains("2s")
+end)
+
+prova.test("idle_timeout is the liveness bound, and spells what shell.run spells", {
+  covers = "docs/design/lifecycle.md#falsify-bounds-a-hanging-mutant",
+  proves = "one concept, not two: an author who knows shell.run's idle_timeout already knows this one. It is the bound that separates a WEDGED body from a slow one — which is what lets it be generous without being useless, where a wall-clock cap has to be wrong for somebody",
+}, function(t)
+  local proj = t:use(sandbox)
+  fs.write(proj .. "/proofs/idle_test.lua", [[
+prova.test("emits nothing and asserts nothing, forever", { idle_timeout = "2s" }, function(t)
+  prova.sleep(30000)
+end)
+]])
+  local r = shell.run({ prova.bin, "-k", "emits nothing" },
+    { cwd = proj, merge_stderr = true, timeout = "90s" })
+  fs.remove_all(proj .. "/proofs/idle_test.lua")
+
+  -- `contains("idle")` alone was vacuous: the closed-option refusal for an UNKNOWN `idle_timeout`
+  -- also contains the word, so this passed before the option existed. Rule that path out by name.
+  t:expect(r.stdout, "the option is honored, not refused:\n" .. r.stdout)
+    :never():contains("unknown option")
+  t:expect(r.stdout, "the TEST ran and failed (a collect-time refusal names no test)")
+    :contains("emits nothing and asserts nothing")
+  t:expect(r.stdout, "and the message names the liveness bound, not a wall clock")
+    :contains("no progress")
+  t:expect(r.code, "a body that shows no sign of life is bounded"):never():equals(0)
+end)
+
+prova.test("a test that keeps asserting is never killed by the liveness bound", {
+  covers = "docs/design/lifecycle.md#falsify-bounds-a-hanging-mutant",
+  proves = "the negative control, and the property that makes a liveness bound safe to default on under falsify: `bounds death, never work`. A bound that killed a slow-but-working body would be a worse defect than the hang it replaced, because it would fail proofs that are CORRECT",
+}, function(t)
+  local proj = t:use(sandbox)
+  fs.write(proj .. "/proofs/alive_test.lua", [[
+-- Longer than the idle bound overall, but never quiet for it: exactly the slow-honest-work case.
+prova.test("slow, but visibly progressing", { idle_timeout = "2s" }, function(t)
+  for _ = 1, 10 do
+    prova.sleep(500)
+    t:expect(1):equals(1)
+  end
+end)
+]])
+  local r = shell.run({ prova.bin, "-k", "visibly progressing" },
+    { cwd = proj, merge_stderr = true, timeout = "90s" })
+  fs.remove_all(proj .. "/proofs/alive_test.lua")
+
+  t:expect(r.code, "progress is life: the run is green:\n" .. r.stdout):equals(0)
+end)
+
+prova.test("falsify bounds a mutant with no flags and no declared timeout at all", {
+  covers = "docs/design/lifecycle.md#falsify-bounds-a-hanging-mutant",
+  proves = "the witness case exactly as it was hit: no `--timeout`, no declared `timeout`, no `idle_timeout` — because an author who had declared any of them would never have found the bug. Every other proof here hands the run a bound; this one proves the run brings its own, which is the difference between a flag and a soundness fix",
+  -- Waits out the real default, so it costs what the default costs. Tagged rather than trimmed:
+  -- shortening the default to make its own proof cheap would be tuning the product to the test.
+  tags = { "slow" },
+}, function(t)
+  local proj = t:use(hanging)
+  -- The shell bound is the SAFETY NET, deliberately far larger than falsify's own: if the feature
+  -- regresses, this fails on prova's bound rather than hanging this suite too.
+  local r = shell.run({ prova.bin, "tests", "falsify" },
+    { cwd = proj, merge_stderr = true, timeout = "180s" })
+
+  t:expect(r.stdout, "the run bounded itself:\n" .. r.stdout):contains("VACUOUS-HANG")
+  t:expect(r.code, "and reported a verdict rather than hanging"):never():equals(0)
+end)

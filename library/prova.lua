@@ -234,7 +234,8 @@ function Matcher:matches_snapshot(opts) end
 ---@field serial? boolean                # never run concurrently with anything (process-wide exclusive)
 
 ---@class prova.TestOpts : prova.UnitOpts
----@field timeout? string                # e.g. "30s"
+---@field timeout? string                # e.g. "30s" — the WALL-CLOCK bound: prices the whole test
+---@field idle_timeout? string           # e.g. "60s" — the LIVENESS bound, spelled as `shell.run` spells it: fail only when a window passes with no sign of life (no assertion lands), never merely because the work is slow. Bounds death, never work — so it can be generous where a wall clock has to be a guess. Progress at test scope is ASSERTIONS (prova captures no test output), so a body doing real work without asserting looks wedged from here: that is why it is opt-in. Defaults ON under `prova falsify`, where a mutant that stops answering is the expected failure (`prova learn falsify`).
 ---@field retries? integer
 ---@field spec? string                   # a proof authored AHEAD of its implementation (value = the mandatory reason/ticket — context from day one). Open spec (red body) reports as its own outcome, CI green; once the body passes, the run fails until the flag graduates — converted to `proves` (preferred) or removed, in the same commit as the implementation. Test/flow-level only. See `prova learn specs`.
 ---@field proves? string                 # graduated context: the why behind a FINISHED proof, living in the test itself (usually a spec's reason carried over; retrofitting onto existing tests is welcome). Runtime-inert; non-empty string; never together with `spec`. See `prova learn specs`.

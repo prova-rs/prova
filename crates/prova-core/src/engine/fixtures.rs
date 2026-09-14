@@ -212,6 +212,8 @@ pub(super) struct RunState {
     /// The falsification pass is active: apply each leaf's declared mutation before its body and
     /// invert the verdict.
     pub(super) falsify: bool,
+    /// The run-scoped `--timeout` cap, applied to every unit in place of its own.
+    pub(super) timeout_cap: Option<std::time::Duration>,
     /// The run-wide conduct store (docs/plans/shared-deputies.md): one slot per `Scope.Run`
     /// fixture NAME, shared across every suite and worker via the `RunConfig` registry pattern.
     /// Cloned from the config at state construction, exactly as `snapshot_registry` is.

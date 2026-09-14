@@ -137,6 +137,118 @@ async fn run_falsifier(
     }
 }
 
+/// Which bound fired, so the message can name the right one.
+///
+/// Two bounds, two sentences: "it took too long" and "it stopped showing signs of life" send an
+/// author to different places, and collapsing them into one timeout message is what made a hang
+/// indistinguishable from slow work.
+pub(super) enum Exceeded {
+    /// The wall clock — `timeout`, or the run-scoped `--timeout` cap that overrode it.
+    Wall(std::time::Duration),
+    /// The liveness bound — `idle_timeout`, or falsify's default.
+    Idle(std::time::Duration),
+}
+
+impl Exceeded {
+    /// The failure message. Under falsify a bound that fires is `VACUOUS-HANG` — kin to *vacuous*
+    /// because both mean the falsifier told you nothing, one by surviving and one by never
+    /// answering (docs/design/lifecycle.md#falsify-bounds-a-hanging-mutant).
+    pub(super) fn message(&self, falsify: bool) -> String {
+        let (what, budget) = match self {
+            Exceeded::Wall(b) => ("timed out after", b),
+            Exceeded::Idle(b) => ("no progress for", b),
+        };
+        if falsify {
+            format!(
+                "VACUOUS-HANG — the body did not FAIL under its falsifier, it never returned \
+                 ({what} {budget:?}). A mutation that removes a terminating condition hangs instead \
+                 of failing, so this is not a surviving mutation and not a falsification either: \
+                 there is no verdict to invert. Bound the body (`timeout` / `idle_timeout`), or fix \
+                 the falsifier to break what the proof checks rather than what ends it."
+            )
+        } else {
+            format!("{what} {budget:?}")
+        }
+    }
+}
+
+/// Falsify's default liveness bound, applied when the author declared none.
+///
+/// Default-ON under falsify only, and that asymmetry is the whole argument: the unmutated body is
+/// known to assert (it passed, or falsifying it would be pointless), so "no assertion for this
+/// long" is a sound wedge signal for the MUTATED run specifically. Claiming the same on the
+/// ordinary path would be a far bigger claim about every proof in every tree, and is not made.
+///
+/// Generous on purpose. This bound exists to turn an infinite hang into a verdict, not to police
+/// duration — `timeout` is the option for that — so it should only ever fire on a body that has
+/// genuinely stopped.
+const FALSIFY_IDLE_DEFAULT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How often liveness is sampled. Small relative to any sane bound, so the reported budget is the
+/// author's number rather than the tick's.
+const LIVENESS_TICK: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Drive the body under both bounds, returning `Err` with whichever fired first.
+///
+/// The wall clock is `--timeout` if the run set one, else the unit's own `timeout`. The cap
+/// OVERRIDES rather than taking the minimum: the flag's job is to rescue a run whose declared
+/// bounds are the problem.
+///
+/// Liveness is sampled rather than pushed because the signal is a counter the body owns: prova
+/// captures no test output (Lua `print` goes straight to stdout), so **assertions are the progress
+/// signal** — the test-layer analogue of bytes on a pipe. That is narrower than `shell.run`'s
+/// bytes-and-CPU reader, and it is why `idle_timeout` is opt-in on the ordinary path: a body doing
+/// real work without asserting looks identical to a wedged one from here.
+async fn drive_bounded(
+    call: impl std::future::Future<Output = mlua::Result<()>>,
+    item: &PlanItem,
+    state: &Rc<RunState>,
+    run: &Rc<RefCell<TestRun>>,
+) -> Result<mlua::Result<()>, Exceeded> {
+    let wall = state.timeout_cap.or(item.timeout);
+    let idle = item.idle_timeout.or(if state.falsify {
+        Some(FALSIFY_IDLE_DEFAULT)
+    } else {
+        None
+    });
+
+    if wall.is_none() && idle.is_none() {
+        return Ok(call.await);
+    }
+
+    let call = std::pin::pin!(call);
+    let mut call = call;
+    let started = tokio::time::Instant::now();
+    let mut last_progress = started;
+    let mut seen = run.borrow().assertions;
+
+    loop {
+        let tick = tokio::time::sleep(LIVENESS_TICK);
+        tokio::select! {
+            r = &mut call => return Ok(r),
+            _ = tick => {
+                let now = tokio::time::Instant::now();
+                let assertions = run.borrow().assertions;
+                if assertions != seen {
+                    // Progress is life: an assertion landed, so the body is working, however slow.
+                    seen = assertions;
+                    last_progress = now;
+                }
+                if let Some(budget) = idle {
+                    if now.duration_since(last_progress) >= budget {
+                        return Err(Exceeded::Idle(budget));
+                    }
+                }
+                if let Some(budget) = wall {
+                    if now.duration_since(started) >= budget {
+                        return Err(Exceeded::Wall(budget));
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Returns the test's own node, plus a `⟶ teardown` node per teardown failure (usually none).
 pub(super) async fn run_one(
     lua: &Lua,
@@ -186,30 +298,33 @@ pub(super) async fn run_one(
 
     let call = item.body.call_async::<()>((ctx_ud, case_arg));
 
-    let result = match item.timeout {
-        Some(budget) => match tokio::time::timeout(budget, call).await {
-            Ok(r) => r,
-            Err(_elapsed) => {
-                let assertions = run.borrow().assertions;
-                // Teardown still runs after a timeout — and a timed-out test is exactly when a
-                // cleanup is most likely to raise, so its errors are reported rather than dropped.
-                let errors = teardown_scope(&test_scope).await;
-                let mut out = vec![NodeResult {
-                    path: item.path.clone(),
-                    outcome: Outcome::Failed,
-                    duration: start.elapsed(),
-                    assertions,
-                    message: Some(format!("timed out after {budget:?}")),
-                    file: file.clone(),
-                    line: item.line,
-                    teardown: false,
-                    promises: None,
-                }];
-                out.extend(teardown_results(&item.path, errors, file.as_deref(), item.line));
-                return out;
-            }
-        },
-        None => call.await,
+    let result = match drive_bounded(call, item, state, &run).await {
+        Ok(r) => r,
+        Err(exceeded) => {
+            let assertions = run.borrow().assertions;
+            // Teardown still runs after a bound fires — and a wedged test is exactly when a
+            // cleanup is most likely to raise, so its errors are reported rather than dropped.
+            let errors = teardown_scope(&test_scope).await;
+            let mut out = vec![NodeResult {
+                path: item.path.clone(),
+                outcome: Outcome::Failed,
+                duration: start.elapsed(),
+                assertions,
+                message: Some(exceeded.message(state.falsify)),
+                file: file.clone(),
+                line: item.line,
+                teardown: false,
+                promises: None,
+            }];
+            out.extend(teardown_results(&item.path, errors, file.as_deref(), item.line));
+            // RETURNED HERE, never falling through to `invert_for_falsify`
+            // (docs/design/lifecycle.md#falsify-bounds-a-hanging-mutant). Under falsify a red body
+            // inverts to green, so routing a hang through the ordinary path would turn every
+            // non-terminating mutant into the strongest possible green — one that means nothing.
+            // The early return used to be the only thing preventing that, incidentally and
+            // undocumented; it is now the stated contract, with a proof on it.
+            return out;
+        }
     };
     let duration = start.elapsed();
 

@@ -258,5 +258,64 @@ says so. The tally must distinguish replayed from re-earned — a cached green t
 identically to a fresh one would green-wash. Observed 2026-08-11: four sweep attempts to
 land one slice; three re-paid the ut conduct for reasons unrelated to it.
 
-<!-- backlog: falsify-bounds-a-hanging-mutant recorded=2026-09-09 -->
-A falsified test that HANGS instead of failing has no bound: `prova falsify` applies the mutation and inverts the verdict, but a mutation that turns a terminating loop into a spin (a watcher whose end condition is removed, a retry whose exit flag is stubbed) never returns a verdict at all, and the run hangs with it. Witness 2026-09-09 (Substrate, proofs/recipes/sdlc_watched_leg.prova.lua): falsifying the grace check of a slot watcher made its fixture poll forever; the author had to add a 50-poll spin guard to the fixture to turn the hang into a red, and reached for a `--timeout` flag that does not exist. Two shapes, either honest: (a) under `prova falsify` a test that exceeds its declared `timeout` (or a falsify default, e.g. 2x the unmutated run's duration) is reported as VACUOUS-HANG, a distinct verdict from vacuous-pass; (b) a run-scoped `--timeout <dur>` cap for falsification/debug runs that overrides every test's declared timeout. Per-test `timeout = "60s"` already exists and stays the ordinary spelling; this is only about the mutated run, where hanging is the expected failure mode of a broken end condition.
+## Falsification is only sound if the mutant is bounded
+
+<!-- claim: falsify-bounds-a-hanging-mutant recorded=2026-09-09 -->
+**Under `falsify` every test is bounded, and exceeding the bound is `VACUOUS-HANG` — its own
+verdict, never inverted.** A falsified test that HANGS instead of failing had no bound at all:
+`falsify` applies the mutation and inverts the verdict, but a mutation that turns a terminating
+loop into a spin (a watcher whose end condition is removed, a retry whose exit flag is stubbed)
+never returns a verdict, and the run hangs with it. Witness 2026-09-09 (Substrate,
+`proofs/recipes/sdlc_watched_leg.prova.lua`): falsifying the grace check of a slot watcher made its
+fixture poll forever; the author added a 50-poll spin guard to the fixture to turn the hang into a
+red, and reached for a `--timeout` flag that does not exist.
+
+**This is a soundness bug, not a missing convenience, and that is what decides the defaults.**
+`invert_for_falsify` is total over `{Passed, Failed, Skipped}`, but the outcome space of running a
+body is `{Passed, Failed, Skipped, ⊥}` — and ⊥ has no inverse. Worse, the mutation class falsify
+most exists to catch, *delete a terminating condition*, is precisely the class that produces ⊥. A
+mutation engine must assume the mutant is hostile to termination. So the bound cannot be something
+an author opts into: a precondition for a verb's correctness that the author has to remember is not
+a precondition. `item.timeout` is `Option` and defaults to `None`, and agents — the primary
+authors — do not know to declare it.
+
+**`VACUOUS-HANG` is named as kin to *vacuous* on purpose.** Both mean *this falsifier told you
+nothing*: one because the body survived the mutation, one because the body never answered. The
+tally reads `1 vacuous-hang, 0 vacuous-pass` and the family is obvious at a glance — which matters
+more for an agent than a human, because an agent pattern-matches the verdict token and cannot see
+that a terminal has stopped moving.
+
+**A hang must never invert.** Today a declared `timeout` under falsify happens to reach the right
+answer by the wrong road: the timeout arm in `run_one` returns early and so never reaches
+`invert_for_falsify`. Nothing documents that and nothing covers it — so a refactor folding the
+timeout into the ordinary result path would silently turn every hang into a falsification
+*success*, the strongest possible green meaning nothing. The non-inversion is now stated and
+proven rather than incidental.
+
+**Three bounds, one vocabulary already in the tree.** `shell.run` long ago worked out the honest
+frame — `timeout` (the wall-clock outer bound, prices the whole task), `idle_timeout` (the liveness
+bound: no output and no CPU progress for a window — *bounds death, never work*), `first_byte` (the
+start-up bound) — and the same words now mean the same things at test scope. That is the whole
+ergonomic: one concept to learn, not two, and an author who knows `shell.run` already knows this.
+The progress signal at test scope is what the test itself emits — **assertions and output** — which
+is the test-layer analogue of bytes-on-a-pipe.
+
+- **`timeout`** stays exactly what it was: declared per test, the outer bound, honored everywhere.
+- **`idle_timeout`** is new at test scope, declarable per test, and useful on the ordinary path:
+  it is the bound that distinguishes a wedged body from a slow one, so it can be generous without
+  being useless.
+- **Under `falsify`, `idle_timeout` defaults on** — and only there. The unmutated body is known to
+  assert (it passed, or the pass would not be worth falsifying), so *no assertion and no output for
+  a window* is a sound wedge signal for the mutated run specifically. Defaulting it on the ordinary
+  path would be a different and much larger claim, and is not made here.
+- **`--timeout <dur>`** is the run-scoped override: it caps every test in the run, overriding what
+  each declares. Not falsify-specific — it is the debug-run affordance the witness reached for, and
+  it composes with any selection.
+
+**What this does NOT bound is a Lua loop that never awaits.** All of the above ride
+`tokio::time::timeout`, which needs the body to yield. `while true do end` yields nothing and is
+unbounded still; that needs the `mlua` interrupt hook that
+[architecture.md](architecture.md#timeouts-the-three-mechanisms) lists as mechanism 2, still
+planned, and it is captured as `agent-ergonomics.md#pure-lua-case-liveness` rather than smuggled in
+here. The witness case is bounded by this change because a *polling* fixture awaits every round;
+saying so precisely is the difference between a fix and a claim of one.

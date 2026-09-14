@@ -20,7 +20,23 @@ local sites = {
   { name = "http.wait_for every",    code = 'http.wait_for("http://127.0.0.1:1", { every = "often" })' },
   { name = "prova.retry timeout",    code = 'prova.retry(function() return true end, { timeout = "a while" })' },
   { name = "grpc.client timeout",    code = 'grpc.client("127.0.0.1:1", { timeout = "quick" })' },
+  { name = "the unit `idle_timeout` — the liveness bound's twin",
+    code = 'prova.test("t", { idle_timeout = "a bit" }, function(t) end)' },
 }
+
+--- `--timeout` is the same rule one layer out: a FLAG, not an option table, so the closed-opts
+--- gate cannot see it and only this proof can. Dropping its value produces precisely the unbounded
+--- run the flag was typed to prevent — and it is typed exactly when a run is already misbehaving.
+prova.test("a malformed duration is refused: the --timeout flag", {
+  proves = "the flag is reached for when a run is ALREADY wedged, so a best-effort parse fails the author at the worst possible moment — it silently returns the unbounded run they were trying to escape",
+}, function(t)
+  local r = shell.run({ prova.bin, "--timeout", "30 seconds", "--allow-empty", "-k", "nothing-matches-this" },
+    { merge_stderr = true, timeout = "60s" })
+
+  t:expect(r.code, "the flag REFUSES, not drops:\n" .. r.stdout):equals(2)
+  t:expect(r.stdout, "and teaches the grammar"):contains("is not a duration")
+  t:expect(r.stdout):contains("250ms")
+end)
 
 prova.test_each("a malformed duration is refused: {name}", sites, function(t, case)
   local r = shell.run({ prova.bin, "eval", case.code }, { merge_stderr = true, timeout = "60s" })
