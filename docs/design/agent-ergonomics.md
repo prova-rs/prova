@@ -1181,6 +1181,19 @@ instances and must not share, or a file-scoped directory would leak one test's s
 the next. `fs.tempdir()` remains only as the unmanaged escape hatch for code with no context to
 ask.
 
+<!-- backlog: scope-tempdirs-outlive-a-run-that-never-tears-down recorded=2026-09-14 -->
+**"All are removed when the scope ends" holds only for runs that reach the end.** Scope directories
+are made by `make_labeled_tempdir` (`crates/prova-core/src/engine/fixtures.rs`) as
+`temp_dir()/prova-<pid>-<nanos>-<n>[-<name>]` with `create_dir_all`, and removal lives only on the
+teardown path. Found 2026-09-14 on a developer Mac: 6,683 such directories in the macOS temp dir, from
+1,543 distinct pids (all but 10 no longer running), created 2026-08-20..09-09 — runs that ended
+without tearing down. They were small; the leak is the shape, not the bytes: nothing can tell a live
+run's scratch from a dead one's without parsing pids out of names, and a proof whose scope renders a
+project or builds into its tempdir leaks all of that too. Proposed: one per-run root
+(`prova-run-<pid>/`) holding every scope directory of the run, registered with the `prova reap`
+sidecar (which already outlives its parent to reap its process groups) for removal when the parent
+dies; plus a startup sweep of `prova-run-<pid>` roots whose pid is dead.
+
 # Round six — 2026-08-16 (an upgrade landing mid-session in a consumer repo)
 
 ## 29. A semantic change to a verb that still compiles has no landing signal
