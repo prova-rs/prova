@@ -354,3 +354,6 @@ instrumenting to the wrapper — which works correctly whenever compilation actu
 instrumentation selective to workspace crates rather than dragging every third-party dependency into
 the denominator. Note what does *not* cure a contaminated tree: deleting `target/` re-links the same
 objects straight back out of the shared cache. `cargo clean -p <each workspace member>` is the cure.
+
+<!-- backlog: ut-deputy-hides-the-failing-case-output recorded=2026-09-15 -->
+A failing case in the deputed ut lane reports only its panic line, never the proof's own message, so a CI-only failure cannot be diagnosed from CI. Hit 2026-09-15: the release gate blocked twice on prova-core::docker_failure_reporting with 'panicked at tests/common/mod.rs:49: expected 0, got 1' — the harness assertion — while the underlying proof's failure text (which container, which assertion, what docker said) stayed inside nextest's capture. The same test passes locally and in the Build workflow's ut leg on the same commit, so the only place the answer exists is the one place it is hidden. Proposed: the junit deputy carries the failing case's captured stdout/stderr into the account, or the ut lane conducts with --no-capture on failure and re-reports.
