@@ -496,8 +496,19 @@ split precisely on the machines that have neither of the first two, which is whe
 think to look. `prova locks` prints the resolved directory for every scope, including an empty one
 — an empty scope is exactly when "am I looking where the other process looked?" is the question.
 (The override is spelled `PROVA_SCRATCH_DIR` rather than `PROVA_LOCK_DIR`: locks turned out to be
-one of three things living at this base, and three overrides for one directory is three ways to
-half-move it.)
+one of three things living here, and three overrides for one directory is three ways to half-move
+it.)
+
+**There are two bases, and merging them was a real regression.** For one commit, scratch roots
+resolved the same way — and CI died with `No space left on device` writing a scope directory into
+`/run/user/1001`, because `$XDG_RUNTIME_DIR` is a small tmpfs and scope directories hold rendered
+projects and build output. macOS hid it completely: there the Darwin per-user temp dir *is* the
+ordinary temp filesystem. The requirements are opposite — a contract address needs **agreement**, a
+scratch root needs **capacity** — and forkability, which disqualifies `temp_dir()` for the first, is
+harmless for the second: a scratch root is not an address two processes must agree on, it is a
+place one process puts its own files, and two runs resolving different bases simply each sweep
+their own. So `contract_base()` is the non-forkable resolution above, and `scratch_base()` follows
+`temp_dir()`.
 
 One-time cost, stated plainly: the machine lock directory MOVED, so a prova from before this change
 and one after take disjoint machine holds until the old one is gone. That is the very bug, incurred

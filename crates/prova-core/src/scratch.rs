@@ -27,20 +27,23 @@ use std::path::{Path, PathBuf};
 /// image with a tmpfs it wants used). The one escape hatch, named so it cannot be set by accident.
 pub const BASE_ENV: &str = "PROVA_SCRATCH_DIR";
 
-/// The machine-wide base for prova's transient state. **Never `$TMPDIR`.**
+/// The base for the CONTRACT addresses — lock files and nothing else.
 ///
-/// Resolution, in order, each step chosen because the environment cannot fork it:
+/// Must resolve identically in every process on the host, or "one cargo at a time, machine-wide"
+/// quietly becomes two. So it is derived from something the environment cannot fork:
 ///
 /// 1. `PROVA_SCRATCH_DIR` — explicit, deliberate, and the only way to move it.
-/// 2. **macOS**: `confstr(_CS_DARWIN_USER_TEMP_DIR)`, the per-user temp dir the kernel reports.
-///    This is what `getconf DARWIN_USER_TEMP_DIR` prints, and it is independent of `$TMPDIR` —
-///    verified by forking `TMPDIR` and watching it not move.
+/// 2. **macOS**: `confstr(_CS_DARWIN_USER_TEMP_DIR)`, the per-user temp dir the kernel reports —
+///    what `getconf DARWIN_USER_TEMP_DIR` prints, verified independent of `$TMPDIR`.
 /// 3. `$XDG_RUNTIME_DIR` — the same idea on Linux: per-user, per-boot, set by the session manager
 ///    rather than inherited from whoever spawned you.
-/// 4. A fixed per-user path under the home directory. Not `temp_dir()`: falling back to the
-///    forkable thing would re-introduce the split on exactly the machines that have neither of the
-///    above, which is where nobody would think to look for it.
-pub fn base() -> PathBuf {
+/// 4. A fixed per-user path. Not `temp_dir()`: falling back to the forkable thing would
+///    re-introduce the split precisely where nobody would look for it.
+///
+/// **Only small files belong here.** `$XDG_RUNTIME_DIR` is a small tmpfs — `/run/user/<uid>`, a
+/// few megabytes on a CI runner — which is perfect for a directory of empty lock files and
+/// catastrophic for anything that holds real bytes. See [`scratch_base`].
+pub fn contract_base() -> PathBuf {
     if let Some(dir) = std::env::var_os(BASE_ENV).filter(|v| !v.is_empty()) {
         return PathBuf::from(dir).join("prova");
     }
@@ -54,10 +57,10 @@ pub fn base() -> PathBuf {
     fixed_per_user_base()
 }
 
-/// The last resort, named so it can be tested.
+/// The last resort for the contract base, named so it can be tested.
 ///
 /// Stable per-user, though not per-boot: a path that survives a reboot is a cosmetic flaw, while a
-/// path that differs between two processes on one machine is the bug this module exists for. It is
+/// path that differs between two processes on one machine is the bug this exists to prevent. It is
 /// reached only where neither the Darwin per-user temp dir nor `XDG_RUNTIME_DIR` exists, which is
 /// why no black-box proof can reach it on macOS — mutation testing said so, and this function
 /// exists so a unit test can.
@@ -69,6 +72,23 @@ fn fixed_per_user_base() -> PathBuf {
         .join("scratch")
 }
 
+/// The base for SCRATCH roots — run scope directories, broker workspaces.
+///
+/// **Capacity, not agreement.** This was the same function as [`contract_base`] for one commit,
+/// and CI failed with `No space left on device` writing into `/run/user/1001`: scope directories
+/// hold rendered projects and build output, and `$XDG_RUNTIME_DIR` is a small tmpfs. macOS hid it
+/// — there the Darwin per-user temp dir IS the ordinary temp filesystem, with room to spare.
+///
+/// Forkability, which disqualifies `temp_dir()` for a contract, is **harmless here**: a scratch
+/// root is not an address two processes must agree on, it is a place one process puts its own
+/// files. If two runs resolve different bases, each sweeps its own — marginally less thorough,
+/// and nothing breaks. Trading that for a filesystem that cannot hold a build is a bad trade.
+pub fn scratch_base() -> PathBuf {
+    if let Some(dir) = std::env::var_os(BASE_ENV).filter(|v| !v.is_empty()) {
+        return PathBuf::from(dir).join("prova");
+    }
+    std::env::temp_dir().join("prova")
+}
 
 /// `confstr(_CS_DARWIN_USER_TEMP_DIR)` — the per-user temp dir, straight from the kernel.
 #[cfg(target_os = "macos")]
@@ -98,7 +118,7 @@ fn darwin_user_temp_dir() -> Option<PathBuf> {
 /// The machine-scoped lock directory — the contract's address
 /// (`architecture.md#machine-lock-dir-follows-tmpdir`).
 pub fn locks_dir() -> PathBuf {
-    base().join("locks")
+    contract_base().join("locks")
 }
 
 /// A root owned by THIS process, for scratch of the given kind (`run`, `broker`).
@@ -107,7 +127,7 @@ pub fn locks_dir() -> PathBuf {
 /// its owner: a sweeper arriving hours later needs to decide "is this reapable" from the name
 /// alone, with no file to have failed to write.
 pub fn owned_root(kind: &str) -> PathBuf {
-    base().join(format!("{kind}-{}", std::process::id()))
+    scratch_base().join(format!("{kind}-{}", std::process::id()))
 }
 
 /// Remove every `<kind>-<pid>` root under the base whose pid is no longer alive.
@@ -118,7 +138,7 @@ pub fn owned_root(kind: &str) -> PathBuf {
 /// say so.
 pub fn sweep_dead(kind: &str) -> usize {
     let prefix = format!("{kind}-");
-    let Ok(entries) = std::fs::read_dir(base()) else { return 0 };
+    let Ok(entries) = std::fs::read_dir(scratch_base()) else { return 0 };
     let mut swept = 0;
     for entry in entries.flatten() {
         let name = entry.file_name();
@@ -218,6 +238,41 @@ mod tests {
             return;
         }
         assert!(is_alive(1), "pid 1 exists and is not ours — EPERM must read as alive");
+    }
+
+    /// **Scratch must not live on the contract base's filesystem.**
+    ///
+    /// They were one function for exactly one commit, and CI died with `No space left on device`
+    /// writing a scope directory into `/run/user/1001` — `$XDG_RUNTIME_DIR` is a small tmpfs, and
+    /// scope directories hold rendered projects and build output. macOS hid it completely, because
+    /// there the Darwin per-user temp dir IS the ordinary temp filesystem. This asserts the two
+    /// bases are chosen by different rules, which is the property that keeps them apart.
+    #[test]
+    fn the_scratch_base_is_capacity_not_the_contract_address() {
+        // With XDG_RUNTIME_DIR meaningful on Linux, the contract base may sit on a tmpfs; scratch
+        // must follow the ordinary temp filesystem instead. The observable difference: scratch
+        // tracks `temp_dir()`, the contract base does not have to.
+        let scratch = scratch_base();
+        assert!(
+            scratch.starts_with(std::env::temp_dir()),
+            "scratch must follow the real temp filesystem, got {scratch:?}"
+        );
+    }
+
+    /// The one override moves BOTH, so a caller that redirects prova's state redirects all of it —
+    /// a half-moved base is how a sandboxed run writes into the developer's real directories.
+    #[test]
+    fn the_override_moves_both_bases() {
+        // Serialized implicitly: this is the only test that touches the variable.
+        let prev = std::env::var_os(BASE_ENV);
+        // SAFETY: single-threaded within this test; restored before returning.
+        unsafe { std::env::set_var(BASE_ENV, "/tmp/prova-override-probe") };
+        assert!(contract_base().starts_with("/tmp/prova-override-probe"));
+        assert!(scratch_base().starts_with("/tmp/prova-override-probe"));
+        match prev {
+            Some(v) => unsafe { std::env::set_var(BASE_ENV, v) },
+            None => unsafe { std::env::remove_var(BASE_ENV) },
+        }
     }
 
     /// A pid that cannot exist is dead, or nothing would ever be reaped.
