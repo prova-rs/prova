@@ -167,3 +167,45 @@ prova.test("a lease is never revoked out from under its holder", C("drain-never-
 	local renewed = broker:request("renew", { lease = lease.lease })
 	t:expect(renewed.ok, "still ours"):is_true()
 end)
+
+-- ── the broker's own root (docs/design/placement.md#broker-leaves-its-workspace-root) ───────────
+
+prova.test("the broker's workspace root is owner-tagged and reaped when its owner dies", {
+  covers = "docs/design/placement.md#broker-leaves-its-workspace-root",
+  proves = "the lease bounds a workspace only while the broker LIVES to drop it — 220 abandoned roots found 2026-09-14, every owning pid gone. A broker killed with leases outstanding also strands `ws-*` trees and their jj workspace registrations, and nothing was scheduled to find them. Reaping has to work without the dead owner's cooperation, which means the root must be identifiable from its NAME",
+}, function(t)
+  local base = t:tempdir("broker-base")
+  -- A root that looks exactly like a dead broker's: the convention is `<base>/broker-<pid>/`, and
+  -- pid 1 is never a prova broker, so this stands in for an owner that is long gone.
+  local dead = base .. "/prova/broker-999999"
+  fs.mkdir(dead)
+  fs.write(dead .. "/ws-abandoned.txt", "a stranded workspace tree\n")
+
+  -- Any later prova sweeps at startup, whatever verb it was asked for.
+  local r = shell.run({ prova.bin, "eval", 'print("swept")' },
+    { env = { PROVA_SCRATCH_DIR = base }, merge_stderr = true, timeout = "60s" })
+
+  t:expect(r.code, "the later prova ran: " .. r.stdout):equals(0)
+  t:expect(fs.exists(dead), "the dead broker's root is gone"):is_false()
+end)
+
+prova.test("a LIVE broker's root is left alone", {
+  covers = "docs/design/placement.md#broker-leaves-its-workspace-root",
+  proves = "the negative control that keeps the sweep from being worse than the leak: deleting a running broker's workspaces would destroy the trees its leases are actively serving, which is a far more expensive failure than an empty directory nobody noticed for three weeks",
+}, function(t)
+  local base = t:tempdir("broker-live-base")
+  -- Named for a pid that IS alive — this very test's conductor.
+  local mine = shell.run({ "sh", "-c", "echo $PPID" }, { timeout = "30s" })
+  local live_pid = (mine.stdout or ""):gsub("%s+", "")
+  t:expect(live_pid ~= "", "got a live pid to stand in for a running broker"):is_true()
+
+  local live = base .. "/prova/broker-" .. live_pid
+  fs.mkdir(live)
+  fs.write(live .. "/ws-in-use.txt", "a tree a lease is serving\n")
+
+  local r = shell.run({ prova.bin, "eval", 'print("swept")' },
+    { env = { PROVA_SCRATCH_DIR = base }, merge_stderr = true, timeout = "60s" })
+
+  t:expect(r.code, r.stdout):equals(0)
+  t:expect(fs.exists(live), "the live owner's root survived"):is_true()
+end)

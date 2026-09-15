@@ -390,8 +390,17 @@ pub(crate) fn make_labeled_tempdir(label: &str) -> std::io::Result<PathBuf> {
         }
     }
     let safe = safe.trim_matches('-');
-    let mut path = std::env::temp_dir();
-    let base = format!("prova-{}-{}-{}", std::process::id(), nanos, n);
+    // ONE ROOT PER RUN, named for the process that owns it
+    // (docs/design/agent-ergonomics.md#scope-tempdirs-outlive-a-run-that-never-tears-down).
+    //
+    // Removal used to live only on the teardown path, which is exactly the path a killed or
+    // crashed run does not take — 6,683 orphaned scope directories from 1,543 dead pids, measured
+    // 2026-09-14. Scattering them across `$TMPDIR` also made them unidentifiable: nothing could
+    // tell a live run's scratch from a dead one's without parsing pids out of sibling names.
+    // Gathering them under `run-<pid>/` makes the ownership question answerable from the name, so
+    // the sweep below is possible at all.
+    let mut path = run_root()?;
+    let base = format!("{nanos}-{n}");
     path.push(if safe.is_empty() {
         base
     } else {
@@ -399,6 +408,21 @@ pub(crate) fn make_labeled_tempdir(label: &str) -> std::io::Result<PathBuf> {
     });
     std::fs::create_dir_all(&path)?;
     Ok(path)
+}
+
+/// This run's scratch root.
+///
+/// The SWEEP deliberately does not live here. Hanging it off first use looked elegant and was
+/// wrong: a run that never makes a scope directory never sweeps, and `prova eval` — the verb an
+/// agent runs constantly — is exactly such a run. A leak that is only collected when something
+/// happens to need scratch is not a startup sweep. It runs once per process in `scratch::boot`.
+fn run_root() -> std::io::Result<PathBuf> {
+    static ROOT: std::sync::OnceLock<std::io::Result<PathBuf>> = std::sync::OnceLock::new();
+    let made = ROOT.get_or_init(|| crate::scratch::ensure(crate::scratch::owned_root("run")));
+    match made {
+        Ok(p) => Ok(p.clone()),
+        Err(e) => Err(std::io::Error::new(e.kind(), e.to_string())),
+    }
 }
 
 #[cfg(test)]
@@ -434,11 +458,20 @@ mod tempdir_label_tests {
     }
 
     /// Degrades to the unlabeled name rather than leaving a trailing separator.
+    ///
+    /// The `prova-` prefix moved to the PARENT when scope directories were gathered under one
+    /// per-run root (agent-ergonomics.md#scope-tempdirs-outlive-a-run-that-never-tears-down): the
+    /// leaf is `<nanos>-<n>[-<label>]` inside `<base>/run-<pid>/`. Asserting the leaf starts with
+    /// a timestamp is the same property the old prefix check was after — that an unusable label
+    /// degrades to the plain name rather than to an empty or dangling one.
     #[test]
     fn a_label_with_nothing_usable_leaves_the_plain_name() {
         let n = name_of("///");
         assert!(!n.ends_with('-'), "no dangling separator: {n}");
-        assert!(n.starts_with("prova-"), "{n}");
+        assert!(
+            n.chars().next().is_some_and(|c| c.is_ascii_digit()),
+            "degrades to the bare `<nanos>-<n>` name: {n}"
+        );
     }
 
     /// Long labels are bounded, because a path has a length limit and the interesting part is the

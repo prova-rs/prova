@@ -21,6 +21,8 @@ pub mod lanes;
 pub mod locks;
 pub mod lease;
 pub mod ledger;
+/// Where machine-scoped transient state lives, and who reaps it.
+pub mod scratch;
 
 /// The reserved-name registry (api-freeze §2): every bundled namespace name, including kernel
 /// transports that are designed but not yet shipped — reserving ahead of the implementation is

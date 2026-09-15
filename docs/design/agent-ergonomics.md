@@ -1221,7 +1221,7 @@ instances and must not share, or a file-scoped directory would leak one test's s
 the next. `fs.tempdir()` remains only as the unmanaged escape hatch for code with no context to
 ask.
 
-<!-- backlog: scope-tempdirs-outlive-a-run-that-never-tears-down recorded=2026-09-14 -->
+<!-- claim: scope-tempdirs-outlive-a-run-that-never-tears-down recorded=2026-09-14 -->
 **"All are removed when the scope ends" holds only for runs that reach the end.** Scope directories
 are made by `make_labeled_tempdir` (`crates/prova-core/src/engine/fixtures.rs`) as
 `temp_dir()/prova-<pid>-<nanos>-<n>[-<name>]` with `create_dir_all`, and removal lives only on the
@@ -1233,6 +1233,26 @@ project or builds into its tempdir leaks all of that too. Proposed: one per-run 
 (`prova-run-<pid>/`) holding every scope directory of the run, registered with the `prova reap`
 sidecar (which already outlives its parent to reap its process groups) for removal when the parent
 dies; plus a startup sweep of `prova-run-<pid>` roots whose pid is dead.
+
+**Resolved, by the sweep half.** Scope directories now live under `<base>/run-<pid>/`
+(`scratch::owned_root`), and every prova invocation reaps dead owners' roots once at startup
+(`scratch::boot`). Ownership is answerable from the NAME, which is what makes reaping possible
+without the dead owner's cooperation; `kill(pid, 0)` decides liveness and treats `EPERM` — someone
+else's live process — as alive, because the failure mode of guessing wrong is deleting the scratch
+of a run still using it.
+
+**The sweep is unconditional, and the first attempt was not.** Hanging it off first use of a scope
+directory looked tidy and was wrong: a run that never allocates scratch never sweeps, and `prova
+eval` — the verb an agent runs most — is exactly such a run. A leak collected only when something
+happens to need scratch is not a startup sweep. The proof caught it, by killing a run and then
+watching an `eval` fail to clean up after it.
+
+Two things deliberately NOT done. The `prova reap` registration: that sidecar's protocol is process
+groups, and the sweep already makes every invocation self-healing, so prompt removal at the instant
+the parent dies is a nicety rather than the fix. And the pre-existing `$TMPDIR/prova-<pid>-…`
+directories (10,855 on this machine when this was written) are left alone — they sit outside the
+base this module controls, and matching them by pattern in order to delete them is how housekeeping
+ruins an afternoon.
 
 # Round six — 2026-08-16 (an upgrade landing mid-session in a consumer repo)
 

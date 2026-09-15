@@ -216,6 +216,13 @@ impl Broker {
                 .output();
             let _ = std::fs::remove_dir_all(&w.path);
         }
+        // When nothing is left to hold, the root goes too. `remove_dir` (not `remove_dir_all`) on
+        // purpose: it succeeds only if the directory is genuinely empty, so a workspace this
+        // bookkeeping lost track of is preserved for the sweep to find rather than deleted by a
+        // cleanup that had already stopped knowing what was in there.
+        if lock(&self.workspaces).is_empty() {
+            let _ = std::fs::remove_dir(prova_core::scratch::owned_root("broker"));
+        }
     }
 }
 
@@ -677,7 +684,12 @@ fn materialize(broker: &Broker, id: &Value, frame: &Value) -> Value {
 
     let short: String = change.chars().take(12).collect();
     let name = format!("prova-broker-{}-{short}", std::process::id());
-    let dir = std::env::temp_dir().join(format!("prova-broker-{}", std::process::id()));
+    // The per-process root joins the owner-tagged convention every other prova scratch root uses
+    // (docs/design/placement.md#broker-leaves-its-workspace-root): `<base>/broker-<pid>/`, so a
+    // broker that is killed with leases outstanding leaves something a later prova can identify as
+    // dead and reap. It used to be `temp_dir()/prova-broker-<pid>` and nothing ever removed it —
+    // 220 of them found 2026-09-14, every owning pid gone.
+    let dir = prova_core::scratch::owned_root("broker");
     if let Err(e) = std::fs::create_dir_all(&dir) {
         return error(id, format!("cannot create workspace root: {e}"));
     }

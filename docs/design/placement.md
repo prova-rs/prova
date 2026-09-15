@@ -270,7 +270,7 @@ passes, and proves nothing about the code you meant to test.
 that, a client could fill a node's disk with trees nobody is scheduled to use, and nothing would
 ever clean them up.
 
-<!-- backlog: broker-leaves-its-workspace-root recorded=2026-09-14 -->
+<!-- claim: broker-leaves-its-workspace-root recorded=2026-09-14 -->
 **`materialize` creates `temp_dir()/prova-broker-<pid>/` to hold its workspaces, and nothing ever
 removes it.** `drop_lease` forgets and deletes each `ws-<change>` it bounded
 (`crates/prova-cli/src/broker.rs`), but the per-process root outlives the broker. Found 2026-09-14 on
@@ -282,6 +282,16 @@ and their `jj workspace` registrations in the source repo, and nothing is schedu
 Proposed: remove the root when its last lease drops and at shutdown; and at broker start, sweep
 `prova-broker-<pid>` roots whose pid is dead (forgetting their `prova-broker-<pid>-*` workspaces
 where the source repo is known).
+
+**Resolved.** The root is `<base>/broker-<pid>/` (`scratch::owned_root`), the same owner-tagged
+convention run scratch uses — so it is reaped by the startup sweep in **any** later prova, not just
+a later broker, which is the difference between self-healing and hoping the right program runs
+next. It is also removed when the last workspace drops, with `remove_dir` rather than
+`remove_dir_all`: that succeeds only on a genuinely empty directory, so a workspace this bookkeeping
+has lost track of is left for the sweep to find instead of being deleted by a cleanup that had
+already stopped knowing what was in there. Forgetting a dead broker's stranded `jj workspace`
+registrations stays open — the sweep removes the trees, but deregistering needs the source repo
+path, which the root's name does not carry.
 
 ## Metering
 

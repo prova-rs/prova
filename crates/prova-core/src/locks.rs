@@ -166,7 +166,11 @@ pub fn lock_dir(machine: bool, project_dir: Option<&Path>) -> PathBuf {
     match (machine, project_dir) {
         (false, Some(p)) => p.join(".prova").join("var").join("locks"),
         // A bare run (no manifest) still honors the rule machine-wide rather than not at all.
-        _ => std::env::temp_dir().join("prova-locks"),
+        //
+        // NOT `temp_dir()`: this is the contract's ADDRESS, and `$TMPDIR` is forkable by anything
+        // that sets it for its children, which silently splits a machine-wide hold in two
+        // (docs/design/architecture.md#machine-lock-dir-follows-tmpdir).
+        _ => crate::scratch::locks_dir(),
     }
 }
 
@@ -578,7 +582,15 @@ mod tests {
         let weird = lock_path("a b/c", false, Some(Path::new("/repo"))).unwrap();
         assert_eq!(weird.file_name().unwrap(), "a-b-c.lock");
         let machine = lock_path("cargo", true, Some(Path::new("/repo"))).unwrap();
-        assert!(machine.starts_with(std::env::temp_dir()), "machine scope leaves the package");
+        assert!(
+            !machine.starts_with("/repo"),
+            "machine scope leaves the package: {machine:?}"
+        );
+        // And specifically does NOT live under `$TMPDIR`, which is the whole point of the move
+        // (architecture.md#machine-lock-dir-follows-tmpdir): that address is forkable by anything
+        // that sets TMPDIR for its children, which splits a machine-wide hold in two. The old
+        // assertion here pinned exactly the behavior that was the bug.
+        assert_eq!(machine, crate::scratch::locks_dir().join("cargo.lock"));
     }
 
     /// Exclusive excludes shared and vice versa, across separate descriptors — the semantics

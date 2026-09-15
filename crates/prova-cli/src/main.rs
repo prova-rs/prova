@@ -417,6 +417,13 @@ fn main() -> ExitCode {
     }
     var::announce();
 
+    // Reap the scratch of runs whose owners are gone, once, before anything else
+    // (docs/design/agent-ergonomics.md#scope-tempdirs-outlive-a-run-that-never-tears-down).
+    // Unconditional across verbs on purpose: removal used to live only on the teardown path, so
+    // every killed or crashed run leaked, and tying the sweep to scratch ALLOCATION would have
+    // left `prova eval` — the verb an agent runs most — never cleaning anything.
+    prova_core::scratch::boot();
+
     // Nothing re-execs (docs/design/manifest.md#runner-is-the-subject-not-the-conductor): the
     // binary you invoke conducts. `[runner]` names the binary UNDER TEST, provisioned just in
     // time by the run path and injected as `prova.bin` — see `cmd_run::provision_subject`.

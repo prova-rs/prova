@@ -48,7 +48,7 @@ prova.test("`prova locks` names the pid and command behind a held token", {
   t:expect(out, "the token reads held"):matches("HELD%s+" .. pat(tok))
   t:expect(out, "…by a writer with a pid"):matches("writer pid %d+")
   t:expect(out, "…naming what it is doing:\n" .. out):contains("lock " .. tok)
-  t:expect(out, "…and where the file that IS the contract lives"):contains("prova-locks")
+  t:expect(out, "…and where the file that IS the contract lives"):contains("/prova/locks")
 
   hold:wait()
   -- Release takes the record with it. A record outliving its flock would accuse a pid that

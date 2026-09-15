@@ -212,3 +212,44 @@ prova.test("a queued leaf names who holds the lock, not 'another prova instance'
   t:expect(r.stdout, "and the placeholder sentence is gone")
     :never():contains("another prova instance")
 end)
+
+-- ── the machine lock ADDRESS (docs/design/architecture.md#machine-lock-dir-follows-tmpdir) ──────
+
+prova.test("a machine-wide hold is the same hold whatever $TMPDIR says", {
+  covers = "docs/design/architecture.md#machine-lock-dir-follows-tmpdir",
+  proves = "the contract's address cannot be derived from something its participants can disagree about. `temp_dir()` reads $TMPDIR, and anything that sets TMPDIR for its children — a cargo [env] table, a CI wrapper, a sandbox — forked 'one cargo at a time, machine-wide' into two rules that never saw each other. Silent by construction: both sides believe they hold it",
+}, function(t)
+  local a = t:tempdir("tmpdir-a")
+  local b = t:tempdir("tmpdir-b")
+  -- Two prova processes that disagree about TMPDIR as hard as possible, racing ONE machine token.
+  -- Before the fix each took a hold in its own $TMPDIR/prova-locks and both sailed through.
+  -- PROVA_SCRATCH_DIR isolates this from the developer's REAL machine lock directory. Without it
+  -- the proof wrote `tmpsplit` into shared machine state and left it there — a test that pollutes
+  -- the thing it is testing. It stays a valid discriminator: the two processes still disagree
+  -- about TMPDIR as hard as possible, and under the old `temp_dir()` address they would still
+  -- have split, because that code never consulted this variable.
+  local sandbox = t:tempdir("machine-base")
+  local r = shell.run({
+    "sh", "-c",
+    'TMPDIR="$1" "$0" lock tmpsplit --machine -- sh -c "sleep 4" & sleep 1; ' ..
+    'TMPDIR="$2" PROVA_LOCK_WAIT_TIMEOUT=2s "$0" lock tmpsplit --machine -- true; ' ..
+    'echo "second=$?"; wait',
+    prova.bin, a, b,
+  }, { env = { PROVA_SCRATCH_DIR = sandbox }, merge_stderr = true, timeout = "90s" })
+
+  -- The second must NOT acquire: it is the same contract, so it queues and (bounded) gives up.
+  t:expect(r.stdout, "the second process contends rather than taking a parallel hold:\n" .. r.stdout)
+    :never():contains("second=0")
+end)
+
+prova.test("`prova locks` names the directory it consulted, even when empty", {
+  covers = "docs/design/architecture.md#machine-lock-dir-follows-tmpdir",
+  proves = "a split lock directory is invisible unless something prints the address. An empty scope is precisely when an operator is asking 'am I looking where the other process looked?', and the old output skipped that scope in silence",
+}, function(t)
+  local r = shell.run({ prova.bin, "locks", "--machine" }, { merge_stderr = true, timeout = "60s" })
+
+  t:expect(r.code, r.stdout):equals(0)
+  t:expect(r.stdout, "the machine scope names its directory:\n" .. r.stdout):contains("machine  (")
+  -- And that directory is not the forkable one.
+  t:expect(r.stdout, "…which is not $TMPDIR-derived"):never():contains("prova-locks")
+end)

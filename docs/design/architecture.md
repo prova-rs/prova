@@ -470,7 +470,7 @@ dozen dependency-free lines, which is the demonstration that the format is joina
 prova-only privilege.) A holder record is deliberately not a lease: nothing here can release
 another process's flock — only ending that process can — so naming the holder IS the recourse.
 
-<!-- backlog: machine-lock-dir-follows-tmpdir recorded=2026-09-14 -->
+<!-- claim: machine-lock-dir-follows-tmpdir recorded=2026-09-14 -->
 **The machine-scoped lock directory is `std::env::temp_dir()/prova-locks`, so two prova processes
 that disagree about `$TMPDIR` take disjoint "machine-wide" holds without either one knowing.**
 `lock_dir(machine, _)` (`crates/prova-core/src/locks.rs`) derives the contract's address from the
@@ -486,6 +486,22 @@ from something the environment cannot fork — on macOS `confstr(_CS_DARWIN_USER
 `getconf DARWIN_USER_TEMP_DIR` prints, independent of `$TMPDIR`), elsewhere `$XDG_RUNTIME_DIR`, then
 a fixed per-user path — with `PROVA_LOCK_DIR` as the one explicit override; and have `prova locks`
 print the directory it consulted, so a split is visible instead of silent.
+
+**Resolved.** `scratch::base()` resolves the machine base from something the environment cannot
+fork, and `lock_dir` uses it: `PROVA_SCRATCH_DIR` if set, else macOS
+`confstr(_CS_DARWIN_USER_TEMP_DIR)` (what `getconf DARWIN_USER_TEMP_DIR` prints — verified
+independent of `$TMPDIR`), else `$XDG_RUNTIME_DIR`, else a fixed per-user path. That last fallback
+is deliberately **not** `temp_dir()`: falling back to the forkable thing would re-introduce the
+split precisely on the machines that have neither of the first two, which is where nobody would
+think to look. `prova locks` prints the resolved directory for every scope, including an empty one
+— an empty scope is exactly when "am I looking where the other process looked?" is the question.
+(The override is spelled `PROVA_SCRATCH_DIR` rather than `PROVA_LOCK_DIR`: locks turned out to be
+one of three things living at this base, and three overrides for one directory is three ways to
+half-move it.)
+
+One-time cost, stated plainly: the machine lock directory MOVED, so a prova from before this change
+and one after take disjoint machine holds until the old one is gone. That is the very bug, incurred
+once and deliberately, instead of indefinitely.
 
 ## TLS — every client, one policy
 

@@ -403,6 +403,15 @@ pub(crate) fn locks_subcommand(args: Vec<String>) -> ExitCode {
     for (label, is_machine) in scopes {
         let rows = prova_core::locks::survey(is_machine, project_dir);
         if rows.is_empty() {
+            // Say WHERE nothing was found. An empty scope is exactly when the question is "am I
+            // even looking in the same place as the other process?", and a silent skip is how a
+            // forked lock directory stays invisible
+            // (docs/design/architecture.md#machine-lock-dir-follows-tmpdir).
+            println!(
+                "{label}  ({}) — no tokens",
+                prova_core::locks::lock_dir(is_machine, project_dir).display()
+            );
+            any = true;
             continue;
         }
         any = true;

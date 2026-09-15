@@ -93,7 +93,12 @@ end)
   local hostile = r.stdout:match("HOSTILE=(%S+)")
   t:expect(hostile, "a traversal is not honored"):never():contains("..")
   t:expect(hostile, "…nor a separator that would nest it elsewhere"):never():contains("escape/")
-  t:expect(hostile, "…and it still lands under a prova temp root"):contains("prova-")
+  -- The root's SPELLING moved when scope directories were gathered under one per-run root
+  -- (agent-ergonomics.md#scope-tempdirs-outlive-a-run-that-never-tears-down): it was
+  -- `<tmp>/prova-<pid>-…`, it is now `<base>/prova/run-<pid>/…`. Asserting the new shape is
+  -- strictly tighter than the old `prova-` substring — it pins the path inside THIS run's root,
+  -- which is what "did not escape" actually means now that a root exists to escape from.
+  t:expect(hostile, "…and it still lands under this run's own root"):contains("/prova/run-")
 end)
 
 prova.test("the sandbox builder asks for a distinct directory every time", {
@@ -143,4 +148,77 @@ prova.test("a fixture's tempdir is its own scope's", function(t)
 end)
 ]])
   t:expect(r.code, "the subject holds the contract: " .. r.stdout):equals(0)
+end)
+
+-- ── reaping (agent-ergonomics.md#scope-tempdirs-outlive-a-run-that-never-tears-down) ────────────
+
+prova.test("a run that is KILLED leaves one identifiable root, and the next run reaps it", {
+  covers = "docs/design/agent-ergonomics.md#scope-tempdirs-outlive-a-run-that-never-tears-down",
+  proves = "'all are removed when the scope ends' held only for runs that reach the end — 6,683 orphaned directories from 1,543 dead pids, measured 2026-09-14, and 10,855 by the time this was written. A kill is not an edge case: it is Ctrl-C, a CI cancel, an agent's timeout. The fix is only real if a DEAD owner's scratch goes away without that owner's cooperation",
+}, function(t)
+  local base = t:tempdir("reap-base")
+  local pkg = t:tempdir("reap-pkg")
+  fs.mkdir(pkg .. "/proofs")
+  fs.write(pkg .. "/prova.toml", '[run]\nproofs = ["proofs"]\n')
+  -- A proof that makes a scope directory and then hangs, so the run can only end by being killed.
+  fs.write(pkg .. "/proofs/wedge_test.lua", [[
+prova.test("makes scratch then waits to be killed", function(t)
+  print("SCRATCH=" .. t:tempdir("victim"))
+  prova.sleep(120000)
+end)
+]])
+
+  -- PROVA_SCRATCH_DIR isolates this from the developer's real base: the sweep removes things, and
+  -- a proof that reaps outside its own sandbox is a proof that can ruin someone's afternoon.
+  local env = { PROVA_SCRATCH_DIR = base }
+  local victim = shell.spawn({ prova.bin }, { cwd = pkg, env = env })
+  local scratch
+  for _ = 1, 600 do
+    scratch = (victim:output() or ""):match("SCRATCH=(%S+)")
+    if scratch then break end
+    prova.sleep(50)
+  end
+  t:expect(scratch, "the victim made a scope directory: " .. tostring(victim:output())):is_truthy()
+  t:expect(fs.exists(scratch), "…which exists while it runs"):is_true()
+
+  -- Kill it outright — no teardown, which is the whole point.
+  victim:stop()
+  t:expect(fs.exists(scratch), "the kill leaves the scratch behind (the defect this fixes)"):is_true()
+
+  -- A LATER prova, with no knowledge of the victim, sweeps the dead owner's root.
+  local later = shell.run({ prova.bin, "eval", 'print("swept")' },
+    { cwd = pkg, env = env, merge_stderr = true, timeout = "60s" })
+  t:expect(later.code, "the later run succeeds: " .. later.stdout):equals(0)
+  t:expect(fs.exists(scratch), "…and the dead run's scratch is gone"):is_false()
+end)
+
+prova.test("a LIVE run's scratch is never reaped by another run", {
+  covers = "docs/design/agent-ergonomics.md#scope-tempdirs-outlive-a-run-that-never-tears-down",
+  proves = "the negative control, and the only way this change could be worse than the leak it replaces: a sweep that cannot tell live from dead deletes the scratch of a run that is still using it — a data race with someone else's test, caused by housekeeping",
+}, function(t)
+  local base = t:tempdir("live-base")
+  local pkg = t:tempdir("live-pkg")
+  fs.mkdir(pkg .. "/proofs")
+  fs.write(pkg .. "/prova.toml", '[run]\nproofs = ["proofs"]\n')
+  fs.write(pkg .. "/proofs/holder_test.lua", [[
+prova.test("holds its scratch open", function(t)
+  print("SCRATCH=" .. t:tempdir("alive"))
+  prova.sleep(8000)
+end)
+]])
+  local env = { PROVA_SCRATCH_DIR = base }
+  local live = t:manage(shell.spawn({ prova.bin }, { cwd = pkg, env = env }))
+  local scratch
+  for _ = 1, 600 do
+    scratch = (live:output() or ""):match("SCRATCH=(%S+)")
+    if scratch then break end
+    prova.sleep(50)
+  end
+  t:expect(scratch, "the live run made its scratch"):is_truthy()
+
+  -- A second run sweeps while the first is still going.
+  local other = shell.run({ prova.bin, "eval", 'print("sweeping")' },
+    { cwd = pkg, env = env, merge_stderr = true, timeout = "60s" })
+  t:expect(other.code, other.stdout):equals(0)
+  t:expect(fs.exists(scratch), "the LIVE run's scratch survived the sweep"):is_true()
 end)
