@@ -554,7 +554,17 @@ pub(crate) fn lock_subcommand(args: Vec<String>) -> ExitCode {
         }
     };
     let ran_from = std::time::Instant::now();
-    match std::process::Command::new(&command[0]).args(&command[1..]).status() {
+    // Tell the child what we hold, so a prova-shaped command inside the wrapper inherits the hold
+    // instead of queuing behind its own parent forever
+    // (docs/design/agent-ergonomics.md#a-lock-wrapper-can-wait-on-its-own-parent). Appending to
+    // whatever WE inherited is what makes nesting compose.
+    let mut child = std::process::Command::new(&command[0]);
+    child.args(&command[1..]);
+    if let Some(p) = prova_core::locks::lock_path(&token, machine, project_dir) {
+        let entry = prova_core::locks::held_env_entry(&token, shared, &p);
+        child.env(prova_core::locks::HELD_ENV, prova_core::locks::held_env_value(&entry));
+    }
+    match child.status() {
         Ok(status) => {
             // The split is the whole point (docs/design/agent-ergonomics.md#narrate-lock-waits):
             // this wrapper is where an operator watches a queued build, and "done in 841.8s"

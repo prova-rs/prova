@@ -771,7 +771,7 @@ can still resolve.** `current_exe()` answers "where did I come from", which is a
 from "what can be run now", and only the second one is safe to write into a shim, a lease, or a
 record.
 
-<!-- backlog: a-lock-wrapper-can-wait-on-its-own-parent recorded=2026-09-12 -->
+<!-- claim: a-lock-wrapper-can-wait-on-its-own-parent recorded=2026-09-12 -->
 **`prova lock cargo -- prova run quality` waits on itself forever, and the wait line names the
 holder as "another prova instance".** Witnessed 2026-09-12 23:31Z (substrate): the outer `prova
 lock cargo --` took the workspace `cargo` flock, then the inner `prova run` — whose manifest
@@ -792,6 +792,46 @@ pid N — drop the wrapper or the manifest lock`. Substrate's side is fixed by n
 prova-shaped conduct at workspace scope (`vault/dev/conduct.lua`, proof in
 `proofs/vault/conduct.prova.lua`), but every other caller who composes `prova lock` around
 `prova run` will find this the same way.
+
+**Resolved: a descendant inherits its ancestor's hold, and a wait names who it is waiting on.**
+
+A flock excludes *independent actors*. A child running inside `prova lock cargo -- …` is not an
+independent actor — it IS the work the parent took the lock to do, and making it queue behind its
+own parent is a deadlock dressed as mutual exclusion. Re-entrancy by a descendant is the correct
+semantics here for the same reason a re-entrant mutex is correct for a thread that already holds
+it. Two layers, both shipped:
+
+- **Inheritance removes the deadlock.** `prova lock` exports `PROVA_HELD_LOCKS`, one entry per
+  hold as `<token>@<lock-path>|<mode>`, and `try_hold` treats a request already covered by an
+  inherited entry as ALREADY HELD — no second flock, no wait, one line naming the inheritance. The
+  match is on the **resolved lock path**, not the token: `cargo` at machine scope and `cargo` at
+  workspace scope are different contracts that happen to share a name, and inheriting across them
+  would hand out an exclusion nobody holds. Mode is checked the same way — an **exclusive** parent
+  hold covers any child request, a **shared** parent hold covers only a shared child request.
+  Silently granting a shared→exclusive upgrade would be the one way this change could *invent* a
+  race rather than remove one.
+- **A shared→exclusive upgrade is REFUSED, not queued** — and the proof written to check the
+  refusal is what found this. Declining to inherit is correct, but the consequence is a wait on a
+  hold whose holder is waiting for the waiter: the same eternal hang this change exists to remove,
+  wearing a mode instead of a scope. A reader hold cannot be upgraded from inside itself by
+  anybody, so waiting is not caution, it is a guaranteed deadlock. The refusal names the two things
+  that disagree and both exits (take the outer hold for writing, or drop the wrapper).
+- **The refusal happens before scheduling, not at acquire time**, because neither acquire-time exit
+  is honest: returning "unavailable" queues the leaf forever, and returning an error lands in
+  `ResourceTable`'s degradation arm — which runs the leaf with in-run-only locking and *silently
+  drops the exclusion the author asked for*. That arm is right for an I/O hiccup and wrong for a
+  semantic conflict, and the distinction is only visible from outside the acquire loop.
+- **Naming the holder removes the misdiagnosis.** The scheduler's queued line said `held by another
+  prova instance` whatever the truth was (`engine/run.rs`'s `announce_queued`), which is how 22
+  minutes went by with the answer — *your own parent* — sitting in a record beside the lock file.
+  It now reports what `holder::describe_holders` already knew: pid, what, and package. That is
+  worth doing independently of inheritance, because the env can be stripped (a `sudo` without
+  `-E`, a container boundary) and the deadlock then returns with no inherited entry to explain it.
+
+Inheritance is deliberately **not** ancestry-walking. Reading `/proc` or `libproc` to ask "is that
+pid my ancestor" would be a third per-platform reader for a fact the wrapper already knows and can
+simply say; and where the environment does not survive, neither does the pid namespace that would
+make the answer meaningful.
 
 <!-- backlog: file-locking-is-a-no-op-on-windows recorded=2026-08-16 -->
 **Two subsystems take file locks, and on Windows both compile to nothing.** `locks.rs` has said so

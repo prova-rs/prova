@@ -184,6 +184,104 @@ pub fn lock_path(token: &str, machine: bool, project_dir: Option<&Path>) -> Opti
     Some(lock_dir(machine, project_dir).join(format!("{sanitized}.lock")))
 }
 
+/// The environment variable by which a holder tells its descendants what it already holds
+/// (docs/design/agent-ergonomics.md#a-lock-wrapper-can-wait-on-its-own-parent).
+///
+/// Entries are `<token>@<resolved-lock-path>|<mode>`, separated by newlines — newline because a
+/// lock path may contain any character a path may, and every other separator can appear in one.
+pub const HELD_ENV: &str = "PROVA_HELD_LOCKS";
+
+/// One inherited hold, as parsed from [`HELD_ENV`].
+struct Inherited {
+    path: PathBuf,
+    /// A concurrent (reader) hold. An exclusive ancestor hold covers any descendant request; a
+    /// shared one covers only a shared request.
+    shared: bool,
+}
+
+/// What this process inherited from its ancestors.
+fn inherited() -> Vec<Inherited> {
+    let Ok(raw) = std::env::var(HELD_ENV) else { return Vec::new() };
+    raw.lines()
+        .filter_map(|line| {
+            let (rest, mode) = line.rsplit_once('|')?;
+            let (_token, path) = rest.split_once('@')?;
+            Some(Inherited { path: PathBuf::from(path), shared: mode == "reads" })
+        })
+        .collect()
+}
+
+/// Render one hold for [`HELD_ENV`], for a wrapper to hand to its child.
+pub fn held_env_entry(token: &str, shared: bool, path: &Path) -> String {
+    format!("{token}@{}|{}", path.display(), if shared { "reads" } else { "writes" })
+}
+
+/// Append `entry` to whatever this process already inherited, so nesting composes.
+pub fn held_env_value(entry: &str) -> String {
+    match std::env::var(HELD_ENV) {
+        Ok(existing) if !existing.is_empty() => format!("{existing}\n{entry}"),
+        _ => entry.to_string(),
+    }
+}
+
+/// Is this request already covered by an ancestor's hold?
+///
+/// Matched on the RESOLVED PATH, never the token: `cargo` at machine scope and `cargo` in a
+/// package are different contracts that share a name, and inheriting across them would hand out
+/// an exclusion nobody holds. Mode is checked the same way — a shared ancestor hold does not
+/// cover an exclusive request, because that upgrade is the one way this could invent a race
+/// rather than remove one.
+fn covered_by_ancestor(path: &Path, shared: bool) -> bool {
+    inherited().iter().any(|h| h.path == path && (!h.shared || shared))
+}
+
+// NOTE, from mutation testing: dropping the `(!h.shared || shared)` clause above does not turn any
+// proof red, because `upgrade_from_ancestor` refuses that same case from the other side. The two
+// guards deliberately overlap — this one declines to GRANT the upgrade, that one declines to WAIT
+// for it — and the overlap is kept rather than trimmed because the failure it prevents is handing
+// out an exclusion nobody holds. Neither is individually load-bearing; together they are, and a
+// test cannot distinguish them without removing one.
+
+/// An ancestor holds this contract for READING and we need to WRITE it.
+///
+/// Found by the proof that was meant to check the upgrade is refused: refusing to inherit is
+/// correct, but the consequence is a wait on a hold that cannot be released until the waiter
+/// exits — the same eternal hang this whole change exists to remove, wearing a mode instead of a
+/// scope. A reader hold cannot be upgraded from inside itself by anyone, so waiting is not
+/// pessimism, it is a guaranteed deadlock. Refuse it immediately and say which two things
+/// disagree.
+fn upgrade_from_ancestor(path: &Path, shared: bool) -> bool {
+    !shared && inherited().iter().any(|h| h.path == path && h.shared)
+}
+
+/// The refusal, as prose, for a caller that can fail cleanly — `None` when there is no conflict.
+///
+/// Deliberately NOT surfaced through `try_hold`'s `Err`: the scheduler's error arm degrades to
+/// in-run-only locking and runs the leaf anyway, which for a semantic conflict would drop the
+/// exclusion instead of reporting it.
+pub fn ancestor_upgrade_refusal(
+    token: &str,
+    shared: bool,
+    machine: bool,
+    project_dir: Option<&Path>,
+) -> Option<String> {
+    let path = lock_path(token, machine, project_dir)?;
+    upgrade_from_ancestor(&path, shared).then(|| upgrade_error(token).to_string())
+}
+
+/// The teaching refusal for that upgrade.
+fn upgrade_error(token: &str) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::WouldBlock,
+        format!(
+            "re-entrant upgrade: an ancestor process holds {token:?} for READING and this needs \
+             to WRITE it. A reader hold cannot be upgraded from inside itself — waiting here \
+             could only ever deadlock, because the holder is waiting for you. Take the outer hold \
+             for writing (drop `--reads`), or drop the outer wrapper and let this take its own."
+        ),
+    )
+}
+
 /// Open (creating as needed) and `flock` the token's file. Non-blocking: `Ok(None)` means
 /// another holder has it — the scheduler's contract, where a refused leaf stays queued.
 pub fn try_hold(
@@ -195,6 +293,9 @@ pub fn try_hold(
     let Some(path) = lock_path(token, machine, project_dir) else {
         return Ok(None);
     };
+    if covered_by_ancestor(&path, shared) {
+        return Ok(Some(inherited_hold(&path)?));
+    }
     let file = open_lock(&path)?;
     match flock(&file, shared, false)? {
         true => Ok(Some(registered(file, &path, token, shared, project_dir))),
@@ -224,6 +325,14 @@ pub fn hold_with(
     project_dir: Option<&Path>,
     policy: &WaitPolicy,
 ) -> std::io::Result<Hold> {
+    if let Some(path) = lock_path(token, machine, project_dir) {
+        if covered_by_ancestor(&path, shared) {
+            return inherited_hold(&path);
+        }
+        if upgrade_from_ancestor(&path, shared) {
+            return Err(upgrade_error(token));
+        }
+    }
     let Some(path) = lock_path(token, machine, project_dir) else {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -264,6 +373,35 @@ pub fn hold_exclusive(token: &str, project_dir: Option<&Path>) -> std::io::Resul
 /// Attach a holder record to a freshly-taken flock. Registration is best-effort by design (see
 /// [`holder::register`]): the hold is already ours, and losing the record costs diagnosis, not
 /// exclusion.
+/// A hold that takes NO flock, because an ancestor already holds this contract.
+///
+/// `record: None` is load-bearing: registering would publish a second holder for one hold, and
+/// `prova locks` would report two processes excluding each other when one is inside the other.
+/// Dropping it closes a file it never locked, which is exactly the right amount of work.
+fn inherited_hold(path: &Path) -> std::io::Result<Hold> {
+    announce_inheritance(path);
+    Ok(Hold { record: None, file: open_lock(path)? })
+}
+
+/// Say it, ONCE per contract per process.
+///
+/// Silence here would make the two outcomes indistinguishable — "the lock was free" and "an
+/// ancestor holds it and I am inside their critical section" are different facts about the run,
+/// and the second is the one that explains why `prova locks` shows one holder where a reader
+/// expected two. Deduped because the scheduler asks per leaf, and a line per leaf would bury it.
+fn announce_inheritance(path: &Path) {
+    static SAID: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<PathBuf>>> =
+        std::sync::OnceLock::new();
+    let said = SAID.get_or_init(Default::default);
+    let Ok(mut set) = said.lock() else { return };
+    if set.insert(path.to_path_buf()) {
+        eprintln!(
+            "prova: lock {:?} inherited from an ancestor holder — no second hold taken",
+            path.file_stem().unwrap_or_default()
+        );
+    }
+}
+
 fn registered(
     file: std::fs::File,
     path: &Path,

@@ -608,6 +608,25 @@ fn stalled_on_lock(leaves: &[Leaf], started: &[bool], outcome: &[Option<Outcome>
     })
 }
 
+/// Refuse, BEFORE scheduling, a run that could only deadlock
+/// (docs/design/agent-ergonomics.md#a-lock-wrapper-can-wait-on-its-own-parent).
+///
+/// An ancestor holding a token for reading while a leaf here needs to write it is a guaranteed
+/// deadlock — the holder is waiting for us — and neither acquire-time exit is honest about it:
+/// returning "unavailable" queues the leaf forever, and returning an error lands in
+/// `ResourceTable`'s degradation arm, which runs the leaf with in-run-only locking and silently
+/// drops the exclusion the author asked for. Saying so up front neither hangs nor lies.
+fn ancestor_upgrade_refusal(leaves: &[Leaf], config: &RunConfig) -> Option<String> {
+    leaves.iter().flat_map(|leaf| leaf.reqs.iter()).find_map(|r| {
+        crate::locks::ancestor_upgrade_refusal(
+            &r.token,
+            r.shared,
+            r.machine,
+            config.project_dir.as_deref(),
+        )
+    })
+}
+
 /// Say that this leaf is queued on a lock, once, and let the activity report the duration when it
 /// finally acquires (docs/design/agent-ergonomics.md#narrate-lock-waits).
 ///
@@ -625,10 +644,21 @@ fn announce_queued(
         return;
     }
     let tokens: Vec<&str> = leaf.reqs.iter().map(|r| r.token.as_str()).collect();
+    // NAME the holder rather than asserting a category. "held by another prova instance" was true
+    // whatever the truth was, and the day it was wrong it cost 22 minutes with the answer — the
+    // waiter's own parent — sitting in a record beside the lock file
+    // (docs/design/agent-ergonomics.md#a-lock-wrapper-can-wait-on-its-own-parent).
     let holder = if resources.can_acquire(&leaf.reqs) {
-        "held by another prova instance"
+        leaf.reqs
+            .iter()
+            .find_map(|r| {
+                let path =
+                    crate::locks::lock_path(&r.token, r.machine, config.project_dir.as_deref())?;
+                Some(crate::locks::holder::describe_holders(&path))
+            })
+            .unwrap_or_else(|| "held by another prova instance".to_string())
     } else {
-        "held by this run"
+        "held by this run".to_string()
     };
     *slot = Some(crate::progress::start(
         config.progress(),
@@ -667,6 +697,11 @@ pub(super) async fn run_plan(
     let mut outcome: Vec<Option<Outcome>> = vec![None; n];
     let mut started = vec![false; n];
     let mut resources = ResourceTable::default();
+    if let Some(why) = ancestor_upgrade_refusal(leaves, config) {
+        eprintln!("prova: {why}");
+        summary.failed += 1;
+        return;
+    }
     let mut in_flight = futures::stream::FuturesUnordered::new();
 
     loop {

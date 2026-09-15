@@ -117,3 +117,98 @@ prova.test("xtask joins the same house rule, on the same file", {
   -- parent holding what its child needs is a deadlock rather than a slow build.
   t:expect(xtask, "the delegating command is exempt"):matches("Commands::Run%s*{%s*%.%.%s*}%s*=>%s*None")
 end)
+
+-- ── re-entrancy (docs/design/agent-ergonomics.md#a-lock-wrapper-can-wait-on-its-own-parent) ────
+--
+-- A flock excludes INDEPENDENT actors. A child inside `prova lock cargo -- …` is not one — it is
+-- the work the parent took the lock to do — so queuing it behind its own parent is a deadlock
+-- wearing mutual exclusion's clothes. Witnessed 2026-09-12: 22 minutes, killed by hand.
+
+--- A package whose proof takes `writes(token)` and writes a marker, so a run that never acquires
+--- is distinguishable from one that acquired instantly.
+local function pkg_locking(t, name, token)
+  local pkg = t:tempdir(name)
+  fs.mkdir(pkg .. "/proofs")
+  fs.write(pkg .. "/prova.toml", '[run]\nproofs = ["proofs"]\n')
+  fs.write(pkg .. "/proofs/inner_test.lua", string.format([[
+prova.test("the inner run takes the same token", { locks = { prova.writes(%q) } }, function(t)
+  t:expect(1):equals(1)
+end)
+]], token))
+  return pkg
+end
+
+prova.test("a child inherits its parent's hold instead of deadlocking behind it", {
+  covers = "docs/design/agent-ergonomics.md#a-lock-wrapper-can-wait-on-its-own-parent",
+  proves = "the composition the wrapper exists FOR — join the house rule around a command — and the most natural command to wrap is a prova run. Before this the inner run queued behind its own parent forever; the bound is the assertion, because a deadlock has no output to match on, only a clock that never stops",
+}, function(t)
+  local pkg = pkg_locking(t, "reentrant", "cargo")
+  -- 60s is the SAFETY NET, not the expectation: this completes in under a second when the hold is
+  -- inherited, and hangs forever when it is not. A generous bound keeps a slow CI runner honest
+  -- while still turning the regression into a red rather than a wedged suite.
+  local r = shell.run({ prova.bin, "lock", "cargo", "--", prova.bin },
+    { cwd = pkg, merge_stderr = true, timeout = "60s" })
+
+  t:expect(r.code, "the wrapped run completes:\n" .. r.stdout):equals(0)
+  t:expect(r.stdout, "and says the hold was inherited rather than taken twice"):contains("inherited")
+end)
+
+prova.test("inheritance is matched on the resolved lock path, not the token name", {
+  covers = "docs/design/agent-ergonomics.md#a-lock-wrapper-can-wait-on-its-own-parent",
+  proves = "`cargo` at machine scope and `cargo` in a package are different contracts that share a name, so inheriting across them would hand out an exclusion nobody holds — the one way this change could INVENT a race instead of removing one. Substrate's wrapper was machine-scoped, which is precisely why the trap had never bitten before the day it did",
+}, function(t)
+  local pkg = pkg_locking(t, "scoped", "cargo")
+  -- BOTH halves in one test, deliberately. Asserting only "no inheritance across scopes" is
+  -- satisfied by an implementation that never inherits at all — it passed before a line of this
+  -- existed. Pairing it with the same-scope case makes the absence mean something: the feature is
+  -- demonstrably ON in the first run and demonstrably scoped in the second.
+  local same = shell.run({ prova.bin, "lock", "cargo", "--", prova.bin },
+    { cwd = pkg, merge_stderr = true, timeout = "60s" })
+  t:expect(same.stdout, "same scope inherits:\n" .. same.stdout):contains("inherited")
+
+  -- The wrapper holds the MACHINE `cargo`; the inner run declares the PACKAGE `cargo`. Different
+  -- files, so the inner must take its own hold — free here, so this asserts inheritance did not
+  -- apply rather than that it deadlocked.
+  local cross = shell.run({ prova.bin, "lock", "cargo", "--machine", "--", prova.bin },
+    { cwd = pkg, merge_stderr = true, timeout = "60s" })
+  t:expect(cross.code, "the run still completes:\n" .. cross.stdout):equals(0)
+  t:expect(cross.stdout, "but claims no inheritance across scopes"):never():contains("inherited")
+end)
+
+prova.test("a shared parent hold does not grant an exclusive child request", {
+  covers = "docs/design/agent-ergonomics.md#a-lock-wrapper-can-wait-on-its-own-parent",
+  proves = "the unsound upgrade. `--reads` is a CONCURRENT hold that several actors share, so treating it as covering a writer would let a child exclude nobody while believing it excludes everyone — a silent race manufactured by the very change meant to remove one",
+}, function(t)
+  local pkg = pkg_locking(t, "upgrade", "cargo")
+  -- A second reader holds the same token for the duration, so the writer genuinely cannot proceed:
+  -- if the upgrade were wrongly granted, the inner run would sail through and this goes red.
+  local r = shell.run({
+    "sh", "-c",
+    '"$0" lock cargo --reads -- sh -c "sleep 6" & sleep 1; ' ..
+    'PROVA_LOCK_WAIT_TIMEOUT=3s "$0" lock cargo --reads -- "$0"; echo "inner=$?"; wait',
+    prova.bin,
+  }, { cwd = pkg, merge_stderr = true, timeout = "90s" })
+
+  -- The inner prova run wants writes("cargo") while two readers hold it: it must WAIT (and here,
+  -- bounded, give up) rather than inherit the reader hold it was handed.
+  t:expect(r.stdout, "the writer did not inherit a reader hold:\n" .. r.stdout)
+    :never():contains("inner=0")
+end)
+
+prova.test("a queued leaf names who holds the lock, not 'another prova instance'", {
+  covers = "docs/design/agent-ergonomics.md#a-lock-wrapper-can-wait-on-its-own-parent",
+  proves = "22 minutes passed with the answer — your own parent — sitting in a record beside the lock file, because the queued line said the same sentence whatever the truth was. A message that cannot be wrong is a message that cannot help",
+}, function(t)
+  local pkg = pkg_locking(t, "named", "crunch")
+  -- An outsider holds the token, so the inner run genuinely queues and must narrate a real holder.
+  local r = shell.run({
+    "sh", "-c",
+    '"$0" lock crunch -- sh -c "sleep 5" & sleep 1; ' ..
+    'PROVA_LOCK_WAIT_TIMEOUT=2s "$0" 2>&1 | head -40; wait',
+    prova.bin,
+  }, { cwd = pkg, merge_stderr = true, timeout = "90s" })
+
+  t:expect(r.stdout, "the holder is named by pid:\n" .. r.stdout):matches("pid %d+")
+  t:expect(r.stdout, "and the placeholder sentence is gone")
+    :never():contains("another prova instance")
+end)
