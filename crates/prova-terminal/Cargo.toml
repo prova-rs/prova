@@ -1,0 +1,27 @@
+[package]
+name = "prova-terminal"
+description = "A terminal kernel: drive a program through a real PTY and observe it through a VT screen model — the engine under prova's `terminal` driver."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/prova-terminal"
+readme = "README.md"
+keywords = ["pty", "terminal", "vt100", "testing", "tui"]
+categories = ["command-line-interface", "development-tools::testing"]
+
+# Every dependency is a crates.io crate, never a git source: this crate is PUBLISHED (User ruling
+# 2026-09-19) so a host outside this workspace — Substrate's `cos.process.pty_*` — depends on a
+# version, not on a sibling checkout. prova-core, with its git-pinned archetect crates, is not.
+[dependencies]
+# PTY allocation behind one API — openpty on unix, ConPTY on Windows. ConPTY emits the same VT
+# sequences openpty does, so the screen model below is byte-for-byte OS-agnostic.
+portable-pty = "0.9"
+# The VT-sequence screen model: the observation layer.
+vt100 = "0.15"
+
+[target.'cfg(unix)'.dependencies]
+# Signal delivery to the child (`Session::signal("INT")` → kill(pid, SIGINT)).
+libc = "0.2"

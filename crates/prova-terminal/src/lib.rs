@@ -1,0 +1,624 @@
+//! The terminal kernel — a program driven through a real PTY, observed through a VT screen model.
+//!
+//! One API, not two per-OS ones: only the ALLOCATION differs by platform (openpty on unix, ConPTY
+//! on Windows, both behind portable-pty). ConPTY emits the same VT sequences openpty does, so the
+//! screen model — the observation layer — is byte-for-byte OS-agnostic.
+//!
+//! The kernel owns the SESSION and no policy. It has no Lua, no async runtime and no clock: every
+//! wait is a non-blocking CHECK ([`Session::check_expect`], [`Session::activity`]) that a host
+//! loops over and bounds as it sees fit — prova's `terminal` driver by deadline, an agent host by
+//! progress. The reader is a plain OS thread feeding one `Arc<Mutex<…>>` (raw transcript + vt100
+//! parser), so a host needs no cross-thread wakers and no `Send` on its own side.
+//!
+//! Extracted from prova-core's `terminal` module with no change in behaviour
+//! (docs/design/terminal-kernel.md).
+
+use std::fmt;
+use std::io::{Read, Write};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
+use portable_pty::{native_pty_system, Child, ChildKiller, CommandBuilder, MasterPty, PtySize};
+
+/// What to run, and on how large a terminal.
+#[derive(Debug, Clone)]
+pub struct SpawnSpec {
+    /// The program and its arguments; the first element is the program.
+    pub cmd: Vec<String>,
+    pub cols: u16,
+    pub rows: u16,
+    /// The child's working directory; the host's own when `None`.
+    pub cwd: Option<String>,
+    /// Extra environment, applied in order. `TERM` is always `xterm-256color` (set last), so a
+    /// program emits the classic VT sequences the screen model parses.
+    pub env: Vec<(String, String)>,
+}
+
+impl SpawnSpec {
+    /// An 80x24 terminal running `cmd`, in the host's directory and environment.
+    pub fn new(cmd: Vec<String>) -> Self {
+        Self { cmd, cols: 80, rows: 24, cwd: None, env: Vec::new() }
+    }
+}
+
+/// Why a kernel call failed. `Display` is the cause alone; the host names the verb.
+#[derive(Debug)]
+pub enum Error {
+    /// The spec named no program.
+    NoCommand,
+    /// The PTY could not be allocated.
+    Openpty(String),
+    /// The program could not be started in the PTY.
+    Spawn { program: String, cause: String },
+    /// The PTY master's reader could not be cloned.
+    Reader(String),
+    /// The PTY master's writer could not be taken.
+    Writer(String),
+    /// The session's PTY is closed — [`Session::stop`] ran.
+    Closed,
+    /// A write, flush or resize on the PTY failed.
+    Io(String),
+    /// [`Session::signal`] was given a name it does not deliver.
+    UnknownSignal(String),
+    /// The child's pid is unknown, so no signal can reach it.
+    NoPid,
+    /// `kill(2)` refused the signal.
+    Kill { signal: String, pid: u32, cause: String },
+    /// This platform has no POSIX signals (ConPTY has no signal channel).
+    SignalsUnsupported,
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::NoCommand => write!(f, "cmd is required"),
+            Error::Openpty(c) => write!(f, "openpty: {c}"),
+            Error::Spawn { program, cause } => write!(f, "{program:?}: {cause}"),
+            Error::Reader(c) => write!(f, "reader: {c}"),
+            Error::Writer(c) => write!(f, "writer: {c}"),
+            Error::Closed => write!(f, "session is closed"),
+            Error::Io(c) => write!(f, "{c}"),
+            Error::UnknownSignal(name) => write!(f, "unknown signal {name:?}"),
+            Error::NoPid => write!(f, "child pid unknown"),
+            Error::Kill { signal, pid, cause } => write!(f, "{signal}: kill({pid}) failed: {cause}"),
+            Error::SignalsUnsupported => {
+                write!(f, "POSIX signals need a unix platform (ConPTY has no signal channel)")
+            }
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
+/// Everything the reader thread produces: the raw byte transcript (what [`Session::check_expect`]
+/// scans) and the vt100 parser (what [`Session::screen`] snapshots). One lock, held briefly on
+/// both sides.
+struct TermBuf {
+    raw: Vec<u8>,
+    parser: vt100::Parser,
+    /// Why the reader stopped, once it has — `None` while the stream is still live.
+    ///
+    /// The REASON is kept, not merely the fact. A clean EOF (the child closed the pty and exited)
+    /// and a failed read are the same "no more output" to a caller but completely different
+    /// diagnoses when expected output never arrives: the first says the program produced nothing,
+    /// the second says we may have lost what it produced. This previously collapsed to a bool, and
+    /// an intermittent empty-screen failure cost a forty-run bisect that still could not tell those
+    /// two apart. Cheap to carry, decisive when it matters.
+    end: Option<String>,
+}
+
+impl TermBuf {
+    /// The stream is finished — no further output can arrive.
+    fn ended(&self) -> bool {
+        self.end.is_some()
+    }
+}
+
+/// Take the terminal buffer lock, recovering from poisoning: the buffer is a raw transcript plus
+/// a vt parser that tolerates torn writes, so a panicked holder leaves nothing worse than a
+/// truncated escape sequence — recovering beats poisoning every later read.
+fn lock_buf(m: &Mutex<TermBuf>) -> MutexGuard<'_, TermBuf> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// A program running in a PTY. `Send`, so a host may keep it on any thread; every method is
+/// non-blocking except [`Session::spawn`].
+pub struct Session {
+    buf: Arc<Mutex<TermBuf>>,
+    writer: Option<Box<dyn Write + Send>>,
+    master: Option<Box<dyn MasterPty + Send>>,
+    child: Box<dyn Child + Send + Sync>,
+    killer: Box<dyn ChildKiller + Send + Sync>,
+    pid: Option<u32>,
+}
+
+/// One non-blocking look for a byte string in the transcript.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExpectCheck {
+    /// The transcript holds it — including output that has since scrolled off the screen.
+    Found,
+    /// Not yet, and the stream is still live.
+    Pending,
+    /// The stream ended without producing it.
+    Ended {
+        /// Bytes read over the session's life.
+        bytes: usize,
+        /// Why the reader stopped ("clean EOF", or the failed read).
+        why: String,
+        /// The transcript's last 200 characters.
+        tail: String,
+    },
+}
+
+/// How a reaped child exited. The kernel's own type, so portable-pty stays out of the public API.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Exit {
+    /// The exit code.
+    pub code: u32,
+}
+
+/// How much output the session has produced so far, and whether it can produce more.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Activity {
+    pub bytes: usize,
+    pub ended: bool,
+}
+
+/// The facts that separate "the program never ran" from "it ran and said nothing" from "it spoke
+/// and we lost it" — what a host reports when a wait gives up. An empty screen alone cannot tell
+/// those apart.
+#[derive(Debug, Clone)]
+pub struct Stall {
+    /// The frame's text at the moment of the stall.
+    pub screen: String,
+    /// Bytes read over the session's life.
+    pub bytes: usize,
+    /// The reader's state: its end reason, or "still streaming".
+    pub reader: String,
+    /// The child's state: "exited (…)", "still running (pid N)", or "status unknown (…)".
+    pub child: String,
+    /// While the child still runs, everything alive under it (`\n-- still alive --\n…`); else
+    /// empty.
+    pub tree: String,
+}
+
+impl Session {
+    /// Allocate a PTY of the spec's size, start the program in it, and start the reader thread.
+    pub fn spawn(spec: &SpawnSpec) -> Result<Session, Error> {
+        let program = spec.cmd.first().ok_or(Error::NoCommand)?;
+        let pty = native_pty_system();
+        let pair = pty
+            .openpty(PtySize { rows: spec.rows, cols: spec.cols, pixel_width: 0, pixel_height: 0 })
+            .map_err(|e| Error::Openpty(e.to_string()))?;
+
+        let mut builder = CommandBuilder::new(program);
+        builder.args(&spec.cmd[1..]);
+        if let Some(cwd) = &spec.cwd {
+            builder.cwd(cwd);
+        }
+        for (k, v) in &spec.env {
+            builder.env(k, v);
+        }
+        // A plain terminal identity so programs emit the classic VT sequences vt100 parses.
+        builder.env("TERM", "xterm-256color");
+
+        let child = pair
+            .slave
+            .spawn_command(builder)
+            .map_err(|e| Error::Spawn { program: program.clone(), cause: e.to_string() })?;
+        drop(pair.slave);
+
+        let pid = child.process_id();
+        let killer = child.clone_killer();
+        let mut reader = pair.master.try_clone_reader().map_err(|e| Error::Reader(e.to_string()))?;
+        let writer = pair.master.take_writer().map_err(|e| Error::Writer(e.to_string()))?;
+
+        let buf = Arc::new(Mutex::new(TermBuf {
+            raw: Vec::new(),
+            parser: vt100::Parser::new(spec.rows, spec.cols, 0),
+            end: None,
+        }));
+
+        // The reader is a plain OS thread: pty reads are blocking, and this keeps every host's
+        // runtime its own business. It dies at EOF (child exit / pty close on teardown).
+        let thread_buf = buf.clone();
+        std::thread::spawn(move || {
+            let mut chunk = [0u8; 8 * 1024];
+            loop {
+                match reader.read(&mut chunk) {
+                    Ok(0) => {
+                        lock_buf(&thread_buf).end = Some("clean EOF".to_string());
+                        break;
+                    }
+                    // Not silently equivalent to EOF. A pty master can fail the read once the last
+                    // slave closes, and whether buffered output survives that is platform-dependent
+                    // — so this branch is exactly the case where the screen can come up empty
+                    // through no fault of the program under test. Record what happened.
+                    Err(e) => {
+                        lock_buf(&thread_buf).end = Some(format!("read failed: {e} ({:?})", e.kind()));
+                        break;
+                    }
+                    Ok(n) => {
+                        let mut b = lock_buf(&thread_buf);
+                        b.raw.extend_from_slice(&chunk[..n]);
+                        b.parser.process(&chunk[..n]);
+                    }
+                }
+            }
+        });
+
+        Ok(Session { buf, writer: Some(writer), master: Some(pair.master), child, killer, pid })
+    }
+
+    /// The child's pid, when the platform reports one.
+    pub fn pid(&self) -> Option<u32> {
+        self.pid
+    }
+
+    /// Write raw bytes to the program's input and flush them.
+    pub fn send(&mut self, data: &[u8]) -> Result<(), Error> {
+        let w = self.writer.as_mut().ok_or(Error::Closed)?;
+        w.write_all(data).and_then(|()| w.flush()).map_err(|e| Error::Io(e.to_string()))
+    }
+
+    /// Look once for `needle` in the raw transcript, so a string that scrolled off the screen
+    /// still counts as observed.
+    pub fn check_expect(&self, needle: &[u8]) -> ExpectCheck {
+        let b = lock_buf(&self.buf);
+        if b.raw.windows(needle.len()).any(|w| w == needle) {
+            return ExpectCheck::Found;
+        }
+        if !b.ended() {
+            return ExpectCheck::Pending;
+        }
+        let tail = String::from_utf8_lossy(&b.raw)
+            .chars()
+            .rev()
+            .take(200)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect::<String>();
+        ExpectCheck::Ended { bytes: b.raw.len(), why: b.end.clone().unwrap_or_default(), tail }
+    }
+
+    /// Bytes produced so far, and whether the stream has ended.
+    pub fn activity(&self) -> Activity {
+        let b = lock_buf(&self.buf);
+        Activity { bytes: b.raw.len(), ended: b.ended() }
+    }
+
+    /// Freeze the current frame: plain data copied out under the lock, so assertions never race
+    /// the reader.
+    pub fn screen(&self) -> Screen {
+        let b = lock_buf(&self.buf);
+        let screen = b.parser.screen();
+        let (rows, cols) = screen.size();
+        let mut cells = Vec::with_capacity(rows as usize);
+        for r in 0..rows {
+            let mut row = Vec::with_capacity(cols as usize);
+            for c in 0..cols {
+                row.push(match screen.cell(r, c) {
+                    Some(cl) => Cell {
+                        ch: cl.contents(),
+                        fg: color_name(cl.fgcolor()),
+                        bg: color_name(cl.bgcolor()),
+                        bold: cl.bold(),
+                    },
+                    None => Cell {
+                        ch: String::new(),
+                        fg: "default".into(),
+                        bg: "default".into(),
+                        bold: false,
+                    },
+                });
+            }
+            cells.push(row);
+        }
+        Screen { contents: screen.contents(), rows, cols, cells }
+    }
+
+    /// A real SIGWINCH: the pty is resized, the child is signaled, and the screen model's
+    /// geometry follows — `stty size` inside the session reports the new numbers.
+    pub fn resize(&mut self, cols: u16, rows: u16) -> Result<(), Error> {
+        let m = self.master.as_ref().ok_or(Error::Closed)?;
+        m.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .map_err(|e| Error::Io(e.to_string()))?;
+        lock_buf(&self.buf).parser.set_size(rows, cols);
+        Ok(())
+    }
+
+    /// Deliver a POSIX signal to the child by name — `INT`, `TERM`, `KILL`, `HUP`, `QUIT`,
+    /// `USR1`, `USR2` or `WINCH`, with or without the `SIG` prefix, in any case.
+    #[cfg(unix)]
+    pub fn signal(&self, name: &str) -> Result<(), Error> {
+        let sig = match name.trim_start_matches("SIG").to_ascii_uppercase().as_str() {
+            "INT" => libc::SIGINT,
+            "TERM" => libc::SIGTERM,
+            "KILL" => libc::SIGKILL,
+            "HUP" => libc::SIGHUP,
+            "QUIT" => libc::SIGQUIT,
+            "USR1" => libc::SIGUSR1,
+            "USR2" => libc::SIGUSR2,
+            "WINCH" => libc::SIGWINCH,
+            other => return Err(Error::UnknownSignal(other.to_string())),
+        };
+        let pid = self.pid.ok_or(Error::NoPid)?;
+        // SAFETY: kill(2) with a pid this session spawned and a valid signal number; it touches
+        // no memory, and a stale pid fails with ESRCH, which is reported.
+        let r = unsafe { libc::kill(pid as libc::pid_t, sig) };
+        if r != 0 {
+            return Err(Error::Kill {
+                signal: name.to_string(),
+                pid,
+                cause: std::io::Error::last_os_error().to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    /// POSIX signals need a unix platform: ConPTY has no signal channel.
+    #[cfg(not(unix))]
+    pub fn signal(&self, _name: &str) -> Result<(), Error> {
+        Err(Error::SignalsUnsupported)
+    }
+
+    /// Reap the child if it has exited; `None` while it runs. Never blocks.
+    pub fn try_wait(&mut self) -> std::io::Result<Option<Exit>> {
+        Ok(self.child.try_wait()?.map(|s| Exit { code: s.exit_code() }))
+    }
+
+    /// The facts a host reports when a wait gives up (see [`Stall`]).
+    pub fn diagnose(&mut self) -> Stall {
+        let (screen, bytes, reader) = {
+            let b = lock_buf(&self.buf);
+            (
+                b.parser.screen().contents(),
+                b.raw.len(),
+                b.end.clone().unwrap_or_else(|| "still streaming".to_string()),
+            )
+        };
+        let child = match self.child.try_wait() {
+            Ok(Some(status)) => format!("exited ({status:?})"),
+            // Alive but silent is the case worth naming precisely: it means the pty slave is still
+            // held, so output was never produced rather than lost. Which link of the chain is
+            // holding it is the actual question.
+            Ok(None) => match self.pid {
+                Some(p) => format!("still running (pid {p})"),
+                None => "still running".to_string(),
+            },
+            Err(e) => format!("status unknown ({e})"),
+        };
+        let tree = if child.starts_with("still running") { process_tree(self.pid) } else { String::new() };
+        Stall { screen, bytes, reader, child, tree }
+    }
+
+    /// Kill the child and close the pty. Idempotent; a kill that fails because the child already
+    /// exited is the expected case, not an error.
+    pub fn stop(&mut self) {
+        // A child that already exited refuses the kill; either way nothing is left running.
+        let _ = self.killer.kill();
+        self.writer.take();
+        self.master.take();
+    }
+}
+
+/// A frozen frame — plain data, safe to hold while the program keeps writing.
+#[derive(Debug, Clone)]
+pub struct Screen {
+    /// The frame as text: rows joined by newlines, trailing blanks trimmed per row.
+    pub contents: String,
+    pub rows: u16,
+    pub cols: u16,
+    /// `cells[row][col]`, 0-based.
+    pub cells: Vec<Vec<Cell>>,
+}
+
+impl Screen {
+    /// Row `n` of the frame text (0-based); empty past the last non-blank row.
+    pub fn line(&self, n: usize) -> &str {
+        self.contents.lines().nth(n).unwrap_or("")
+    }
+
+    pub fn contains(&self, s: &str) -> bool {
+        self.contents.contains(s)
+    }
+
+    /// The cell at `(row, col)`, 0-based; `None` outside the screen.
+    pub fn cell(&self, row: usize, col: usize) -> Option<&Cell> {
+        self.cells.get(row).and_then(|r| r.get(col))
+    }
+}
+
+/// One screen cell: its character and its rendition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cell {
+    /// The cell's contents — empty for a never-written cell.
+    pub ch: String,
+    /// Foreground colour: one of the 16 ANSI names (`red`, `bright-white`, …), `idx-N` beyond
+    /// them, `#rrggbb` for RGB, or `default` for the terminal's own.
+    pub fg: String,
+    /// Background colour, in the same vocabulary as `fg`.
+    pub bg: String,
+    pub bold: bool,
+}
+
+/// The colour vocabulary a proof matches by: the 16 ANSI names, `idx-N` beyond them, `#rrggbb`
+/// for RGB, and `default` for the terminal's own. Private, so vt100 stays out of the public API.
+fn color_name(c: vt100::Color) -> String {
+    match c {
+        vt100::Color::Default => "default".to_string(),
+        vt100::Color::Idx(i) => match i {
+            0 => "black".into(),
+            1 => "red".into(),
+            2 => "green".into(),
+            3 => "yellow".into(),
+            4 => "blue".into(),
+            5 => "magenta".into(),
+            6 => "cyan".into(),
+            7 => "white".into(),
+            8 => "bright-black".into(),
+            9 => "bright-red".into(),
+            10 => "bright-green".into(),
+            11 => "bright-yellow".into(),
+            12 => "bright-blue".into(),
+            13 => "bright-magenta".into(),
+            14 => "bright-cyan".into(),
+            15 => "bright-white".into(),
+            other => format!("idx-{other}"),
+        },
+        vt100::Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
+    }
+}
+
+/// Best-effort snapshot of everything still alive under a stalled child, for a failure message
+/// only.
+///
+/// "child still running" localizes a hang to the session but not to a process, and a pty session
+/// is routinely a chain — a shell, a PATH shim, the real program under it. Which link stalled is
+/// the whole question, and it is unrecoverable after the fact because teardown reaps the tree. So
+/// it is captured at the moment of failure.
+///
+/// Failure-tolerant by construction: no `ps`, an unparsable table, or a since-exited child all
+/// degrade the message and never the run. Unix-only; Windows keeps the shorter form.
+#[cfg(unix)]
+fn process_tree(root: Option<u32>) -> String {
+    let Some(root) = root else { return String::new() };
+    let Ok(out) = std::process::Command::new("ps").args(["-A", "-o", "pid=,ppid=,stat=,command="]).output()
+    else {
+        return String::new();
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+
+    let mut rows: Vec<(u32, u32, &str)> = Vec::new();
+    for line in text.lines() {
+        let mut it = line.split_whitespace();
+        let (Some(pid), Some(ppid)) = (it.next(), it.next()) else {
+            continue;
+        };
+        // A process row names its state before its command; a row without one is not a process.
+        if it.next().is_none() {
+            continue;
+        }
+        let (Ok(pid), Ok(ppid)) = (pid.parse::<u32>(), ppid.parse::<u32>()) else {
+            continue;
+        };
+        rows.push((pid, ppid, line.trim()));
+    }
+
+    // Walk down from the child: repeated sweeps, since `ps` output is not topologically ordered.
+    let mut keep: Vec<u32> = vec![root];
+    loop {
+        let before = keep.len();
+        for (pid, ppid, _) in &rows {
+            if keep.contains(ppid) && !keep.contains(pid) {
+                keep.push(*pid);
+            }
+        }
+        if keep.len() == before {
+            break;
+        }
+    }
+
+    let listed: Vec<&str> =
+        rows.iter().filter(|(pid, _, _)| keep.contains(pid)).map(|(_, _, line)| *line).collect();
+    if listed.is_empty() {
+        return String::new();
+    }
+    format!("\n-- still alive --\n{}", listed.join("\n"))
+}
+
+/// Unix-only: Windows keeps the shorter failure message.
+#[cfg(not(unix))]
+fn process_tree(_root: Option<u32>) -> String {
+    String::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// The screen vocabulary a proof matches colors by: the 16 ANSI names, idx-N beyond them,
+    /// hex for RGB, and "default" for the terminal's own.
+    #[test]
+    fn color_names_speak_ansi_idx_and_rgb() {
+        assert_eq!(color_name(vt100::Color::Default), "default");
+        assert_eq!(color_name(vt100::Color::Idx(1)), "red");
+        assert_eq!(color_name(vt100::Color::Idx(15)), "bright-white");
+        assert_eq!(color_name(vt100::Color::Idx(42)), "idx-42");
+        assert_eq!(color_name(vt100::Color::Rgb(255, 0, 16)), "#ff0010");
+    }
+
+    #[test]
+    fn an_empty_command_is_refused() {
+        let err = Session::spawn(&SpawnSpec::new(Vec::new())).err().expect("refused");
+        assert!(matches!(err, Error::NoCommand), "{err}");
+    }
+
+    /// Loop a check the way a host does — the kernel never sleeps, so the test owns the bound.
+    fn until<T>(bound: Duration, mut f: impl FnMut() -> Option<T>) -> T {
+        let deadline = Instant::now() + bound;
+        loop {
+            if let Some(v) = f() {
+                return v;
+            }
+            assert!(Instant::now() < deadline, "not observed within {bound:?}");
+            std::thread::sleep(Duration::from_millis(15));
+        }
+    }
+
+    /// The kernel round trip with no host at all: the pty echo reaches the transcript and the
+    /// frozen frame, a signal reaches the child, try_wait reaps the real exit code, and a stream
+    /// that ends without the needle says so with the facts that explain it.
+    #[cfg(unix)]
+    #[test]
+    fn a_real_pty_round_trip() {
+        let bound = Duration::from_secs(10);
+        let mut s = Session::spawn(&SpawnSpec::new(vec!["cat".into()])).expect("spawn cat");
+        s.send(b"marco\r").expect("send");
+        until(bound, || (s.check_expect(b"marco") == ExpectCheck::Found).then_some(()));
+        let frame = s.screen();
+        assert!(frame.contains("marco") && frame.line(0).contains("marco"), "{}", frame.contents);
+        assert_eq!((frame.rows, frame.cols), (24, 80));
+        assert_eq!(frame.cell(0, 0).map(|c| c.ch.as_str()), Some("m"));
+        assert!(frame.cell(24, 0).is_none(), "outside the screen");
+        s.signal("TERM").expect("signal");
+        until(bound, || s.try_wait().expect("try_wait"));
+
+        let mut exiter = Session::spawn(&SpawnSpec::new(vec!["sh".into(), "-c".into(), "exit 3".into()]))
+            .expect("spawn sh");
+        let status = until(bound, || exiter.try_wait().expect("try_wait"));
+        assert_eq!(status.code, 3, "the real exit code");
+
+        let quiet = Session::spawn(&SpawnSpec::new(vec!["sh".into(), "-c".into(), "exit 0".into()]))
+            .expect("spawn sh");
+        let ended = until(bound, || match quiet.check_expect(b"never-appears") {
+            ExpectCheck::Pending => None,
+            other => Some(other),
+        });
+        match ended {
+            ExpectCheck::Ended { why, .. } => assert!(!why.is_empty(), "the reader's end reason is kept"),
+            other => panic!("expected the stream to end, got {other:?}"),
+        }
+        assert!(quiet.activity().ended);
+    }
+
+    /// Stop is idempotent and closes the session: later sends and resizes refuse as Closed.
+    #[cfg(unix)]
+    #[test]
+    fn stop_closes_the_session() {
+        let mut s = Session::spawn(&SpawnSpec::new(vec!["cat".into()])).expect("spawn cat");
+        s.stop();
+        s.stop();
+        assert!(matches!(s.send(b"x"), Err(Error::Closed)));
+        assert!(matches!(s.resize(100, 30), Err(Error::Closed)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unknown_signal_is_refused_by_name() {
+        let s = Session::spawn(&SpawnSpec::new(vec!["cat".into()])).expect("spawn cat");
+        let err = s.signal("BOGUS").expect_err("refused");
+        assert_eq!(err.to_string(), "unknown signal \"BOGUS\"");
+    }
+}

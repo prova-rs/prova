@@ -2983,11 +2983,11 @@ dependencies = [
  "libc",
  "mlua",
  "percent-encoding",
- "portable-pty",
  "prost",
  "prost-reflect",
  "prost-types",
  "protox",
+ "prova-terminal",
  "quick-xml",
  "regex",
  "reqwest",
@@ -3008,9 +3008,17 @@ dependencies = [
  "tonic-reflection",
  "url",
  "uuid",
- "vt100",
  "webpki-roots",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "prova-terminal"
+version = "0.28.0"
+dependencies = [
+ "libc",
+ "portable-pty",
+ "vt100",
 ]
 
 [[package]]

@@ -1,10 +1,11 @@
-//! The `terminal` kernel transport — PTY-backed driving of interactive programs, with a screen
-//! model as the observation layer (docs/design/mocks-proxies-drivers.md, proofs/spec/terminal).
+//! The `terminal` module — prova's Lua face over the terminal kernel (the `prova-terminal` crate,
+//! docs/design/terminal-kernel.md): PTY-backed driving of interactive programs, with a screen model
+//! as the observation layer (docs/design/mocks-proxies-drivers.md, proofs/spec/terminal).
 //!
-//! One kernel API, not two per-OS ones: only the ALLOCATION differs by platform (openpty on unix,
-//! ConPTY on Windows, both behind portable-pty). ConPTY emits the same VT sequences openpty does,
-//! so the screen model — the observation layer — is byte-for-byte OS-agnostic. `terminal` is the
-//! user-facing word; this pty-shaped module is the internal name.
+//! The kernel owns the SESSION — allocation (openpty on unix, ConPTY on Windows), the reader
+//! thread, the transcript and the screen model — and answers every wait as a non-blocking check.
+//! This face owns the POLICY: waits are bounded by a deadline (`timeout`), polled on the async
+//! runtime, and every session is torn down via `ctx:manage`. `terminal` is the user-facing word.
 //!
 //! Driver surface: `terminal.spawn(ctx, { cmd, cols, rows, env? })` → a session with `:send`,
 //! `:expect` (observe-until-match with a timeout — the same idea as `wait_for`; never a sleep),
@@ -13,19 +14,15 @@
 //!
 //! Mock surface: `terminal.mock(ctx, { as = "name" })` shadows a CLI on PATH with a scripted
 //! responder (expect→send pairs, generated as a self-contained POSIX shim). The narrow, true
-//! mock: your SUT shells out to an interactive CLI and you script the other side.
-//!
-//! The pty reader is a plain OS thread feeding an `Arc<Mutex<…>>` (raw transcript + vt100 parser);
-//! Lua-side waits poll it on the async runtime — no cross-thread wakers, no `Send` Lua.
+//! mock: your SUT shells out to an interactive CLI and you script the other side. Mocks and
+//! proxies are prova's alone — test-driver conveniences, not kernel concerns.
 
 use std::cell::RefCell;
-use std::io::{Read, Write};
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use mlua::{Function, Lua, Table, UserData, UserDataFields, UserDataMethods, Value};
-use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
+use prova_terminal::{ExpectCheck, Session, SpawnSpec};
 
 use crate::model::parse_duration;
 
@@ -46,69 +43,6 @@ fn err(msg: impl Into<String>) -> mlua::Error {
     mlua::Error::RuntimeError(msg.into())
 }
 
-/// Best-effort snapshot of everything still alive under a stalled child, for a failure message only.
-///
-/// "child still running" localizes a hang to the session but not to a process, and a pty session is
-/// routinely a chain — a shell, a PATH shim, the real program under it. Which link stalled is the
-/// whole question, and it is unrecoverable after the fact because teardown reaps the tree. So it is
-/// captured at the moment of failure.
-///
-/// Failure-tolerant by construction: no `ps`, an unparsable table, or a since-exited child all
-/// degrade the message and never the run. Unix-only; Windows keeps the shorter form.
-#[cfg(unix)]
-fn process_tree(root: Option<u32>) -> String {
-    let Some(root) = root else { return String::new() };
-    let Ok(out) = std::process::Command::new("ps")
-        .args(["-A", "-o", "pid=,ppid=,stat=,command="])
-        .output()
-    else {
-        return String::new();
-    };
-    let text = String::from_utf8_lossy(&out.stdout);
-
-    let mut rows: Vec<(u32, u32, &str)> = Vec::new();
-    for line in text.lines() {
-        let mut it = line.split_whitespace();
-        let (Some(pid), Some(ppid), Some(stat)) = (it.next(), it.next(), it.next()) else {
-            continue;
-        };
-        let (Ok(pid), Ok(ppid)) = (pid.parse::<u32>(), ppid.parse::<u32>()) else {
-            continue;
-        };
-        rows.push((pid, ppid, line.trim()));
-        let _ = stat;
-    }
-
-    // Walk down from the child: repeated sweeps, since `ps` output is not topologically ordered.
-    let mut keep: Vec<u32> = vec![root];
-    loop {
-        let before = keep.len();
-        for (pid, ppid, _) in &rows {
-            if keep.contains(ppid) && !keep.contains(pid) {
-                keep.push(*pid);
-            }
-        }
-        if keep.len() == before {
-            break;
-        }
-    }
-
-    let listed: Vec<&str> = rows
-        .iter()
-        .filter(|(pid, _, _)| keep.contains(pid))
-        .map(|(_, _, line)| *line)
-        .collect();
-    if listed.is_empty() {
-        return String::new();
-    }
-    format!("\n-- still alive --\n{}", listed.join("\n"))
-}
-
-#[cfg(not(unix))]
-fn process_tree(_root: Option<u32>) -> String {
-    String::new()
-}
-
 fn opt_timeout(opts: &Option<Table>, default: Duration) -> mlua::Result<Duration> {
     match opts {
         Some(t) => match t.get::<Option<String>>("timeout")? {
@@ -119,112 +53,30 @@ fn opt_timeout(opts: &Option<Table>, default: Duration) -> mlua::Result<Duration
     }
 }
 
-/// Everything the reader thread produces: the raw byte transcript (what `expect` scans) and the
-/// vt100 parser (what `screen()` snapshots). One lock, held briefly on both sides.
-struct TermBuf {
-    raw: Vec<u8>,
-    parser: vt100::Parser,
-    /// Why the reader stopped, once it has — `None` while the stream is still live.
-    ///
-    /// The REASON is kept, not merely the fact. A clean EOF (the child closed the pty and exited)
-    /// and a failed read are the same "no more output" to a caller but completely different
-    /// diagnoses when expected output never arrives: the first says the program produced nothing,
-    /// the second says we may have lost what it produced. This previously collapsed to a bool, and
-    /// an intermittent empty-screen failure cost a forty-run bisect that still could not tell those
-    /// two apart. Cheap to carry, decisive when it matters.
-    end: Option<String>,
-}
-
-impl TermBuf {
-    /// The stream is finished — no further output can arrive.
-    fn ended(&self) -> bool {
-        self.end.is_some()
-    }
-}
-
-/// Take the terminal buffer lock, recovering from poisoning: the buffer is a raw transcript plus
-/// a vt parser that tolerates torn writes, so a panicked holder leaves nothing worse than a
-/// truncated escape sequence — recovering beats poisoning every later read.
-fn lock_buf(m: &Mutex<TermBuf>) -> std::sync::MutexGuard<'_, TermBuf> {
-    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
+/// A live session. One `RefCell`, borrowed only between awaits — Lua runs one coroutine at a
+/// time, so no two borrows ever overlap.
 struct TermUd {
-    buf: Arc<Mutex<TermBuf>>,
-    writer: RefCell<Option<Box<dyn Write + Send>>>,
-    master: RefCell<Option<Box<dyn MasterPty>>>,
-    child: Rc<RefCell<Box<dyn portable_pty::Child + Send + Sync>>>,
-    killer: RefCell<Box<dyn ChildKiller>>,
-    pid: Option<u32>,
+    session: RefCell<Session>,
 }
 
-/// A frozen frame — plain data copied out under the lock, so assertions never race the reader.
-struct ScreenUd {
-    contents: String,
-    rows: u16,
-    cols: u16,
-    cells: Vec<Vec<CellData>>,
-}
-
-#[derive(Clone)]
-struct CellData {
-    ch: String,
-    fg: String,
-    bg: String,
-    bold: bool,
-}
-
-fn color_name(c: vt100::Color) -> String {
-    match c {
-        vt100::Color::Default => "default".to_string(),
-        vt100::Color::Idx(i) => match i {
-            0 => "black".into(),
-            1 => "red".into(),
-            2 => "green".into(),
-            3 => "yellow".into(),
-            4 => "blue".into(),
-            5 => "magenta".into(),
-            6 => "cyan".into(),
-            7 => "white".into(),
-            8 => "bright-black".into(),
-            9 => "bright-red".into(),
-            10 => "bright-green".into(),
-            11 => "bright-yellow".into(),
-            12 => "bright-blue".into(),
-            13 => "bright-magenta".into(),
-            14 => "bright-cyan".into(),
-            15 => "bright-white".into(),
-            other => format!("idx-{other}"),
-        },
-        vt100::Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
-    }
-}
+/// A frozen frame — plain data copied out under the kernel's lock, so assertions never race the
+/// reader.
+struct ScreenUd(prova_terminal::Screen);
 
 impl UserData for ScreenUd {
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
-        fields.add_field_method_get("rows", |_, this| Ok(this.rows));
-        fields.add_field_method_get("cols", |_, this| Ok(this.cols));
+        fields.add_field_method_get("rows", |_, this| Ok(this.0.rows));
+        fields.add_field_method_get("cols", |_, this| Ok(this.0.cols));
     }
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("text", |_, this, ()| Ok(this.contents.clone()));
-        methods.add_method("line", |_, this, n: usize| {
-            // 0-based, like cell(row, col) — screen geometry is coordinates, not Lua arrays.
-            Ok(this.contents.lines().nth(n).unwrap_or("").to_string())
-        });
-        methods.add_method("contains", |_, this, s: String| {
-            Ok(this.contents.contains(&s))
-        });
+        methods.add_method("text", |_, this, ()| Ok(this.0.contents.clone()));
+        // 0-based, like cell(row, col) — screen geometry is coordinates, not Lua arrays.
+        methods.add_method("line", |_, this, n: usize| Ok(this.0.line(n).to_string()));
+        methods.add_method("contains", |_, this, s: String| Ok(this.0.contains(&s)));
         methods.add_method("cell", |lua, this, (r, c): (usize, usize)| {
-            let cell = this
-                .cells
-                .get(r)
-                .and_then(|row| row.get(c))
-                .ok_or_else(|| {
-                    err(format!(
-                        "cell({r}, {c}): outside the {}x{} screen",
-                        this.rows, this.cols
-                    ))
-                })?;
+            let cell = this.0.cell(r, c).ok_or_else(|| {
+                err(format!("cell({r}, {c}): outside the {}x{} screen", this.0.rows, this.0.cols))
+            })?;
             let t = lua.create_table()?;
             t.set("char", cell.ch.clone())?;
             t.set("fg", cell.fg.clone())?;
@@ -234,24 +86,18 @@ impl UserData for ScreenUd {
         });
         // The snapshot protocol: any userdata exposing `snapshot_text()` can be the subject of
         // `matches_snapshot` — a Screen snapshots as its rendered frame text.
-        methods.add_method("snapshot_text", |_, this, ()| Ok(this.contents.clone()));
+        methods.add_method("snapshot_text", |_, this, ()| Ok(this.0.contents.clone()));
     }
 }
 
 /// Driving the session: `:send` raw bytes, `:expect` (observe-until-match with a timeout).
 fn add_drive_methods<M: UserDataMethods<TermUd>>(methods: &mut M) {
     methods.add_method("send", |_, this, data: mlua::String| {
-        let mut w = this.writer.borrow_mut();
-        let Some(w) = w.as_mut() else {
-            return Err(err("send: session is closed"));
-        };
-        w.write_all(&data.as_bytes())
-            .and_then(|_| w.flush())
-            .map_err(|e| err(format!("send: {e}")))
+        this.session.borrow_mut().send(&data.as_bytes()).map_err(|e| err(format!("send: {e}")))
     });
 
-    // Observe-until-match with a timeout — never a sleep. Scans the raw transcript, so a
-    // string that scrolled off the screen still counts as observed.
+    // Observe-until-match with a timeout — never a sleep. The kernel scans the raw transcript,
+    // so a string that scrolled off the screen still counts as observed.
     methods.add_async_method(
         "expect",
         |_, this, (pattern, opts): (mlua::String, Option<Table>)| async move {
@@ -259,91 +105,57 @@ fn add_drive_methods<M: UserDataMethods<TermUd>>(methods: &mut M) {
             let dur = opt_timeout(&opts, DEFAULT_WAIT)?;
             let deadline = tokio::time::Instant::now() + dur;
             loop {
-                {
-                    let b = lock_buf(&this.buf);
-                    if b.raw.windows(needle.len()).any(|w| w == &needle[..]) {
-                        return Ok(());
-                    }
-                    if b.ended() {
-                        let tail = String::from_utf8_lossy(&b.raw)
-                            .chars()
-                            .rev()
-                            .take(200)
-                            .collect::<String>()
-                            .chars()
-                            .rev()
-                            .collect::<String>();
-                        let why = b.end.clone().unwrap_or_default();
-                        let bytes = b.raw.len();
+                match this.session.borrow().check_expect(&needle) {
+                    ExpectCheck::Found => return Ok(()),
+                    ExpectCheck::Ended { bytes, why, tail } => {
                         return Err(err(format!(
                             "expect {:?}: the stream ended without producing it \
                              [{bytes} bytes read, {why}] (transcript tail: {tail:?})",
                             String::from_utf8_lossy(&needle)
                         )));
                     }
+                    ExpectCheck::Pending => {}
                 }
                 if tokio::time::Instant::now() >= deadline {
                     // An empty screen is the least informative thing a pty failure can show,
                     // and on its own it cannot distinguish "the program never ran" from "it ran
-                    // and said nothing" from "it spoke and we lost it". Report the three facts
-                    // that separate those, so the first recurrence explains itself instead of
+                    // and said nothing" from "it spoke and we lost it". Report the facts that
+                    // separate those, so the first recurrence explains itself instead of
                     // needing a bisect.
-                    let (screen, bytes, reader) = {
-                        let b = lock_buf(&this.buf);
-                        (
-                            b.parser.screen().contents(),
-                            b.raw.len(),
-                            b.end.clone().unwrap_or_else(|| "still streaming".to_string()),
-                        )
-                    };
-                    let child = match this.child.borrow_mut().try_wait() {
-                        Ok(Some(status)) => format!("exited ({status:?})"),
-                        // Alive but silent is the case worth naming precisely: it means the pty
-                        // slave is still held, so output was never produced rather than lost.
-                        // Which link of the chain is holding it is the actual question.
-                        Ok(None) => match this.pid {
-                            Some(p) => format!("still running (pid {p})"),
-                            None => "still running".to_string(),
-                        },
-                        Err(e) => format!("status unknown ({e})"),
-                    };
-                    let tree = if child.starts_with("still running") {
-                        process_tree(this.pid)
-                    } else {
-                        String::new()
-                    };
+                    let stall = this.session.borrow_mut().diagnose();
                     return Err(err(format!(
                         "expect {:?}: not observed within {dur:?}\n\
-                         -- pty: {bytes} bytes read, reader {reader}, child {child} --{tree}\n\
-                         -- screen --\n{screen}",
-                        String::from_utf8_lossy(&needle)
+                         -- pty: {} bytes read, reader {}, child {} --{}\n\
+                         -- screen --\n{}",
+                        String::from_utf8_lossy(&needle),
+                        stall.bytes,
+                        stall.reader,
+                        stall.child,
+                        stall.tree,
+                        stall.screen
                     )));
                 }
                 tokio::time::sleep(POLL).await;
             }
         },
     );
-
-    // Settle the frame: done when no new output for a quiet window. The anti-sleep.
 }
 
 /// Observing the frame: `:wait_stable`, `:screen()` snapshots, `:resize` (a real SIGWINCH).
 fn add_observe_methods<M: UserDataMethods<TermUd>>(methods: &mut M) {
+    // Settle the frame: done when no new output for a quiet window. The anti-sleep.
     methods.add_async_method("wait_stable", |_, this, opts: Option<Table>| async move {
         let dur = opt_timeout(&opts, DEFAULT_WAIT)?;
         let deadline = tokio::time::Instant::now() + dur;
-        let mut last_len = lock_buf(&this.buf).raw.len();
+        let mut last_len = this.session.borrow().activity().bytes;
         let mut quiet_since = tokio::time::Instant::now();
         loop {
             tokio::time::sleep(POLL).await;
-            let (len, ended) = {
-                let b = lock_buf(&this.buf);
-                (b.raw.len(), b.ended())
-            };
-            if len != last_len {
-                last_len = len;
+            let now = this.session.borrow().activity();
+            if now.bytes != last_len {
+                last_len = now.bytes;
                 quiet_since = tokio::time::Instant::now();
-            } else if ended || quiet_since.elapsed() >= QUIET {
+            } else if now.ended || quiet_since.elapsed() >= QUIET {
                 return Ok(());
             }
             if tokio::time::Instant::now() >= deadline {
@@ -353,96 +165,26 @@ fn add_observe_methods<M: UserDataMethods<TermUd>>(methods: &mut M) {
     });
 
     methods.add_method("screen", |lua, this, ()| {
-        let b = lock_buf(&this.buf);
-        let screen = b.parser.screen();
-        let (rows, cols) = screen.size();
-        let mut cells = Vec::with_capacity(rows as usize);
-        for r in 0..rows {
-            let mut row = Vec::with_capacity(cols as usize);
-            for c in 0..cols {
-                let cell = screen.cell(r, c);
-                row.push(match cell {
-                    Some(cl) => CellData {
-                        ch: cl.contents(),
-                        fg: color_name(cl.fgcolor()),
-                        bg: color_name(cl.bgcolor()),
-                        bold: cl.bold(),
-                    },
-                    None => CellData {
-                        ch: String::new(),
-                        fg: "default".into(),
-                        bg: "default".into(),
-                        bold: false,
-                    },
-                });
-            }
-            cells.push(row);
-        }
-        lua.create_userdata(ScreenUd {
-            contents: screen.contents(),
-            rows,
-            cols,
-            cells,
-        })
+        lua.create_userdata(ScreenUd(this.session.borrow().screen()))
     });
 
     // A real SIGWINCH: the pty is resized, the child is signaled, and the parser's geometry
     // follows — `stty size` inside the session reports the new numbers.
     methods.add_method("resize", |_, this, (cols, rows): (u16, u16)| {
-        let m = this.master.borrow();
-        let Some(m) = m.as_ref() else {
-            return Err(err("resize: session is closed"));
-        };
-        m.resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|e| err(format!("resize: {e}")))?;
-        lock_buf(&this.buf).parser.set_size(rows, cols);
-        Ok(())
+        this.session.borrow_mut().resize(cols, rows).map_err(|e| err(format!("resize: {e}")))
     });
-
 }
 
 /// Session lifecycle: `:signal`, `:wait` (exit status + teardown backstop).
 fn add_lifecycle_methods<M: UserDataMethods<TermUd>>(methods: &mut M) {
     methods.add_method("signal", |_, this, name: String| {
-        #[cfg(unix)]
-        {
-            let sig = match name.trim_start_matches("SIG").to_ascii_uppercase().as_str() {
-                "INT" => libc::SIGINT,
-                "TERM" => libc::SIGTERM,
-                "KILL" => libc::SIGKILL,
-                "HUP" => libc::SIGHUP,
-                "QUIT" => libc::SIGQUIT,
-                "USR1" => libc::SIGUSR1,
-                "USR2" => libc::SIGUSR2,
-                "WINCH" => libc::SIGWINCH,
-                other => return Err(err(format!("signal: unknown signal {other:?}"))),
-            };
-            let Some(pid) = this.pid else {
-                return Err(err("signal: child pid unknown"));
-            };
-            let r = unsafe { libc::kill(pid as libc::pid_t, sig) };
-            if r != 0 {
-                return Err(err(format!(
-                    "signal {name}: kill({pid}) failed: {}",
-                    std::io::Error::last_os_error()
-                )));
-            }
-            Ok(())
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = name;
-            // Annotate the Ok type: this branch has no `Ok(())` to pin it, so `Err(..)` alone
-            // leaves the success type ambiguous (E0283) — only surfaces on non-unix builds.
-            Err::<(), _>(err(
-                "signal: POSIX signals need a unix platform (ConPTY has no signal channel)",
-            ))
-        }
+        this.session.borrow().signal(&name).map_err(|e| {
+            err(match e {
+                // kill(2)'s refusal names the signal it was given: `signal INT: kill(…) failed`.
+                prova_terminal::Error::Kill { .. } => format!("signal {e}"),
+                _ => format!("signal: {e}"),
+            })
+        })
     });
 
     // Reap the child and report its exit code. Polling try_wait keeps everything on the
@@ -451,14 +193,11 @@ fn add_lifecycle_methods<M: UserDataMethods<TermUd>>(methods: &mut M) {
         let dur = opt_timeout(&opts, Duration::from_secs(30))?;
         let deadline = tokio::time::Instant::now() + dur;
         loop {
-            let status = this
-                .child
-                .borrow_mut()
-                .try_wait()
-                .map_err(|e| err(format!("wait: {e}")))?;
+            let status =
+                this.session.borrow_mut().try_wait().map_err(|e| err(format!("wait: {e}")))?;
             if let Some(s) = status {
                 let t = lua.create_table()?;
-                t.set("code", s.exit_code())?;
+                t.set("code", s.code)?;
                 return Ok(t);
             }
             if tokio::time::Instant::now() >= deadline {
@@ -470,9 +209,7 @@ fn add_lifecycle_methods<M: UserDataMethods<TermUd>>(methods: &mut M) {
 
     // `ctx:manage` teardown: kill the child, close the pty. Idempotent, LIFO, for free.
     methods.add_method("stop", |_, this, ()| {
-        let _ = this.killer.borrow_mut().kill();
-        this.writer.borrow_mut().take();
-        this.master.borrow_mut().take();
+        this.session.borrow_mut().stop();
         Ok(())
     });
 }
@@ -492,93 +229,26 @@ fn spawn_fn(lua: &Lua) -> mlua::Result<Function> {
             .get::<Option<Vec<String>>>("cmd")?
             .filter(|v| !v.is_empty())
             .ok_or_else(|| err("terminal.spawn(ctx, { cmd = { … } }): cmd is required"))?;
-        let cols = opts.get::<Option<u16>>("cols")?.unwrap_or(80);
-        let rows = opts.get::<Option<u16>>("rows")?.unwrap_or(24);
-
-        let pty = native_pty_system();
-        let pair = pty
-            .openpty(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|e| err(format!("terminal.spawn: openpty: {e}")))?;
-
-        let mut builder = CommandBuilder::new(&cmd[0]);
-        builder.args(&cmd[1..]);
-        if let Some(cwd) = opts.get::<Option<String>>("cwd")? {
-            builder.cwd(cwd);
-        }
+        let mut spec = SpawnSpec {
+            cmd,
+            cols: opts.get::<Option<u16>>("cols")?.unwrap_or(80),
+            rows: opts.get::<Option<u16>>("rows")?.unwrap_or(24),
+            cwd: opts.get::<Option<String>>("cwd")?,
+            env: Vec::new(),
+        };
         if let Some(env) = opts.get::<Option<Table>>("env")? {
             for pair in env.pairs::<String, String>() {
-                let (k, v) = pair?;
-                builder.env(k, v);
+                spec.env.push(pair?);
             }
         }
-        // A plain terminal identity so programs emit the classic VT sequences vt100 parses.
-        builder.env("TERM", "xterm-256color");
-
-        let child = pair
-            .slave
-            .spawn_command(builder)
-            .map_err(|e| err(format!("terminal.spawn {:?}: {e}", cmd[0])))?;
-        drop(pair.slave);
-
-        let pid = child.process_id();
-        let killer = child.clone_killer();
-        let mut reader = pair
-            .master
-            .try_clone_reader()
-            .map_err(|e| err(format!("terminal.spawn: reader: {e}")))?;
-        let writer = pair
-            .master
-            .take_writer()
-            .map_err(|e| err(format!("terminal.spawn: writer: {e}")))?;
-
-        let buf = Arc::new(Mutex::new(TermBuf {
-            raw: Vec::new(),
-            parser: vt100::Parser::new(rows, cols, 0),
-            end: None,
-        }));
-
-        // The reader is a plain OS thread: pty reads are blocking, and this keeps the runtime
-        // single-threaded. It dies at EOF (child exit / pty close on teardown).
-        let thread_buf = buf.clone();
-        std::thread::spawn(move || {
-            let mut chunk = [0u8; 8 * 1024];
-            loop {
-                match reader.read(&mut chunk) {
-                    Ok(0) => {
-                        lock_buf(&thread_buf).end = Some("clean EOF".to_string());
-                        break;
-                    }
-                    // Not silently equivalent to EOF. A pty master can fail the read once the last
-                    // slave closes, and whether buffered output survives that is platform-dependent
-                    // — so this branch is exactly the case where the screen can come up empty
-                    // through no fault of the program under test. Record what happened.
-                    Err(e) => {
-                        lock_buf(&thread_buf).end =
-                            Some(format!("read failed: {e} ({:?})", e.kind()));
-                        break;
-                    }
-                    Ok(n) => {
-                        let mut b = lock_buf(&thread_buf);
-                        b.raw.extend_from_slice(&chunk[..n]);
-                        b.parser.process(&chunk[..n]);
-                    }
-                }
-            }
-        });
-
-        let ud = lua.create_userdata(TermUd {
-            buf,
-            writer: RefCell::new(Some(writer)),
-            master: RefCell::new(Some(pair.master)),
-            child: Rc::new(RefCell::new(child)),
-            killer: RefCell::new(killer),
-            pid,
+        let session = Session::spawn(&spec).map_err(|e| {
+            err(match e {
+                // The program's own failure names it: `terminal.spawn "cat": …`.
+                prova_terminal::Error::Spawn { .. } => format!("terminal.spawn {e}"),
+                _ => format!("terminal.spawn: {e}"),
+            })
         })?;
+        let ud = lua.create_userdata(TermUd { session: RefCell::new(session) })?;
         super::manage("terminal.spawn", &ctx, &ud)?;
         Ok(ud)
     })
@@ -932,17 +602,6 @@ mod tests {
         let t = lua.create_table().unwrap();
         t.set("timeout", "soon").unwrap();
         assert!(opt_timeout(&Some(t), default).is_err(), "a bad spelling is refused, not defaulted");
-    }
-
-    /// The screen vocabulary a proof matches colors by: the 16 ANSI names, idx-N beyond them,
-    /// hex for RGB, and "default" for the terminal's own.
-    #[test]
-    fn color_names_speak_ansi_idx_and_rgb() {
-        assert_eq!(color_name(vt100::Color::Default), "default");
-        assert_eq!(color_name(vt100::Color::Idx(1)), "red");
-        assert_eq!(color_name(vt100::Color::Idx(15)), "bright-white");
-        assert_eq!(color_name(vt100::Color::Idx(42)), "idx-42");
-        assert_eq!(color_name(vt100::Color::Rgb(255, 0, 16)), "#ff0010");
     }
 
     /// The scripted responder end to end as a file: expect→send pairs render as substring case
