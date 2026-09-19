@@ -215,6 +215,9 @@ mod tests {
             schema: 1,
             version: "0.0.0-test".into(),
             binary: "test".into(),
+            run_id: "run-test".into(),
+            tree: Some("tree-test".into()),
+            reused_from: BTreeMap::new(),
             selection: vec!["engine".into()],
             duration_ms: 7,
             summary: Counts {

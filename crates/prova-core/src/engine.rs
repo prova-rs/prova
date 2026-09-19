@@ -295,6 +295,12 @@ pub struct RunConfig {
     /// Run the falsification pass: select only leaves declaring `falsified_by`, apply the mutation
     /// before the body, and invert the verdict — a body that survives is vacuous.
     pub falsify: bool,
+    /// `--resume` (docs/plans/resume.md#phase-1a): the file-qualified paths whose PASS a prior run of
+    /// this lane over the identical tree already produced. The caller owns that matching (tree,
+    /// binary, selection); the engine only keeps these leaves from executing — unless a leaf that
+    /// does execute depends on one, which then runs too — and names them in
+    /// [`Summary::reused_paths`] instead of `deselected_paths`: they are evidence, not absence.
+    pub reuse: std::collections::BTreeSet<String>,
     /// The run-scoped wall-clock cap (`--timeout`): it OVERRIDES every unit's declared `timeout`
     /// (docs/design/lifecycle.md#falsify-bounds-a-hanging-mutant). Overriding rather than taking
     /// the minimum is the point — the flag exists to rescue a run whose declared bounds are
@@ -388,6 +394,7 @@ impl Default for RunConfig {
             promises_only: false,
             proofs_only: false,
             falsify: false,
+            reuse: std::collections::BTreeSet::new(),
             timeout_cap: None,
             switches: std::collections::BTreeSet::new(),
             conducts: ConductRegistry::default(),
@@ -495,6 +502,12 @@ impl RunConfig {
 
     pub fn with_falsify(mut self, falsify: bool) -> Self {
         self.falsify = falsify;
+        self
+    }
+
+    /// Carry these file-qualified passes forward instead of executing them (`--resume`).
+    pub fn with_reuse(mut self, reuse: impl IntoIterator<Item = String>) -> Self {
+        self.reuse = reuse.into_iter().collect();
         self
     }
 
@@ -1099,7 +1112,7 @@ fn execute_collected(
     reporter: &mut dyn Reporter,
     config: &RunConfig,
 ) -> mlua::Result<Summary> {
-    let (plan, deselected, dropped, switched_off, state) = {
+    let (plan, deselected, dropped, reused, switched_off, state) = {
         let col = col.borrow();
         let plan = build_plan(&col, &config.capabilities)?;
         // Switches first: held-back classes are not part of this run's membership at all, so the
@@ -1115,6 +1128,11 @@ fn execute_collected(
         dropped.extend(falsify_dropped);
         dropped.extend(spec_dropped);
         let dropped = qualify_all(dropped, &col.file_paths);
+        // Last, over exactly what would otherwise execute: a reused leaf is one this run was going
+        // to run, so it never counts among what the selection left out.
+        let (plan, _reused_leaves, reused) =
+            apply_reuse_filter(plan, &config.reuse, &col.file_paths);
+        let reused = qualify_all(reused, &col.file_paths);
         let state = Rc::new(RunState {
             defs: col.fixtures.clone(),
             suite: Rc::new(RefCell::new(ScopeState::default())),
@@ -1129,7 +1147,7 @@ fn execute_collected(
             project_dir: config.project_dir.clone(),
             interned: config.interned.clone(),
         });
-        (plan, deselected, dropped, switched_off, state)
+        (plan, deselected, dropped, reused, switched_off, state)
     };
 
     // Held-topology attach (docs/design/topologies.md#attach-binds-by-name): rehydrate each
@@ -1165,6 +1183,8 @@ fn execute_collected(
     let mut summary = Summary {
         deselected,
         deselected_paths: dropped,
+        reused: reused.len(),
+        reused_paths: reused,
         switched_off,
         reminders_declared: col.borrow().reminders.len(),
         ..Summary::default()

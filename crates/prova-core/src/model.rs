@@ -23,6 +23,19 @@ pub enum Outcome {
     Promised,
 }
 
+impl Outcome {
+    /// The one spelling of each outcome on every wire prova writes — the JSON event stream and the
+    /// run journal read the same word, so a reader of one can read the other.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Outcome::Passed => "passed",
+            Outcome::Failed => "failed",
+            Outcome::Skipped => "skipped",
+            Outcome::Promised => "promised",
+        }
+    }
+}
+
 /// The parameter bindings that make a node's identity unique.
 ///
 /// Empty today for every node, but it is part of node identity *now* so that when parameterized
@@ -333,6 +346,11 @@ pub struct Summary {
     /// record needs "which", because a selection is the cheapest way of all to report green having
     /// tested nothing in particular.
     pub deselected_paths: Vec<String>,
+    /// Leaves `--resume` carried forward from a prior run over the identical tree instead of
+    /// executing (docs/plans/resume.md#phase-1a). Never in `passed`: this run did not run them.
+    pub reused: usize,
+    /// The file-qualified path of every reused leaf, for the record's `Executed::Reused` rows.
+    pub reused_paths: Vec<String>,
     /// How many `prova.remind` declarations the run collected. Plumbing, not a tally: reminders are
     /// not tests and never enter the counts above — this exists so the caller knows whether an
     /// attention-account pass (`evaluate_reminders`) has anything to evaluate, without paying a
@@ -429,11 +447,12 @@ impl Reporter for ConsoleReporter {
             }
             Event::RunFinished { summary } => {
                 println!(
-                    "\n{} passed, {} failed, {} skipped{}{}   in {:.1?}",
+                    "\n{} passed, {} failed, {} skipped{}{}{}   in {:.1?}",
                     summary.passed,
                     summary.failed,
                     summary.skipped,
                     spec_summary_segment(summary),
+                    reuse_summary_segment(summary),
                     if summary.deselected > 0 {
                         format!(", {} deselected", summary.deselected)
                     } else {
@@ -489,14 +508,6 @@ impl<W: Write> Reporter for JsonReporter<W> {
     }
 }
 
-fn outcome_str(o: Outcome) -> &'static str {
-    match o {
-        Outcome::Passed => "passed",
-        Outcome::Failed => "failed",
-        Outcome::Skipped => "skipped",
-        Outcome::Promised => "promised",
-    }
-}
 
 /// The `, N promised` summary segment — present only while promises are open.
 pub fn spec_summary_segment(summary: &Summary) -> String {
@@ -504,6 +515,16 @@ pub fn spec_summary_segment(summary: &Summary) -> String {
         return String::new();
     }
     format!(", {} promised", summary.promised)
+}
+
+/// The `, N reused` summary segment — present only on a `--resume` run that carried passes forward
+/// (docs/plans/resume.md). Beside the tally, never inside `passed`: the reader must see how much of
+/// the green this run executed.
+pub fn reuse_summary_segment(summary: &Summary) -> String {
+    if summary.reused == 0 {
+        return String::new();
+    }
+    format!(", {} reused (same tree)", summary.reused)
 }
 
 /// Serialize an event to a stable JSON shape (the wire protocol for frontends).
@@ -524,7 +545,7 @@ pub fn event_to_json(event: &Event) -> serde_json::Value {
         } => json!({
             "type": "node_finished",
             "path": path,
-            "outcome": outcome_str(*outcome),
+            "outcome": outcome.as_str(),
             "durationMs": duration.as_secs_f64() * 1000.0,
             "assertions": assertions,
             "message": message,
@@ -539,6 +560,7 @@ pub fn event_to_json(event: &Event) -> serde_json::Value {
             "skipped": summary.skipped,
             "promised": summary.promised,
             "deselected": summary.deselected,
+            "reused": summary.reused,
             "durationMs": summary.duration.as_secs_f64() * 1000.0,
         }),
     }
@@ -979,6 +1001,8 @@ mod tests {
             promised: 1,
             deselected: 0,
             deselected_paths: Vec::new(),
+            reused: 0,
+            reused_paths: Vec::new(),
             switched_off: std::collections::BTreeMap::new(),
             reminders_declared: 0,
             duration: Duration::from_millis(6),

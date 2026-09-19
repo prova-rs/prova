@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use anstream::AutoStream;
 use anstyle::{AnsiColor, Style};
-use prova_core::{spec_summary_segment, Event, Outcome, Reporter};
+use prova_core::{reuse_summary_segment, spec_summary_segment, Event, Outcome, Reporter};
 
 /// How to color stdout. Resolution order for the run path: `--color` flag > `PROVA_COLOR` env >
 /// manifest `color` key > `Auto`. Under `Auto`, anstream additionally honors `NO_COLOR` and
@@ -347,11 +347,12 @@ impl GitHubReporter {
         let mut md = String::new();
         let mark = if summary.failed > 0 { "❌" } else { "✅" };
         md.push_str(&format!(
-            "### {mark} prova — {} passed, {} failed, {} skipped{} in {:.1?}\n",
+            "### {mark} prova — {} passed, {} failed, {} skipped{}{} in {:.1?}\n",
             summary.passed,
             summary.failed,
             summary.skipped,
             spec_summary_segment(summary),
+            reuse_summary_segment(summary),
             summary.duration
         ));
         if !self.rows.is_empty() {
@@ -522,11 +523,12 @@ impl HumanReporter {
         let failed_style = if summary.failed > 0 { FAIL } else { Style::new() };
         let _ = writeln!(
             out,
-            "\n{PASS}{}{PASS:#} passed, {failed_style}{}{failed_style:#} failed, {} skipped{}{}   in {}",
+            "\n{PASS}{}{PASS:#} passed, {failed_style}{}{failed_style:#} failed, {} skipped{}{}{}   in {}",
             summary.passed,
             summary.failed,
             summary.skipped,
             spec_summary_segment(summary),
+            reuse_summary_segment(summary),
             if summary.deselected > 0 {
                 format!(", {} deselected", summary.deselected)
             } else {

@@ -20,6 +20,11 @@ pub enum Executed {
     /// stale run record loads rather than erroring until the next run rewrites it.
     #[serde(alias = "spec")]
     Promised,
+    /// Did not run HERE: `--resume` carried a pass forward from an earlier run of the same lane over
+    /// the identical tree (docs/plans/resume.md). Evidence, because the same bytes produced it; never
+    /// spelled `passed`, because it did not execute in this run. `Record::reused_from` names the run
+    /// that did.
+    Reused,
 }
 
 /// A leaf that ran into a gate before its body — and the gate's own words for why.
@@ -44,6 +49,8 @@ pub struct Counts {
     pub skipped: usize,
     pub promised: usize,
     pub deselected: usize,
+    /// Leaves `--resume` carried forward instead of executing (docs/plans/resume.md).
+    pub reused: usize,
 }
 
 /// One reminder, as the run evaluated it — the attention account's row in the record.
@@ -134,6 +141,18 @@ pub struct Record {
     pub version: String,
     /// Which build of the binary produced it.
     pub binary: String,
+    /// This run's identity, so a reused verdict can name the run that executed it. Defaulted so
+    /// records from before it existed parse (they can never be resumed from: no id, no tree).
+    #[serde(default)]
+    pub run_id: String,
+    /// The digest of every file the VCS tracks, taken at the start of the run and confirmed at its
+    /// end (docs/plans/resume.md#phase-1a). `None` when there is no VCS, or when the tree CHANGED
+    /// during the run — a record whose verdicts belong to no single tree cannot be resumed from.
+    #[serde(default)]
+    pub tree: Option<String>,
+    /// For every `Executed::Reused` leaf: the run that actually executed it.
+    #[serde(default)]
+    pub reused_from: BTreeMap<String, String>,
     /// How the run was narrowed, spelled as it was asked for. Empty means "everything".
     pub selection: Vec<String>,
     pub duration_ms: u64,
@@ -238,7 +257,9 @@ pub fn attest(record: &Record, bindings: &[String]) -> Attested {
             };
         }
         match record.executed.get(binding) {
-            Some(Executed::Passed) => {}
+            // A reused pass is a pass of these same bytes, carried forward from the run that executed
+            // it (`--resume` refuses any tree, binary or selection mismatch before reusing anything).
+            Some(Executed::Passed) | Some(Executed::Reused) => {}
             Some(&outcome) => {
                 return Attested::Red {
                     path: binding.clone(),
@@ -344,6 +365,9 @@ mod tests {
             schema: 1,
             version: "test".into(),
             binary: "test".into(),
+            run_id: String::new(),
+            tree: None,
+            reused_from: BTreeMap::new(),
             selection: Vec::new(),
             duration_ms: 0,
             summary: Counts::default(),
@@ -394,5 +418,15 @@ mod tests {
     fn an_executed_passing_proof_attests() {
         let r = record_with(&[("busy", Executed::Passed)], &[], &[]);
         assert!(attest(&r, &["busy".to_string()]).is_attested());
+    }
+
+    /// A pass `--resume` carried forward is evidence (the same tree produced it) under its own
+    /// spelling — `"reused"`, never `"passed"` — so no reader mistakes it for this run's execution.
+    #[test]
+    fn a_reused_pass_attests_and_is_spelled_reused() {
+        let r = record_with(&[("busy", Executed::Reused)], &[], &[]);
+        assert!(attest(&r, &["busy".to_string()]).is_attested());
+        assert_eq!(serde_json::to_string(&Executed::Reused).unwrap(), "\"reused\"");
+        assert_eq!(serde_json::from_str::<Executed>("\"reused\"").unwrap(), Executed::Reused);
     }
 }

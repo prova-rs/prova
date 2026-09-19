@@ -5,6 +5,9 @@
 
 use super::*;
 
+mod journaling;
+use journaling::{open_journal, plan_journal, JournalPlan};
+
 /// Everything the flag loop can set — one struct instead of thirty locals.
 struct Cli {
     format: Option<Format>,
@@ -52,6 +55,9 @@ struct Cli {
     packages: Vec<String>,
     selection: prova_core::Selection,
     last_failed: bool,
+    // `--resume` (docs/plans/resume.md): execute only what the previous run of this lane over the
+    // identical tree did not pass, and carry the rest forward as `reused`.
+    resume: bool,
     record_to: Option<std::path::PathBuf>,
     // `--allow-empty`: opt out of the empty-selection error, for the matrix leg that legitimately
     // selects nothing. Off by default, because a selection matching nothing is nearly always a typo
@@ -103,6 +109,7 @@ impl Default for Cli {
             packages: Vec::new(),
             selection: prova_core::Selection::default(),
             last_failed: false,
+            resume: false,
             record_to: None,
             allow_empty: false,
             update_force: false,
@@ -323,6 +330,7 @@ impl Cli {
             // manifest's `heed`; like every guarantee it can only tighten (All absorbs).
             "--heed" => self.heed = crate::manifest::Heed::All,
             "--last-failed" => self.last_failed = true,
+            "--resume" => self.resume = true,
             "--falsify" => self.falsify = true,
             "--fresh" => self.fresh = true,
             // The tests lane's state flags, derived from the registry (`--promise(s)` /
@@ -908,6 +916,8 @@ fn build_reporter(
         failed: Vec::new(),
         executed: std::collections::BTreeMap::new(),
         skipped: Vec::new(),
+        // Opened by `run` once the journal is planned (it needs the tree and the resume set).
+        journal: None,
     })
 }
 
@@ -944,6 +954,7 @@ fn store_run_record(
     accounts: &Accounts,
     full_run: bool,
     measurements: &[prova_core::Measurement],
+    journal_plan: Option<&JournalPlan>,
 ) -> Vec<record::ReminderEntry> {
     // The attention account (docs/design/reminders.md): conditions evaluate HERE — during
     // the run, in a phase after the proofs — and only against a FULL manifest run, the same
@@ -964,14 +975,19 @@ fn store_run_record(
         None => Vec::new(),
     };
 
+    let settled = journaling::settle(journal_plan, home, reporter, summary);
     record::store(
         home,
         &record::Record {
-            // 2: the open-promise executed value is `"promised"` (was `"spec"` in schema 1;
-            // `Executed`'s `alias = "spec"` still reads an old record until the next run).
-            schema: 2,
+            // 3: `run_id`, `tree`, `reused_from` and the `"reused"` executed value
+            // (docs/plans/resume.md). 2: the open-promise value is `"promised"` (was `"spec"` in
+            // schema 1; `Executed`'s `alias = "spec"` still reads an old record).
+            schema: 3,
             version: env!("CARGO_PKG_VERSION").to_string(),
             binary: record::binary_fingerprint(),
+            run_id: settled.run_id,
+            tree: settled.tree,
+            reused_from: settled.reused_from,
             selection: spell_selection(config),
             duration_ms: summary.duration.as_millis() as u64,
             summary: record::Counts {
@@ -980,8 +996,9 @@ fn store_run_record(
                 skipped: summary.skipped,
                 promised: summary.promised,
                 deselected: summary.deselected,
+                reused: summary.reused,
             },
-            executed: std::mem::take(&mut reporter.executed),
+            executed: settled.executed,
             skipped: std::mem::take(&mut reporter.skipped),
             deselected: summary.deselected_paths.clone(),
             reminders: reminders.clone(),
@@ -1049,6 +1066,7 @@ fn conclude_run(
     budget: Option<std::time::Duration>,
     from_manifest: bool,
     is_console: bool,
+    journal_plan: Option<&JournalPlan>,
 ) -> ExitCode {
     store_last_failed(home, &reporter.failed);
 
@@ -1099,10 +1117,13 @@ fn conclude_run(
         }
     }
 
-    let full_run =
-        from_manifest && config.selection.is_empty() && !cli.falsify && !cli.promises_only;
+    // A resumed run is not a full one for the attention account: its reused tests took no
+    // measurements and emitted no outcomes, so a condition would read a partial ledger.
+    let full_run = from_manifest && config.selection.is_empty() && !cli.falsify && !cli.promises_only
+        && config.reuse.is_empty();
     let reminders = store_run_record(
         cli, home, suites, config, &summary, &mut reporter, &accounts, full_run, &measurements,
+        journal_plan,
     );
 
     // `--topology NAME` insisted on attaching — a suite that never declared the topology
@@ -1224,6 +1245,12 @@ fn track_snapshots(
     if cli.unreferenced == "ignore" {
         return None;
     }
+    // A resumed run executes only part of the suite, so every reused test's snapshot would read
+    // as orphaned — and `delete` would act on that.
+    if !config.reuse.is_empty() {
+        eprintln!("prova: --unreferenced is skipped on a resumed run (it needs every test to execute)");
+        return None;
+    }
     if !config.selection.is_empty() {
         eprintln!(
             "prova: --unreferenced is skipped on a filtered run (it needs the full suite to be sound)"
@@ -1292,6 +1319,29 @@ fn provision_if_testing(cli: &Cli, home: Option<&Home>) -> Option<ExitCode> {
     crate::cmd_run::provision_subject(home, cli.reprovision)
 }
 
+/// The query verbs answer from the collection (bodies never execute) and exit here; `None` when this
+/// invocation is a run.
+fn answer_query(
+    cli: &Cli,
+    suites: &[prova_core::Suite],
+    config: &prova_core::RunConfig,
+    home: &Option<Home>,
+) -> Option<ExitCode> {
+    if cli.switches_list {
+        return Some(switches_listing(suites, config, home));
+    }
+    if cli.reminders_list {
+        return Some(reminders_listing(suites, config, home, cli.reminders_state));
+    }
+    if cli.backfill {
+        return Some(backfill_listing(suites, config));
+    }
+    if cli.list {
+        return Some(nodes_listing(suites, config, cli.list_tagged));
+    }
+    None
+}
+
 pub(crate) fn run(cli_args: Vec<String>) -> ExitCode {
     let mut cli = match parse_cli(cli_args) {
         Ok(cli) => cli,
@@ -1343,6 +1393,13 @@ pub(crate) fn run(cli_args: Vec<String>) -> ExitCode {
         Err(code) => return code,
     };
 
+    // The journal and `--resume` (docs/plans/resume.md), planned before snapshot tracking, which
+    // has to know whether this run carries anything forward.
+    let journal_plan = match plan_journal(&cli, &home, &mut config) {
+        Ok(plan) => plan,
+        Err(code) => return code,
+    };
+
     let snapshot_registry = track_snapshots(&cli, &mut config);
 
     // Run-wide topologies: the pool is started before the query verbs answer (a bad `scope` value
@@ -1354,18 +1411,8 @@ pub(crate) fn run(cli_args: Vec<String>) -> ExitCode {
 
     sync_ide_annotations(&cli, &home, &env, &layout);
 
-    // The query verbs answer from the collection (bodies never execute) and exit here.
-    if cli.switches_list {
-        return switches_listing(&suites, &config, &home);
-    }
-    if cli.reminders_list {
-        return reminders_listing(&suites, &config, &home, cli.reminders_state);
-    }
-    if cli.backfill {
-        return backfill_listing(&suites, &config);
-    }
-    if cli.list {
-        return nodes_listing(&suites, &config, cli.list_tagged);
+    if let Some(code) = answer_query(&cli, &suites, &config, &home) {
+        return code;
     }
 
     if let Err(code) = placement_handshake(env.env.placement_broker.as_deref()) {
@@ -1388,6 +1435,7 @@ pub(crate) fn run(cli_args: Vec<String>) -> ExitCode {
     };
 
     let mut reporter = reporter;
+    reporter.journal = open_journal(journal_plan.as_ref(), &home);
     let outcome = run_suites(&suites, &mut reporter, &config);
     // The run is over, so the run-wide instances are reaped here — before the summary, because a
     // teardown that takes a minute must not look like a hung reporter, and after every suite,
@@ -1410,6 +1458,7 @@ pub(crate) fn run(cli_args: Vec<String>) -> ExitCode {
             env.env.budget,
             from_manifest,
             is_console,
+            journal_plan.as_ref(),
         ),
         Err(err) => {
             eprintln!("prova: {err}");
@@ -1419,64 +1468,4 @@ pub(crate) fn run(cli_args: Vec<String>) -> ExitCode {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn parse(args: &[&str]) -> Result<Cli, ExitCode> {
-        parse_cli(args.iter().map(|s| s.to_string()).collect())
-    }
-
-    /// The run-shaping grammar in one pass: every selection axis with its `!` exclusion form,
-    /// comma-splitting where lists are natural, and the value flags that name what runs.
-    #[test]
-    fn parse_cli_reads_the_selection_axes_and_run_shape() {
-        let cli = parse(&[
-            "-k", "orders", "-k", "!slow-orders",
-            "--tags", "unit, http ,!flaky",
-            "--node", "engine › selects",
-            "-j", "4", "-p", "quality", "-s", "ci,docker", "--switch", "soak",
-            "-P", "pg=./packages/pg", "--record", "out.json", "--topology", "dev",
-            "--heed=ops,security", "--heed=ops",
-            "proofs/engine",
-        ])
-        .ok()
-        .unwrap();
-        assert_eq!(cli.selection.keywords, vec!["orders"]);
-        assert_eq!(cli.selection.keyword_excludes, vec!["slow-orders"]);
-        assert_eq!(cli.selection.tags, vec!["unit", "http"]);
-        assert_eq!(cli.selection.tag_excludes, vec!["flaky"]);
-        assert_eq!(cli.selection.nodes, vec!["engine › selects"]);
-        assert_eq!(cli.jobs, Some(4));
-        assert_eq!(cli.profile.as_deref(), Some("quality"));
-        assert_eq!(cli.switches, vec!["ci", "docker", "soak"]);
-        assert_eq!(cli.packages, vec!["pg=./packages/pg"]);
-        assert_eq!(cli.record_to.as_deref(), Some(std::path::Path::new("out.json")));
-        assert_eq!(cli.require_topology.as_deref(), Some("dev"));
-        assert_eq!(
-            cli.heed,
-            crate::manifest::Heed::Matching(vec!["ops".into(), "security".into()]),
-            "heed selectors accumulate and dedupe across flags"
-        );
-        assert_eq!(cli.explicit_paths, vec!["proofs/engine"], "bare paths are the selection");
-    }
-
-    /// Every taught refusal exits 2 at the parse, before anything loads: a non-positive job
-    /// count, and unknown --format/--color/--progress spellings.
-    #[test]
-    fn parse_cli_refuses_bad_values_at_the_door() {
-        for bad in [
-            &["--jobs", "0"][..],
-            &["--jobs", "many"][..],
-            &["--format", "yaml"][..],
-            &["--color", "sometimes"][..],
-            &["--progress", "maybe"][..],
-        ] {
-            assert!(parse(bad).is_err(), "{bad:?} must be refused");
-        }
-        let cli = parse(&["--format", "json", "--color", "never", "--progress", "always"])
-            .ok()
-            .unwrap();
-        assert!(matches!(cli.format, Some(Format::Json)));
-        assert!(matches!(cli.color, Some(report::ColorMode::Never)));
-    }
-}
+mod tests;

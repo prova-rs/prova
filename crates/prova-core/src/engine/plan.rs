@@ -310,6 +310,36 @@ pub(super) fn apply_specs_filter(
     narrow_plan(plan, keep)
 }
 
+/// `--resume` (docs/plans/resume.md#phase-1a): hold back every leaf whose items ALL passed in the
+/// matched prior run. A flow is atomic, so one unreused step runs the whole flow. The dependency
+/// closure is `narrow_plan`'s: a reused leaf that an executing leaf depends on is kept and runs
+/// again, because an outcome gate is evaluated against a node of THIS run. The returned paths are
+/// the leaves actually held back, not the reuse set the caller offered.
+pub(super) fn apply_reuse_filter(
+    plan: Plan,
+    reuse: &std::collections::BTreeSet<String>,
+    file_paths: &[PathBuf],
+) -> (Plan, usize, Vec<(String, usize)>) {
+    if reuse.is_empty() {
+        return (plan, 0, Vec::new());
+    }
+    let keep = plan
+        .leaves
+        .iter()
+        .map(|l| {
+            let items = l.unit.items();
+            items.is_empty()
+                || !items.iter().all(|item| {
+                    reuse.contains(&qualify_leaf_path(
+                        &item.path,
+                        file_paths.get(item.file).map(PathBuf::as_path),
+                    ))
+                })
+        })
+        .collect();
+    narrow_plan(plan, keep)
+}
+
 /// Keep exactly the marked leaves plus the dependency closure of every one of them (an outcome
 /// gate can't be evaluated against a node that never ran), remapping leaf-id edges. Returns the
 /// surviving plan and the reported path of every leaf that was dropped.

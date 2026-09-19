@@ -287,6 +287,8 @@ fn run_sequential(suites: &[Suite], reporter: &mut dyn Reporter, config: &RunCon
                 summary.promised += s.promised;
                 summary.deselected += s.deselected;
                 summary.deselected_paths.extend(s.deselected_paths);
+                summary.reused += s.reused;
+                summary.reused_paths.extend(s.reused_paths);
                 for (class, n) in s.switched_off {
                     *summary.switched_off.entry(class).or_insert(0) += n;
                 }
@@ -304,11 +306,8 @@ fn run_pooled(suites: &[Suite], reporter: &mut dyn Reporter, config: &RunConfig)
     let workers = config.concurrency.min(suites.len()).max(1);
     let queue: Arc<Mutex<VecDeque<Suite>>> = Arc::new(Mutex::new(suites.iter().cloned().collect()));
     let (tx, rx) = channel::<OwnedEvent>();
-    // Plan-derived facts emit no node events, so they travel on a side channel: the deselected
-    // paths, the switched-off class counts, and the count of reminders declared (not tests — see
-    // `Summary::reminders_declared`).
-    let (dtx, drx) =
-        channel::<(Vec<String>, std::collections::BTreeMap<String, usize>, usize)>();
+    // Plan-derived facts emit no node events, so they travel on a side channel.
+    let (dtx, drx) = channel::<PlanFacts>();
 
     let mut handles = Vec::with_capacity(workers);
     for _ in 0..workers {
@@ -334,7 +333,12 @@ fn run_pooled(suites: &[Suite], reporter: &mut dyn Reporter, config: &RunConfig)
                         // never ran emits nothing to re-tally FROM, which is the whole reason the
                         // run record has to be told about it explicitly. Reminder declarations are
                         // the same shape: not nodes, so no event ever carries them.
-                        let _ = dtx.send((s.deselected_paths, s.switched_off, s.reminders_declared));
+                        let _ = dtx.send(PlanFacts {
+                            deselected_paths: s.deselected_paths,
+                            reused_paths: s.reused_paths,
+                            switched_off: s.switched_off,
+                            reminders_declared: s.reminders_declared,
+                        });
                     }
                     Err(err) => {
                         // Surface a collection/load error as a synthetic failed node for the suite.
@@ -368,15 +372,29 @@ fn run_pooled(suites: &[Suite], reporter: &mut dyn Reporter, config: &RunConfig)
     for handle in handles {
         let _ = handle.join();
     }
-    for (paths, switched_off, reminders) in drx.iter() {
-        summary.deselected += paths.len();
-        summary.deselected_paths.extend(paths);
-        for (class, n) in switched_off {
+    for facts in drx.iter() {
+        summary.deselected += facts.deselected_paths.len();
+        summary.deselected_paths.extend(facts.deselected_paths);
+        summary.reused += facts.reused_paths.len();
+        summary.reused_paths.extend(facts.reused_paths);
+        for (class, n) in facts.switched_off {
             *summary.switched_off.entry(class).or_insert(0) += n;
         }
-        summary.reminders_declared += reminders;
+        summary.reminders_declared += facts.reminders_declared;
     }
     summary
+}
+
+/// What a pooled suite's PLAN decided, which no node event carries: the leaves it deselected, the
+/// passes it carried forward under `--resume`, the switched-off class counts, and how many
+/// reminders it declared (not tests — see `Summary::reminders_declared`). A struct and not a tuple
+/// because the facts grow, and a positional fourth `Vec<String>` beside the first is a swap
+/// waiting to happen.
+struct PlanFacts {
+    deselected_paths: Vec<String>,
+    reused_paths: Vec<String>,
+    switched_off: std::collections::BTreeMap<String, usize>,
+    reminders_declared: usize,
 }
 
 /// Reconstruct an `Event` from an `OwnedEvent`, forward it to the reporter, and tally finishes.

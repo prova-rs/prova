@@ -109,6 +109,7 @@ pub(super) fn run_blocking(env: &McpEnv, req: RunRequest) -> Result<(serde_json:
         "skipped": summary.skipped,
         "promised": summary.promised,
         "deselected": summary.deselected,
+        "reused": summary.reused,
         "duration_ms": summary.duration.as_millis() as u64,
         "failures": failures,
     });
@@ -189,7 +190,7 @@ pub(super) fn attest_blocking(env: &McpEnv, req: AttestRequest) -> Result<(serde
             "reason": match outcome {
                 crate::record::Executed::Failed => "the covering proof ran and failed",
                 crate::record::Executed::Promised => "the covering proof is an open promise, red by definition",
-                crate::record::Executed::Passed => "unreachable",
+                crate::record::Executed::Passed | crate::record::Executed::Reused => "unreachable",
             },
         }),
         crate::record::Attested::NoEvidence { path, why } => json!({

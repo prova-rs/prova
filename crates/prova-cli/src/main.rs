@@ -40,9 +40,11 @@ mod registry;
 mod progress;
 /// The spawnable-mock adapter: `prova relay --to <addr>` (docs/plans/stdio-transport.md §4).
 mod relay;
+mod journal;
 mod record;
 mod report;
 mod runstate;
+mod tree;
 mod var;
 
 use std::collections::BTreeMap;
@@ -342,6 +344,9 @@ options:
   -s, --switch a,b          throw opt-in switches: run tests marked `switch = ...`, which are
                             otherwise held back (repeatable; unions with [run]/profile `switches`)
       --last-failed         select only the nodes that failed in the previous run
+      --resume              run only what the previous run of this LANE over the identical tree
+                            did not pass; carry its passes forward as `reused` (refuses, naming
+                            why, when the tree, prova or the lane changed)
       --topology NAME       require attaching to the held topology NAME (error when not running) —
                             judge the LIVE environment, never a silently fresh one
       --fresh               ignore held topologies: always provision fresh (the CI behavior)
@@ -771,6 +776,9 @@ struct FailureRecorder {
     failed: Vec<String>,
     executed: std::collections::BTreeMap<String, record::Executed>,
     skipped: Vec<record::Skipped>,
+    /// The run journal (docs/plans/resume.md): every settled leaf, on disk the moment it settles.
+    /// `None` for a narrowed run, or one with no tree to key it on.
+    journal: Option<journal::Writer>,
 }
 
 impl Reporter for FailureRecorder {
@@ -786,6 +794,13 @@ impl Reporter for FailureRecorder {
             // `--last-failed` re-selects with `--node`, which matches the raw path; the record is
             // keyed on the file-qualified one, so two files' same-named tests stay distinct.
             let key = record::qualified(path, *file);
+            if let Some(journal) = self.journal.as_mut() {
+                journal.row(journal::Row {
+                    path: key.clone(),
+                    outcome: outcome.as_str().to_string(),
+                    from: None,
+                });
+            }
             match outcome {
                 prova_core::Outcome::Failed => {
                     self.failed.push(path.to_string());

@@ -238,14 +238,20 @@ pub(crate) fn attest_subcommand(args: Vec<String>) -> ExitCode {
     let verdict = record::attest(&recorded, &bindings);
     println!("prova: attest {address}");
     match &verdict {
-        record::Attested::Yes { path } => {
-            println!("  ↳ attested — {path} ran and passed");
-        }
+        record::Attested::Yes { path } => match recorded.reused_from.get(path) {
+            // Said as what happened: the pass was carried forward, not executed in this record's run.
+            Some(origin) => println!(
+                "  ↳ attested — {path} passed in run {origin}, reused over the identical tree"
+            ),
+            None => println!("  ↳ attested — {path} ran and passed"),
+        },
         record::Attested::Red { path, outcome } => {
             let what = match outcome {
                 record::Executed::Failed => "failed",
                 record::Executed::Promised => "is an open promise, red by definition",
-                record::Executed::Passed => unreachable!("a passing proof attests"),
+                record::Executed::Passed | record::Executed::Reused => {
+                    unreachable!("a passing proof attests, reused or executed")
+                }
             };
             println!("  ↳ NOT attested — {path} {what}");
         }
@@ -860,6 +866,9 @@ end)
                 schema: 1,
                 version: "0.0.0-test".into(),
                 binary: "test".into(),
+                run_id: String::new(),
+                tree: None,
+                reused_from: std::collections::BTreeMap::new(),
                 selection: vec![],
                 duration_ms: 1,
                 summary: record::Counts::default(),
