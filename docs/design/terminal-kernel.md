@@ -1,7 +1,9 @@
 # The terminal kernel
 
 **Status:** slice 1 landed as an extraction with no change in behaviour (2026-09-19). The crate is
-`prova-terminal` (`crates/prova-terminal`), published on its own.
+`prova-terminal` (`crates/prova-terminal`). It is publishable (crates.io dependencies only, no pty
+type in its public API) but not yet published: a host outside this workspace pins it by git rev and
+watches prova's `main` with a reminder (ruling 2026-09-19).
 
 ## Why a kernel
 
@@ -66,4 +68,6 @@ kernel should not carry harness concerns.
    - recovered styles;
    - mode-aware keys, paste and mouse;
    - `Screen` diff and a snapshot format.
-4. **Substrate's face**, over a published version.
+4. **Substrate's face**, over a git-rev pin of this crate. Open question for that slice: `Session`
+   owns its child, and Substrate's supervisor must own every process it runs. Either the face hands
+   the kernel a child the supervisor spawned, or the kernel grows a transport-only constructor.
