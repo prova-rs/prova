@@ -22,6 +22,13 @@ portable-pty = "0.9"
 # The VT-sequence screen model: the observation layer.
 vt100 = "0.15"
 
+[dev-dependencies]
+# The ORACLE, never a runtime dependency (docs/design/terminal-kernel.md#the-oracle): the same
+# fixture programs run through termlens and through this kernel, and every place the two screens
+# disagree is a named entry in tests/oracle.baseline — the kernel's burn-down list, measured against
+# an external truth. MIT OR Apache-2.0; nothing of it ships.
+termlens = "0.11"
+
 [target.'cfg(unix)'.dependencies]
 # Signal delivery to the child (`Session::signal("INT")` → kill(pid, SIGINT)).
 libc = "0.2"

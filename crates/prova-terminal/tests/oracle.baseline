@@ -1,0 +1,38 @@
+# The kernel's burn-down list against termlens: one `fixture/aspect` per line (tests/oracle.rs).
+# Lower is better, and it only shrinks — a key that stops disagreeing must be removed.
+# Seeded 2026-09-19 at 21, grouped in the order slice 3 burns them down
+# (docs/design/terminal-kernel.md#next-slices).
+
+# A DEFECT, not a missing report: Screen::line(n) returns vt100's LOGICAL line, so a soft-wrapped
+# row reads as one long line while cell(r, c) addresses the grid — the two disagree about rows.
+wrap/text
+
+# Cursor position and visibility (vt100 tracks both; the kernel does not surface them).
+clear_and_home/cursor
+cursor_position/cursor
+plain_text/cursor
+wrap/cursor
+cursor_hidden/cursor_visible
+
+# Cursor shape (DECSCUSR) — vt100 0.15 does not track it; the kernel must.
+cursor_shape_bar/cursor_shape
+cursor_shape_block/cursor_shape
+
+# The query responder (DA1 here): a capability probe waits out its timeout against the kernel.
+query_device_attributes/text
+
+# Recovered styles beyond bold.
+sgr_attrs/cell(0,1).dim
+sgr_attrs/cell(0,2).italic
+sgr_attrs/cell(0,3).underline
+sgr_attrs/cell(0,4).blink
+sgr_attrs/cell(0,5).reverse
+sgr_attrs/cell(0,6).conceal
+sgr_attrs/cell(0,7).strikethrough
+
+# Out-of-band state and input modes.
+title/title
+alternate_screen/alternate_screen
+input_modes/application_cursor
+input_modes/bracketed_paste
+input_modes/mouse_reporting

@@ -45,6 +45,31 @@ the verb and keeps prova's messages byte-for-byte: `send: session is closed`,
 Mocks and proxies stay in prova (ruling 2026-09-19). They are test-driver conveniences, and the
 kernel should not carry harness concerns.
 
+## The oracle
+
+The kernel is measured against termlens (MIT OR Apache-2.0), used as a dev-dependency of its tests
+and never shipped. `crates/prova-terminal/tests/oracle.rs` runs a corpus of fixture programs through
+both. Each fixture names the aspects it targets: text rows, one cell's colour or attribute, cursor
+position, visibility or shape, title, alternate screen, input modes, and a query's answer. An
+adapter reads each side's screen, and on the kernel side it answers "cannot report" as a distinct
+value. Wherever the two differ, the result is a key, `fixture/aspect`.
+
+`tests/oracle.baseline` lists the admitted keys. It is the burn-down list, and its length is the
+disagreement count, a lower-is-better **ratchet** that runs in `prova run ut`:
+- **A new key fails.** It is a regression, or a new fixture whose gaps have not been admitted on
+  purpose.
+- **A listed key that stopped disagreeing also fails.** The list only shrinks, so a gain is locked
+  in the moment it lands.
+
+Both directions were seen red by name before the baseline counted (2026-09-19: 21 NEW against an
+empty list, then one GONE against a padded one).
+
+The seed count is 21. One of them is a DEFECT rather than a missing report: `Screen::line(n)` returns
+vt100's *logical* line, so a soft-wrapped row reads as one long line while `cell(r, c)` addresses the
+grid (`wrap/text`). The fixtures are deterministic by construction: each draws, then stays alive
+until the host has looked; a screen is read after 250 ms of quiet, never at a child exit; and the
+responder fixture turns echo off before it asks. The oracle passed three consecutive runs.
+
 ## Invariants and how each is enforced
 
 | Invariant | Enforced by |
@@ -54,14 +79,15 @@ kernel should not carry harness concerns.
 | The reader's end REASON survives (clean EOF vs failed read) | test: `a_real_pty_round_trip` asserts `Ended{why}` is non-empty |
 | prova's surface and messages are unchanged | proof: `proofs/spec/terminal`, plus the face's `spawn_drives_a_real_pty_round_trip` |
 | `stop` is idempotent and closes the session | test: `stop_closes_the_session` |
+| Every disagreement with termlens is admitted by name, and the list never grows or goes stale | test: `the_kernel_disagrees_with_termlens_only_where_the_baseline_admits` (the ratchet) |
 
 ## Next slices (Substrate plan docs/plans/PTY_FIRST_CLASS.md)
 
 1. ~~Extract the kernel with no behaviour change.~~
-2. **The oracle and its ratchet.** A dev-dependency runs the same fixture programs through termlens
-   and through the kernel, diffs text, cursor, modes and styles, and counts the disagreements as a
-   lower-is-better ratchet, seen red first.
+2. ~~**The oracle and its ratchet.**~~ Landed: see [The oracle](#the-oracle), seeded at 21.
 3. **Burn down in the order the UI arc needs:**
+   - `Screen::line` addresses grid rows (the `wrap/text` defect), and cursor position and visibility
+     are surfaced (vt100 already tracks both);
    - event-driven waits (a notify per output chunk, not a 15 ms poll);
    - cursor shape (DECSCUSR) and visibility;
    - the query responder;
