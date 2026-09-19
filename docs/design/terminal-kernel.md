@@ -29,7 +29,8 @@ The kernel owns the **session** and no **policy**.
 | `send`, `resize`, `signal`, `try_wait`, `stop` | `:send`, `:resize`, `:signal`, `:wait` (a 30 s deadline), `:stop` |
 | `check_expect(needle)` → `Found` / `Pending` / `Ended{bytes, why, tail}` | `:expect`: the loop, the 15 ms poll, the `timeout` deadline, the message |
 | `activity()` → `{bytes, ended}` | `:wait_stable`: the 150 ms quiet window, the deadline |
-| `screen()` → a frozen `Screen` (logical `contents`, grid `lines`, `cell` → `Cell{ch, fg, bg, bold, italic, underline, reverse}`, `cursor`, `cursor_visible`, `title`, `alternate_screen`, `application_cursor`, `bracketed_paste`, `mouse_reporting`) | `Screen` userdata (`text`, `line`, `contains`, `cell`), `snapshot_text` for `matches_snapshot` |
+| `screen()` → a frozen `Screen` (logical `contents`, grid `lines`, `cell` → `Cell{ch, fg, bg, bold, dim, italic, underline, reverse}`, `cursor`, `cursor_visible`, `cursor_shape`, `cursor_blink`, `title`, `alternate_screen`, `application_cursor`, `bracketed_paste`, `mouse_reporting`) | `Screen` userdata (`text`, `line`, `contains`, `cell`), `snapshot_text` for `matches_snapshot` |
+| the **query responder**: DA1, DA2, DSR 5, CPR / DECXCPR and the text-area size, each reply termlens's byte for byte, queued by vt100's callbacks and written by the reader thread outside the buffer lock | nothing to configure: a program that probes its terminal gets an answer |
 | `diagnose()` → `Stall{screen, bytes, reader, child, tree}`, with `process_tree` under a live child | the timeout message that reports it |
 
 **Every wait in the kernel is a non-blocking check.** There is no clock, no sleep and no async
@@ -91,8 +92,13 @@ responder fixture turns echo off before it asks. The oracle passed three consecu
      italic/underline/reverse, title, alternate screen, application cursor, bracketed paste, mouse
      reporting. prova's Lua `screen:line(n)` changed with it (a fix, proven in proofs/spec/terminal
      and seen red against the old binary); the other fields have no Lua surface yet.
-   - What vt100 0.15 does not track (the remaining 7): cursor shape (DECSCUSR), the query
-     responder, and dim/blink/conceal/strikethrough — a newer vt100 or a tracker of our own;
+   - ~~Cursor shape, the query responder, `dim`~~ — slice 3b, oracle 7 → 3: vt100 0.16's
+     `Callbacks` (DECSCUSR, the replies, the window title, which 0.16 no longer keeps on its
+     `Screen`). The four other responder fixtures (DA2, DSR, CPR, text-area size) agreed with
+     termlens on first contact. prova's Lua driver answers probes now — proven in
+     proofs/spec/terminal and seen red against the old binary.
+   - The remaining 3: blink, conceal and strikethrough, which vt100 0.16 parses and drops. They
+     need a per-cell SGR tracker of our own.
    - event-driven waits (a notify per output chunk, not a 15 ms poll);
    - cursor shape (DECSCUSR) and visibility;
    - the query responder;

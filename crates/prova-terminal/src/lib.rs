@@ -89,12 +89,74 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// Everything the reader thread produces: the raw byte transcript (what [`Session::check_expect`]
+/// What vt100 hands back instead of handling: the cursor style the program asked for (DECSCUSR),
+/// its window title, and the queries a real terminal answers. A reply is QUEUED here and written by
+/// the reader thread after the chunk is parsed — the callback runs under the buffer lock and must
+/// never block on the pty.
+///
+/// The replies are termlens's, byte for byte (MIT OR Apache-2.0, github.com/vyncint/termlens,
+/// `Terminal::answer`): a VT220 with ANSI colour and nothing it cannot render. The oracle holds
+/// them to that.
+#[derive(Default)]
+struct Tracker {
+    /// The last DECSCUSR parameter (0..=6); `None` while the program never asked.
+    cursor_style: Option<u16>,
+    title: String,
+    replies: Vec<u8>,
+}
+
+impl vt100::Callbacks for Tracker {
+    fn set_window_title(&mut self, _: &mut vt100::Screen, title: &[u8]) {
+        self.title = String::from_utf8_lossy(title).into_owned();
+    }
+
+    fn unhandled_csi(
+        &mut self,
+        screen: &mut vt100::Screen,
+        i1: Option<u8>,
+        i2: Option<u8>,
+        params: &[&[u16]],
+        c: char,
+    ) {
+        // An absent first parameter reads as 0, as the VT spec defaults it.
+        let first = params.first().and_then(|p| p.first()).copied().unwrap_or(0);
+        let reply = match (i1, i2, c) {
+            // DECSCUSR — `CSI Ps SP q`. A value the spec does not define is ignored, never guessed.
+            (Some(b' '), None, 'q') => {
+                if first <= 6 {
+                    self.cursor_style = Some(first);
+                }
+                return;
+            }
+            // Primary device attributes: a VT220 with ANSI colour.
+            (None, None, 'c') if first == 0 => b"\x1b[?62;22c".to_vec(),
+            // Secondary device attributes.
+            (Some(b'>'), None, 'c') if first == 0 => b"\x1b[>1;10;0c".to_vec(),
+            // Device status: "OK".
+            (None, None, 'n') if first == 5 => b"\x1b[0n".to_vec(),
+            // Cursor position report (DSR 6, and DECXCPR with `?`), 1-based on the wire.
+            (None | Some(b'?'), None, 'n') if first == 6 => {
+                let (row, col) = screen.cursor_position();
+                let private = if i1 == Some(b'?') { "?" } else { "" };
+                format!("\x1b[{private}{};{}R", row + 1, col + 1).into_bytes()
+            }
+            // Text-area size in characters.
+            (None, None, 't') if first == 18 => {
+                let (rows, cols) = screen.size();
+                format!("\x1b[8;{rows};{cols}t").into_bytes()
+            }
+            _ => return,
+        };
+        self.replies.extend_from_slice(&reply);
+    }
+}
+
+/// Everything the reader thread produces: the raw byte transcript (what [`Session::check_expect`
 /// scans) and the vt100 parser (what [`Session::screen`] snapshots). One lock, held briefly on
 /// both sides.
 struct TermBuf {
     raw: Vec<u8>,
-    parser: vt100::Parser,
+    parser: vt100::Parser<Tracker>,
     /// Why the reader stopped, once it has — `None` while the stream is still live.
     ///
     /// The REASON is kept, not merely the fact. A clean EOF (the child closed the pty and exited)
@@ -113,6 +175,14 @@ impl TermBuf {
     }
 }
 
+/// Take the pty writer lock, recovering from poisoning: a writer is a byte sink, and a panicked
+/// holder leaves at worst a partial write — recovering beats refusing every later send.
+fn lock_writer(
+    m: &Mutex<Option<Box<dyn Write + Send>>>,
+) -> MutexGuard<'_, Option<Box<dyn Write + Send>>> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// Take the terminal buffer lock, recovering from poisoning: the buffer is a raw transcript plus
 /// a vt parser that tolerates torn writes, so a panicked holder leaves nothing worse than a
 /// truncated escape sequence — recovering beats poisoning every later read.
@@ -124,7 +194,9 @@ fn lock_buf(m: &Mutex<TermBuf>) -> MutexGuard<'_, TermBuf> {
 /// non-blocking except [`Session::spawn`].
 pub struct Session {
     buf: Arc<Mutex<TermBuf>>,
-    writer: Option<Box<dyn Write + Send>>,
+    /// Shared with the reader thread, which writes the query replies through it; `None` once
+    /// [`Session::stop`] closed the session, which silences the replies too.
+    writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
     master: Option<Box<dyn MasterPty + Send>>,
     child: Box<dyn Child + Send + Sync>,
     killer: Box<dyn ChildKiller + Send + Sync>,
@@ -214,13 +286,15 @@ impl Session {
 
         let buf = Arc::new(Mutex::new(TermBuf {
             raw: Vec::new(),
-            parser: vt100::Parser::new(spec.rows, spec.cols, 0),
+            parser: vt100::Parser::new_with_callbacks(spec.rows, spec.cols, 0, Tracker::default()),
             end: None,
         }));
+        let writer = Arc::new(Mutex::new(Some(writer)));
 
         // The reader is a plain OS thread: pty reads are blocking, and this keeps every host's
         // runtime its own business. It dies at EOF (child exit / pty close on teardown).
         let thread_buf = buf.clone();
+        let thread_writer = writer.clone();
         std::thread::spawn(move || {
             let mut chunk = [0u8; 8 * 1024];
             loop {
@@ -238,15 +312,26 @@ impl Session {
                         break;
                     }
                     Ok(n) => {
-                        let mut b = lock_buf(&thread_buf);
-                        b.raw.extend_from_slice(&chunk[..n]);
-                        b.parser.process(&chunk[..n]);
+                        let replies = {
+                            let mut b = lock_buf(&thread_buf);
+                            b.raw.extend_from_slice(&chunk[..n]);
+                            b.parser.process(&chunk[..n]);
+                            std::mem::take(&mut b.parser.callbacks_mut().replies)
+                        };
+                        // Answer outside the buffer lock. A failed write leaves the program
+                        // unanswered — exactly what it saw before there was a responder — so
+                        // there is nothing to report, and the next read carries on.
+                        if !replies.is_empty() {
+                            if let Some(w) = lock_writer(&thread_writer).as_mut() {
+                                let _ = w.write_all(&replies).and_then(|()| w.flush());
+                            }
+                        }
                     }
                 }
             }
         });
 
-        Ok(Session { buf, writer: Some(writer), master: Some(pair.master), child, killer, pid })
+        Ok(Session { buf, writer, master: Some(pair.master), child, killer, pid })
     }
 
     /// The child's pid, when the platform reports one.
@@ -256,7 +341,8 @@ impl Session {
 
     /// Write raw bytes to the program's input and flush them.
     pub fn send(&mut self, data: &[u8]) -> Result<(), Error> {
-        let w = self.writer.as_mut().ok_or(Error::Closed)?;
+        let mut guard = lock_writer(&self.writer);
+        let w = guard.as_mut().ok_or(Error::Closed)?;
         w.write_all(data).and_then(|()| w.flush()).map_err(|e| Error::Io(e.to_string()))
     }
 
@@ -299,10 +385,11 @@ impl Session {
             for c in 0..cols {
                 row.push(match screen.cell(r, c) {
                     Some(cl) => Cell {
-                        ch: cl.contents(),
+                        ch: cl.contents().to_string(),
                         fg: color_name(cl.fgcolor()),
                         bg: color_name(cl.bgcolor()),
                         bold: cl.bold(),
+                        dim: cl.dim(),
                         italic: cl.italic(),
                         underline: cl.underline(),
                         reverse: cl.inverse(),
@@ -312,6 +399,7 @@ impl Session {
                         fg: "default".into(),
                         bg: "default".into(),
                         bold: false,
+                        dim: false,
                         italic: false,
                         underline: false,
                         reverse: false,
@@ -322,6 +410,7 @@ impl Session {
         }
         let lines = screen.rows(0, cols).map(|l| l.trim_end().to_string()).collect();
         let (cursor_row, cursor_col) = screen.cursor_position();
+        let tracker = b.parser.callbacks();
         Screen {
             contents: screen.contents(),
             lines,
@@ -330,7 +419,14 @@ impl Session {
             cells,
             cursor: (cursor_row, cursor_col),
             cursor_visible: !screen.hide_cursor(),
-            title: screen.title().to_string(),
+            cursor_shape: match tracker.cursor_style {
+                None => CursorShape::Default,
+                Some(0..=2) => CursorShape::Block,
+                Some(3..=4) => CursorShape::Underline,
+                Some(_) => CursorShape::Bar,
+            },
+            cursor_blink: tracker.cursor_style.map(|s| matches!(s, 0 | 1 | 3 | 5)),
+            title: tracker.title.clone(),
             alternate_screen: screen.alternate_screen(),
             application_cursor: screen.application_cursor(),
             bracketed_paste: screen.bracketed_paste(),
@@ -344,7 +440,7 @@ impl Session {
         let m = self.master.as_ref().ok_or(Error::Closed)?;
         m.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
             .map_err(|e| Error::Io(e.to_string()))?;
-        lock_buf(&self.buf).parser.set_size(rows, cols);
+        lock_buf(&self.buf).parser.screen_mut().set_size(rows, cols);
         Ok(())
     }
 
@@ -418,7 +514,7 @@ impl Session {
     pub fn stop(&mut self) {
         // A child that already exited refuses the kill; either way nothing is left running.
         let _ = self.killer.kill();
-        self.writer.take();
+        lock_writer(&self.writer).take();
         self.master.take();
     }
 }
@@ -440,6 +536,11 @@ pub struct Screen {
     pub cursor: (u16, u16),
     /// Whether the cursor is shown (`DECTCEM`).
     pub cursor_visible: bool,
+    /// The cursor the program asked for with DECSCUSR — [`CursorShape::Default`] while it never did.
+    pub cursor_shape: CursorShape,
+    /// Whether that cursor blinks; `None` while the program never said (its default is the
+    /// terminal's, not ours to claim).
+    pub cursor_blink: Option<bool>,
     /// The window title the program set (`OSC 0` / `OSC 2`); empty when it never did.
     pub title: String,
     /// Whether the program is on the alternate screen (`?1049` and kin).
@@ -471,6 +572,21 @@ impl Screen {
     }
 }
 
+/// The cursor a program asked for with DECSCUSR (`CSI Ps SP q`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CursorShape {
+    /// Never asked: whatever the terminal draws by default. Not folded into `Block` — "never
+    /// asked" and "asked for a block" are different claims about the program.
+    #[default]
+    Default,
+    /// DECSCUSR 0, 1 (blinking) or 2 (steady).
+    Block,
+    /// DECSCUSR 3 (blinking) or 4 (steady).
+    Underline,
+    /// DECSCUSR 5 (blinking) or 6 (steady).
+    Bar,
+}
+
 /// One screen cell: its character and its rendition.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cell {
@@ -482,6 +598,8 @@ pub struct Cell {
     /// Background colour, in the same vocabulary as `fg`.
     pub bg: String,
     pub bold: bool,
+    /// Decreased intensity (`SGR 2`); shares one intensity state with `bold` — last write wins.
+    pub dim: bool,
     pub italic: bool,
     pub underline: bool,
     /// Reverse video (`SGR 7`): foreground and background swapped.

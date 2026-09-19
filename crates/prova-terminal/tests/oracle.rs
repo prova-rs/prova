@@ -178,6 +178,31 @@ const FIXTURES: &[Fixture] = &[
         script: r#"stty -echo; printf '\033[c'; IFS= read -r -t 2 -d c reply; printf 'reply:%s' "${reply#?}"; sleep 5"#,
         probes: &[Text],
     },
+    Fixture {
+        name: "query_secondary_da",
+        shell: "bash",
+        script: r#"stty -echo; printf '\033[>c'; IFS= read -r -t 2 -d c reply; printf 'reply:%s' "${reply#?}"; sleep 5"#,
+        probes: &[Text],
+    },
+    Fixture {
+        name: "query_operating_status",
+        shell: "bash",
+        script: r#"stty -echo; printf '\033[5n'; IFS= read -r -t 2 -d n reply; printf 'reply:%s' "${reply#?}"; sleep 5"#,
+        probes: &[Text],
+    },
+    Fixture {
+        // The cursor stands at row 3, column 5 when it asks; the answer is 1-based.
+        name: "query_cursor_position",
+        shell: "bash",
+        script: r#"stty -echo; printf '\033[3;5H\033[6n'; IFS= read -r -t 2 -d R reply; printf '\033[Hreply:%s' "${reply#?}"; sleep 5"#,
+        probes: &[Text],
+    },
+    Fixture {
+        name: "query_text_area_size",
+        shell: "bash",
+        script: r#"stty -echo; printf '\033[18t'; IFS= read -r -t 2 -d t reply; printf 'reply:%s' "${reply#?}"; sleep 5"#,
+        probes: &[Text],
+    },
 ];
 
 /// The colour vocabulary the kernel speaks (its Cell.fg/bg), for termlens's colours.
@@ -244,10 +269,11 @@ fn kernel_probe(s: &prova_terminal::Screen, p: Probe) -> Option<String> {
                 Fg => Some(cell.fg.clone()),
                 Bg => Some(cell.bg.clone()),
                 Bold => Some(cell.bold.to_string()),
+                Dim => Some(cell.dim.to_string()),
                 Italic => Some(cell.italic.to_string()),
                 Underline => Some(cell.underline.to_string()),
                 Reverse => Some(cell.reverse.to_string()),
-                Dim | Blink | Conceal | Strikethrough => None,
+                Blink | Conceal | Strikethrough => None,
             }
         }
         Cursor => Some(format!("({},{})", s.cursor.0, s.cursor.1)),
@@ -257,7 +283,7 @@ fn kernel_probe(s: &prova_terminal::Screen, p: Probe) -> Option<String> {
         BracketedPaste => Some(s.bracketed_paste.to_string()),
         ApplicationCursor => Some(s.application_cursor.to_string()),
         MouseReporting => Some(s.mouse_reporting.to_string()),
-        CursorShape => None,
+        CursorShape => Some(format!("{:?}", s.cursor_shape).to_lowercase()),
     }
 }
 

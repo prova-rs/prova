@@ -57,6 +57,16 @@ prova.test("line(n) is a grid row — a soft-wrapped line spans rows, as its cel
   t:expect(s:contains(string.rep("x", 100))):is_true()   -- contains still sees the whole line
 end)
 
+prova.test("a capability probe is answered — the terminal replies to device-attribute queries",
+  { requires = { "unix" },
+    proves = "tier-a/terminal: the kernel's query responder answers DA1 as a VT220 with ANSI colour (termlens's reply, byte for byte), so a program that probes its terminal runs instead of waiting out its timeout" }, function(t)
+  local term = terminal.spawn(t, {
+    cmd = { "bash", "-c", [[stty -echo; printf '\033[c'; IFS= read -r -t 3 -d c reply; printf 'reply:%s' "${reply#?}"; sleep 5]] },
+    cols = 80, rows = 24,
+  })
+  term:expect("reply:[?62;22", { timeout = "2s" })   -- answered well inside the program's 3 s wait
+end)
+
 prova.test("resize is a real SIGWINCH — the program observes the new geometry",
   { requires = { "unix" }, proves = "tier-a/terminal: resize is a real SIGWINCH the program observes" }, function(t)
   local term = terminal.spawn(t, { cmd = { "sh" }, cols = 80, rows = 24 })

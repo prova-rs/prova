@@ -19,8 +19,10 @@ categories = ["command-line-interface", "development-tools::testing"]
 # PTY allocation behind one API — openpty on unix, ConPTY on Windows. ConPTY emits the same VT
 # sequences openpty does, so the screen model below is byte-for-byte OS-agnostic.
 portable-pty = "0.9"
-# The VT-sequence screen model: the observation layer.
-vt100 = "0.15"
+# The VT-sequence screen model: the observation layer. 0.16 for its `Callbacks` — the sequences it
+# does not handle itself (DECSCUSR, the queries a terminal answers, the window title) come back to
+# the kernel — and for `dim`.
+vt100 = "0.16"
 
 [dev-dependencies]
 # The ORACLE, never a runtime dependency (docs/design/terminal-kernel.md#the-oracle): the same
