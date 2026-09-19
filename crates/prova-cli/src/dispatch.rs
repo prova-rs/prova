@@ -1282,7 +1282,7 @@ fn resolve_run(cli: &mut Cli) -> Result<(XdgSystemLayout, Option<Home>, RunEnv),
 /// Provision the binary under test, when this invocation is actually TESTING.
 ///
 /// A run is the only thing that provisions (docs/design/manifest.md#runner-is-the-subject-not-the-conductor):
-/// query verbs and `prova mcp` never reach this path, `-U` forces even a fresh subject to rebuild,
+/// query verbs never reach this path (an MCP `run` provisions too), `-U` forces a fresh rebuild,
 /// and pure discoveries (`--list`, the switches census) execute nothing so they skip it.
 fn provision_if_testing(cli: &Cli, home: Option<&Home>) -> Option<ExitCode> {
     let home = home?;
@@ -1303,8 +1303,8 @@ pub(crate) fn run(cli_args: Vec<String>) -> ExitCode {
         Err(code) => return code,
     };
     // A run is TESTING, so the binary under test provisions here — just in time, only when
-    // asked (docs/design/manifest.md#runner-is-the-subject-not-the-conductor). Query verbs and
-    // `prova mcp` never reach this path; `-U` forces even a fresh subject to rebuild; pure
+    // asked (docs/design/manifest.md#runner-is-the-subject-not-the-conductor). Query verbs never
+    // reach this path (MCP's `run` provisions on its own); `-U` forces a fresh rebuild; pure
     // discoveries (`--list`, the switches census) execute nothing and skip it.
     if let Some(code) = provision_if_testing(&cli, home.as_ref()) {
         return code;

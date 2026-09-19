@@ -195,11 +195,23 @@ fn provision_runner(
             ),
         }
     }
-    let status = if cfg!(windows) {
-        std::process::Command::new("cmd").args(["/C", build]).current_dir(&home.dir).status()
+    let mut command = if cfg!(windows) {
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/C", build]);
+        c
     } else {
-        std::process::Command::new("sh").args(["-c", build]).current_dir(&home.dir).status()
+        let mut c = std::process::Command::new("sh");
+        c.args(["-c", build]);
+        c
     };
+    // The build writes to OUR stderr and reads no stdin: a run's stdout carries the report
+    // (`--format json`), and inside `prova mcp` stdin and stdout ARE the JSON-RPC channel — a
+    // line of build chatter there is a corrupt frame, a read is a stolen request.
+    let status = command
+        .current_dir(&home.dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::from(std::io::stderr()))
+        .status();
     drop(held);
     match status {
         Ok(s) if s.success() => {
@@ -257,8 +269,8 @@ pub(crate) fn declared_subject(home: &Home) -> Option<Result<crate::manifest::Ru
     }))
 }
 
-/// Provision the binary under test — just in time, only when a RUN asks
-/// (docs/design/manifest.md#runner-is-the-subject-not-the-conductor). Nothing re-execs anymore:
+/// Provision the binary under test — just in time, only when a RUN asks: the CLI run path, or an
+/// MCP `run` (docs/design/manifest.md#runner-is-the-subject-not-the-conductor). Nothing re-execs:
 /// the binary you invoke conducts, and `[runner]` names the SUBJECT — the build `prova.bin`
 /// injects, so nested proofs judge this tree's build while your installed prova stays the tool
 /// in your hand. Freshness compares sources against the LATER of the provision stamp and the

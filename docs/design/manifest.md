@@ -153,8 +153,14 @@ the declared subject just in time (`build`, skipped while `sources` are older th
 the provision stamp and the bin's own mtime — a direct `cargo build` of the subject IS a
 provision; `-U` forces; failure is a loud exit 2 and nothing judges) and injects it as
 `prova.bin`, so nested proofs judge this tree's build. **Everything else** — query verbs,
-`prova mcp`, the tool in your hand — answers as the binary you invoked, immediately; a human
-refreshes their own tools deliberately (`cargo xtask install`). Identity holds where it matters:
+the `prova mcp` handshake and its query tools, the tool in your hand — answers as the binary you
+invoked, immediately; a human refreshes their own tools deliberately (`cargo xtask install`). An
+MCP `run` is a run: it provisions exactly as the CLI's does, because a server outlives every edit
+and would otherwise judge whatever `bin` the last CLI run left behind (field report 2026-09-18: a
+just-fixed proof reported red with the pre-fix message, from a server that had never rebuilt), and
+a failed provision comes back as a refusal carrying the build to reproduce, since the server's
+stderr never reaches its client. The build reads no stdin and writes its stdout to stderr: a
+run's stdout carries the report, and inside the server both streams ARE the JSON-RPC channel. Identity holds where it matters:
 `binary_identity_test` guarantees nested runs and the suite AGREE on the subject, and the
 subject is the tree's build whenever a run conducted it. A `prova.bin` child never re-provisions
 (the depth guard inherits; empty-counts-as-unset re-arms a sandbox), and a declared-but-

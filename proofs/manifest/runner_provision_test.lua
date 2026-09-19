@@ -105,6 +105,131 @@ prova.test("queries and `prova mcp` never provision — the tool in your hand an
   t:expect(provisions(dir), "no build in the handshake path"):equals(0)
 end)
 
+--- Drive the sandbox's `prova mcp` as a real conversation over stdio: handshake, then each tool
+--- call awaited before the next is written. The server is LONG-LIVED here on purpose — one process
+--- across every call, the way a client holds it, so staleness between calls is observable.
+local function mcp_session(t, dir)
+  local sess = stdio.spawn(t, {
+    cmd = { prova.bin, "mcp" },
+    cwd = dir,
+    -- The same re-arm `invoke` performs: the sandbox asks what its OWN manifest resolves to.
+    env = { PROVA_RUN_DEPTH = "", PROVA_SUBJECT_BIN = "", PROVA_SRC = prova.bin },
+    framing = "line",
+    codec = "json",
+  })
+  sess:send({
+    jsonrpc = "2.0", id = 1, method = "initialize",
+    params = { protocolVersion = "2024-11-05", capabilities = {},
+      clientInfo = { name = "proof", version = "0" } },
+  })
+  sess:recv({ where = { id = 1 }, timeout = "60s" })
+  sess:send({ jsonrpc = "2.0", method = "notifications/initialized" })
+  local id = 1
+  -- A tool call's text (JSON on success, the refusal's prose on error) and its isError flag.
+  -- `recv` decodes EVERY line it passes over, so a stray non-JSON line on the server's stdout
+  -- raises here — the protocol stream's integrity is asserted by every call, not just one.
+  return sess, function(tool, arguments)
+    id = id + 1
+    sess:send({ jsonrpc = "2.0", id = id, method = "tools/call",
+      params = { name = tool, arguments = arguments or {} } })
+    local resp = sess:recv({ where = { id = id }, timeout = "120s" })
+    return resp.result.content[1].text, resp.result.isError
+  end
+end
+
+prova.test("an MCP `run` is a run: it provisions the subject, and a long-lived server never judges a stale one", {
+  covers = "docs/design/manifest.md#runner-is-the-subject-not-the-conductor",
+  proves = "field report 2026-09-18: the MCP `run` tool never provisioned — after an engine edit it "
+    .. "returned in 203ms, judging the previous target/debug/prova, and reported a just-fixed proof "
+    .. "red with the pre-fix message while the CLI rebuilt and went green; a server outlives every "
+    .. "edit, so it is the transport where a stale subject is the steady state",
+}, function(t)
+  local dir = sandbox(t)
+  local sess, call = mcp_session(t, dir)
+  t:expect(provisions(dir), "the handshake built nothing"):equals(0)
+
+  -- A query answers as the server itself, immediately — still no build.
+  call("owed")
+  t:expect(provisions(dir), "a query tool never provisions"):equals(0)
+
+  local text, is_err = call("run")
+  t:expect(is_err, text):is_falsy()
+  t:expect(json.decode(text).passed, text):equals(1)
+  t:expect(provisions(dir), "the run provisioned the subject"):equals(1)
+  t:expect(fs.read(dir .. "/subject.txt"), "prova.bin is the subject"):contains("bin/prova")
+
+  call("run")
+  t:expect(provisions(dir), "a fresh subject is not rebuilt"):equals(1)
+
+  -- The sources move on under the SAME server process; its next run notices on its own.
+  prova.sleep(1100) -- mtime granularity
+  fs.write(dir .. "/src/marker.txt", "v2\n")
+  call("run")
+  t:expect(provisions(dir), "the long-lived server re-provisions a stale subject"):equals(2)
+
+  sess:eof()
+  sess:wait({ timeout = "60s" })
+end)
+
+prova.test("the build's stdout never reaches a run's stdout — the MCP protocol stream or a --format json report", {
+  covers = "docs/design/manifest.md#runner-is-the-subject-not-the-conductor",
+  proves = "a provision inside the MCP server shares the server's stdout, which IS the JSON-RPC "
+    .. "channel: one line of build chatter there is a corrupt frame, and the same leak splices "
+    .. "into a CLI run's machine-readable report — the build's output belongs on stderr, visible "
+    .. "and out of band",
+}, function(t)
+  local dir = sandbox(t)
+  fs.write(dir .. "/prova.toml", table.concat({
+    '[run]', 'proofs = ["proofs"]', '',
+    '[runner]',
+    "build   = 'echo build-chatter-on-stdout && echo built >> build.log && cp \"$PROVA_SRC\" bin/prova'",
+    'bin     = "bin/prova"',
+    'sources = ["src"]',
+  }, "\n"))
+
+  local sess, call = mcp_session(t, dir)
+  local text, is_err = call("run")   -- raises if the chatter landed on the protocol stream
+  t:expect(is_err, text):is_falsy()
+  t:expect(provisions(dir), "the chatty build did run"):equals(1)
+  t:expect(sess:stderr(), "the chatter was routed to stderr, not swallowed"):contains("build-chatter-on-stdout")
+  sess:eof()
+  sess:wait({ timeout = "60s" })
+
+  -- The CLI half: stdout carries the reporter, so it must carry nothing else.
+  local r = shell.run({ prova.bin, "--reprovision", "--format", "json" }, {
+    cwd = dir, timeout = "120s",
+    env = { PROVA_RUN_DEPTH = "", PROVA_SUBJECT_BIN = "", PROVA_SRC = prova.bin },
+  })
+  t:expect(r.code, r.stderr):equals(0)
+  t:expect(provisions(dir), "--reprovision rebuilt"):equals(2)
+  t:expect(r.stdout, "the report stream is the report alone"):never():contains("build-chatter")
+  t:expect(r.stderr, "the build's output is still visible"):contains("build-chatter-on-stdout")
+end)
+
+prova.test("a failed provision over MCP is a refusal that names the build — nothing judges", {
+  covers = "docs/design/manifest.md#runner-is-the-subject-not-the-conductor",
+  proves = "the CLI's failed provision is exit 2 with the reason on stderr, but a server's stderr "
+    .. "is invisible to its client — the refusal must carry what failed and how to reproduce it, "
+    .. "or the agent sees an error with nothing to act on",
+}, function(t)
+  local dir = sandbox(t)
+  fs.write(dir .. "/prova.toml", table.concat({
+    '[run]', 'proofs = ["proofs"]', '',
+    '[runner]',
+    'build   = "echo attempted >> build.log && exit 1"',
+    'bin     = "bin/prova"',
+    'sources = ["src"]',
+  }, "\n"))
+  local sess, call = mcp_session(t, dir)
+  local text, is_err = call("run")
+  t:expect(is_err, "a failed provision is an error result"):is_truthy()
+  t:expect(text, "the refusal says what failed"):contains("build failed")
+  t:expect(text, "…and names the command to reproduce it"):contains("echo attempted >> build.log")
+  t:expect(fs.exists(dir .. "/subject.txt"), "no proof body ran"):is_false()
+  sess:eof()
+  sess:wait({ timeout = "60s" })
+end)
+
 prova.test("a failed provision is loud (exit 2) and nothing judges", {
   covers = "docs/design/manifest.md#runner-is-the-subject-not-the-conductor",
   proves = "a build failure is a failed provision, not a verdict — and never a silent run against whatever subject happened to be lying around",

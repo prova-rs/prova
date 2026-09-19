@@ -7,11 +7,34 @@
 
 use super::*;
 
+/// A run is TESTING on either transport, so an MCP run provisions the `[runner]` subject exactly
+/// as the CLI run path does (docs/design/manifest.md#runner-is-the-subject-not-the-conductor);
+/// the handshake and the query tools never do. A server outlives every edit — without this, each
+/// run judged whatever `bin` the last CLI run happened to leave behind.
+fn provision_for_run(home: &crate::home::Home) -> Result<(), String> {
+    if crate::cmd_run::provision_subject(home, false).is_none() {
+        return Ok(());
+    }
+    // The CLI's reason went to stderr, which a client never sees — the refusal must carry it.
+    Err(match crate::cmd_run::declared_subject(home) {
+        Some(Ok(runner)) => format!(
+            "[runner] build failed — the subject could not be provisioned, so nothing was \
+             judged. Reproduce it in {}: `{}` (its output went to the server's stderr)",
+            home.dir.display(),
+            runner.build.unwrap_or_default()
+        ),
+        _ => "[runner] declares no readable `bin` — the subject cannot be resolved; fix the \
+              manifest ([runner] bin = \"<home-relative path>\")"
+            .to_string(),
+    })
+}
+
 pub(super) fn run_blocking(env: &McpEnv, req: RunRequest) -> Result<(serde_json::Value, bool), String> {
     let call = env.resolve_call(
         req.selection.profile.as_deref(),
         req.selection.package.as_deref(),
     )?;
+    provision_for_run(&call.home)?;
 
     let mut selection = to_selection(&req.selection);
     // `last_failed`: fold the previous run's failed node paths in, exactly like `--last-failed`.
@@ -593,6 +616,10 @@ pub(super) fn warm_run_blocking(
                 .to_string(),
         );
     }
+
+    // The SUBJECT still provisions (the topology never does): the holder's `prova.bin` names the
+    // same path, so a rebuild here is what its next spawn runs.
+    provision_for_run(&home)?;
 
     let mut selection = to_selection(&req.selection);
     // `last_failed` state lives in the held topology's home — the package its `up` resolved —
