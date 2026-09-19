@@ -97,6 +97,58 @@ prova.test("a path handed to `run` gets the specific correction, not a profile e
 	local r = shell.run(prova.bin .. " run proofs/basic_test.lua", { cwd = proj, merge_stderr = true })
 	t:expect(r.code):never():equals(0)
 	t:expect(r.stdout, "names the right spelling"):contains("prova proofs/basic_test.lua")
+	-- A bare directory name carries no `/`; it is known for a slip only once no lane claims it.
+	local dir = shell.run(prova.bin .. " run proofs", { cwd = proj, merge_stderr = true })
+	t:expect(dir.code):never():equals(0)
+	t:expect(dir.stdout, "a slashless dir gets the same correction"):contains("`prova proofs`")
+end)
+
+--- A lane named after the directory it covers is the natural spelling (`clients` for `clients/`),
+--- so the collision is the common case, not the edge. `clients/` here is deliberately NOT a proofs
+--- dir and holds a stray file: read as a path it would run that file, read as the lane it runs only
+--- the tagged proof — the two readings disagree on every line of output.
+local shadowed = prova.fixture("lane-beside-same-named-dir", Scope.File, function(ctx)
+	-- ctx:tempdir() is one per scope: a sibling of the sandbox's `pkg`, never on top of it.
+	local proj = ctx:tempdir() .. "/shadowed"
+	fs.mkdir(proj .. "/proofs")
+	fs.mkdir(proj .. "/clients")
+	fs.write(proj .. "/prova.toml", [[
+[run]
+proofs = ["proofs"]
+
+[profiles.clients]
+tags = ["clients"]
+]])
+	fs.write(proj .. "/proofs/basic_test.lua", [[
+prova.test("a client check", { tags = { "clients" } }, function(t)
+  t:expect(true):is_true()
+end)
+
+prova.test("a server check", function(t)
+  t:expect(true):is_true()
+end)
+]])
+	fs.write(proj .. "/clients/stray_test.lua", [[
+prova.test("the directory's own file", function(t)
+  t:expect(true):is_true()
+end)
+]])
+	return proj
+end)
+
+prova.test("a lane named like a directory beside it is still the lane", {
+	proves = "`run`'s positional is a lane, full stop: a same-named path never shadows a declared "
+		.. "[profiles.<name>], and the path-slip correction waits until the lookup has failed (field "
+		.. "report 2026-09-18: `prova run clients` refused as a path beside a `clients/` dir, leaving "
+		.. "`--profile clients` the only way in)",
+}, function(t)
+	local proj = t:use(shadowed)
+	local r = shell.run(prova.bin .. " run clients", { cwd = proj, merge_stderr = true })
+	t:expect(r.code, r.stdout):equals(0)
+	t:expect(r.stdout):contains("1 passed")
+	t:expect(r.stdout, "the lane's selection ran"):contains("a client check")
+	t:expect(r.stdout):never():contains("a server check")
+	t:expect(r.stdout, "the same-named directory was not run as a path"):never():contains("the directory's own file")
 end)
 
 prova.test("bare `prova run` runs the default lane, exactly like bare `prova`", function(t)

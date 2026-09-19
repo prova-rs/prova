@@ -764,6 +764,16 @@ pub(crate) fn resolve_from_manifest(
     })?;
     let resolved = manifest.resolve(profile.as_deref()).map_err(|e| {
         eprintln!("prova: {e}");
+        // A path in the profile slot (usually `prova run <path>`) is a slip with a specific fix —
+        // but only once no lane claims the name: a declared lane always wins its own name.
+        if let Some(name) = profile.as_deref().filter(|n| !manifest.profiles.contains_key(*n)) {
+            if name.contains('/') || Path::new(name).exists() {
+                eprintln!(
+                    "prova: `{name}` is a path, not a lane (a [profiles.<name>] from prova.toml) \
+                     — run files/dirs with `prova {name}`"
+                );
+            }
+        }
         ExitCode::from(2)
     })?;
     if require_proofs && resolved.proofs.is_empty() && resolved.suites.is_empty() {

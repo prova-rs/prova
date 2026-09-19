@@ -40,18 +40,13 @@ pub(crate) fn run_subcommand(args: Vec<String>) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        // A leading non-flag argument is the lane. A path here is a common slip with a specific
-        // fix, so it gets its own message instead of "no such profile".
+        // A leading non-flag argument is the lane, full stop — never a path, so a lane named for
+        // the directory it covers (`clients` beside `clients/`) is still the lane. A path handed
+        // here is a slip, but only the manifest can say so: its correction rides the unknown-
+        // profile error (`resolve_from_manifest`), after the lookup has failed.
         Some(first) if !first.starts_with('-') => {
             let lane = first.to_string();
             args.next();
-            if lane.contains('/') || Path::new(&lane).exists() {
-                eprintln!(
-                    "prova: `run` takes a lane (a [profiles.<name>] from prova.toml), not a \
-                     path — run files/dirs with `prova {lane}`"
-                );
-                return ExitCode::from(2);
-            }
             let mut rest: Vec<String> = vec!["--profile".to_string(), lane];
             rest.extend(args);
             run(rest)
