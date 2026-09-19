@@ -244,11 +244,20 @@ fn kernel_probe(s: &prova_terminal::Screen, p: Probe) -> Option<String> {
                 Fg => Some(cell.fg.clone()),
                 Bg => Some(cell.bg.clone()),
                 Bold => Some(cell.bold.to_string()),
-                Dim | Italic | Underline | Blink | Reverse | Conceal | Strikethrough => None,
+                Italic => Some(cell.italic.to_string()),
+                Underline => Some(cell.underline.to_string()),
+                Reverse => Some(cell.reverse.to_string()),
+                Dim | Blink | Conceal | Strikethrough => None,
             }
         }
-        Cursor | CursorVisible | CursorShape | Title | AlternateScreen | BracketedPaste | ApplicationCursor
-        | MouseReporting => None,
+        Cursor => Some(format!("({},{})", s.cursor.0, s.cursor.1)),
+        CursorVisible => Some(s.cursor_visible.to_string()),
+        Title => Some(s.title.clone()),
+        AlternateScreen => Some(s.alternate_screen.to_string()),
+        BracketedPaste => Some(s.bracketed_paste.to_string()),
+        ApplicationCursor => Some(s.application_cursor.to_string()),
+        MouseReporting => Some(s.mouse_reporting.to_string()),
+        CursorShape => None,
     }
 }
 

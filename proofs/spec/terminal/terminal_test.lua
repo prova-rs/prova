@@ -42,6 +42,21 @@ prova.test("the screen model observes styled cells, not just bytes",
   t:expect(s:cell(0, 4).fg):never():equals("red")   -- the reset took
 end)
 
+prova.test("line(n) is a grid row — a soft-wrapped line spans rows, as its cells do",
+  { requires = { "unix" },
+    proves = "tier-a/terminal: line(n) addresses the grid; until 2026-09-19 it read the logical line, so a wrapped row returned the whole line while cell(r, c) addressed the grid (the kernel oracle's wrap/text)" }, function(t)
+  local term = terminal.spawn(t, {
+    cmd = { "sh", "-c", [[printf '%0100d' 0 | tr 0 x; sleep 5]] },
+    cols = 80, rows = 24,
+  })
+  term:wait_stable()
+  local s = term:screen()
+  t:expect(s:line(0)):equals(string.rep("x", 80))   -- the first row holds 80 columns
+  t:expect(s:line(1)):equals(string.rep("x", 20))   -- the wrap continues on the next row
+  t:expect(s:cell(1, 19).char):equals("x")           -- where cell(r, c) agrees it is
+  t:expect(s:contains(string.rep("x", 100))):is_true()   -- contains still sees the whole line
+end)
+
 prova.test("resize is a real SIGWINCH — the program observes the new geometry",
   { requires = { "unix" }, proves = "tier-a/terminal: resize is a real SIGWINCH the program observes" }, function(t)
   local term = terminal.spawn(t, { cmd = { "sh" }, cols = 80, rows = 24 })

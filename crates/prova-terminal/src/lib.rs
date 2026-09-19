@@ -303,18 +303,39 @@ impl Session {
                         fg: color_name(cl.fgcolor()),
                         bg: color_name(cl.bgcolor()),
                         bold: cl.bold(),
+                        italic: cl.italic(),
+                        underline: cl.underline(),
+                        reverse: cl.inverse(),
                     },
                     None => Cell {
                         ch: String::new(),
                         fg: "default".into(),
                         bg: "default".into(),
                         bold: false,
+                        italic: false,
+                        underline: false,
+                        reverse: false,
                     },
                 });
             }
             cells.push(row);
         }
-        Screen { contents: screen.contents(), rows, cols, cells }
+        let lines = screen.rows(0, cols).map(|l| l.trim_end().to_string()).collect();
+        let (cursor_row, cursor_col) = screen.cursor_position();
+        Screen {
+            contents: screen.contents(),
+            lines,
+            rows,
+            cols,
+            cells,
+            cursor: (cursor_row, cursor_col),
+            cursor_visible: !screen.hide_cursor(),
+            title: screen.title().to_string(),
+            alternate_screen: screen.alternate_screen(),
+            application_cursor: screen.application_cursor(),
+            bracketed_paste: screen.bracketed_paste(),
+            mouse_reporting: screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None,
+        }
     }
 
     /// A real SIGWINCH: the pty is resized, the child is signaled, and the screen model's
@@ -405,18 +426,39 @@ impl Session {
 /// A frozen frame — plain data, safe to hold while the program keeps writing.
 #[derive(Debug, Clone)]
 pub struct Screen {
-    /// The frame as text: rows joined by newlines, trailing blanks trimmed per row.
+    /// The frame as LOGICAL text: a soft-wrapped row continues its line, hard line breaks separate
+    /// lines, trailing blanks are trimmed. What `contains` searches, so a word the terminal wrapped
+    /// is still found.
     pub contents: String,
+    /// Each GRID row's text, trailing blanks trimmed — `lines[r]` is row `r` of `cells`.
+    pub lines: Vec<String>,
     pub rows: u16,
     pub cols: u16,
     /// `cells[row][col]`, 0-based.
     pub cells: Vec<Vec<Cell>>,
+    /// The cursor, `(row, col)`, 0-based.
+    pub cursor: (u16, u16),
+    /// Whether the cursor is shown (`DECTCEM`).
+    pub cursor_visible: bool,
+    /// The window title the program set (`OSC 0` / `OSC 2`); empty when it never did.
+    pub title: String,
+    /// Whether the program is on the alternate screen (`?1049` and kin).
+    pub alternate_screen: bool,
+    /// Application cursor keys (`DECCKM`, `?1`): arrows arrive as `ESC O x`, not `ESC [ x`.
+    pub application_cursor: bool,
+    /// Bracketed paste (`?2004`): a paste arrives fenced by `ESC [200~` / `ESC [201~`.
+    pub bracketed_paste: bool,
+    /// Whether the program asked for any mouse reporting.
+    pub mouse_reporting: bool,
 }
 
 impl Screen {
-    /// Row `n` of the frame text (0-based); empty past the last non-blank row.
+    /// GRID row `n`'s text (0-based), trailing blanks trimmed; empty past the last row. A row, not
+    /// a logical line: a soft-wrapped line spans several of these, as it spans several rows of
+    /// `cells`. (Until 2026-09-19 this read the logical text, so a wrapped row read as the whole
+    /// line and disagreed with `cell` — the oracle's `wrap/text`.)
     pub fn line(&self, n: usize) -> &str {
-        self.contents.lines().nth(n).unwrap_or("")
+        self.lines.get(n).map_or("", String::as_str)
     }
 
     pub fn contains(&self, s: &str) -> bool {
@@ -440,6 +482,10 @@ pub struct Cell {
     /// Background colour, in the same vocabulary as `fg`.
     pub bg: String,
     pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    /// Reverse video (`SGR 7`): foreground and background swapped.
+    pub reverse: bool,
 }
 
 /// The colour vocabulary a proof matches by: the 16 ANSI names, `idx-N` beyond them, `#rrggbb`

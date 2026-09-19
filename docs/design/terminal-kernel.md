@@ -29,7 +29,7 @@ The kernel owns the **session** and no **policy**.
 | `send`, `resize`, `signal`, `try_wait`, `stop` | `:send`, `:resize`, `:signal`, `:wait` (a 30 s deadline), `:stop` |
 | `check_expect(needle)` → `Found` / `Pending` / `Ended{bytes, why, tail}` | `:expect`: the loop, the 15 ms poll, the `timeout` deadline, the message |
 | `activity()` → `{bytes, ended}` | `:wait_stable`: the 150 ms quiet window, the deadline |
-| `screen()` → a frozen `Screen` (`contents`, `line`, `contains`, `cell` → `Cell{ch, fg, bg, bold}`) | `Screen` userdata, `snapshot_text` for `matches_snapshot` |
+| `screen()` → a frozen `Screen` (logical `contents`, grid `lines`, `cell` → `Cell{ch, fg, bg, bold, italic, underline, reverse}`, `cursor`, `cursor_visible`, `title`, `alternate_screen`, `application_cursor`, `bracketed_paste`, `mouse_reporting`) | `Screen` userdata (`text`, `line`, `contains`, `cell`), `snapshot_text` for `matches_snapshot` |
 | `diagnose()` → `Stall{screen, bytes, reader, child, tree}`, with `process_tree` under a live child | the timeout message that reports it |
 
 **Every wait in the kernel is a non-blocking check.** There is no clock, no sleep and no async
@@ -86,8 +86,13 @@ responder fixture turns echo off before it asks. The oracle passed three consecu
 1. ~~Extract the kernel with no behaviour change.~~
 2. ~~**The oracle and its ratchet.**~~ Landed: see [The oracle](#the-oracle), seeded at 21.
 3. **Burn down in the order the UI arc needs:**
-   - `Screen::line` addresses grid rows (the `wrap/text` defect), and cursor position and visibility
-     are surfaced (vt100 already tracks both);
+   - ~~`Screen::line` addresses grid rows (the `wrap/text` defect); surface what vt100 0.15 already
+     tracks~~ — slice 3a, oracle 21 → 7: grid `lines`, cursor position and visibility,
+     italic/underline/reverse, title, alternate screen, application cursor, bracketed paste, mouse
+     reporting. prova's Lua `screen:line(n)` changed with it (a fix, proven in proofs/spec/terminal
+     and seen red against the old binary); the other fields have no Lua surface yet.
+   - What vt100 0.15 does not track (the remaining 7): cursor shape (DECSCUSR), the query
+     responder, and dim/blink/conceal/strikethrough — a newer vt100 or a tracker of our own;
    - event-driven waits (a notify per output chunk, not a 15 ms poll);
    - cursor shape (DECSCUSR) and visibility;
    - the query responder;
