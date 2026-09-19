@@ -5,8 +5,8 @@
 #           position and visibility, italic/underline/reverse, title, alternate screen, input modes).
 #    7 → 3  slice 3b: vt100 0.16 and its callbacks — cursor shape (DECSCUSR), the query responder
 #           (DA1 here; DA2, DSR, CPR and text-area size agreed on first contact), dim.
-# What remains: the SGR attributes vt100 0.16 parses and drops.
-
-sgr_attrs/cell(0,4).blink
-sgr_attrs/cell(0,6).conceal
-sgr_attrs/cell(0,7).strikethrough
+#    3 → 0  slice 3c: blink, conceal and strikethrough through the attribute shadow ported from
+#           termlens (src/shadow.rs); colon-form colours agreed on first contact.
+#
+# EMPTY: over this corpus the kernel and termlens agree. A new fixture that disagrees lands its
+# keys here deliberately — the list is the burn-down, and it starts again from what it measures.

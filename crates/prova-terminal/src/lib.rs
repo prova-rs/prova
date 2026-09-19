@@ -19,6 +19,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use portable_pty::{native_pty_system, Child, ChildKiller, CommandBuilder, MasterPty, PtySize};
 
+mod shadow;
+use shadow::{AttrShadow, ColorNormalizer};
+
 /// What to run, and on how large a terminal.
 #[derive(Debug, Clone)]
 pub struct SpawnSpec {
@@ -156,7 +159,11 @@ impl vt100::Callbacks for Tracker {
 /// both sides.
 struct TermBuf {
     raw: Vec<u8>,
+    /// Colon-form colours (`38:2::r:g:b`) rewritten to the form vt100 reads, before either parser.
+    normalizer: ColorNormalizer,
     parser: vt100::Parser<Tracker>,
+    /// The parallel parser carrying blink, conceal and strikethrough (`shadow.rs`).
+    shadow: AttrShadow,
     /// Why the reader stopped, once it has — `None` while the stream is still live.
     ///
     /// The REASON is kept, not merely the fact. A clean EOF (the child closed the pty and exited)
@@ -286,7 +293,9 @@ impl Session {
 
         let buf = Arc::new(Mutex::new(TermBuf {
             raw: Vec::new(),
+            normalizer: ColorNormalizer::new(),
             parser: vt100::Parser::new_with_callbacks(spec.rows, spec.cols, 0, Tracker::default()),
+            shadow: AttrShadow::new(spec.rows, spec.cols),
             end: None,
         }));
         let writer = Arc::new(Mutex::new(Some(writer)));
@@ -315,7 +324,9 @@ impl Session {
                         let replies = {
                             let mut b = lock_buf(&thread_buf);
                             b.raw.extend_from_slice(&chunk[..n]);
-                            b.parser.process(&chunk[..n]);
+                            let bytes = b.normalizer.feed(&chunk[..n]);
+                            b.parser.process(&bytes);
+                            b.shadow.feed(&bytes);
                             std::mem::take(&mut b.parser.callbacks_mut().replies)
                         };
                         // Answer outside the buffer lock. A failed write leaves the program
@@ -379,10 +390,14 @@ impl Session {
         let b = lock_buf(&self.buf);
         let screen = b.parser.screen();
         let (rows, cols) = screen.size();
+        // Attributes never shape vt100's grid, so the shadow's text is the primary's: shadow cell
+        // (r, c) IS primary cell (r, c). Checked, not argued.
+        debug_assert_eq!(screen.contents(), b.shadow.contents(), "the attribute shadow drifted");
         let mut cells = Vec::with_capacity(rows as usize);
         for r in 0..rows {
             let mut row = Vec::with_capacity(cols as usize);
             for c in 0..cols {
+                let carried = b.shadow.cell(r, c);
                 row.push(match screen.cell(r, c) {
                     Some(cl) => Cell {
                         ch: cl.contents().to_string(),
@@ -393,6 +408,9 @@ impl Session {
                         italic: cl.italic(),
                         underline: cl.underline(),
                         reverse: cl.inverse(),
+                        blink: carried.is_some_and(vt100::Cell::bold),
+                        conceal: carried.is_some_and(vt100::Cell::italic),
+                        strikethrough: carried.is_some_and(vt100::Cell::underline),
                     },
                     None => Cell {
                         ch: String::new(),
@@ -403,6 +421,9 @@ impl Session {
                         italic: false,
                         underline: false,
                         reverse: false,
+                        blink: false,
+                        conceal: false,
+                        strikethrough: false,
                     },
                 });
             }
@@ -440,7 +461,9 @@ impl Session {
         let m = self.master.as_ref().ok_or(Error::Closed)?;
         m.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
             .map_err(|e| Error::Io(e.to_string()))?;
-        lock_buf(&self.buf).parser.screen_mut().set_size(rows, cols);
+        let mut b = lock_buf(&self.buf);
+        b.parser.screen_mut().set_size(rows, cols);
+        b.shadow.set_size(rows, cols);
         Ok(())
     }
 
@@ -604,6 +627,13 @@ pub struct Cell {
     pub underline: bool,
     /// Reverse video (`SGR 7`): foreground and background swapped.
     pub reverse: bool,
+    /// Blinking (`SGR 5`/`6`; the two rates are not distinguished).
+    pub blink: bool,
+    /// Concealed (`SGR 8`): the cell holds text the terminal does not display — a masked password
+    /// field. `ch` still reports the text, as a real terminal holds it; this says it is hidden.
+    pub conceal: bool,
+    /// Struck through (`SGR 9`).
+    pub strikethrough: bool,
 }
 
 /// The colour vocabulary a proof matches by: the 16 ANSI names, `idx-N` beyond them, `#rrggbb`

@@ -84,6 +84,12 @@ struct Fixture {
     /// `QUIET` of silence, never at a child exit that could race the reader.
     script: &'static str,
     probes: &'static [Probe],
+    /// A sentinel the screen must show before the quiet window counts. A query fixture goes
+    /// silent while it waits for its answer, and under load that silence outlasted `QUIET` and
+    /// the screen was read before the reply was printed (a responder fixture read `""` on a
+    /// correct terminal). A terminal that never answers still prints the sentinel once the
+    /// program's own read times out, so the comparison stays honest.
+    until: Option<&'static str>,
 }
 
 use Attr::*;
@@ -91,24 +97,45 @@ use Probe::*;
 
 /// The corpus. Every script is POSIX `printf` except the responder's, which needs bash's `read`.
 const FIXTURES: &[Fixture] = &[
-    Fixture { name: "plain_text", shell: "sh", script: r"printf 'hello\nworld'; sleep 5", probes: &[Text, Cursor] },
+    Fixture { name: "plain_text", shell: "sh", script: r"printf 'hello\nworld'; sleep 5", probes: &[Text, Cursor], until: None },
     Fixture {
         name: "wrap",
         shell: "sh",
         script: r"printf '%0100d' 0 | tr 0 x; sleep 5",
         probes: &[Text, Cursor],
+        until: None,
     },
     Fixture {
         name: "clear_and_home",
         shell: "sh",
         script: r"printf 'junk\033[2J\033[Hclean'; sleep 5",
         probes: &[Text, Cursor],
+        until: None,
     },
     Fixture {
         name: "sgr_colors",
         shell: "sh",
         script: r"printf '\033[31mred\033[0m \033[42mgreenbg\033[0m \033[38;5;208midx\033[0m \033[38;2;255;0;16mrgb\033[0m'; sleep 5",
         probes: &[Text, Cell(0, 0, Fg), Cell(0, 4, Bg), Cell(0, 12, Fg), Cell(0, 16, Fg), Cell(0, 3, Fg)],
+        until: None,
+    },
+    Fixture {
+        // Colon-form extended colours (ITU T.416), which vt100 does not read on its own.
+        name: "sgr_colon_colors",
+        shell: "sh",
+        script: r"printf '\033[38:2::255:0:16mA\033[0m\033[38:5:208mB\033[0m\033[48:2::1:2:3mC\033[0m'; sleep 5",
+        probes: &[Text, Cell(0, 0, Fg), Cell(0, 1, Fg), Cell(0, 2, Bg)],
+        until: None,
+    },
+    Fixture {
+        // An extended colour whose sub-parameters look like the dropped attributes: the 5 in
+        // 38;5;n is palette mode, the 8 and 9 in an RGB triple are colour values — never blink,
+        // conceal or strike.
+        name: "sgr_attr_lookalikes",
+        shell: "sh",
+        script: r"printf '\033[38;5;9mA\033[0m\033[38;2;8;9;5mB\033[0m'; sleep 5",
+        probes: &[Cell(0, 0, Blink), Cell(0, 0, Strikethrough), Cell(0, 1, Conceal), Cell(0, 1, Blink), Cell(0, 1, Fg)],
+        until: None,
     },
     Fixture {
         name: "sgr_attrs",
@@ -125,48 +152,56 @@ const FIXTURES: &[Fixture] = &[
             Cell(0, 7, Strikethrough),
             Cell(0, 8, Bold),
         ],
+        until: None,
     },
     Fixture {
         name: "cursor_position",
         shell: "sh",
         script: r"printf '\033[5;10Hx'; sleep 5",
         probes: &[Text, Cursor],
+        until: None,
     },
     Fixture {
         name: "cursor_hidden",
         shell: "sh",
         script: r"printf 'h\033[?25l'; sleep 5",
         probes: &[CursorVisible],
+        until: None,
     },
     Fixture {
         name: "cursor_shape_bar",
         shell: "sh",
         script: r"printf 'b\033[6 q'; sleep 5",
         probes: &[CursorShape],
+        until: None,
     },
     Fixture {
         name: "cursor_shape_block",
         shell: "sh",
         script: r"printf 'b\033[2 q'; sleep 5",
         probes: &[CursorShape],
+        until: None,
     },
     Fixture {
         name: "title",
         shell: "sh",
         script: r"printf 't\033]0;oracle-title\007'; sleep 5",
         probes: &[Title],
+        until: None,
     },
     Fixture {
         name: "alternate_screen",
         shell: "sh",
         script: r"printf 'main'; printf '\033[?1049h\033[Halt'; sleep 5",
         probes: &[Text, AlternateScreen],
+        until: None,
     },
     Fixture {
         name: "input_modes",
         shell: "sh",
         script: r"printf 'm\033[?2004h\033[?1h\033[?1000h'; sleep 5",
         probes: &[BracketedPaste, ApplicationCursor, MouseReporting],
+        until: None,
     },
     Fixture {
         // A capability probe: primary device attributes. A terminal that never answers leaves the
@@ -177,18 +212,21 @@ const FIXTURES: &[Fixture] = &[
         // still echoes, and the screen then shows it twice or once depending on a race.
         script: r#"stty -echo; printf '\033[c'; IFS= read -r -t 2 -d c reply; printf 'reply:%s' "${reply#?}"; sleep 5"#,
         probes: &[Text],
+        until: Some("reply:"),
     },
     Fixture {
         name: "query_secondary_da",
         shell: "bash",
         script: r#"stty -echo; printf '\033[>c'; IFS= read -r -t 2 -d c reply; printf 'reply:%s' "${reply#?}"; sleep 5"#,
         probes: &[Text],
+        until: Some("reply:"),
     },
     Fixture {
         name: "query_operating_status",
         shell: "bash",
         script: r#"stty -echo; printf '\033[5n'; IFS= read -r -t 2 -d n reply; printf 'reply:%s' "${reply#?}"; sleep 5"#,
         probes: &[Text],
+        until: Some("reply:"),
     },
     Fixture {
         // The cursor stands at row 3, column 5 when it asks; the answer is 1-based.
@@ -196,12 +234,14 @@ const FIXTURES: &[Fixture] = &[
         shell: "bash",
         script: r#"stty -echo; printf '\033[3;5H\033[6n'; IFS= read -r -t 2 -d R reply; printf '\033[Hreply:%s' "${reply#?}"; sleep 5"#,
         probes: &[Text],
+        until: Some("reply:"),
     },
     Fixture {
         name: "query_text_area_size",
         shell: "bash",
         script: r#"stty -echo; printf '\033[18t'; IFS= read -r -t 2 -d t reply; printf 'reply:%s' "${reply#?}"; sleep 5"#,
         probes: &[Text],
+        until: Some("reply:"),
     },
 ];
 
@@ -273,7 +313,9 @@ fn kernel_probe(s: &prova_terminal::Screen, p: Probe) -> Option<String> {
                 Italic => Some(cell.italic.to_string()),
                 Underline => Some(cell.underline.to_string()),
                 Reverse => Some(cell.reverse.to_string()),
-                Blink | Conceal | Strikethrough => None,
+                Blink => Some(cell.blink.to_string()),
+                Conceal => Some(cell.conceal.to_string()),
+                Strikethrough => Some(cell.strikethrough.to_string()),
             }
         }
         Cursor => Some(format!("({},{})", s.cursor.0, s.cursor.1)),
@@ -294,6 +336,10 @@ fn lens_screen(f: &Fixture) -> termlens::Screen {
         .args(["-c", f.script])
         .spawn(f.shell)
         .unwrap_or_else(|e| panic!("{}: termlens spawn: {e}", f.name));
+    if let Some(sentinel) = f.until {
+        t.wait_until(|s| s.contains(sentinel))
+            .unwrap_or_else(|e| panic!("{}: termlens never showed {sentinel:?}: {e}", f.name));
+    }
     t.wait_stable(QUIET).unwrap_or_else(|e| panic!("{}: termlens never settled: {e}", f.name))
 }
 
@@ -304,6 +350,12 @@ fn kernel_screen(f: &Fixture) -> prova_terminal::Screen {
     let mut s = Session::spawn(&spec).unwrap_or_else(|e| panic!("{}: kernel spawn: {e}", f.name));
     // The host's loop, as prova's `wait_stable` runs it: settled after QUIET with no new bytes.
     let deadline = Instant::now() + BOUND;
+    if let Some(sentinel) = f.until {
+        while !s.screen().contains(sentinel) {
+            assert!(Instant::now() < deadline, "{}: kernel never showed {sentinel:?}", f.name);
+            std::thread::sleep(Duration::from_millis(15));
+        }
+    }
     let mut last = s.activity().bytes;
     let mut quiet_since = Instant::now();
     loop {

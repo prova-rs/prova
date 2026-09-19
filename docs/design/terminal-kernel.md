@@ -29,7 +29,7 @@ The kernel owns the **session** and no **policy**.
 | `send`, `resize`, `signal`, `try_wait`, `stop` | `:send`, `:resize`, `:signal`, `:wait` (a 30 s deadline), `:stop` |
 | `check_expect(needle)` → `Found` / `Pending` / `Ended{bytes, why, tail}` | `:expect`: the loop, the 15 ms poll, the `timeout` deadline, the message |
 | `activity()` → `{bytes, ended}` | `:wait_stable`: the 150 ms quiet window, the deadline |
-| `screen()` → a frozen `Screen` (logical `contents`, grid `lines`, `cell` → `Cell{ch, fg, bg, bold, dim, italic, underline, reverse}`, `cursor`, `cursor_visible`, `cursor_shape`, `cursor_blink`, `title`, `alternate_screen`, `application_cursor`, `bracketed_paste`, `mouse_reporting`) | `Screen` userdata (`text`, `line`, `contains`, `cell`), `snapshot_text` for `matches_snapshot` |
+| `screen()` → a frozen `Screen` (logical `contents`, grid `lines`, `cell` → `Cell{ch, fg, bg, bold, dim, italic, underline, reverse, blink, conceal, strikethrough}`, `cursor`, `cursor_visible`, `cursor_shape`, `cursor_blink`, `title`, `alternate_screen`, `application_cursor`, `bracketed_paste`, `mouse_reporting`) | `Screen` userdata (`text`, `line`, `contains`, `cell`), `snapshot_text` for `matches_snapshot` |
 | the **query responder**: DA1, DA2, DSR 5, CPR / DECXCPR and the text-area size, each reply termlens's byte for byte, queued by vt100's callbacks and written by the reader thread outside the buffer lock | nothing to configure: a program that probes its terminal gets an answer |
 | `diagnose()` → `Stall{screen, bytes, reader, child, tree}`, with `process_tree` under a live child | the timeout message that reports it |
 
@@ -81,6 +81,8 @@ responder fixture turns echo off before it asks. The oracle passed three consecu
 | prova's surface and messages are unchanged | proof: `proofs/spec/terminal`, plus the face's `spawn_drives_a_real_pty_round_trip` |
 | `stop` is idempotent and closes the session | test: `stop_closes_the_session` |
 | Every disagreement with termlens is admitted by name, and the list never grows or goes stale | test: `the_kernel_disagrees_with_termlens_only_where_the_baseline_admits` (the ratchet) |
+| The attribute shadow's grid IS the primary's, cell for cell | a `debug_assert_eq!` on every snapshot (tests run with debug assertions); the argument (SGR never shapes vt100's grid) in `shadow.rs` |
+| A query reply never blocks the reader under the buffer lock | construction: the callback only queues, and the reader writes after releasing the lock |
 
 ## Next slices (Substrate plan docs/plans/PTY_FIRST_CLASS.md)
 
@@ -97,8 +99,17 @@ responder fixture turns echo off before it asks. The oracle passed three consecu
      `Screen`). The four other responder fixtures (DA2, DSR, CPR, text-area size) agreed with
      termlens on first contact. prova's Lua driver answers probes now — proven in
      proofs/spec/terminal and seen red against the old binary.
-   - The remaining 3: blink, conceal and strikethrough, which vt100 0.16 parses and drops. They
-     need a per-cell SGR tracker of our own.
+   - ~~Blink, conceal, strikethrough~~ — slice 3c, oracle 3 → **0**. `src/shadow.rs` is PORTED
+     from termlens (MIT, notice at the file). It runs a second vt100 parser fed the same stream with
+     only whole plain-SGR sequences rewritten, so bold, italic and underline carry the three vt100
+     drops. It also ports termlens's colon-colour normalizer (`38:2::r:g:b`), and the colon and
+     look-alike fixtures (`38;5;9`, an RGB triple holding 8/9/5) agreed on first contact.
+   - The oracle's query fixtures wait for a sentinel before the quiet window counts. Under load a
+     correct responder once read `""` because the program's silence while it waited for the reply
+     outlasted the window.
+   - Next in the UI arc's order: event-driven waits (a notify per output chunk, not a 15 ms
+     poll), then `Screen` diff and a snapshot format. New oracle fixtures are welcome at any point:
+     the baseline restarts from what they measure.
    - event-driven waits (a notify per output chunk, not a 15 ms poll);
    - cursor shape (DECSCUSR) and visibility;
    - the query responder;
