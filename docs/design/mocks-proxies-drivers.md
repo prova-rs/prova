@@ -140,8 +140,10 @@ end)
 ```
 
 - **Session surface:** `:send`, `:expect`, `:wait_stable`, `:screen`, `:resize`, `:signal`, `:wait`.
-- **`Screen` type:** `:text`, `:line(n)`, `:cell(r,c)` (char + fg/bg/attrs), `:contains`,
-  `:matches_snapshot`.
+- **`Screen` type:** `:text`, `:line(n)` (a grid row), `:cell(r,c)` (char + fg/bg + every SGR
+  attribute, `conceal` included), `:contains`, `:matches_snapshot`; the fields `.cursor`
+  (position, visibility, DECSCUSR shape, blink), `.title`, `.alternate_screen`, `.modes`. The
+  engine beneath is the `prova-terminal` kernel (terminal-kernel.md), measured against termlens.
 - **Lifecycle:** allocated via `ctx:manage` like any resource — the child is killed and the pty
   restored on scope exit, LIFO, for free.
 

@@ -31,7 +31,7 @@ The kernel owns the **session** and no **policy**.
 | `activity()` → `{bytes, ended}` | `:wait_stable`: the 150 ms quiet window, the deadline |
 | the WAKE: `on_output(hook)`, which the reader calls after every chunk and at end-of-stream, outside every lock | `:expect` / `:wait_stable` await a `tokio::sync::Notify` the hook fires. A permit survives a notification that lands between a check and the await, so nothing is missed and nothing is polled |
 | `wait_output(since, bound)` / `wait_until(bound, predicate)`: blocking waits for a host that may block; the bound is the host's | (Substrate's face, and the oracle) |
-| `screen()` → a frozen `Screen` (logical `contents`, grid `lines`, `cell` → `Cell{ch, fg, bg, bold, dim, italic, underline, reverse, blink, conceal, strikethrough}`, `cursor`, `cursor_visible`, `cursor_shape`, `cursor_blink`, `title`, `alternate_screen`, `application_cursor`, `bracketed_paste`, `mouse_reporting`) | `Screen` userdata (`text`, `line`, `contains`, `cell`), `snapshot_text` for `matches_snapshot` |
+| `screen()` → a frozen `Screen` (logical `contents`, grid `lines`, `cell` → `Cell{ch, fg, bg, bold, dim, italic, underline, reverse, blink, conceal, strikethrough}`, `cursor`, `cursor_visible`, `cursor_shape`, `cursor_blink`, `title`, `alternate_screen`, `application_cursor`, `bracketed_paste`, `mouse_reporting`) | `Screen` userdata: `text`, `line` (a grid row), `contains`, `cell` (every attribute), the fields `.cursor` / `.title` / `.alternate_screen` / `.modes` (slice 3e), and `snapshot_text` for `matches_snapshot` |
 | the **query responder**: DA1, DA2, DSR 5, CPR / DECXCPR and the text-area size, each reply termlens's byte for byte, queued by vt100's callbacks and written by the reader thread outside the buffer lock | nothing to configure: a program that probes its terminal gets an answer |
 | `diagnose()` → `Stall{screen, bytes, reader, child, tree}`, with `process_tree` under a live child | the timeout message that reports it |
 
@@ -120,6 +120,11 @@ responder fixture turns echo off before it asks. The oracle passed three consecu
        The oracle's hand-rolled wait checked the screen BEFORE reading the byte count. That lost
        the reply's wakeup and sat out each query program's 5 s life, and the suite went from 16 s
        to 40 s. `wait_until` now owns that ordering, and `wait_output`'s doc states it.
+   - ~~The Lua surface for what the kernel now observes~~ — slice 3e: `screen.cursor`
+     (position, visibility, DECSCUSR shape, blink), `.title`, `.alternate_screen`, `.modes`, and
+     every SGR attribute on `screen:cell`. It is additive, with a spec proof per group, each seen
+     red against the old binary. It puts the UI arc's first gated TUI witness (vim Normal mode's
+     block cursor in Substrate's TUI) within reach of a plain prova proof.
    - Next in the UI arc's order: `Screen` diff and a snapshot format. New oracle fixtures are welcome at any point:
      the baseline restarts from what they measure.
    - event-driven waits (a notify per output chunk, not a 15 ms poll);

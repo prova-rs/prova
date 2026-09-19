@@ -74,6 +74,38 @@ impl UserData for ScreenUd {
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
         fields.add_field_method_get("rows", |_, this| Ok(this.0.rows));
         fields.add_field_method_get("cols", |_, this| Ok(this.0.cols));
+        // The cursor: 0-based position, whether it is shown (DECTCEM), the shape the program
+        // asked for with DECSCUSR ("default" while it never asked — not the same claim as
+        // "block"), and whether it blinks (nil while the program never said).
+        fields.add_field_method_get("cursor", |lua, this| {
+            let s = &this.0;
+            let t = lua.create_table()?;
+            t.set("row", s.cursor.0)?;
+            t.set("col", s.cursor.1)?;
+            t.set("visible", s.cursor_visible)?;
+            t.set(
+                "shape",
+                match s.cursor_shape {
+                    prova_terminal::CursorShape::Default => "default",
+                    prova_terminal::CursorShape::Block => "block",
+                    prova_terminal::CursorShape::Underline => "underline",
+                    prova_terminal::CursorShape::Bar => "bar",
+                },
+            )?;
+            t.set("blink", s.cursor_blink)?;
+            Ok(t)
+        });
+        // Out-of-band state the grid does not show: the window title, the alternate screen, and
+        // the input modes a program switched on.
+        fields.add_field_method_get("title", |_, this| Ok(this.0.title.clone()));
+        fields.add_field_method_get("alternate_screen", |_, this| Ok(this.0.alternate_screen));
+        fields.add_field_method_get("modes", |lua, this| {
+            let t = lua.create_table()?;
+            t.set("application_cursor", this.0.application_cursor)?;
+            t.set("bracketed_paste", this.0.bracketed_paste)?;
+            t.set("mouse_reporting", this.0.mouse_reporting)?;
+            Ok(t)
+        });
     }
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("text", |_, this, ()| Ok(this.0.contents.clone()));
@@ -89,6 +121,15 @@ impl UserData for ScreenUd {
             t.set("fg", cell.fg.clone())?;
             t.set("bg", cell.bg.clone())?;
             t.set("bold", cell.bold)?;
+            t.set("dim", cell.dim)?;
+            t.set("italic", cell.italic)?;
+            t.set("underline", cell.underline)?;
+            t.set("reverse", cell.reverse)?;
+            t.set("blink", cell.blink)?;
+            // A concealed cell still holds its text (`char`), as a real terminal does — this
+            // says the text is not displayed: the masked-password assertion.
+            t.set("conceal", cell.conceal)?;
+            t.set("strikethrough", cell.strikethrough)?;
             Ok(t)
         });
         // The snapshot protocol: any userdata exposing `snapshot_text()` can be the subject of

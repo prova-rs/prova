@@ -1343,11 +1343,23 @@ function stdio.proxy(ctx, opts) end
 ---@class prova.Screen
 ---@field rows integer
 ---@field cols integer
+--- The cursor: 0-based `row`/`col`; `visible` (DECTCEM); `shape` — what the program asked for with
+--- DECSCUSR, "default" while it never asked (not the same claim as "block"); `blink`, nil while
+--- the program never said.
+---@field cursor { row: integer, col: integer, visible: boolean, shape: "default"|"block"|"underline"|"bar", blink: boolean? }
+--- The window title the program set (OSC 0/2); "" when it never did.
+---@field title string
+--- Whether the program is on the alternate screen (`?1049` and kin).
+---@field alternate_screen boolean
+--- The input modes the program switched on: application cursor keys (`?1`), bracketed paste
+--- (`?2004`), and any mouse reporting.
+---@field modes { application_cursor: boolean, bracketed_paste: boolean, mouse_reporting: boolean }
 local Screen = {}
 --- The rendered frame text.
 ---@return string
 function Screen:text() end
---- One rendered line (0-based — screen geometry is coordinates, not Lua arrays).
+--- One grid ROW (0-based — screen geometry is coordinates, not Lua arrays). A soft-wrapped line
+--- spans several rows, as it spans several rows of `cell`; `contains` still sees the whole line.
 ---@param n integer
 ---@return string
 function Screen:line(n) end
@@ -1355,10 +1367,12 @@ function Screen:line(n) end
 ---@param s string
 ---@return boolean
 function Screen:contains(s) end
---- One styled cell (0-based row, col): `{ char, fg, bg, bold }` with named ANSI colors ("red").
+--- One styled cell (0-based row, col) with named ANSI colors ("red", "idx-208", "#ff0010") and
+--- every SGR attribute. A `conceal`ed cell still reports its `char`, as a real terminal holds it —
+--- `conceal` says it is not displayed (the masked-password assertion).
 ---@param row integer
 ---@param col integer
----@return { char: string, fg: string, bg: string, bold: boolean }
+---@return { char: string, fg: string, bg: string, bold: boolean, dim: boolean, italic: boolean, underline: boolean, reverse: boolean, blink: boolean, conceal: boolean, strikethrough: boolean }
 function Screen:cell(row, col) end
 --- The snapshot protocol: what `t:expect(screen):matches_snapshot(name)` compares (the frame text).
 ---@return string

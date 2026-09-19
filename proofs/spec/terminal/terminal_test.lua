@@ -67,6 +67,63 @@ prova.test("a capability probe is answered — the terminal replies to device-at
   term:expect("reply:[?62;22", { timeout = "2s" })   -- answered well inside the program's 3 s wait
 end)
 
+prova.test("the screen reports the cursor — position, visibility, and the shape the program asked for",
+  { requires = { "unix" },
+    proves = "tier-a/terminal: screen.cursor carries the 0-based position, DECTCEM visibility and the DECSCUSR shape/blink — the block-vs-bar cursor a modal editor switches, invisible in the grid" }, function(t)
+  local term = terminal.spawn(t, {
+    cmd = { "sh", "-c", [[printf '\033[5;10Hx\033[6 q\033[?25l'; sleep 5]] },
+    cols = 80, rows = 24,
+  })
+  term:wait_stable()
+  local c = term:screen().cursor
+  t:expect(c.row):equals(4)
+  t:expect(c.col):equals(10)              -- after the x written at column 9
+  t:expect(c.visible):equals(false)
+  t:expect(c.shape):equals("bar")         -- DECSCUSR 6: a steady bar
+  t:expect(c.blink):equals(false)
+
+  local plain = terminal.spawn(t, { cmd = { "sh", "-c", [[printf 'p'; sleep 5]] }, cols = 80, rows = 24 })
+  plain:wait_stable()
+  t:expect(plain:screen().cursor.shape):equals("default")   -- never asked is not "block"
+  t:expect(plain:screen().cursor.blink):is_nil()
+end)
+
+prova.test("out-of-band state is observable — the title, the alternate screen, the input modes",
+  { requires = { "unix" },
+    proves = "tier-a/terminal: screen.title / .alternate_screen / .modes report what a program switched on that the grid never shows" }, function(t)
+  local term = terminal.spawn(t, {
+    cmd = { "sh", "-c", [[printf '\033]0;my-title\007\033[?1049h\033[?2004h\033[?1h\033[?1000halt'; sleep 5]] },
+    cols = 80, rows = 24,
+  })
+  term:wait_stable()
+  local s = term:screen()
+  t:expect(s.title):equals("my-title")
+  t:expect(s.alternate_screen):equals(true)
+  t:expect(s.modes.bracketed_paste):equals(true)
+  t:expect(s.modes.application_cursor):equals(true)
+  t:expect(s.modes.mouse_reporting):equals(true)
+end)
+
+prova.test("every SGR attribute reaches the cell — a masked field is told apart from one printed in clear",
+  { requires = { "unix" },
+    proves = "tier-a/terminal: dim/italic/underline/reverse/blink/conceal/strikethrough reach screen:cell; a concealed cell keeps its char, and conceal says it is hidden" }, function(t)
+  local term = terminal.spawn(t, {
+    cmd = { "sh", "-c", [[printf '\033[2mD\033[0m\033[3mI\033[0m\033[4mU\033[0m\033[7mR\033[0m\033[5mK\033[0m\033[9mS\033[0m\033[8mhunter2\033[0m clear'; sleep 5]] },
+    cols = 80, rows = 24,
+  })
+  term:wait_stable()
+  local s = term:screen()
+  t:expect(s:cell(0, 0).dim):equals(true)
+  t:expect(s:cell(0, 1).italic):equals(true)
+  t:expect(s:cell(0, 2).underline):equals(true)
+  t:expect(s:cell(0, 3).reverse):equals(true)
+  t:expect(s:cell(0, 4).blink):equals(true)
+  t:expect(s:cell(0, 5).strikethrough):equals(true)
+  t:expect(s:cell(0, 6).char):equals("h")          -- the text is there, as a terminal holds it…
+  t:expect(s:cell(0, 6).conceal):equals(true)      -- …and it is hidden
+  t:expect(s:cell(0, 14).conceal):equals(false)    -- the reset took: "clear" is in clear
+end)
+
 prova.test("resize is a real SIGWINCH — the program observes the new geometry",
   { requires = { "unix" }, proves = "tier-a/terminal: resize is a real SIGWINCH the program observes" }, function(t)
   local term = terminal.spawn(t, { cmd = { "sh" }, cols = 80, rows = 24 })
