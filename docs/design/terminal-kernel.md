@@ -29,6 +29,8 @@ The kernel owns the **session** and no **policy**.
 | `send`, `resize`, `signal`, `try_wait`, `stop` | `:send`, `:resize`, `:signal`, `:wait` (a 30 s deadline), `:stop` |
 | `check_expect(needle)` → `Found` / `Pending` / `Ended{bytes, why, tail}` | `:expect`: the loop, the 15 ms poll, the `timeout` deadline, the message |
 | `activity()` → `{bytes, ended}` | `:wait_stable`: the 150 ms quiet window, the deadline |
+| the WAKE: `on_output(hook)`, which the reader calls after every chunk and at end-of-stream, outside every lock | `:expect` / `:wait_stable` await a `tokio::sync::Notify` the hook fires. A permit survives a notification that lands between a check and the await, so nothing is missed and nothing is polled |
+| `wait_output(since, bound)` / `wait_until(bound, predicate)`: blocking waits for a host that may block; the bound is the host's | (Substrate's face, and the oracle) |
 | `screen()` → a frozen `Screen` (logical `contents`, grid `lines`, `cell` → `Cell{ch, fg, bg, bold, dim, italic, underline, reverse, blink, conceal, strikethrough}`, `cursor`, `cursor_visible`, `cursor_shape`, `cursor_blink`, `title`, `alternate_screen`, `application_cursor`, `bracketed_paste`, `mouse_reporting`) | `Screen` userdata (`text`, `line`, `contains`, `cell`), `snapshot_text` for `matches_snapshot` |
 | the **query responder**: DA1, DA2, DSR 5, CPR / DECXCPR and the text-area size, each reply termlens's byte for byte, queued by vt100's callbacks and written by the reader thread outside the buffer lock | nothing to configure: a program that probes its terminal gets an answer |
 | `diagnose()` → `Stall{screen, bytes, reader, child, tree}`, with `process_tree` under a live child | the timeout message that reports it |
@@ -83,6 +85,8 @@ responder fixture turns echo off before it asks. The oracle passed three consecu
 | Every disagreement with termlens is admitted by name, and the list never grows or goes stale | test: `the_kernel_disagrees_with_termlens_only_where_the_baseline_admits` (the ratchet) |
 | The attribute shadow's grid IS the primary's, cell for cell | a `debug_assert_eq!` on every snapshot (tests run with debug assertions); the argument (SGR never shapes vt100's grid) in `shadow.rs` |
 | A query reply never blocks the reader under the buffer lock | construction: the callback only queues, and the reader writes after releasing the lock |
+| An output wait wakes on output and honours the host's bound; nothing polls | tests: `wait_output_wakes_on_output_and_honours_the_hosts_bound`, `wait_until_returns_the_satisfying_frame_or_none`, `on_output_fires_for_output_and_at_the_end` |
+| A blocking waiter cannot lose a wakeup | construction: `wait_until` counts before it checks; `wait_output`'s doc names the order for hand-rolled loops |
 
 ## Next slices (Substrate plan docs/plans/PTY_FIRST_CLASS.md)
 
@@ -107,8 +111,16 @@ responder fixture turns echo off before it asks. The oracle passed three consecu
    - The oracle's query fixtures wait for a sentinel before the quiet window counts. Under load a
      correct responder once read `""` because the program's silence while it waited for the reply
      outlasted the window.
-   - Next in the UI arc's order: event-driven waits (a notify per output chunk, not a 15 ms
-     poll), then `Screen` diff and a snapshot format. New oracle fixtures are welcome at any point:
+   - ~~Event-driven waits~~ — slice 3d.
+     - `on_output` hooks, and a condition variable paired with the buffer lock.
+     - `wait_output` and `wait_until` block for hosts that may block.
+     - prova's `:expect` and `:wait_stable` wake on output instead of a 15 ms poll. `:wait` still
+       polls `try_wait`, because a child's exit is not output.
+     - The mechanism caught its own first bug, and the timing, not a failing assertion, showed it.
+       The oracle's hand-rolled wait checked the screen BEFORE reading the byte count. That lost
+       the reply's wakeup and sat out each query program's 5 s life, and the suite went from 16 s
+       to 40 s. `wait_until` now owns that ordering, and `wait_output`'s doc states it.
+   - Next in the UI arc's order: `Screen` diff and a snapshot format. New oracle fixtures are welcome at any point:
      the baseline restarts from what they measure.
    - event-driven waits (a notify per output chunk, not a 15 ms poll);
    - cursor shape (DECSCUSR) and visibility;

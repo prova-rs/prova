@@ -19,6 +19,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 use mlua::{Function, Lua, Table, UserData, UserDataFields, UserDataMethods, Value};
@@ -27,6 +28,8 @@ use prova_terminal::{ExpectCheck, Session, SpawnSpec};
 use crate::model::parse_duration;
 
 const DEFAULT_WAIT: Duration = Duration::from_secs(10);
+/// `:wait` only: a child's exit is not output, so the reap still polls `try_wait`. The output waits
+/// (`:expect`, `:wait_stable`) wake on the kernel's per-chunk notification instead.
 const POLL: Duration = Duration::from_millis(15);
 /// `wait_stable`: the frame is settled when no new bytes arrive for this window.
 const QUIET: Duration = Duration::from_millis(150);
@@ -57,6 +60,10 @@ fn opt_timeout(opts: &Option<Table>, default: Duration) -> mlua::Result<Duration
 /// time, so no two borrows ever overlap.
 struct TermUd {
     session: RefCell<Session>,
+    /// Woken by the kernel's reader after every output chunk and at end-of-stream
+    /// (`Session::on_output`). `notify_one` keeps a permit when nobody is waiting, so output that
+    /// lands between a check and the next await is never missed.
+    wake: Arc<tokio::sync::Notify>,
 }
 
 /// A frozen frame — plain data copied out under the kernel's lock, so assertions never race the
@@ -116,7 +123,8 @@ fn add_drive_methods<M: UserDataMethods<TermUd>>(methods: &mut M) {
                     }
                     ExpectCheck::Pending => {}
                 }
-                if tokio::time::Instant::now() >= deadline {
+                let now = tokio::time::Instant::now();
+                if now >= deadline {
                     // An empty screen is the least informative thing a pty failure can show,
                     // and on its own it cannot distinguish "the program never ran" from "it ran
                     // and said nothing" from "it spoke and we lost it". Report the facts that
@@ -135,7 +143,11 @@ fn add_drive_methods<M: UserDataMethods<TermUd>>(methods: &mut M) {
                         stall.screen
                     )));
                 }
-                tokio::time::sleep(POLL).await;
+                // Sleep until the program writes or the deadline passes — never a fixed poll.
+                tokio::select! {
+                    () = this.wake.notified() => {}
+                    () = tokio::time::sleep_until(deadline) => {}
+                }
             }
         },
     );
@@ -150,7 +162,12 @@ fn add_observe_methods<M: UserDataMethods<TermUd>>(methods: &mut M) {
         let mut last_len = this.session.borrow().activity().bytes;
         let mut quiet_since = tokio::time::Instant::now();
         loop {
-            tokio::time::sleep(POLL).await;
+            // Wake on new output, or when the quiet window (or the deadline) would close.
+            let wake_at = (quiet_since + QUIET).min(deadline);
+            tokio::select! {
+                () = this.wake.notified() => {}
+                () = tokio::time::sleep_until(wake_at) => {}
+            }
             let now = this.session.borrow().activity();
             if now.bytes != last_len {
                 last_len = now.bytes;
@@ -248,7 +265,10 @@ fn spawn_fn(lua: &Lua) -> mlua::Result<Function> {
                 _ => format!("terminal.spawn: {e}"),
             })
         })?;
-        let ud = lua.create_userdata(TermUd { session: RefCell::new(session) })?;
+        let wake = Arc::new(tokio::sync::Notify::new());
+        let hook = wake.clone();
+        session.on_output(move || hook.notify_one());
+        let ud = lua.create_userdata(TermUd { session: RefCell::new(session), wake })?;
         super::manage("terminal.spawn", &ctx, &ud)?;
         Ok(ud)
     })

@@ -349,22 +349,23 @@ fn kernel_screen(f: &Fixture) -> prova_terminal::Screen {
     spec.rows = ROWS;
     let mut s = Session::spawn(&spec).unwrap_or_else(|e| panic!("{}: kernel spawn: {e}", f.name));
     // The host's loop, as prova's `wait_stable` runs it: settled after QUIET with no new bytes.
+    // The host's loop, woken by the kernel on output (`wait_output`), never a fixed poll.
     let deadline = Instant::now() + BOUND;
     if let Some(sentinel) = f.until {
-        while !s.screen().contains(sentinel) {
-            assert!(Instant::now() < deadline, "{}: kernel never showed {sentinel:?}", f.name);
-            std::thread::sleep(Duration::from_millis(15));
-        }
+        // wait_until orders count / check / wait itself. A hand-rolled loop that checked the
+        // screen before reading the count lost the reply's wakeup and sat out each query
+        // program's 5 s life (the oracle took 40 s instead of 16).
+        s.wait_until(BOUND, |frame| frame.contains(sentinel))
+            .unwrap_or_else(|| panic!("{}: kernel never showed {sentinel:?}", f.name));
     }
-    let mut last = s.activity().bytes;
-    let mut quiet_since = Instant::now();
+    // Settled: a whole QUIET window passes with no new bytes (or the stream ended).
     loop {
-        std::thread::sleep(Duration::from_millis(15));
-        let now = s.activity();
-        if now.bytes != last {
-            last = now.bytes;
-            quiet_since = Instant::now();
-        } else if now.ended || quiet_since.elapsed() >= QUIET {
+        let before = s.activity();
+        if before.ended {
+            break;
+        }
+        let after = s.wait_output(before.bytes, QUIET);
+        if after.bytes == before.bytes {
             break;
         }
         assert!(Instant::now() < deadline, "{}: kernel never settled", f.name);

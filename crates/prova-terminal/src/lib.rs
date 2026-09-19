@@ -4,10 +4,11 @@
 //! on Windows, both behind portable-pty). ConPTY emits the same VT sequences openpty does, so the
 //! screen model — the observation layer — is byte-for-byte OS-agnostic.
 //!
-//! The kernel owns the SESSION and no policy. It has no Lua, no async runtime and no clock: every
-//! wait is a non-blocking CHECK ([`Session::check_expect`], [`Session::activity`]) that a host
-//! loops over and bounds as it sees fit — prova's `terminal` driver by deadline, an agent host by
-//! progress. The reader is a plain OS thread feeding one `Arc<Mutex<…>>` (raw transcript + vt100
+//! The kernel owns the SESSION and no policy. It has no Lua, no async runtime and no clock of its
+//! own: a wait is a non-blocking CHECK ([`Session::check_expect`], [`Session::activity`]) that a
+//! host re-runs when output arrives — woken by [`Session::on_output`] (an async host) or
+//! [`Session::wait_output`] (a thread that may block) — and bounds as it sees fit: prova's
+//! `terminal` driver by deadline, an agent host by progress. Never a fixed poll. The reader is a plain OS thread feeding one `Arc<Mutex<…>>` (raw transcript + vt100
 //! parser), so a host needs no cross-thread wakers and no `Send` on its own side.
 //!
 //! Extracted from prova-core's `terminal` module with no change in behaviour
@@ -15,7 +16,8 @@
 
 use std::fmt;
 use std::io::{Read, Write};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
 
 use portable_pty::{native_pty_system, Child, ChildKiller, CommandBuilder, MasterPty, PtySize};
 
@@ -182,6 +184,31 @@ impl TermBuf {
     }
 }
 
+/// A hook the reader thread calls when output arrives or the stream ends.
+type OutputHook = Arc<dyn Fn() + Send + Sync>;
+
+/// How the reader tells waiters that the transcript grew or the stream ended: a condition
+/// variable paired with the buffer's mutex (for [`Session::wait_output`]), and the hooks async
+/// hosts register ([`Session::on_output`]). Fired after every chunk and once at end-of-stream,
+/// after the buffer lock is released.
+#[derive(Default)]
+struct Signal {
+    changed: Condvar,
+    hooks: Mutex<Vec<OutputHook>>,
+}
+
+impl Signal {
+    fn fire(&self) {
+        self.changed.notify_all();
+        // Snapshot the hooks and call them outside the list's own lock, so a hook that registers
+        // another (or is slow) cannot deadlock the reader.
+        let hooks: Vec<OutputHook> = self.hooks.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        for hook in hooks {
+            hook();
+        }
+    }
+}
+
 /// Take the pty writer lock, recovering from poisoning: a writer is a byte sink, and a panicked
 /// holder leaves at worst a partial write — recovering beats refusing every later send.
 fn lock_writer(
@@ -201,6 +228,7 @@ fn lock_buf(m: &Mutex<TermBuf>) -> MutexGuard<'_, TermBuf> {
 /// non-blocking except [`Session::spawn`].
 pub struct Session {
     buf: Arc<Mutex<TermBuf>>,
+    signal: Arc<Signal>,
     /// Shared with the reader thread, which writes the query replies through it; `None` once
     /// [`Session::stop`] closed the session, which silences the replies too.
     writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
@@ -299,17 +327,20 @@ impl Session {
             end: None,
         }));
         let writer = Arc::new(Mutex::new(Some(writer)));
+        let signal = Arc::new(Signal::default());
 
         // The reader is a plain OS thread: pty reads are blocking, and this keeps every host's
         // runtime its own business. It dies at EOF (child exit / pty close on teardown).
         let thread_buf = buf.clone();
         let thread_writer = writer.clone();
+        let thread_signal = signal.clone();
         std::thread::spawn(move || {
             let mut chunk = [0u8; 8 * 1024];
             loop {
                 match reader.read(&mut chunk) {
                     Ok(0) => {
                         lock_buf(&thread_buf).end = Some("clean EOF".to_string());
+                        thread_signal.fire();
                         break;
                     }
                     // Not silently equivalent to EOF. A pty master can fail the read once the last
@@ -318,6 +349,7 @@ impl Session {
                     // through no fault of the program under test. Record what happened.
                     Err(e) => {
                         lock_buf(&thread_buf).end = Some(format!("read failed: {e} ({:?})", e.kind()));
+                        thread_signal.fire();
                         break;
                     }
                     Ok(n) => {
@@ -337,12 +369,13 @@ impl Session {
                                 let _ = w.write_all(&replies).and_then(|()| w.flush());
                             }
                         }
+                        thread_signal.fire();
                     }
                 }
             }
         });
 
-        Ok(Session { buf, writer, master: Some(pair.master), child, killer, pid })
+        Ok(Session { buf, signal, writer, master: Some(pair.master), child, killer, pid })
     }
 
     /// The child's pid, when the platform reports one.
@@ -382,6 +415,70 @@ impl Session {
     pub fn activity(&self) -> Activity {
         let b = lock_buf(&self.buf);
         Activity { bytes: b.raw.len(), ended: b.ended() }
+    }
+
+    /// Block until the transcript grows past `since` bytes or the stream ends — or until `bound`
+    /// passes. The bound is the HOST's (a deadline, a silence budget), never the kernel's: the
+    /// kernel still owns no clock policy. Returns the activity at wake-up; compare `bytes` with
+    /// `since` to tell output from the bound. For a thread that may block; an async host
+    /// registers [`Session::on_output`] instead and never blocks its runtime.
+    ///
+    /// Take `since` from [`Session::activity`] BEFORE checking whatever you are waiting for. A
+    /// count taken after the check already includes output that landed in between, and the wait
+    /// then sleeps until something MORE arrives — a lost wakeup, silent until the bound:
+    ///
+    /// ```text
+    /// loop {
+    ///     let seen = session.activity().bytes;      // 1. count
+    ///     if session.screen().contains("ready") { break }   // 2. check
+    ///     session.wait_output(seen, remaining);     // 3. wait past the count
+    /// }
+    /// ```
+    pub fn wait_output(&self, since: usize, bound: Duration) -> Activity {
+        let deadline = Instant::now() + bound;
+        let mut b = lock_buf(&self.buf);
+        loop {
+            if b.raw.len() > since || b.ended() {
+                return Activity { bytes: b.raw.len(), ended: b.ended() };
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Activity { bytes: b.raw.len(), ended: false };
+            }
+            b = match self.signal.changed.wait_timeout(b, deadline - now) {
+                Ok((guard, _)) => guard,
+                Err(poisoned) => poisoned.into_inner().0,
+            };
+        }
+    }
+
+    /// Block until `predicate` holds for the current frame, and return that frame — or `None` when
+    /// `bound` passes first, or the stream ends without it (no later output can make it true).
+    /// Counts, checks and waits in the one order that cannot lose a wakeup, so a blocking host
+    /// never has to get [`Session::wait_output`]'s ordering right by hand.
+    pub fn wait_until(&self, bound: Duration, mut predicate: impl FnMut(&Screen) -> bool) -> Option<Screen> {
+        let deadline = Instant::now() + bound;
+        loop {
+            let seen = self.activity();
+            let frame = self.screen();
+            if predicate(&frame) {
+                return Some(frame);
+            }
+            let now = Instant::now();
+            if seen.ended || now >= deadline {
+                return None;
+            }
+            self.wait_output(seen.bytes, deadline - now);
+        }
+    }
+
+    /// Register a hook the reader thread calls after every chunk it reads and once when the stream
+    /// ends. It runs ON the reader thread, outside every kernel lock, so it must be quick and must
+    /// not block — waking a task is the intended use (prova's driver wakes a `tokio::sync::Notify`).
+    /// A hook sees only what arrives after it is registered, so a host re-checks the state it
+    /// cares about after registering.
+    pub fn on_output(&self, hook: impl Fn() + Send + Sync + 'static) {
+        self.signal.hooks.lock().unwrap_or_else(PoisonError::into_inner).push(Arc::new(hook));
     }
 
     /// Freeze the current frame: plain data copied out under the lock, so assertions never race
@@ -795,6 +892,75 @@ mod tests {
             other => panic!("expected the stream to end, got {other:?}"),
         }
         assert!(quiet.activity().ended);
+    }
+
+    /// wait_output wakes on OUTPUT, not on a poll: it returns as soon as the program writes,
+    /// well inside the host's bound, and returns AT the bound when the program stays silent —
+    /// with the bytes unchanged, so the host can tell the two apart.
+    #[cfg(unix)]
+    #[test]
+    fn wait_output_wakes_on_output_and_honours_the_hosts_bound() {
+        let s = Session::spawn(&SpawnSpec::new(vec!["sh".into(), "-c".into(), "sleep 0.3; printf x; sleep 5".into()]))
+            .expect("spawn sh");
+        let started = Instant::now();
+        let woke = s.wait_output(0, Duration::from_secs(5));
+        let waited = started.elapsed();
+        assert!(woke.bytes > 0, "woke with the output: {woke:?}");
+        assert!(waited < Duration::from_secs(3), "woken by the write, not the 5 s bound: {waited:?}");
+
+        let started = Instant::now();
+        let quiet = s.wait_output(woke.bytes, Duration::from_millis(300));
+        let waited = started.elapsed();
+        assert_eq!(quiet.bytes, woke.bytes, "nothing new: the bound ended the wait");
+        assert!(!quiet.ended);
+        assert!(waited >= Duration::from_millis(290), "the bound is honoured: {waited:?}");
+    }
+
+    /// wait_until returns the frame that satisfied the predicate as soon as the output makes it
+    /// true; `None` at the bound; `None` at once when the stream ended without it.
+    #[cfg(unix)]
+    #[test]
+    fn wait_until_returns_the_satisfying_frame_or_none() {
+        let s = Session::spawn(&SpawnSpec::new(vec!["sh".into(), "-c".into(), "sleep 0.2; printf ready; sleep 5".into()]))
+            .expect("spawn sh");
+        let started = Instant::now();
+        let frame = s.wait_until(Duration::from_secs(5), |f| f.contains("ready")).expect("ready appears");
+        assert!(frame.line(0).starts_with("ready"));
+        assert!(started.elapsed() < Duration::from_secs(3), "woken by the output: {:?}", started.elapsed());
+        assert!(s.wait_until(Duration::from_millis(200), |f| f.contains("never")).is_none(), "the bound");
+
+        let done = Session::spawn(&SpawnSpec::new(vec!["sh".into(), "-c".into(), "printf done".into()]))
+            .expect("spawn sh");
+        let started = Instant::now();
+        assert!(done.wait_until(Duration::from_secs(5), |f| f.contains("never")).is_none());
+        assert!(started.elapsed() < Duration::from_secs(3), "an ended stream gives up at once");
+    }
+
+    /// on_output fires on the reader thread for each chunk and once at end-of-stream.
+    #[cfg(unix)]
+    #[test]
+    fn on_output_fires_for_output_and_at_the_end() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let s = Session::spawn(&SpawnSpec::new(vec!["sh".into(), "-c".into(), "sleep 0.2; printf a; sleep 0.3; printf b".into()]))
+            .expect("spawn sh");
+        let fired = Arc::new(AtomicUsize::new(0));
+        let buf = s.buf.clone();
+        let ended_seen = Arc::new(AtomicBool::new(false));
+        {
+            let (fired, ended_seen) = (fired.clone(), ended_seen.clone());
+            s.on_output(move || {
+                fired.fetch_add(1, Ordering::SeqCst);
+                if lock_buf(&buf).ended() {
+                    ended_seen.store(true, Ordering::SeqCst);
+                }
+            });
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !ended_seen.load(Ordering::SeqCst) {
+            assert!(Instant::now() < deadline, "the end of the stream never fired a hook");
+            std::thread::sleep(Duration::from_millis(15));
+        }
+        assert!(fired.load(Ordering::SeqCst) >= 3, "two chunks and the end: {}", fired.load(Ordering::SeqCst));
     }
 
     /// Stop is idempotent and closes the session: later sends and resizes refuse as Closed.

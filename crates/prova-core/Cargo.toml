@@ -10,7 +10,9 @@ mlua = { workspace = true, features = ["async"] }
 # coroutines cooperatively (I/O-bound concurrency for load/stress; real timeouts via cancellation).
 # `process` powers `shell`; `io-util` is its runtime dep for child pipes; `net` is the `docker`
 # module's TCP readiness probe.
-tokio = { version = "1", features = ["rt", "time", "macros", "process", "io-util", "net", "signal"] }
+# `sync`: the terminal driver wakes on a `Notify` the kernel's reader fires per output chunk (and
+# wiretap.rs has used tokio::sync all along, compiling only through feature unification).
+tokio = { version = "1", features = ["rt", "time", "macros", "process", "io-util", "net", "signal", "sync"] }
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 # Structured, streaming output for machine consumers (CI, and a future GUI/IDE frontend).
 serde_json = "1"
