@@ -718,7 +718,7 @@ async fn run_command(
         let supervised =
             run_supervised(command, o.stdin.clone(), o.idle_timeout, o.timeout, o.first_byte)
                 .await
-            .map_err(|e| mlua::Error::RuntimeError(format!("shell.run failed to spawn: {e}")))?;
+            .map_err(|e| spawn_failed(cmd, &e))?;
         match supervised {
             Supervised::Finished(output) => output,
             Supervised::Idle { stdout, stderr } => {
@@ -780,7 +780,7 @@ async fn run_command(
             }
         };
         run.await
-            .map_err(|e| mlua::Error::RuntimeError(format!("shell.run failed to spawn: {e}")))?
+            .map_err(|e| spawn_failed(cmd, &e))?
     };
 
     let mut stdout = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -968,6 +968,28 @@ impl CommandSpec {
 
 /// How the command reads back in an error — the argv form joined for legibility (it is a display,
 /// not a re-runnable quoting).
+/// A spawn that never started, named.
+///
+/// Every other failure in this function interpolates the command — the wall timeout, the idle
+/// kill — and `display_name`'s own doc promises "the full command is still in the error on
+/// failure". Spawn was the one path that broke it, and it is the path that needs it most: the OS
+/// says "No such file or directory", which sends the reader looking for a missing FILE when what
+/// is missing is the program. `check = false` does not soften this — that option forgives a
+/// non-zero EXIT, and a process that never started has no exit to forgive — so this string is all
+/// the reader gets.
+///
+/// `NotFound` earns the extra sentence because it is overwhelmingly one thing: the tool is not
+/// installed, or not on this PATH. Other kinds (a permission bit, a bad interpreter line) are left
+/// to speak for themselves rather than be told they are a PATH problem.
+fn spawn_failed(cmd: &CommandSpec, e: &std::io::Error) -> mlua::Error {
+    let hint = if e.kind() == std::io::ErrorKind::NotFound {
+        " — is it installed and on PATH?"
+    } else {
+        ""
+    };
+    mlua::Error::RuntimeError(format!("shell.run failed to spawn `{cmd}`: {e}{hint}"))
+}
+
 impl std::fmt::Display for CommandSpec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
