@@ -56,6 +56,9 @@ const DEFAULT_TTL_MS: u64 = 300_000;
 /// What a `busy` response tells the client to wait before retrying.
 const RETRY_AFTER_MS: u64 = 1_000;
 
+/// How long a queued ticket lives without a refresh (docs/design/placement.md#ticket-is-heartbeat).
+const TICKET_TTL_MS: u64 = 60_000;
+
 pub fn run(args: Vec<String>) -> ExitCode {
     let mut socket: Option<PathBuf> = None;
     let mut offers: Vec<String> = Vec::new();
@@ -149,6 +152,25 @@ struct Broker {
     /// Version probes shell out; ask each tool once per broker lifetime.
     versions: Mutex<HashMap<String, semver::Version>>,
     next_lease: AtomicU64,
+    /// Each kind's FIFO of queued claims — the `queue` plane (docs/design/placement.md#queued-is-fifo).
+    waiters: Mutex<BTreeMap<String, std::collections::VecDeque<Waiter>>>,
+    /// Tickets handed a lease, kept while the lease lives so a lost answer can be asked again.
+    handed: Mutex<HashMap<String, String>>,
+    next_ticket: AtomicU64,
+}
+
+/// One queued claim.
+struct Waiter {
+    ticket: String,
+    exclusive: bool,
+    ttl_ms: u64,
+    alive_until_ms: u64,
+}
+
+/// Would a claim of this mode on `kind` collide with a live lease? A writer blocks everyone and
+/// anyone blocks a writer — the spec's slot model, one instance per kind.
+fn contended(leases: &HashMap<String, Lease>, kind: &str, exclusive: bool) -> bool {
+    leases.values().any(|l| l.kind == kind && (l.exclusive || exclusive))
 }
 
 struct Lease {
@@ -173,7 +195,42 @@ impl Broker {
             workspaces: Mutex::new(HashMap::new()),
             versions: Mutex::new(HashMap::new()),
             next_lease: AtomicU64::new(1),
+            waiters: Mutex::new(BTreeMap::new()),
+            handed: Mutex::new(HashMap::new()),
+            next_ticket: AtomicU64::new(1),
         }
+    }
+
+    /// Record a lease — the one place one is made, for a claim or a handoff. Returns its id and
+    /// expiry.
+    fn grant(&self, leases: &mut HashMap<String, Lease>, kind: &str, exclusive: bool, ttl_ms: u64) -> (String, u64) {
+        let lease_id = format!("L-{:x}", self.next_lease.fetch_add(1, Ordering::Relaxed));
+        let expires_at_ms = now_ms() + ttl_ms;
+        leases.insert(lease_id.clone(), Lease { kind: kind.to_string(), exclusive, ttl_ms, expires_at_ms });
+        (lease_id, expires_at_ms)
+    }
+
+    /// Drop waiters whose refreshes stopped, then HAND every free slot to the head of its queue
+    /// (docs/design/placement.md#handed-not-hinted). Locks nest leases → waiters → handed, the one
+    /// order every op takes them in.
+    fn promote(&self) {
+        let now = now_ms();
+        let mut leases = lock(&self.leases);
+        let mut waiters = lock(&self.waiters);
+        let mut handed = lock(&self.handed);
+        for (kind, queue) in waiters.iter_mut() {
+            queue.retain(|w| w.alive_until_ms > now);
+            while let Some(head) = queue.front() {
+                if contended(&leases, kind, head.exclusive) {
+                    break;
+                }
+                let (exclusive, ttl_ms) = (head.exclusive, head.ttl_ms);
+                let ticket = queue.pop_front().map(|w| w.ticket).unwrap_or_default();
+                let (lease_id, _) = self.grant(&mut leases, kind, exclusive, ttl_ms);
+                handed.insert(ticket, lease_id);
+            }
+        }
+        waiters.retain(|_, q| !q.is_empty());
     }
 
     /// Drop expired leases and the workspaces their deaths orphan. Called lazily at the top of
@@ -191,11 +248,14 @@ impl Broker {
         for id in dead {
             self.drop_lease(&id);
         }
+        self.promote();
     }
 
     /// Remove one lease and clean up everything whose lifetime it bounded.
     fn drop_lease(&self, id: &str) {
         lock(&self.leases).remove(id);
+        // A grant that ended answers no ticket any more (docs/design/placement.md#handed-not-hinted).
+        lock(&self.handed).retain(|_, lease| lease != id);
         let orphaned: Vec<(String, Workspace)> = {
             let mut ws = lock(&self.workspaces);
             let keys: Vec<String> = ws
@@ -286,6 +346,8 @@ fn serve(stream: UnixStream, broker: Arc<Broker>) {
                 "claim" => claim(&broker, &id, &frame),
                 "renew" => renew(&broker, &id, &frame),
                 "release" => release(&broker, &id, &frame),
+                "ticket" => ticket(&broker, &id, &frame),
+                "cancel" => cancel(&broker, &id, &frame),
                 "exec" => exec(&broker, &id, &frame, &mut writer),
                 "materialize" => materialize(&broker, &id, &frame),
                 other => error(&id, format!("unknown op {other:?}")),
@@ -322,7 +384,7 @@ fn hello(id: &Value, frame: &Value) -> Value {
                 "id": id, "ok": true,
                 "protocol": format!("{PROTOCOL_MAJOR}.{PROTOCOL_MINOR}"),
                 "broker": format!("prova/{}", env!("CARGO_PKG_VERSION")),
-                "features": ["exec", "materialize"],
+                "features": ["exec", "materialize", "queue"],
                 "nodes": 1,
             })
         }
@@ -503,24 +565,82 @@ fn claim(broker: &Broker, id: &Value, frame: &Value) -> Value {
                        "reason": format!("no node offers slot kind {kind:?}") });
     }
 
-    let mut leases = lock(&broker.leases);
-    let contended = leases.values().any(|l| {
-        l.kind == kind && (l.exclusive || exclusive) // writer blocks all; anyone blocks a writer
-    });
-    if contended {
-        return json!({ "id": id, "ok": false, "outcome": "busy",
-                       "retry_after_ms": RETRY_AFTER_MS });
-    }
-
     let ttl_ms = frame.get("ttl_ms").and_then(Value::as_u64).unwrap_or(DEFAULT_TTL_MS);
-    let lease_id = format!("L-{:x}", broker.next_lease.fetch_add(1, Ordering::Relaxed));
-    let expires_at_ms = now_ms() + ttl_ms;
-    leases.insert(
-        lease_id.clone(),
-        Lease { kind: kind.to_string(), exclusive, ttl_ms, expires_at_ms },
-    );
+    let queue = frame.get("queue").and_then(Value::as_bool).unwrap_or(false);
+    let mut leases = lock(&broker.leases);
+    let mut waiters = lock(&broker.waiters);
+    // FIFO: a non-empty queue is served first, so a plain claim never jumps it
+    // (docs/design/placement.md#queued-is-fifo).
+    let waiting = waiters.get(kind).is_some_and(|q| !q.is_empty());
+    if waiting || contended(&leases, kind, exclusive) {
+        if !queue {
+            return json!({ "id": id, "ok": false, "outcome": "busy",
+                           "retry_after_ms": RETRY_AFTER_MS });
+        }
+        let ticket = format!("T-{:x}", broker.next_ticket.fetch_add(1, Ordering::Relaxed));
+        let places = waiters.entry(kind.to_string()).or_default();
+        places.push_back(Waiter {
+            ticket: ticket.clone(),
+            exclusive,
+            ttl_ms,
+            alive_until_ms: now_ms() + TICKET_TTL_MS,
+        });
+        return json!({ "id": id, "ok": false, "outcome": "queued",
+                       "ticket": ticket, "position": places.len(), "node": "local" });
+    }
+    drop(waiters);
+    let (lease_id, expires_at_ms) = broker.grant(&mut leases, kind, exclusive, ttl_ms);
     json!({ "id": id, "ok": true, "outcome": "granted",
             "lease": lease_id, "node": "local", "expires_at_ms": expires_at_ms })
+}
+
+/// Refresh a queued place — its holder's heartbeat — and answer where it stands: `queued` with its
+/// position, `granted` with the lease it was handed, or an error for a ticket this broker does not
+/// know (docs/design/placement.md#handed-not-hinted, #ticket-is-heartbeat).
+fn ticket(broker: &Broker, id: &Value, frame: &Value) -> Value {
+    broker.reap();
+    let Some(ticket) = frame.get("ticket").and_then(Value::as_str) else {
+        return error(id, "ticket needs a ticket".into());
+    };
+    let leases = lock(&broker.leases);
+    let mut waiters = lock(&broker.waiters);
+    let handed = lock(&broker.handed);
+    if let Some((lease_id, lease)) = handed.get(ticket).and_then(|l| leases.get(l).map(|lease| (l, lease))) {
+        return json!({ "id": id, "ok": true, "outcome": "granted",
+                       "lease": lease_id, "node": "local", "expires_at_ms": lease.expires_at_ms });
+    }
+    for queue in waiters.values_mut() {
+        if let Some(pos) = queue.iter().position(|w| w.ticket == ticket) {
+            queue[pos].alive_until_ms = now_ms() + TICKET_TTL_MS;
+            return json!({ "id": id, "ok": false, "outcome": "queued",
+                           "ticket": ticket, "position": pos + 1, "node": "local" });
+        }
+    }
+    error(
+        id,
+        format!("unknown ticket {ticket:?}: never issued, cancelled, dropped for want of refreshes, or its grant has ended — claim again"),
+    )
+}
+
+/// Leave a queue; a ticket already handed its slot declines it onward
+/// (docs/design/placement.md#cancel-declines). Idempotent, like release.
+fn cancel(broker: &Broker, id: &Value, frame: &Value) -> Value {
+    let Some(ticket) = frame.get("ticket").and_then(Value::as_str) else {
+        return error(id, "cancel needs a ticket".into());
+    };
+    {
+        let mut waiters = lock(&broker.waiters);
+        for queue in waiters.values_mut() {
+            queue.retain(|w| w.ticket != ticket);
+        }
+        waiters.retain(|_, q| !q.is_empty());
+    }
+    let declined = lock(&broker.handed).remove(ticket);
+    if let Some(lease_id) = declined {
+        broker.drop_lease(&lease_id);
+    }
+    broker.reap();
+    json!({ "id": id, "ok": true })
 }
 
 fn renew(broker: &Broker, id: &Value, frame: &Value) -> Value {
@@ -548,6 +668,8 @@ fn release(broker: &Broker, id: &Value, frame: &Value) -> Value {
     // Idempotent by contract: teardown paths run twice more often than anyone intends, and the
     // second release of a slot you no longer hold is correct cleanup, not an error.
     broker.drop_lease(lease_id);
+    // The freed slot goes straight to the head of its queue, not at the next caller's reap.
+    broker.reap();
     json!({ "id": id, "ok": true })
 }
 
@@ -777,7 +899,7 @@ mod tests {
         let ok = hello(&id, &serde_json::json!({ "protocol": "1.0" }));
         assert_eq!(ok["ok"], true);
         assert_eq!(ok["id"], 7);
-        assert_eq!(ok["features"], serde_json::json!(["exec", "materialize"]));
+        assert_eq!(ok["features"], serde_json::json!(["exec", "materialize", "queue"]));
 
         let refused = hello(&id, &serde_json::json!({ "protocol": "1.99" }));
         assert_eq!(refused["ok"], false);
@@ -795,13 +917,7 @@ mod tests {
     /// unmet capability names the whole answer.
     #[test]
     fn resolve_grants_or_names_the_first_unmet_capability() {
-        let broker = Broker {
-            offers: BTreeMap::new(),
-            leases: Mutex::new(HashMap::new()),
-            workspaces: Mutex::new(HashMap::new()),
-            versions: Mutex::new(HashMap::new()),
-            next_lease: AtomicU64::new(1),
-        };
+        let broker = Broker::new(Vec::new());
         let id = serde_json::json!(1);
         let granted = resolve(&broker, &id, &serde_json::json!({}));
         assert_eq!(granted["outcome"], "granted", "an empty ask is satisfiable: {granted}");

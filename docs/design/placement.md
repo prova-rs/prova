@@ -217,6 +217,50 @@ indistinguishable from a failing test, so preemption would make a proof runner m
 reds — the one thing it may never do. (This differs from request-scoped systems, where a retry is
 transparent.)
 
+### Queued claims — the `queue` plane
+
+A client that would rather WAIT for a slot than retry can take a place in its queue. Polling a
+busy claim blocks the waiter for the whole wait, and nothing about it is fair.
+
+<!-- claim: queue-is-a-plane -->
+Queueing is an optional plane: a broker that serves it advertises `queue` in `features`, and a
+client sends `queue: true` only to such a broker. It is a FEATURE and not a protocol minor. A newer
+minor is refused outright, so bumping one would cut every upgraded client off from every broker
+not yet upgraded, and a pool cannot upgrade all its machines in one instant. A broker without the
+plane ignores `queue` and answers `busy`, which the client handles as it always has.
+
+```json
+→ { "id": 4, "op": "claim", "kind": "window-server", "mode": "exclusive", "ttl_ms": 300000, "queue": true }
+← { "id": 4, "ok": false, "outcome": "queued", "ticket": "T-3", "position": 1 }
+```
+
+<!-- claim: queued-is-fifo -->
+A queued claim on a busy slot answers `queued` with a `ticket` and a 1-based `position`. The queue
+is FIFO per slot, and a claim WITHOUT `queue` never jumps a non-empty queue: it answers `busy`.
+Otherwise a stream of fast claimants, such as readers that could share a reader's instance, starves
+a queued writer forever.
+
+<!-- claim: handed-not-hinted -->
+When the slot frees, the broker HANDS it to the head of the queue. The grant happens in the broker,
+never in a message about it: the waiter learns it by refreshing its ticket. Every such answer can be
+asked again. A handed ticket answers `granted` with its lease for as long as that lease lives, so a
+refresh whose answer was lost is simply repeated, and it answers `error` once the lease has ended.
+
+```json
+→ { "id": 5, "op": "ticket", "ticket": "T-3" }
+← { "id": 5, "ok": true, "outcome": "granted", "lease": "L-9", "expires_at_ms": 1750000900000 }
+```
+
+<!-- backlog: ticket-is-heartbeat -->
+A ticket refresh is the waiter's heartbeat. A ticket not refreshed within the broker's ticket TTL
+is dropped and the next waiter is served, so a waiter that died costs its successor one TTL, never
+the slot. (Backlog, not yet a claim: a conformance proof needs the ticket TTL configurable on the
+broker under proof. Fleet's table tests prove its implementation.)
+
+<!-- claim: cancel-declines -->
+`cancel` leaves the queue. Cancelling a HANDED ticket declines the grant: its lease is released and
+the slot goes to the next waiter. It is idempotent, like `release`.
+
 ### `exec` — run on the lease
 
 ```json
