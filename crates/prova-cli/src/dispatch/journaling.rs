@@ -97,12 +97,20 @@ pub(super) fn plan_journal(
     };
     let key = journal_key(cli, config);
     let binary = record::binary_fingerprint();
-    let reuse = if cli.resume { carried(h, &key, &tree, &binary)? } else { BTreeMap::new() };
-    *config = std::mem::take(config).with_reuse(reuse.keys().cloned());
+    let (reuse, resumed_from) = if cli.resume {
+        let (reuse, prior) = carried(h, &key, &tree, &binary)?;
+        (reuse, Some(prior))
+    } else {
+        (BTreeMap::new(), None)
+    };
+    let run_id = journal::new_run_id();
+    *config = std::mem::take(config)
+        .with_reuse(reuse.keys().cloned())
+        .with_run_identity(run_id.clone(), resumed_from);
     Ok(Some(JournalPlan {
         header: journal::Header {
             schema: 1,
-            run_id: journal::new_run_id(),
+            run_id,
             key,
             tree,
             binary,
@@ -112,14 +120,15 @@ pub(super) fn plan_journal(
     }))
 }
 
-/// The passes the previous run of this key lends a resume, or the refusal that says why it lends
-/// none: nothing journaled, the tree changed since or during it, or prova itself changed.
+/// The passes the previous run of this key lends a resume, and that run's id — or the refusal that
+/// says why it lends none: nothing journaled, the tree changed since or during it, or prova itself
+/// changed.
 fn carried(
     home: &Home,
     key: &[String],
     tree: &str,
     binary: &str,
-) -> Result<BTreeMap<String, String>, ExitCode> {
+) -> Result<(BTreeMap<String, String>, String), ExitCode> {
     let Some(prior) = journal::load(home, key) else {
         return refuse(format!(
             "no earlier run of this lane ({}) is journaled here — run it once without --resume",
@@ -153,7 +162,7 @@ fn carried(
         reuse.len(),
         if reuse.len() == 1 { "" } else { "es" }
     );
-    Ok(reuse)
+    Ok((reuse, prior.header.run_id))
 }
 
 /// Open the journal a planned run keeps. The offered passes go in first, so a run killed before its

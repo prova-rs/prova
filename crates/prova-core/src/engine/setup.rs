@@ -483,6 +483,21 @@ fn install_run_facts(lua: &Lua, prova: &Table, config: &RunConfig) -> mlua::Resu
     // release it was cut from both claimed 0.11.0 and behaved differently.
     prova.set("version", crate::VERSION)?;
 
+    // `prova.run_id` and `prova.resume` — resume pushdown into conducts, the same shape as
+    // `prova.selection` below (docs/plans/resume.md#phase-1b). A deputy stamps its artifact with
+    // `prova.run_id`; on a resumed run whose `prova.resume.from` names that stamp, the artifact is
+    // this lane's own account over the identical tree (prova refused the resume otherwise), so the
+    // deputy may re-run only its failures and `junit.merge` the rest forward. `prova.resume` is nil
+    // on every run that is not resuming, so a deputy that ignores it conducts in full.
+    if let Some(id) = &config.run_id {
+        prova.set("run_id", id.as_str())?;
+    }
+    if let Some(from) = &config.resumed_from {
+        let resume = lua.create_table()?;
+        resume.set("from", from.as_str())?;
+        prova.set("resume", resume)?;
+    }
+
     // `prova.selection` — the run's resolved selection, as plain data
     // (docs/design/verifiers.md#selection-pushdown-into-conducts). The engine's whole
     // contribution to pushdown: a deputy's factory reads these axes and translates them to its

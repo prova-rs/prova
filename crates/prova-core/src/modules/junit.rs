@@ -26,7 +26,13 @@ struct Case {
     message: Option<String>,
     time_ms: Option<u64>,
     file: String,
+    /// The run that produced this verdict, when it was carried forward rather than conducted here:
+    /// the `prova.reused_from` property `junit.merge` writes (docs/plans/resume.md#phase-1b).
+    reused_from: Option<String>,
 }
+
+/// The testcase property that marks a verdict carried forward by `junit.merge`.
+const REUSED_FROM: &str = "prova.reused_from";
 
 /// Parse one JUnit XML document, appending its cases. Tolerant by design: elements the stable
 /// core doesn't include are skipped, a `<testcase>` with no failure/error/skipped child passed.
@@ -65,6 +71,7 @@ fn parse_document(xml: &str, file: &str, cases: &mut Vec<Case>) -> Result<(), St
             message: None,
             time_ms,
             file: file.to_string(),
+            reused_from: None,
         }
     };
 
@@ -87,6 +94,12 @@ fn parse_document(xml: &str, file: &str, cases: &mut Vec<Case>) -> Result<(), St
             },
             Ok(Event::Empty(e)) => match e.name().as_ref() {
                 b"testcase" => cases.push(start_case(&e, &suite_stack)),
+                // Only a case's own property: a suite-level <properties> block has no open case.
+                b"property" if attr(&e, "name").as_deref() == Some(REUSED_FROM) => {
+                    if let Some(case) = open.as_mut() {
+                        case.reused_from = attr(&e, "value");
+                    }
+                }
                 b"failure" | b"error" | b"skipped" => {
                     if let Some(case) = open.as_mut() {
                         case.outcome = match e.name().as_ref() {
@@ -156,6 +169,9 @@ fn report_table(lua: &Lua, files: &[PathBuf], cases: &[Case]) -> mlua::Result<Ta
             row.set("time_ms", t)?;
         }
         row.set("file", c.file.as_str())?;
+        if let Some(from) = &c.reused_from {
+            row.set("reused_from", from.as_str())?;
+        }
         cases_t.set(i + 1, row)?;
     }
     report.set("cases", cases_t)?;
@@ -248,6 +264,7 @@ pub(crate) fn make(lua: &Lua, deputed: Option<DeputedRegistry>) -> mlua::Result<
                     message: c.get("message")?,
                     time_ms: c.get("time_ms")?,
                     file: c.get::<Option<String>>("file")?.unwrap_or_default(),
+                    reused_from: c.get("reused_from")?,
                 });
             }
             let n = rows.len();
@@ -260,7 +277,116 @@ pub(crate) fn make(lua: &Lua, deputed: Option<DeputedRegistry>) -> mlua::Result<
         })?,
     )?;
 
+    // merge(prior, rerun?, { reused_from, out }) — a deputy's full account after a resumed run
+    // re-ran only its failures (docs/plans/resume.md#phase-1b). Every case of `prior` the rerun
+    // did not re-run is carried forward and MARKED with the run it came from; a re-run case
+    // replaces its prior verdict; the result is written to `out` and its path returned, so readers
+    // that parse the artifact see the whole account and can tell carried from conducted.
+    junit.set(
+        "merge",
+        lua.create_function(|_, (prior, rerun, opts): (String, Option<String>, Table)| {
+            let reused_from: String = opts.get::<Option<String>>("reused_from")?.ok_or_else(|| {
+                mlua::Error::RuntimeError(
+                    "junit.merge: reused_from = <the run the prior account came from> is required"
+                        .into(),
+                )
+            })?;
+            let out: String = opts.get::<Option<String>>("out")?.ok_or_else(|| {
+                mlua::Error::RuntimeError("junit.merge: out = <path to write> is required".into())
+            })?;
+            let load = |path: &str| -> mlua::Result<Vec<Case>> {
+                let xml = std::fs::read_to_string(path).map_err(|e| {
+                    mlua::Error::RuntimeError(format!("junit.merge: cannot read {path}: {e}"))
+                })?;
+                let mut cases = Vec::new();
+                parse_document(&xml, path, &mut cases).map_err(mlua::Error::RuntimeError)?;
+                Ok(cases)
+            };
+            let prior_cases = load(&prior)?;
+            let rerun_cases = match &rerun {
+                Some(p) => load(p)?,
+                None => Vec::new(),
+            };
+            let xml = merge_accounts(prior_cases, rerun_cases, &reused_from);
+            std::fs::write(&out, xml).map_err(|e| {
+                mlua::Error::RuntimeError(format!("junit.merge: cannot write {out}: {e}"))
+            })?;
+            Ok(out)
+        })?,
+    )?;
+
     Ok(junit)
+}
+
+/// Merge a prior account with the cases re-run over it. The prior's order is kept; a re-run case
+/// replaces its (suite, name) twin; a re-run case the prior never had is appended. Every carried
+/// case keeps the origin it already had (a resume of a resume names the run that CONDUCTED it) or
+/// takes `reused_from`. Carried failures stay failures: a merge carries verdicts forward, and only
+/// passes are evidence — a red that nobody re-ran is still red.
+fn merge_accounts(prior: Vec<Case>, rerun: Vec<Case>, reused_from: &str) -> String {
+    let mut fresh: std::collections::HashMap<(String, String), Case> = rerun
+        .into_iter()
+        .map(|c| ((c.suite.clone(), c.name.clone()), c))
+        .collect();
+    let mut order: Vec<Case> = Vec::new();
+    for mut c in prior {
+        match fresh.remove(&(c.suite.clone(), c.name.clone())) {
+            Some(again) => order.push(again),
+            None => {
+                c.reused_from.get_or_insert_with(|| reused_from.to_string());
+                order.push(c);
+            }
+        }
+    }
+    let mut left: Vec<Case> = fresh.into_values().collect();
+    left.sort_by(|a, b| (&a.suite, &a.name).cmp(&(&b.suite, &b.name)));
+    order.extend(left);
+    render_account(&order)
+}
+
+/// Render cases as one JUnit document, grouped into suites in first-seen order.
+fn render_account(cases: &[Case]) -> String {
+    use quick_xml::escape::escape;
+    let mut suites: Vec<(&str, Vec<&Case>)> = Vec::new();
+    for c in cases {
+        match suites.iter_mut().find(|(s, _)| *s == c.suite) {
+            Some((_, v)) => v.push(c),
+            None => suites.push((c.suite.as_str(), vec![c])),
+        }
+    }
+    let mut xml = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<testsuites name=\"prova-merged\">\n");
+    for (suite, members) in suites {
+        xml.push_str(&format!(
+            "  <testsuite name=\"{}\" tests=\"{}\">\n",
+            escape(suite),
+            members.len()
+        ));
+        for c in members {
+            let time = c.time_ms.map(|t| format!(" time=\"{:.3}\"", t as f64 / 1000.0)).unwrap_or_default();
+            xml.push_str(&format!(
+                "    <testcase name=\"{}\" classname=\"{}\"{time}>\n",
+                escape(&c.name),
+                escape(&c.suite)
+            ));
+            let message = c.message.as_deref().map(|m| format!(" message=\"{}\"", escape(m))).unwrap_or_default();
+            match c.outcome {
+                "failed" => xml.push_str(&format!("      <failure{message}/>\n")),
+                "error" => xml.push_str(&format!("      <error{message}/>\n")),
+                "skipped" => xml.push_str("      <skipped/>\n"),
+                _ => {}
+            }
+            if let Some(from) = &c.reused_from {
+                xml.push_str(&format!(
+                    "      <properties><property name=\"{REUSED_FROM}\" value=\"{}\"/></properties>\n",
+                    escape(from)
+                ));
+            }
+            xml.push_str("    </testcase>\n");
+        }
+        xml.push_str("  </testsuite>\n");
+    }
+    xml.push_str("</testsuites>\n");
+    xml
 }
 
 /// Load the `junit.verify` recipe — after `make`'s table is installed as the global.
@@ -315,6 +441,39 @@ trace line</failure></testcase>
         assert_eq!(cases[1].outcome, "failed");
         // First line only — a message is a label, not a traceback.
         assert_eq!(cases[1].message.as_deref(), Some("AssertionError: nope"));
+    }
+
+    /// A resumed deputy's account: the re-run case replaces its prior red, every other case is
+    /// carried and MARKED, an origin already carried is kept, a red nobody re-ran stays red — and
+    /// the merged document parses back to exactly that.
+    #[test]
+    fn a_merge_carries_marked_verdicts_and_replaces_what_was_re_run() {
+        let prior = r#"<testsuites><testsuite name="cos-daemon">
+          <testcase name="tests::ok" classname="cos-daemon" time="0.5"/>
+          <testcase name="tests::flaky" classname="cos-daemon"><failure message="timed out &amp; gone"/></testcase>
+          <testcase name="tests::still_red" classname="cos-daemon"><failure message="real"/></testcase>
+          <testcase name="tests::older" classname="cos-daemon"><properties><property name="prova.reused_from" value="run-0"/></properties></testcase>
+        </testsuite></testsuites>"#;
+        let rerun = r#"<testsuites><testsuite name="cos-daemon">
+          <testcase name="tests::flaky" classname="cos-daemon" time="0.2"/>
+        </testsuite></testsuites>"#;
+        let mut p = Vec::new();
+        parse_document(prior, "prior.xml", &mut p).unwrap();
+        assert_eq!(p[3].reused_from.as_deref(), Some("run-0"), "the property parses");
+        let mut r = Vec::new();
+        parse_document(rerun, "rerun.xml", &mut r).unwrap();
+
+        let merged = merge_accounts(p, r, "run-1");
+        let mut back = Vec::new();
+        parse_document(&merged, "merged.xml", &mut back).unwrap();
+        let by = |name: &str| back.iter().find(|c| c.name == name).unwrap();
+        assert_eq!(back.len(), 4);
+        assert_eq!((by("tests::ok").outcome, by("tests::ok").reused_from.as_deref()), ("passed", Some("run-1")));
+        assert_eq!(by("tests::ok").time_ms, Some(500), "timing survives the round trip");
+        assert_eq!((by("tests::flaky").outcome, by("tests::flaky").reused_from.as_deref()), ("passed", None), "re-run: conducted here, unmarked");
+        assert_eq!(by("tests::still_red").outcome, "failed", "a red nobody re-ran stays red");
+        assert_eq!(by("tests::still_red").message.as_deref(), Some("real"));
+        assert_eq!(by("tests::older").reused_from.as_deref(), Some("run-0"), "an older origin is kept");
     }
 
     #[test]

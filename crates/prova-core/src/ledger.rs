@@ -98,6 +98,9 @@ pub struct DeputedRow {
     pub time_ms: Option<u64>,
     /// The artifact file the verdict was read from — the provenance of the adoption.
     pub file: String,
+    /// The run that conducted it, when a resumed deputy carried it forward instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reused_from: Option<String>,
 }
 /// One recorded measurement — a named scalar this run observed, with which way is better and which
 /// baseline set it belongs to. History for the record, and the source `--update-baseline` reads

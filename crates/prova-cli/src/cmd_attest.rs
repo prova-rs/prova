@@ -888,6 +888,7 @@ end)
                     message: None,
                     time_ms: None,
                     file: "junit.xml".into(),
+                    reused_from: None,
                 }],
             };
             let path = "ledger_test › covers the claim".to_string();

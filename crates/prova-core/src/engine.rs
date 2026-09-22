@@ -301,6 +301,12 @@ pub struct RunConfig {
     /// does execute depends on one, which then runs too — and names them in
     /// [`Summary::reused_paths`] instead of `deselected_paths`: they are evidence, not absence.
     pub reuse: std::collections::BTreeSet<String>,
+    /// This run's identity (`prova.run_id`) and, under `--resume`, the run it resumes
+    /// (`prova.resume.from`): resume pushdown into conducts (docs/plans/resume.md#phase-1b). A
+    /// deputy that stamped its artifact with the run that made it can tell, from these two alone,
+    /// whether that artifact is the resumed run's own — and re-run only its failures.
+    pub run_id: Option<String>,
+    pub resumed_from: Option<String>,
     /// The run-scoped wall-clock cap (`--timeout`): it OVERRIDES every unit's declared `timeout`
     /// (docs/design/lifecycle.md#falsify-bounds-a-hanging-mutant). Overriding rather than taking
     /// the minimum is the point — the flag exists to rescue a run whose declared bounds are
@@ -395,6 +401,8 @@ impl Default for RunConfig {
             proofs_only: false,
             falsify: false,
             reuse: std::collections::BTreeSet::new(),
+            run_id: None,
+            resumed_from: None,
             timeout_cap: None,
             switches: std::collections::BTreeSet::new(),
             conducts: ConductRegistry::default(),
@@ -508,6 +516,13 @@ impl RunConfig {
     /// Carry these file-qualified passes forward instead of executing them (`--resume`).
     pub fn with_reuse(mut self, reuse: impl IntoIterator<Item = String>) -> Self {
         self.reuse = reuse.into_iter().collect();
+        self
+    }
+
+    /// Name this run, and the run it resumes when it does (`prova.run_id`, `prova.resume.from`).
+    pub fn with_run_identity(mut self, run_id: String, resumed_from: Option<String>) -> Self {
+        self.run_id = Some(run_id);
+        self.resumed_from = resumed_from;
         self
     }
 

@@ -220,6 +220,8 @@ pub(crate) fn make(lua: &Lua, deputed: Option<DeputedRegistry>) -> mlua::Result<
                     message: c.get("message")?,
                     time_ms: None,
                     file: c.get::<Option<String>>("file")?.unwrap_or_default(),
+                    // A SARIF scan is always conducted by the run that reads it.
+                    reused_from: None,
                 });
             }
             let n = rows.len();

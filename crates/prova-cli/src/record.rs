@@ -82,6 +82,7 @@ pub fn deputed_rows(cases: &[prova_core::DeputedCase]) -> Vec<DeputedRow> {
             message: c.message.clone(),
             time_ms: c.time_ms,
             file: c.file.clone(),
+            reused_from: c.reused_from.clone(),
         })
         .collect()
 }
@@ -280,6 +281,7 @@ mod tests {
             message: Some("boom".into()),
             time_ms: Some(12),
             file: "target/junit.xml".into(),
+            reused_from: None,
         }]);
         assert_eq!(deputed[0].verifier, "junit");
         assert_eq!(deputed[0].outcome, "failed");

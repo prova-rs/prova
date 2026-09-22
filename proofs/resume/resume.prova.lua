@@ -27,9 +27,11 @@ end
 prova.test("steady one", function(t) bump("one"); t:expect(1):equals(1) end)
 prova.test("steady two", function(t) bump("two"); t:expect(2):equals(2) end)
 prova.test("flaky", function(t)
+  -- What the run tells a deputy about itself (docs/plans/resume.md#phase-1b), as it saw it.
+  fs.write(%q .. "/facts", (prova.run_id or "nil") .. " " .. (prova.resume and prova.resume.from or "nil"))
   t:expect(bump("flaky") >= 2, "red on its first execution only"):is_true()
 end)
-]], counts))
+]], counts, counts))
   shell.run({ "git", "init", "-q" }, { cwd = pkg, check = true })
   shell.run({ "git", "add", "-A" }, { cwd = pkg, check = true })
   return { pkg = pkg, counts = counts }
@@ -74,6 +76,20 @@ prova.test("a resume executes only what did not pass, and carries the rest forwa
   t:expect(rec.executed["widget_test › flaky"], "the executed one is passed"):equals("passed")
   t:expect(rec.reused_from["widget_test › steady one"], "naming the run that executed it"):equals(first_id)
   t:expect(rec.summary.reused, "and counted apart from passed"):equals(2)
+end)
+
+prova.test("a conduct sees its own run id, and — only when resuming — the run it resumes", {
+  requires = { "git" },
+}, function(t)
+  local sb = t:use(sandbox)
+  run(sb.pkg)
+  local first_id = record(sb).run_id
+  t:expect(fs.read(sb.counts .. "/facts"), "a plain run: its id, and no resume"):equals(first_id .. " nil")
+  run(sb.pkg, "--resume")
+  local second_id = record(sb).run_id
+  t:expect(second_id ~= first_id, "every run is its own"):is_true()
+  t:expect(fs.read(sb.counts .. "/facts"), "a resumed run names the run it resumes")
+    :equals(second_id .. " " .. first_id)
 end)
 
 prova.test("a resume of a resume keeps the ORIGIN of every carried pass", {

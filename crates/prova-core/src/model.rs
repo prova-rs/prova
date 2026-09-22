@@ -232,6 +232,9 @@ pub struct DeputedCase {
     pub time_ms: Option<u64>,
     /// The artifact file the verdict was read from — the provenance that makes adoption auditable.
     pub file: String,
+    /// The run that conducted this verdict, when the deputy carried it forward from a resumed
+    /// run's prior account instead of conducting it here (docs/plans/resume.md#phase-1b).
+    pub reused_from: Option<String>,
 }
 
 /// Where a run's ingested deputed cases accumulate — shared across workers, drained by the caller
