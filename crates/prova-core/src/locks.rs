@@ -536,6 +536,11 @@ pub fn survey(machine: bool, project_dir: Option<&Path>) -> Vec<LockStatus> {
 
 fn open_lock(path: &Path) -> std::io::Result<std::fs::File> {
     if let Some(parent) = path.parent() {
+        // A package-scoped lock lives in the package's `.prova/var/`, which must ignore itself
+        // BEFORE the lock lands there (see `crate::state`).
+        if let Some(var) = parent.parent().filter(|v| v.ends_with(".prova/var")) {
+            crate::state::ensure_self_ignoring(var)?;
+        }
         std::fs::create_dir_all(parent)?;
     }
     std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(path)
@@ -591,6 +596,20 @@ mod tests {
         // that sets TMPDIR for its children, which splits a machine-wide hold in two. The old
         // assertion here pinned exactly the behavior that was the bug.
         assert_eq!(machine, crate::scratch::locks_dir().join("cargo.lock"));
+    }
+
+    /// A package-scoped lock is the FIRST write to a fresh package's state directory surprisingly
+    /// often (`prova lock cargo -- …` before any run), so it must leave that directory ignoring
+    /// itself: without it, the next VCS snapshot tracks the lock file.
+    #[test]
+    fn a_package_lock_leaves_its_state_directory_ignoring_itself() {
+        let project = std::env::temp_dir().join(format!("prova-locks-ignore-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&project);
+        let path = lock_path("cargo", false, Some(&project)).unwrap();
+        open_lock(&path).unwrap();
+        let ignore = project.join(".prova/var/.gitignore");
+        assert_eq!(std::fs::read_to_string(&ignore).unwrap(), crate::state::GITIGNORE);
+        let _ = std::fs::remove_dir_all(&project);
     }
 
     /// Exclusive excludes shared and vice versa, across separate descriptors — the semantics
