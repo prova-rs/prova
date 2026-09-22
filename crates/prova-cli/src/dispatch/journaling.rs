@@ -11,6 +11,8 @@ use std::collections::BTreeMap;
 /// What this run journals, and what `--resume` lets it carry forward.
 pub(super) struct JournalPlan {
     header: journal::Header,
+    /// The absolute `[resume] roots` the fingerprint covers — kept to confirm it at the end.
+    roots: Vec<std::path::PathBuf>,
     /// The offered passes: file-qualified path → the run that executed it. Empty without `--resume`.
     reuse: BTreeMap<String, String>,
 }
@@ -64,6 +66,7 @@ pub(super) fn plan_journal(
     cli: &Cli,
     home: &Option<Home>,
     config: &mut prova_core::RunConfig,
+    resume_roots: &[String],
 ) -> Result<Option<JournalPlan>, ExitCode> {
     if cli.list || cli.switches_list || cli.reminders_list || cli.backfill {
         return Ok(None);
@@ -90,7 +93,8 @@ pub(super) fn plan_journal(
         }
         return Ok(None);
     };
-    let tree = match crate::tree::fingerprint(&h.dir) {
+    let roots: Vec<std::path::PathBuf> = resume_roots.iter().map(|r| h.dir.join(r)).collect();
+    let tree = match crate::tree::fingerprint_with(&h.dir, &roots) {
         Ok(t) => t,
         Err(why) if cli.resume => return refuse(why),
         Err(_) => return Ok(None),
@@ -116,6 +120,7 @@ pub(super) fn plan_journal(
             binary,
             started_at: humantime::format_rfc3339_seconds(std::time::SystemTime::now()).to_string(),
         },
+        roots,
         reuse,
     }))
 }
@@ -205,7 +210,9 @@ pub(super) fn settle(
     summary: &prova_core::Summary,
 ) -> Settled {
     let tree = plan.and_then(|plan| {
-        let after = home.as_ref().and_then(|h| crate::tree::fingerprint(&h.dir).ok());
+        let after = home
+            .as_ref()
+            .and_then(|h| crate::tree::fingerprint_with(&h.dir, &plan.roots).ok());
         if after.as_deref() == Some(plan.header.tree.as_str()) {
             Some(plan.header.tree.clone())
         } else {

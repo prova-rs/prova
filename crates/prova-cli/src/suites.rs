@@ -80,6 +80,8 @@ pub(crate) struct ManifestRun {
     /// The thrown opt-in switches (`switches` on `[run]`/the profile, unioned) — the CLI's `-s`
     /// unions on top at the wiring site.
     pub(crate) switches: Vec<String>,
+    /// `[resume] roots` — home-relative directories the `--resume` tree fingerprint covers too.
+    pub(crate) resume_roots: Vec<String>,
 }
 
 /// If a linted plugin ships no LuaCATS stub (`library/<canonical>.lua`), return an advisory message.
@@ -823,6 +825,7 @@ pub(crate) fn resolve_from_manifest(
         budget: resolved.budget,
         lane_tags: resolved.lane_tags,
         switches: resolved.switches,
+        resume_roots: resolved.resume_roots,
     })
 }
 

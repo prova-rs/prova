@@ -125,6 +125,37 @@ prova.test("an edited tracked file REFUSES the resume, naming why, and executes 
   t:expect(count(sb, "one"), "nothing executed"):equals(1)
 end)
 
+--- A package whose runs read a SIBLING checkout (a build that links it by path) declares it in
+--- `[resume] roots`; the fingerprint then covers the sibling's tracked tree too.
+local with_sibling = prova.fixture("resume-sibling-sandbox", Scope.Test, function(ctx)
+  local root = ctx:tempdir()
+  local pkg, sib = root .. "/pkg", root .. "/sib"
+  fs.mkdir(pkg .. "/proofs")
+  fs.mkdir(sib)
+  fs.write(pkg .. "/prova.toml", '[run]\nproofs = ["proofs"]\n\n[resume]\nroots = ["../sib"]\n')
+  fs.write(pkg .. "/proofs/ok_test.lua", 'prova.test("holds", function(t) t:expect(1):equals(1) end)\n')
+  fs.write(sib .. "/lib.txt", "v1\n")
+  for _, dir in ipairs({ pkg, sib }) do
+    shell.run({ "git", "init", "-q" }, { cwd = dir, check = true })
+    shell.run({ "git", "add", "-A" }, { cwd = dir, check = true })
+  end
+  return { pkg = pkg, sib = sib }
+end)
+
+prova.test("an edit to a declared SIBLING root refuses the resume, naming the change", {
+  requires = { "git" },
+}, function(t)
+  local sb = t:use(with_sibling)
+  local first = run(sb.pkg)
+  t:expect(first.code, first.stdout):equals(0)
+  t:expect(run(sb.pkg, "--resume").code, "an untouched sibling resumes"):equals(0)
+
+  fs.write(sb.sib .. "/lib.txt", "v2\n")
+  local r = run(sb.pkg, "--resume")
+  t:expect(r.code, "the sibling's bytes changed, so nothing may be carried"):equals(2)
+  t:expect(r.stdout, "names why"):contains("tracked tree changed")
+end)
+
 prova.test("a narrowed resume, or one with nothing journaled, REFUSES", {
   requires = { "git" },
 }, function(t)

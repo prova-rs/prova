@@ -96,6 +96,18 @@ pub fn fingerprint(start: &Path) -> Result<String, String> {
     Ok(format!("{kind}:{}", digest(&root, &paths)))
 }
 
+/// The fingerprint of the tree containing `start` AND of every extra root (`[resume] roots`) —
+/// each root digested as its own repository's tracked tree, in the order given. Any root that
+/// cannot be fingerprinted fails the whole: a resume must never proceed on a partial key.
+pub fn fingerprint_with(start: &Path, roots: &[PathBuf]) -> Result<String, String> {
+    let mut parts = vec![fingerprint(start)?];
+    for root in roots {
+        let part = fingerprint(root).map_err(|why| format!("[resume] root {}: {why}", root.display()))?;
+        parts.push(part);
+    }
+    Ok(parts.join("+"))
+}
+
 /// Path, length and bytes of each file, in order. A tracked path that cannot be read (deleted in the
 /// working copy, a dangling link) digests as its own marker, so deleting a file moves the digest too.
 fn digest(root: &Path, paths: &[String]) -> String {

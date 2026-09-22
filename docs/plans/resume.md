@@ -52,6 +52,18 @@ same lane over the same tree. Every other leaf is **reused**.
   reused leaf took no measurement. It does not re-evaluate reminders, carrying the prior rows
   forward as a narrowed run does.
 
+### Extra roots
+
+A package's runs can read bytes outside its own repository. Substrate builds fleet, typhon and
+anemnez-graph through `[patch]` PATH dependencies on sibling checkouts. The VCS-only fingerprint
+cannot see those, so an edit to `../fleet` between a red run and its resume would carry passes
+forward across bytes that changed. That was witnessed on 2026-09-22, when a sibling edit broke a
+running gate.
+
+`[resume] roots = ["../fleet", …]` names such directories, relative to home. The fingerprint digests
+each root's own repository's tracked tree beside the package's, joined as `<pkg>+<root>+…`. A root
+that cannot be fingerprinted refuses the resume, as a missing VCS does.
+
 ## Phase 1b — resume reaches the deputy
 
 The expensive leaf is often a **deputy that conducts a whole suite**: Substrate's

@@ -129,6 +129,24 @@ pub struct Manifest {
     /// invocation, and configured-but-unreachable is a loud error, never a silent local fallback.
     #[serde(default)]
     pub placement: Option<PlacementSection>,
+    /// `[resume]` — what `--resume`'s tree fingerprint covers beyond this package's own
+    /// repository (docs/plans/resume.md#extra-roots). A package property: which bytes a verdict
+    /// depends on cannot vary by lane.
+    #[serde(default)]
+    pub resume: ResumeSection,
+}
+
+/// `[resume]` — `roots` are directories OUTSIDE this package's repository that its runs read: a
+/// sibling checkout a build links by path, for one (Substrate's `[patch]` path dependencies).
+/// Home-relative. The fingerprint digests each root's own tracked tree too, so editing one refuses
+/// `--resume` instead of carrying passes across bytes that changed — which is what an edit to
+/// `../fleet` would otherwise do, silently (2026-09-22). A root that cannot be fingerprinted refuses
+/// the resume as well.
+#[derive(Debug, Deserialize, Default, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ResumeSection {
+    #[serde(default)]
+    pub roots: Vec<String>,
 }
 
 /// `[runner]` — the binary UNDER TEST
@@ -742,6 +760,8 @@ pub struct Resolved {
     pub heed: Heed,
     /// Project-provided agent context docs (top-level `context`), home-relative paths.
     pub context: Vec<String>,
+    /// `[resume] roots` — home-relative directories the tree fingerprint covers besides the package's own.
+    pub resume_roots: Vec<String>,
 }
 
 impl Resolved {
@@ -1086,6 +1106,7 @@ impl Manifest {
             switches,
             heed,
             context: self.context.clone(),
+            resume_roots: self.resume.roots.clone(),
         })
     }
 }
@@ -1151,6 +1172,7 @@ proofs = ["tests/smoke"]
                 switches: Vec::new(),
                 heed: Heed::None,
                 context: Vec::new(),
+                resume_roots: Vec::new(),
             }
         );
     }

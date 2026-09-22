@@ -482,6 +482,7 @@ fn resolve_env(cli: &mut Cli, home: &Option<Home>, layout: &XdgSystemLayout) -> 
                 budget: None,                      // no manifest, no lane to price
                 lane_tags: Vec::new(),             // no manifest, no lanes
                 switches: Vec::new(),              // no manifest, nothing thrown
+                resume_roots: Vec::new(),          // no manifest, no extra roots
             },
         }),
     }
@@ -1395,7 +1396,7 @@ pub(crate) fn run(cli_args: Vec<String>) -> ExitCode {
 
     // The journal and `--resume` (docs/plans/resume.md), planned before snapshot tracking, which
     // has to know whether this run carries anything forward.
-    let journal_plan = match plan_journal(&cli, &home, &mut config) {
+    let journal_plan = match plan_journal(&cli, &home, &mut config, &env.env.resume_roots) {
         Ok(plan) => plan,
         Err(code) => return code,
     };
