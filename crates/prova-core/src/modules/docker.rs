@@ -673,7 +673,7 @@ pub(crate) fn create_managed_network(lua: &Lua) -> mlua::Result<AnyUserData> {
     // await. Harmless here — this handle only ever removes the network again, which every API
     // version in range agrees on. Everything version-sensitive (container create/start/inspect)
     // goes through `connect()`.
-    let client = Docker::connect_with_local_defaults().map_err(derr)?;
+    let client = local_client().map_err(derr)?;
     lua.create_userdata(Network {
         client,
         name,
@@ -897,12 +897,13 @@ pub(crate) static PORT_BIND_FAILURES: AtomicU64 = AtomicU64::new(0);
 /// Negotiation costs one `/version` round-trip and degrades safely: if it fails, keep the
 /// default client rather than turning a working daemon into a hard error.
 async fn connect() -> mlua::Result<Docker> {
-    let client = Docker::connect_with_local_defaults().map_err(derr)?;
+    let client = local_client().map_err(derr)?;
     match client.negotiate_version().await {
         Ok(negotiated) => Ok(negotiated),
-        Err(_) => Docker::connect_with_local_defaults().map_err(derr),
+        Err(_) => local_client().map_err(derr),
     }
 }
+
 
 /// Pull the image only if it isn't already local — `docker run`'s own rule. A locally-BUILT
 /// image (docker.build) exists in no registry, so an unconditional pull fails it with a
@@ -1126,6 +1127,8 @@ async fn start(
 }
 
 mod files;
+mod endpoint;
+use endpoint::local_client;
 mod readiness;
 use readiness::*;
 
@@ -1289,7 +1292,6 @@ fn split_image(image: &str) -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     /// These drive `start` directly; activity reporting is not what they are about, so they get
     /// the silent sink a library consumer gets.
     fn silent() -> crate::progress::NullProgressArc {
