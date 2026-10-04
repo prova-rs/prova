@@ -54,6 +54,9 @@ pub(crate) struct ManifestRun {
     pub(crate) junit: Option<String>,
     pub(crate) suites: BTreeMap<String, SuiteDecl>,
     pub(crate) dependencies: packages::ResolvedPackages,
+    /// The run-scoped dependency overrides this run applied, one line each
+    /// (`standards: tag v1.3.0 -> tag v1.4.0 (--dep)`), for the run record.
+    pub(crate) dependency_overrides: Vec<String>,
     pub(crate) sources: BTreeMap<String, String>,
     pub(crate) manage: Manage,
     /// Manifest topologies (`[topologies]`) — name → the plugin factory it exposes. Consumed only by
@@ -752,6 +755,9 @@ pub(crate) fn resolve_from_manifest(
     // empty selection is a config error); explicit-path runs and `eval` bring their own selection
     // and only borrow the package environment, so a plugins-only manifest is fine for them.
     require_proofs: bool,
+    // Run-scoped `--dep name=<tag|rev|path>` overrides (`PROVA_DEP_<NAME>` is read here too, so
+    // every verb that resolves a manifest honours the env form): see dep_override.
+    dep_overrides: &[String],
 ) -> Result<ManifestRun, ExitCode> {
     let path = &home.manifest;
 
@@ -764,7 +770,7 @@ pub(crate) fn resolve_from_manifest(
         eprintln!("prova: {e}");
         ExitCode::from(2)
     })?;
-    let resolved = manifest.resolve(profile.as_deref()).map_err(|e| {
+    let mut resolved = manifest.resolve(profile.as_deref()).map_err(|e| {
         eprintln!("prova: {e}");
         // A path in the profile slot (usually `prova run <path>`) is a slip with a specific fix —
         // but only once no lane claims the name: a declared lane always wins its own name.
@@ -794,6 +800,27 @@ pub(crate) fn resolve_from_manifest(
     // Apply the run environment before tests execute.
     for (key, value) in &resolved.env {
         std::env::set_var(key, value);
+    }
+
+    // Run-scoped dependency overrides, env first so the CLI wins for the same name; applied to the
+    // consumer's DIRECT dependencies before anything is fetched, and named on stderr and in the
+    // run record (gap 01a103f0).
+    let mut overrides = crate::dep_override::from_env(std::env::vars()).map_err(|e| {
+        eprintln!("prova: {e}");
+        ExitCode::from(2)
+    })?;
+    for entry in dep_overrides {
+        overrides.push(crate::dep_override::parse(entry, "--dep").map_err(|e| {
+            eprintln!("prova: {e}");
+            ExitCode::from(2)
+        })?);
+    }
+    let applied = crate::dep_override::apply(&mut resolved.dependencies, &overrides).map_err(|e| {
+        eprintln!("prova: {e}");
+        ExitCode::from(2)
+    })?;
+    for a in &applied {
+        eprintln!("prova: dependency override, this run only: {}", a.line());
     }
 
     let packages_resolved =
@@ -826,6 +853,7 @@ pub(crate) fn resolve_from_manifest(
         lane_tags: resolved.lane_tags,
         switches: resolved.switches,
         resume_roots: resolved.resume_roots,
+        dependency_overrides: applied.iter().map(crate::dep_override::Applied::line).collect(),
     })
 }
 

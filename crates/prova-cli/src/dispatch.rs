@@ -53,6 +53,8 @@ struct Cli {
     profile: Option<String>,
     manifest_path: Option<String>,
     packages: Vec<String>,
+    /// `--dep name=<tag|rev|path>` (repeatable): run-scoped dependency overrides.
+    deps: Vec<String>,
     selection: prova_core::Selection,
     last_failed: bool,
     // `--resume` (docs/plans/resume.md): execute only what the previous run of this lane over the
@@ -107,6 +109,7 @@ impl Default for Cli {
             profile: None,
             manifest_path: None,
             packages: Vec::new(),
+            deps: Vec::new(),
             selection: prova_core::Selection::default(),
             last_failed: false,
             resume: false,
@@ -139,8 +142,11 @@ impl Cli {
         arg: &str,
         args: &mut impl Iterator<Item = String>,
     ) -> Result<bool, ExitCode> {
+        // `--dep name=<tag|rev|path>` (repeatable): override a declared dependency's pin, this run only.
+        if let Some(v) = value_flag(arg, args, &["--dep"]) {
+            self.deps.push(v);
         // `-P name=source` (repeatable): an ad-hoc package, layered over the manifest (CLI wins).
-        if let Some(v) = value_flag(arg, args, &["--package", "-P", "--plugin"]) {
+        } else if let Some(v) = value_flag(arg, args, &["--package", "-P", "--plugin"]) {
             if arg.starts_with("--plugin") {
                 eprintln!("prova: `--plugin` is deprecated — use `--package` (retires at 1.0)");
             }
@@ -423,6 +429,7 @@ fn resolve_env(cli: &mut Cli, home: &Option<Home>, layout: &XdgSystemLayout) -> 
             cli.update_force,
             cli.offline,
             true,
+            &cli.deps,
         )?;
         return Ok(RunEnv {
             // `home.dir` IS the package root (the parent of a nested `.prova/`/`prova/` nook), so
@@ -449,7 +456,8 @@ fn resolve_env(cli: &mut Cli, home: &Option<Home>, layout: &XdgSystemLayout) -> 
                 cli.update_force,
                 cli.offline,
                 false,
-            )?;
+            &cli.deps,
+        )?;
             env.suites = BTreeMap::new();
             env.manage = Manage::Never;
             Ok(RunEnv { base_dir: PathBuf::from("."), paths, env })
@@ -459,6 +467,7 @@ fn resolve_env(cli: &mut Cli, home: &Option<Home>, layout: &XdgSystemLayout) -> 
             base_dir: PathBuf::from("."),
             paths,
             env: ManifestRun {
+                dependency_overrides: Vec::new(),
                 proofs: Vec::new(),
                 jobs: cli.jobs.unwrap_or(1),
                 format: cli.format.unwrap_or(Format::Console),
@@ -935,6 +944,9 @@ struct Accounts {
     // artifact a conduct publishes accumulates here, drained into the run record.
     reports: prova_core::ReportRegistry,
     attached: prova_core::AttachedRegistry,
+    // The run-scoped dependency overrides this run applied (`--dep`, `PROVA_DEP_<NAME>`), carried
+    // into the run record so the evidence names the version judged.
+    dependency_overrides: Vec<String>,
     snapshots: Option<prova_core::SnapshotRegistry>,
 }
 
@@ -1012,6 +1024,7 @@ fn store_run_record(
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone(),
+            dependency_overrides: accounts.dependency_overrides.clone(),
         },
         cli.record_to.as_deref(),
     );
@@ -1432,6 +1445,7 @@ pub(crate) fn run(cli_args: Vec<String>) -> ExitCode {
         measurements: measurement_registry,
         reports: report_registry,
         attached: attached_registry,
+        dependency_overrides: env.env.dependency_overrides.clone(),
         snapshots: snapshot_registry,
     };
 

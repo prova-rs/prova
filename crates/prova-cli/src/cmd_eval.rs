@@ -183,7 +183,7 @@ pub(crate) fn eval_subcommand(args: Vec<String>) -> ExitCode {
     };
     let (mut packages_resolved, sources) = match &home {
         Some(home) => {
-            match resolve_from_manifest(home, profile, None, None, None, &layout, false, false, false) {
+            match resolve_from_manifest(home, profile, None, None, None, &layout, false, false, false, &[]) {
                 Ok(r) => (r.dependencies, r.sources),
                 Err(code) => return code,
             }

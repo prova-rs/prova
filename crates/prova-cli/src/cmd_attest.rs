@@ -378,7 +378,7 @@ pub(crate) fn resolve_for_obligations(
         }
     };
     let mut run =
-        resolve_from_manifest(home, None, None, None, None, &layout, false, false, false)?;
+        resolve_from_manifest(home, None, None, None, None, &layout, false, false, false, &[])?;
     // The obligation readers EXECUTE proof files to collect their `covers`, so they must resolve
     // the same package set the run did — `-P name=source` included
     // (docs/design/agent-ergonomics.md#reminder-reconcile-ignores-adhoc-packages). Resolving the
@@ -877,6 +877,7 @@ end)
                 deselected: vec![],
                 measurements: vec![],
                 attached: vec![],
+                dependency_overrides: Vec::new(),
                 reports: Vec::new(),
                 reminders: vec![],
                 deputed_narrowed: false,

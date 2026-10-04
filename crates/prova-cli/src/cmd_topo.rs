@@ -477,7 +477,7 @@ pub(crate) fn build_topology_run(
     // Locate the package (the manifest tells us where topologies + plugins live).
     let home = resolve_home(manifest_path.as_deref())?;
 
-    let run = resolve_from_manifest(&home, profile, None, None, None, &layout, false, false, true)?;
+    let run = resolve_from_manifest(&home, profile, None, None, None, &layout, false, false, true, &[])?;
 
     // The inhabited verbs resolve topologies from `[topologies]` REGISTRATIONS ONLY — never by
     // scanning code. A topology has exactly two consumers and they enter by different doors: a test

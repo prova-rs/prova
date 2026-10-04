@@ -177,6 +177,11 @@ pub struct Record {
     /// so records from before attach existed still parse.
     #[serde(default)]
     pub attached: Vec<String>,
+    /// Run-scoped dependency overrides (`prova --dep`, `PROVA_DEP_<NAME>`), one line each:
+    /// `standards: tag v1.3.0 -> tag v1.4.0 (--dep)`. The evidence names the version that was
+    /// judged when it was not the manifest's. Defaulted so records from before it existed parse.
+    #[serde(default)]
+    pub dependency_overrides: Vec<String>,
     /// The report account: every artifact a conduct published this run, in custody. Defaulted so
     /// records written before reports existed still parse.
     #[serde(default)]
@@ -385,6 +390,7 @@ mod tests {
             deputed_narrowed: false,
             measurements: Vec::new(),
             attached: Vec::new(),
+            dependency_overrides: Vec::new(),
             reports: Vec::new(),
         }
     }

@@ -25,6 +25,7 @@ mod broker;
 use prova_core::ledger::claims;
 mod capabilities;
 mod catalog;
+mod dep_override;
 mod deprecations;
 mod home;
 mod ide;
@@ -334,6 +335,9 @@ options:
                             (cargo, a port) declare locks instead of dialing this to 1: the
                             scheduler serializes only the holders (`prova learn locks`)
   -P, --package name=source add an ad-hoc package (repeatable; layers over the manifest)
+      --dep name=<tag|rev|path>
+                            override a declared dependency's pin for THIS run only (repeatable;
+                            also PROVA_DEP_<NAME>); no file is touched, the run record names it
   -k PATTERN                select nodes whose path contains PATTERN (repeatable; !PAT excludes)
       --tags a,b            select nodes tagged with any listed tag (repeatable; !tag excludes)
       --node PATH           select an exact node path (repeatable) — re-run what a report named

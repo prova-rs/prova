@@ -44,6 +44,12 @@ Built-ins need no declaration: `fs shell net http grpc graphql yaml sqlite docke
 
 - Ad-hoc, no manifest edit: `-P name=source` (repeatable; local paths; layers over
   `[dependencies]`).
+- Judge against another version, THIS run only: `--dep name=<tag|rev|path>` (repeatable; also
+  `PROVA_DEP_<NAME>=...`, NAME uppercased with `-` as `_`). It changes a DECLARED dependency's pin:
+  a tag or rev keeps its git URL and module, a path replaces the source. No file is touched; the
+  override is printed and written into the run record (`prova learn record`). A bare value reads
+  as a path (`./x`, `/x`, an existing dir), a rev (7–40 hex) or a tag; `tag:` / `rev:` / `path:`
+  settle doubt. Typical use: a release gate running a consumer under the old tag and the new one.
 - Profile-scoped: `[profiles.ci.dependencies]` overlays `[dependencies]` (profile wins on
   conflict) — CI capabilities stay pinned in-repo.
 - Git freshness: cached under the user cache; `[updates] interval = "1d"` gates re-checks;

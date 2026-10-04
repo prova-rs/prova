@@ -230,6 +230,7 @@ mod tests {
             deselected: vec!["f › other".into()],
             measurements: vec![],
             attached: vec![],
+            dependency_overrides: Vec::new(),
             reports: Vec::new(),
             reminders: vec![],
             deputed: vec![],
