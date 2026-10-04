@@ -306,7 +306,7 @@ pub(super) fn eval_with_state(
     // File scope stands in for `defer`/`manage`).
     let file0 = state.file_scope(0);
     let ctx = Ctx {
-        run: Rc::new(RefCell::new(TestRun::default())),
+        run: new_run(),
         state: state.clone(),
         test_scope: file0.clone(),
         file_scope: file0,

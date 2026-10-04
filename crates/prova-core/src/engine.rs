@@ -42,7 +42,7 @@ use futures::stream::StreamExt;
 use mlua::{Function, Lua, Table, UserData, UserDataFields, UserDataMethods, Value};
 
 use crate::model::{
-    parse_duration, Event, NodeIx, Outcome, Params, ReminderAccount, ReminderListing,
+    Event, NodeIx, Outcome, Params, ReminderAccount, ReminderListing,
     ReminderOutcome, ReminderState, Reporter, ResourceReq, Summary, UnitOpts,
 };
 
@@ -195,7 +195,7 @@ impl PortMode {
 
 /// A thread-safe set of every `.snap` file referenced during a run — shared across worker Lua states
 /// so the CLI can find untouched (orphaned) snapshots afterward.
-pub type SnapshotRegistry = std::sync::Arc<std::sync::Mutex<std::collections::HashSet<PathBuf>>>;
+pub use prova_expect::SnapshotRegistry;
 
 /// Find orphaned `.snap` files after a run: those present on disk in a `snapshots/` dir that a test
 /// *did* reference, but which were not themselves referenced. Only dirs with at least one referenced
@@ -708,8 +708,7 @@ use collect::*;
 mod context;
 use context::*;
 
-mod matchers;
-pub(crate) use matchers::*;
+pub(crate) use prova_expect::*;
 
 
 mod setup;

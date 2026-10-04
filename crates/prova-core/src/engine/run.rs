@@ -203,7 +203,7 @@ async fn drive_bounded(
     call: impl std::future::Future<Output = mlua::Result<()>>,
     item: &PlanItem,
     state: &Rc<RunState>,
-    run: &Rc<RefCell<TestRun>>,
+    run: &RunHandle,
 ) -> Result<mlua::Result<()>, Exceeded> {
     let wall = state.timeout_cap.or(item.timeout);
     let idle = item.idle_timeout.or(if state.falsify {
@@ -220,7 +220,7 @@ async fn drive_bounded(
     let mut call = call;
     let started = tokio::time::Instant::now();
     let mut last_progress = started;
-    let mut seen = run.borrow().assertions;
+    let mut seen = lock(run).assertions;
 
     loop {
         let tick = tokio::time::sleep(LIVENESS_TICK);
@@ -228,7 +228,7 @@ async fn drive_bounded(
             r = &mut call => return Ok(r),
             _ = tick => {
                 let now = tokio::time::Instant::now();
-                let assertions = run.borrow().assertions;
+                let assertions = lock(run).assertions;
                 if assertions != seen {
                     // Progress is life: an assertion landed, so the body is working, however slow.
                     seen = assertions;
@@ -256,8 +256,8 @@ pub(super) async fn run_one(
     state: &Rc<RunState>,
     flow_scope: Option<Rc<RefCell<ScopeState>>>,
 ) -> Vec<NodeResult> {
-    let run = Rc::new(RefCell::new(TestRun::default()));
-    run.borrow_mut().snapshot = snapshot_ctx_for(state, item);
+    let run = new_run();
+    lock(&run).snapshot = snapshot_ctx_for(state, item);
     let test_scope = Rc::new(RefCell::new(ScopeState::default()));
     // The case is delivered both as `t.case` and as the body's second argument, so `fn(t, case)`
     // and `fn(t)` (ignoring the trailing nil) both work.
@@ -301,7 +301,7 @@ pub(super) async fn run_one(
     let result = match drive_bounded(call, item, state, &run).await {
         Ok(r) => r,
         Err(exceeded) => {
-            let assertions = run.borrow().assertions;
+            let assertions = lock(&run).assertions;
             // Teardown still runs after a bound fires — and a wedged test is exactly when a
             // cleanup is most likely to raise, so its errors are reported rather than dropped.
             let errors = teardown_scope(&test_scope).await;
@@ -329,7 +329,7 @@ pub(super) async fn run_one(
     let duration = start.elapsed();
 
     let (outcome, message, assertions) = {
-        let r = run.borrow();
+        let r = lock(&run);
         let (outcome, message) = if r.skip.is_some() {
             (Outcome::Skipped, r.skip.clone())
         } else if let Err(err) = &result {

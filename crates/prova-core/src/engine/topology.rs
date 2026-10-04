@@ -220,7 +220,7 @@ pub(super) async fn provision(
 ) -> mlua::Result<(Value, Vec<Endpoint>)> {
     let file0 = state.file_scope(0);
     let ctx = Ctx {
-        run: Rc::new(RefCell::new(TestRun::default())),
+        run: new_run(),
         state: state.clone(),
         test_scope: file0.clone(), // no test scope in `up`; the File scope stands in for `manage`
         file_scope: file0,

@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+# The assertion core (t:expect, :eventually, snapshots, the per-test record), Send-safe so a host
+# with mlua `send` (Substrate's vault proof host) links the same implementation.
+prova-expect = { path = "../prova-expect" }
 mlua = { workspace = true, features = ["async"] }
 # Async from the ground up: a per-run current-thread runtime drives many concurrent Lua
 # coroutines cooperatively (I/O-bound concurrency for load/stress; real timeouts via cancellation).

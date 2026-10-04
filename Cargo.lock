@@ -3017,6 +3017,7 @@ dependencies = [
  "prost-reflect",
  "prost-types",
  "protox",
+ "prova-expect",
  "prova-terminal",
  "quick-xml",
  "regex",
@@ -3040,6 +3041,14 @@ dependencies = [
  "uuid",
  "webpki-roots",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "prova-expect"
+version = "0.28.1"
+dependencies = [
+ "mlua",
+ "tokio",
 ]
 
 [[package]]

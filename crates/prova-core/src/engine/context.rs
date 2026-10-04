@@ -9,35 +9,8 @@ const SKIP_SENTINEL: &str = "__prova_skip__";
 // The context (`t` / `ctx`) — one type for test bodies and fixture factories
 // ---------------------------------------------------------------------------------------------
 
-#[derive(Default)]
-pub(super) struct TestRun {
-    pub(super) assertions: usize,
-    pub(super) failure: Option<String>,
-    pub(super) skip: Option<String>,
-    /// Inside `t:expect_all(...)`, a failed assertion is collected here instead of aborting, so the
-    /// block reports *every* failure. `soft` is the active flag; `soft_failures` accumulates.
-    pub(super) soft: bool,
-    pub(super) soft_failures: Vec<String>,
-    /// Snapshot context for `matches_snapshot` (where `.snap` files live, the key base, update mode,
-    /// and a per-test counter for auto-named snapshots). `None` when the test has no source file path.
-    pub(super) snapshot: Option<SnapshotCtx>,
-}
-
-/// Per-test snapshot state: everything `matches_snapshot` needs to locate and key a `.snap` file.
-pub(super) struct SnapshotCtx {
-    /// `<test-file-dir>/snapshots`.
-    pub(super) dir: PathBuf,
-    /// The test-file stem — the `.snap` filename prefix (`<stem>__<key>.snap`).
-    pub(super) stem: String,
-    /// A slug of the test's node path — the base for auto-named snapshots (`<slug>-<n>`).
-    pub(super) key_base: String,
-    /// `--update-snapshots`: write instead of compare.
-    pub(super) update: bool,
-    /// Increments per *unnamed* `matches_snapshot` in this test, so several are distinct.
-    pub(super) counter: usize,
-    /// Shared registry to record each referenced `.snap` into (for unreferenced reconciliation).
-    pub(super) registry: Option<SnapshotRegistry>,
-}
+// `TestRun` (the per-test record) and `SnapshotCtx` live in prova-expect: the assertion core every
+// Lua host links. A test shares its record through `RunHandle` (`Arc<Mutex<TestRun>>`).
 
 /// Injected into every body/factory. `own_scope` is the scope its `defer`/`tempdir` target and the
 /// floor for the scope-mismatch check; `test_scope` is the active test/step scope instance;
@@ -47,7 +20,7 @@ pub(super) struct SnapshotCtx {
 /// its future without holding the userdata borrow across an `await`.
 #[derive(Clone)]
 pub(super) struct Ctx {
-    pub(super) run: Rc<RefCell<TestRun>>,
+    pub(super) run: RunHandle,
     pub(super) state: Rc<RunState>,
     pub(super) test_scope: Rc<RefCell<ScopeState>>,
     /// This test's file scope instance (`Scope.File`) — its file's, so it is shared across the file's
@@ -471,7 +444,7 @@ impl UserData for Ctx {
         );
 
         methods.add_method("skip", |_, this, reason: String| -> mlua::Result<()> {
-            this.run.borrow_mut().skip = Some(reason);
+            lock(&this.run).skip = Some(reason);
             Err(mlua::Error::RuntimeError(SKIP_SENTINEL.into()))
         });
 
@@ -479,12 +452,12 @@ impl UserData for Ctx {
         // first, then fail once with all of them. Reports every missing file, not just the first.
         methods.add_method("expect_all", |_, this, body: Function| {
             let prev = {
-                let mut r = this.run.borrow_mut();
+                let mut r = lock(&this.run);
                 std::mem::replace(&mut r.soft, true)
             };
             let outcome = body.call::<()>(());
             let failures = {
-                let mut r = this.run.borrow_mut();
+                let mut r = lock(&this.run);
                 r.soft = prev;
                 std::mem::take(&mut r.soft_failures)
             };
@@ -497,7 +470,7 @@ impl UserData for Ctx {
                 failures.len(),
                 failures.join("\n    - ")
             );
-            this.run.borrow_mut().failure = Some(combined.clone());
+            lock(&this.run).failure = Some(combined.clone());
             Err(mlua::Error::RuntimeError(combined))
         });
     }

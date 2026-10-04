@@ -1,0 +1,11 @@
+[package]
+name = "prova-expect"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "prova's assertion core: the t:expect matchers and the per-test record they write. Send-safe, so every Lua host links one implementation."
+
+[dependencies]
+mlua = { workspace = true, features = ["async"] }
+# `:eventually` sleeps between polls.
+tokio = { version = "1", features = ["time"] }

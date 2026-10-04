@@ -1,23 +1,23 @@
 //! Matchers and value helpers: the `t:expect` chain, `:eventually`, snapshots, and
 //! the structural comparison/display primitives they share.
 
-use super::*;
+use crate::*;
 
 // ---------------------------------------------------------------------------------------------
 // Matchers
 // ---------------------------------------------------------------------------------------------
 
 /// One `:eventually` poll observation, deposited by a probe-mode `Matcher`: `(passed, message)`.
-pub(super) type ProbeState = Rc<RefCell<Option<(bool, String)>>>;
+pub type ProbeState = Arc<Mutex<Option<(bool, String)>>>;
 
-pub(super) struct Matcher {
-    pub(super) subject: Value,
-    pub(super) label: Option<String>,
-    pub(super) negated: bool,
-    pub(super) run: Rc<RefCell<TestRun>>,
+pub struct Matcher {
+    pub subject: Value,
+    pub label: Option<String>,
+    pub negated: bool,
+    pub run: RunHandle,
     /// `:eventually` probe mode: when set, `record` deposits `(passed, message)` here instead of
     /// counting an assertion or raising — one poll iteration, observed by the retry loop.
-    pub(super) probe: Option<ProbeState>,
+    pub probe: Option<ProbeState>,
 }
 
 impl Matcher {
@@ -35,10 +35,10 @@ impl Matcher {
                 let neg = if self.negated { "not: " } else { "" };
                 format!("{prefix}{neg}{}", detail())
             };
-            *probe.borrow_mut() = Some((passed, msg));
+            *lock(probe) = Some((passed, msg));
             return Ok(());
         }
-        let mut r = self.run.borrow_mut();
+        let mut r = lock(&self.run);
         r.assertions += 1;
         if passed {
             return Ok(());
@@ -67,13 +67,13 @@ impl Matcher {
 /// probe-mode `Matcher`) until it passes or the deadline lapses. Sugar over the same
 /// poll-until-truthy idea as `prova.retry`, which stays the public primitive.
 #[derive(Clone)]
-pub(super) struct Eventually {
-    pub(super) func: mlua::Function,
-    pub(super) label: Option<String>,
-    pub(super) negated: bool,
-    pub(super) run: Rc<RefCell<TestRun>>,
-    pub(super) timeout: Duration,
-    pub(super) every: Duration,
+pub struct Eventually {
+    pub func: mlua::Function,
+    pub label: Option<String>,
+    pub negated: bool,
+    pub run: RunHandle,
+    pub timeout: Duration,
+    pub every: Duration,
 }
 
 impl UserData for Eventually {
@@ -96,7 +96,7 @@ impl UserData for Eventually {
                         // Re-evaluate the subject; a raise means "not yet", exactly like prova.retry.
                         match ev.func.call_async::<Value>(()).await {
                             Ok(value) => {
-                                let state = Rc::new(RefCell::new(None));
+                                let state = Arc::new(Mutex::new(None));
                                 let probe = lua.create_userdata(Matcher {
                                     subject: value,
                                     label: ev.label.clone(),
@@ -113,7 +113,7 @@ impl UserData for Eventually {
                                     call_args.push_back(v);
                                 }
                                 dispatch.call_async::<()>(call_args).await?;
-                                let observed = state.borrow_mut().take();
+                                let observed = lock(&state).take();
                                 match observed {
                                     Some((true, _)) => {
                                         // Honored: one real assertion for the whole poll.
@@ -171,7 +171,7 @@ impl UserData for Eventually {
 ///
 /// The default-by-kind is the anti-rot guard: a broad directory snapshot defaults to the cheap shape,
 /// and you *opt into* `content`.
-pub(super) fn serialize_snapshot_subject(subject: &Value, level: Option<&str>) -> Result<String, String> {
+pub fn serialize_snapshot_subject(subject: &Value, level: Option<&str>) -> Result<String, String> {
     match subject {
         Value::String(s) => Ok(s.to_string_lossy().to_string()),
         Value::Table(t) => {
@@ -201,7 +201,7 @@ pub(super) fn serialize_snapshot_subject(subject: &Value, level: Option<&str>) -
 }
 
 /// Serialize a filesystem path at a snapshot level (see [`serialize_snapshot_subject`]).
-pub(super) fn serialize_path(path: &Path, level: Option<&str>) -> Result<String, String> {
+pub fn serialize_path(path: &Path, level: Option<&str>) -> Result<String, String> {
     let meta = std::fs::metadata(path)
         .map_err(|e| format!("matches_snapshot: cannot stat {}: {e}", path.display()))?;
 
@@ -238,7 +238,7 @@ pub(super) fn serialize_path(path: &Path, level: Option<&str>) -> Result<String,
 }
 
 /// Every file under `root`, as `/`-separated relative paths, sorted — a deterministic layout listing.
-pub(super) fn walk_files_relative(root: &Path) -> Result<Vec<String>, String> {
+pub fn walk_files_relative(root: &Path) -> Result<Vec<String>, String> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -260,7 +260,7 @@ pub(super) fn walk_files_relative(root: &Path) -> Result<Vec<String>, String> {
 
 /// A filesystem-safe slug of a node path (or a user-given snapshot name): alphanumerics kept,
 /// everything else collapsed to single `-`, lowercased. `"orders › creates a row"` → `"orders-creates-a-row"`.
-pub(super) fn slugify(s: &str) -> String {
+pub fn slugify(s: &str) -> String {
     let mut out = String::new();
     let mut pending_dash = false;
     for c in s.chars() {
@@ -284,13 +284,13 @@ pub(super) fn slugify(s: &str) -> String {
 /// The stored `.snap` document: a small header (for review context) then a `---` line, then the raw
 /// body. The lone `---` delimiter is robust — a body starting with `#!/bin/sh` or containing later
 /// `---` lines round-trips, since only the *first* `---` splits header from body.
-pub(super) fn format_snapshot(source: &str, body: &str) -> String {
+pub fn format_snapshot(source: &str, body: &str) -> String {
     format!("prova-snapshot v1\nsource: {source}\n---\n{body}")
 }
 
 /// Extract the body from a stored `.snap` document (everything after the first lone `---` line). A
 /// document with no delimiter (hand-written / legacy) is treated as all-body.
-pub(super) fn snapshot_body(doc: &str) -> &str {
+pub fn snapshot_body(doc: &str) -> &str {
     match doc.split_once("\n---\n") {
         Some((_header, body)) => body,
         None => doc,
@@ -298,7 +298,7 @@ pub(super) fn snapshot_body(doc: &str) -> &str {
 }
 
 /// Write a snapshot document, creating the `snapshots/` dir if needed. Returns a message on failure.
-pub(super) fn write_snapshot(path: &Path, doc: &str) -> Result<(), String> {
+pub fn write_snapshot(path: &Path, doc: &str) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)
             .map_err(|e| format!("cannot create snapshot dir {}: {e}", dir.display()))?;
@@ -308,7 +308,7 @@ pub(super) fn write_snapshot(path: &Path, doc: &str) -> Result<(), String> {
 
 /// A minimal LCS-based line diff (`  ` context, `- ` expected-only, `+ ` actual-only), for the
 /// snapshot mismatch message. O(n·m) — fine for snapshot-sized inputs.
-pub(super) fn line_diff(expected: &str, actual: &str) -> String {
+pub fn line_diff(expected: &str, actual: &str) -> String {
     let a: Vec<&str> = expected.lines().collect();
     let b: Vec<&str> = actual.lines().collect();
     let (n, m) = (a.len(), b.len());
@@ -453,7 +453,7 @@ fn add_snapshot_method<M: UserDataMethods<Matcher>>(methods: &mut M) {
         // Resolve the `.snap`/`.snap.new` paths + update flag + a header source label from the
         // per-test snapshot context (advancing the auto-name counter for an unnamed snapshot).
         let (snap, snap_new, update, source, registry) = {
-            let mut r = this.run.borrow_mut();
+            let mut r = lock(&this.run);
             let ctx = r.snapshot.as_mut().ok_or_else(|| {
                 mlua::Error::RuntimeError(
                     "matches_snapshot needs a test-file context (no source path recorded for this run)"
@@ -810,7 +810,7 @@ impl UserData for Matcher {
 
 /// A `Value` interpreted as a filesystem path: a string, or a handle table with a `path` field
 /// (as returned by `archetect.render(...)` — `t:expect(out:file("Cargo.toml")):exists()`).
-pub(super) fn subject_path(v: &Value) -> Option<PathBuf> {
+pub fn subject_path(v: &Value) -> Option<PathBuf> {
     match v {
         Value::String(s) => s.to_str().ok().map(|bs| PathBuf::from(&*bs)),
         Value::Table(t) => t
@@ -826,7 +826,7 @@ pub(super) fn subject_path(v: &Value) -> Option<PathBuf> {
 // Value helpers
 // ---------------------------------------------------------------------------------------------
 
-pub(super) fn truthy(v: &Value) -> bool {
+pub fn truthy(v: &Value) -> bool {
     !matches!(v, Value::Nil | Value::Boolean(false))
 }
 
@@ -843,7 +843,7 @@ pub(super) fn truthy(v: &Value) -> bool {
 /// rather than the subject.
 const MAX_EQUALS_DEPTH: usize = 64;
 
-pub(super) fn values_equal(a: &Value, b: &Value) -> bool {
+pub fn values_equal(a: &Value, b: &Value) -> bool {
     values_equal_at(a, b, 0)
 }
 
@@ -880,7 +880,7 @@ fn values_equal_at(a: &Value, b: &Value, depth: usize) -> bool {
 /// fails on the missing index). Scalar leaves compare with `values_equal` (int↔float coercion).
 /// Returns the FIRST mismatch as a `path: expected X, got Y` line — the table-aware diff that
 /// pinpoints `status.readyReplicas: expected 3, got 1` instead of `<table> != <table>`.
-pub(crate) fn subset_mismatch(shape: &Table, subject: &Table, path: &mut Vec<String>) -> Option<String> {
+pub fn subset_mismatch(shape: &Table, subject: &Table, path: &mut Vec<String>) -> Option<String> {
     for pair in shape.clone().pairs::<Value, Value>() {
         let Ok((key, expected)) = pair else {
             return Some(format!("{}: unreadable shape entry", path_str(path)));
@@ -911,7 +911,7 @@ pub(crate) fn subset_mismatch(shape: &Table, subject: &Table, path: &mut Vec<Str
 }
 
 /// One path segment for the subset diff: array indices render as `[i]`, string keys as-is.
-pub(super) fn key_segment(key: &Value) -> String {
+pub fn key_segment(key: &Value) -> String {
     match key {
         Value::Integer(i) => format!("[{i}]"),
         Value::String(s) => s.to_string_lossy().to_string(),
@@ -920,7 +920,7 @@ pub(super) fn key_segment(key: &Value) -> String {
 }
 
 /// Join diff path segments: dots between named keys, indices appended (`status.conditions[1].type`).
-pub(super) fn path_str(path: &[String]) -> String {
+pub fn path_str(path: &[String]) -> String {
     if path.is_empty() {
         return "(root)".to_string();
     }
@@ -941,7 +941,7 @@ pub(super) fn path_str(path: &[String]) -> String {
 /// `depth` is the cycle guard's ply counter — see `MAX_EQUALS_DEPTH`. Callers outside the
 /// recursion pass 0; there is no wrapper hiding it, because a comparison that cannot say how deep
 /// it already is cannot be bounded.
-pub(super) fn tables_equal_at(x: &Table, y: &Table, depth: usize) -> bool {
+pub fn tables_equal_at(x: &Table, y: &Table, depth: usize) -> bool {
     let mut x_keys = 0;
     for pair in x.clone().pairs::<Value, Value>() {
         let Ok((key, xv)) = pair else { return false };
@@ -956,7 +956,7 @@ pub(super) fn tables_equal_at(x: &Table, y: &Table, depth: usize) -> bool {
     x_keys == y_keys
 }
 
-pub(super) fn as_number(v: &Value) -> Option<f64> {
+pub fn as_number(v: &Value) -> Option<f64> {
     match v {
         Value::Integer(i) => Some(*i as f64),
         Value::Number(n) => Some(*n),
@@ -965,7 +965,7 @@ pub(super) fn as_number(v: &Value) -> Option<f64> {
 }
 
 /// Length of a string (bytes, matching Lua `#`) or a table (sequence length).
-pub(super) fn value_length(v: &Value) -> Option<i64> {
+pub fn value_length(v: &Value) -> Option<i64> {
     match v {
         Value::String(s) => Some(s.as_bytes().len() as i64),
         Value::Table(t) => Some(t.raw_len() as i64),
@@ -975,7 +975,7 @@ pub(super) fn value_length(v: &Value) -> Option<i64> {
 
 /// `is_empty` on a path subject: an empty directory, or a zero-byte file. A non-path (or missing
 /// path) is not empty.
-pub(super) fn path_is_empty(v: &Value) -> bool {
+pub fn path_is_empty(v: &Value) -> bool {
     let Some(path) = subject_path(v) else {
         return false;
     };
@@ -992,7 +992,7 @@ pub(super) fn path_is_empty(v: &Value) -> bool {
 
 /// Byte index of the first unrendered jinja marker (`{{`, `{%`, `{#`) in `s` that is *not* part of a
 /// GitHub Actions `${{ … }}` expression (i.e. not immediately preceded by `$`). `None` if clean.
-pub(super) fn first_marker(s: &str) -> Option<usize> {
+pub fn first_marker(s: &str) -> Option<usize> {
     let b = s.as_bytes();
     let mut i = 0;
     while i + 1 < b.len() {
@@ -1010,7 +1010,7 @@ pub(super) fn first_marker(s: &str) -> Option<usize> {
 /// Every leftover-template-marker offender under `root` — an unrendered `{{`/`{%`/`{#` in a file's
 /// contents (reported as `relpath:line: snippet`) or in a path segment (`relpath (unrendered path
 /// segment)`). Binary/unreadable files are skipped. A missing `root` is itself an offender.
-pub(super) fn unrendered_markers(root: &Path) -> Vec<String> {
+pub fn unrendered_markers(root: &Path) -> Vec<String> {
     let mut out = Vec::new();
     if !root.exists() {
         return vec![format!("{}: path does not exist", root.display())];
@@ -1063,7 +1063,7 @@ pub(super) fn unrendered_markers(root: &Path) -> Vec<String> {
     out
 }
 
-pub(super) fn contains(subject: &Value, needle: &Value) -> bool {
+pub fn contains(subject: &Value, needle: &Value) -> bool {
     match subject {
         Value::String(s) => match needle {
             Value::String(n) => s.to_string_lossy().contains(&*n.to_string_lossy()),
@@ -1087,7 +1087,7 @@ pub(super) fn contains(subject: &Value, needle: &Value) -> bool {
 /// and tail (the plain polarity: the subject's edges, since no middle is more relevant than any
 /// other). Field-reported: a `contains` against a captured CLI transcript dumped ~3KB into every
 /// diagnostic line, burying the needle it was about.
-pub(super) fn display_windowed(subject: &str, needle: &str) -> String {
+pub fn display_windowed(subject: &str, needle: &str) -> String {
     const LIMIT: usize = 600; // below this, verbatim
     const WINDOW: usize = 240; // bytes shown per side of a cut
     if subject.len() <= LIMIT {
@@ -1129,7 +1129,7 @@ pub(super) fn display_windowed(subject: &str, needle: &str) -> String {
     }
 }
 
-pub(super) fn display(v: &Value) -> String {
+pub fn display(v: &Value) -> String {
     match v {
         Value::Nil => "nil".into(),
         Value::Boolean(b) => b.to_string(),
@@ -1144,7 +1144,7 @@ pub(super) fn display(v: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::*;
 
     fn lua_table(lua: &Lua, pairs: &[(&str, Value)]) -> Table {
         let t = lua.create_table().unwrap();
