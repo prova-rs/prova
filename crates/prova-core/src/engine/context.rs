@@ -3,7 +3,6 @@
 
 use super::*;
 
-const SKIP_SENTINEL: &str = "__prova_skip__";
 
 // ---------------------------------------------------------------------------------------------
 // The context (`t` / `ctx`) — one type for test bodies and fixture factories
@@ -430,48 +429,7 @@ impl UserData for Ctx {
             Ok(())
         });
 
-        methods.add_method(
-            "expect",
-            |lua, this, (subject, label): (Value, Option<String>)| {
-                lua.create_userdata(Matcher {
-                    subject,
-                    label,
-                    negated: false,
-                    run: this.run.clone(),
-                    probe: None,
-                })
-            },
-        );
-
-        methods.add_method("skip", |_, this, reason: String| -> mlua::Result<()> {
-            lock(&this.run).skip = Some(reason);
-            Err(mlua::Error::RuntimeError(SKIP_SENTINEL.into()))
-        });
-
-        // Soft assertions: run `body` collecting every failed assertion instead of aborting on the
-        // first, then fail once with all of them. Reports every missing file, not just the first.
-        methods.add_method("expect_all", |_, this, body: Function| {
-            let prev = {
-                let mut r = lock(&this.run);
-                std::mem::replace(&mut r.soft, true)
-            };
-            let outcome = body.call::<()>(());
-            let failures = {
-                let mut r = lock(&this.run);
-                r.soft = prev;
-                std::mem::take(&mut r.soft_failures)
-            };
-            outcome?; // propagate a real error (or a `skip`) raised inside the block
-            if failures.is_empty() {
-                return Ok(());
-            }
-            let combined = format!(
-                "{} soft assertion(s) failed:\n    - {}",
-                failures.len(),
-                failures.join("\n    - ")
-            );
-            lock(&this.run).failure = Some(combined.clone());
-            Err(mlua::Error::RuntimeError(combined))
-        });
+        // t:expect / t:skip / t:expect_all: the assertion surface every host shares (prova-expect).
+        prova_expect::add_expect_methods(methods, |ctx: &Ctx| &ctx.run);
     }
 }

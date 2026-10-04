@@ -67,6 +67,7 @@ impl Matcher {
 /// probe-mode `Matcher`) until it passes or the deadline lapses. Sugar over the same
 /// poll-until-truthy idea as `prova.retry`, which stays the public primitive.
 #[derive(Clone)]
+#[cfg(feature = "eventually")]
 pub struct Eventually {
     pub func: mlua::Function,
     pub label: Option<String>,
@@ -76,6 +77,7 @@ pub struct Eventually {
     pub every: Duration,
 }
 
+#[cfg(feature = "eventually")]
 impl UserData for Eventually {
     fn add_methods<M: mlua::UserDataMethods<Self>>(methods: &mut M) {
         methods.add_meta_method(mlua::MetaMethod::Index, |lua, this, name: String| {
@@ -363,6 +365,7 @@ fn add_mode_methods<M: UserDataMethods<Matcher>>(methods: &mut M) {
     // a FUNCTION subject: the returned handle re-evaluates it (and the terminal matcher that
     // follows) until pass or timeout. `opts = { timeout, every }`, defaults matching
     // `prova.retry` — which remains the public primitive this sugars over.
+    #[cfg(feature = "eventually")]
     methods.add_method("eventually", |lua, this, opts: Option<Table>| {
         let Value::Function(func) = &this.subject else {
             return Err(mlua::Error::RuntimeError(
@@ -393,6 +396,16 @@ fn add_mode_methods<M: UserDataMethods<Matcher>>(methods: &mut M) {
             timeout,
             every,
         })
+    });
+    // Without `eventually` (a host that never polls a live system — Substrate's hermetic vault
+    // proof host builds without mlua's `async`), the method still exists and says why it refuses.
+    #[cfg(not(feature = "eventually"))]
+    methods.add_method("eventually", |_, _this, _opts: Option<Table>| -> mlua::Result<()> {
+        Err(mlua::Error::RuntimeError(
+            "eventually is not available in this host: it polls a live system, and this host's proofs \
+             are hermetic (prova-expect built without the `eventually` feature)"
+                .into(),
+        ))
     });
 
 }

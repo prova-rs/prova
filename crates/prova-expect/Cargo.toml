@@ -5,7 +5,17 @@ edition.workspace = true
 license.workspace = true
 description = "prova's assertion core: the t:expect matchers and the per-test record they write. Send-safe, so every Lua host links one implementation."
 
+[features]
+default = ["eventually"]
+# `:eventually` polls a live system: it needs mlua's `async` and tokio's timer. A host whose proofs
+# are hermetic (Substrate's vault proof host) builds without it and keeps its mlua build unchanged.
+eventually = ["mlua/async", "dep:tokio"]
+
 [dependencies]
-mlua = { workspace = true, features = ["async"] }
-# `:eventually` sleeps between polls.
-tokio = { version = "1", features = ["time"] }
+# Only what the assertions use: a host brings its own build choices (vendored, send, serialize…).
+mlua = { version = "0.11", features = ["lua54"] }
+tokio = { version = "1", features = ["time"], optional = true }
+
+[dev-dependencies]
+# A host supplies the Lua build; built alone (its own tests), prova-expect vendors one.
+mlua = { version = "0.11", features = ["lua54", "vendored"] }

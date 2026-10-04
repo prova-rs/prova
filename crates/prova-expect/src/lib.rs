@@ -9,13 +9,68 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(feature = "eventually")]
+use std::time::Instant;
 
 #[allow(unused_imports)]
 use mlua::{Lua, Table, UserData, UserDataMethods, Value};
 
 mod matchers;
 pub use matchers::*;
+
+/// What `t:skip(reason)` raises: a host's runner reads the record's `skip`, not the error text.
+pub const SKIP_SENTINEL: &str = "__prova_skip__";
+
+/// The assertion methods every host's test context (`t`) carries — `t:expect(subject, label?)`,
+/// `t:skip(reason)`, `t:expect_all(fn)` — added to the host's own context type, so prova's engine
+/// and an embedding host give a proof exactly the same `t`. `run_of` reaches the test's record.
+pub fn add_expect_methods<T: UserData + 'static, M: UserDataMethods<T>>(
+    methods: &mut M,
+    run_of: fn(&T) -> &RunHandle,
+) {
+    methods.add_method("expect", move |lua, this, (subject, label): (Value, Option<String>)| {
+        lua.create_userdata(Matcher {
+            subject,
+            label,
+            negated: false,
+            run: run_of(this).clone(),
+            probe: None,
+        })
+    });
+
+    methods.add_method("skip", move |_, this, reason: String| -> mlua::Result<()> {
+        lock(run_of(this)).skip = Some(reason);
+        Err(mlua::Error::RuntimeError(SKIP_SENTINEL.into()))
+    });
+
+    // Soft assertions: run `body` collecting every failed assertion instead of aborting on the
+    // first, then fail once with all of them. The record's lock is never held across the body.
+    methods.add_method("expect_all", move |_, this, body: mlua::Function| {
+        let run = run_of(this);
+        let prev = {
+            let mut r = lock(run);
+            std::mem::replace(&mut r.soft, true)
+        };
+        let outcome = body.call::<()>(());
+        let failures = {
+            let mut r = lock(run);
+            r.soft = prev;
+            std::mem::take(&mut r.soft_failures)
+        };
+        outcome?; // propagate a real error (or a `skip`) raised inside the block
+        if failures.is_empty() {
+            return Ok(());
+        }
+        let combined = format!(
+            "{} soft assertion(s) failed:\n    - {}",
+            failures.len(),
+            failures.join("\n    - ")
+        );
+        lock(run).failure = Some(combined.clone());
+        Err(mlua::Error::RuntimeError(combined))
+    });
+}
 
 /// One test's record: what its assertions wrote.
 #[derive(Default)]
