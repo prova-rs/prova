@@ -179,6 +179,7 @@ pub(super) const UNIT_OPTS: &[&str] = &[
     "depends_on",
     "falsified_by",
     "idle_timeout",
+    "inputs",
     "locks",
     "promises",
     "proves",
@@ -342,6 +343,7 @@ pub(super) fn parse_opts(t: &mlua::Table) -> mlua::Result<UnitOpts> {
         other => other,
     };
     let covers = parse_covers_opt(&t.get::<Value>("covers")?)?;
+    let inputs = parse_inputs_opt(&t.get::<Value>("inputs")?)?;
     let promises = parse_promises_opt(&t.get::<Value>("promises")?)?;
     let proves = parse_proves_opt(&t.get::<Value>("proves")?)?;
     if promises.is_some() && proves.is_some() {
@@ -361,7 +363,41 @@ pub(super) fn parse_opts(t: &mlua::Table) -> mlua::Result<UnitOpts> {
         promises,
         proves,
         covers,
+        inputs,
     })
+}
+
+/// The `inputs` opt (docs/plans/resume.md#phase-2): a LIST of package-root-relative paths or globs —
+/// everything this unit's verdict reads. Refused when misdeclared rather than dropped: an `inputs`
+/// quietly ignored is a unit that silently never reuses, and one half-read is a key that misses an
+/// input — a green carried across bytes that changed.
+pub(super) fn parse_inputs_opt(v: &Value) -> mlua::Result<Vec<String>> {
+    let teach = || {
+        mlua::Error::RuntimeError(
+            "inputs lists the package-relative paths/globs this verdict reads — \
+             `inputs = { \"src/**\", \"Cargo.lock\" }` (a list of non-empty strings)"
+                .into(),
+        )
+    };
+    match v {
+        Value::Nil => Ok(Vec::new()),
+        Value::Table(t) => {
+            let mut out = Vec::new();
+            for v in t.clone().sequence_values::<Value>() {
+                match v? {
+                    Value::String(s) if !s.to_string_lossy().trim().is_empty() => {
+                        out.push(s.to_string_lossy().to_string())
+                    }
+                    _ => return Err(teach()),
+                }
+            }
+            if out.is_empty() || t.pairs::<Value, Value>().count() != out.len() {
+                return Err(teach());
+            }
+            Ok(out)
+        }
+        _ => Err(teach()),
+    }
 }
 
 /// The `covers` opt: one address, or a list of them — `"docs/design.md#claim-id"` or a ticket.

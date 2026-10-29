@@ -51,6 +51,11 @@ classes on one line ("switched off: ut (3) …"). Exact `--node` implies the thr
   the lever for a run whose declared bounds are themselves the problem. Per-test `timeout` stays
   the ordinary spelling; `idle_timeout` is its liveness sibling (`prova learn falsify`).
 
+- `--resume` re-executes only what the previous run of this lane over the IDENTICAL tree did not
+  pass. `--reuse` carries a prior pass of any test declaring `inputs = {…}` whose inputs are
+  byte-identical, across trees. Both record carried leaves as `reused` (with the run that executed
+  them, and which kind), never as `passed`; a failure always runs again.
+
 ## Profiles and guarantees
 
 `prova --profile ci` overlays `[profiles.ci]` on `[run]`. A profile's `must_run = ["docker"]`

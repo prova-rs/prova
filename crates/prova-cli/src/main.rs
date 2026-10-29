@@ -351,6 +351,9 @@ options:
       --resume              run only what the previous run of this LANE over the identical tree
                             did not pass; carry its passes forward as `reused` (refuses, naming
                             why, when the tree, prova or the lane changed)
+      --reuse               carry forward a prior pass of every test declaring `inputs = {…}`
+                            whose inputs, declaring file and prova version are byte-identical,
+                            even across trees — recorded as reused (inputs unchanged)
       --topology NAME       require attaching to the held topology NAME (error when not running) —
                             judge the LIVE environment, never a silently fresh one
       --fresh               ignore held topologies: always provision fresh (the CI behavior)

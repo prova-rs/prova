@@ -43,6 +43,14 @@ inputs someone can name. Not pure — but *nameable*, which is the property that
 The tell that this is the real seam: the principled boundary and the valuable boundary are the same
 boundary. Conducts are 93% of the sweep. **Proof-verdict caching is never needed and never built.**
 
+> **Revisited (2026-10-29) by [resume.md Phase 2](resume.md#phase-2-as-built-2026-10-29).** Release
+> trains made the cost real: a gate result reusable only over the identical tree means every move
+> of `main` re-runs every proof. The argument above still holds for the DEFAULT — a proof's input
+> set is not enumerable by the engine — so Phase 2 does not guess one. Reuse is OPT-IN: a leaf whose
+> author declares `inputs` claims its verdict reads nothing else, only a PASS is ever carried, and
+> the record names it reused-by-inputs with its origin run rather than passed. An undeclared proof
+> is never cached.
+
 ## Who declares a conduct's inputs: the deputy
 
 Settled by precedent. `verifiers.md#selection-pushdown-into-conducts` ratified the split — the

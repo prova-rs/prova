@@ -60,6 +60,8 @@ struct Cli {
     // `--resume` (docs/plans/resume.md): execute only what the previous run of this lane over the
     // identical tree did not pass, and carry the rest forward as `reused`.
     resume: bool,
+    // `--reuse` (docs/plans/resume.md#phase-2): carry a prior pass of a leaf that declares `inputs`.
+    reuse: bool,
     record_to: Option<std::path::PathBuf>,
     // `--allow-empty`: opt out of the empty-selection error, for the matrix leg that legitimately
     // selects nothing. Off by default, because a selection matching nothing is nearly always a typo
@@ -113,6 +115,7 @@ impl Default for Cli {
             selection: prova_core::Selection::default(),
             last_failed: false,
             resume: false,
+            reuse: false,
             record_to: None,
             allow_empty: false,
             update_force: false,
@@ -337,6 +340,7 @@ impl Cli {
             "--heed" => self.heed = crate::manifest::Heed::All,
             "--last-failed" => self.last_failed = true,
             "--resume" => self.resume = true,
+            "--reuse" => self.reuse = true,
             "--falsify" => self.falsify = true,
             "--fresh" => self.fresh = true,
             // The tests lane's state flags, derived from the registry (`--promise(s)` /
@@ -988,19 +992,20 @@ fn store_run_record(
         None => Vec::new(),
     };
 
-    let settled = journaling::settle(journal_plan, home, reporter, summary);
+    let settled = journaling::settle(cli, config, journal_plan, home, reporter, summary);
     record::store(
         home,
         &record::Record {
-            // 3: `run_id`, `tree`, `reused_from` and the `"reused"` executed value
-            // (docs/plans/resume.md). 2: the open-promise value is `"promised"` (was `"spec"` in
-            // schema 1; `Executed`'s `alias = "spec"` still reads an old record).
-            schema: 3,
+            // 4: `reused_inputs` (input-keyed reuse). 3: `run_id`, `tree`, `reused_from` and the
+            // `"reused"` executed value (docs/plans/resume.md). 2: the open-promise value is
+            // `"promised"` (was `"spec"` in schema 1; `alias = "spec"` still reads an old record).
+            schema: 4,
             version: env!("CARGO_PKG_VERSION").to_string(),
             binary: record::binary_fingerprint(),
             run_id: settled.run_id,
             tree: settled.tree,
             reused_from: settled.reused_from,
+            reused_inputs: settled.reused_inputs,
             selection: spell_selection(config),
             duration_ms: summary.duration.as_millis() as u64,
             summary: record::Counts {
@@ -1010,6 +1015,7 @@ fn store_run_record(
                 promised: summary.promised,
                 deselected: summary.deselected,
                 reused: summary.reused,
+                reused_inputs: summary.reused_inputs.len(),
             },
             executed: settled.executed,
             skipped: std::mem::take(&mut reporter.skipped),
@@ -1261,7 +1267,7 @@ fn track_snapshots(
     }
     // A resumed run executes only part of the suite, so every reused test's snapshot would read
     // as orphaned — and `delete` would act on that.
-    if !config.reuse.is_empty() {
+    if !config.reuse.is_empty() || config.input_reuse.as_ref().is_some_and(|r| r.carry) {
         eprintln!("prova: --unreferenced is skipped on a resumed run (it needs every test to execute)");
         return None;
     }
@@ -1409,7 +1415,7 @@ pub(crate) fn run(cli_args: Vec<String>) -> ExitCode {
 
     // The journal and `--resume` (docs/plans/resume.md), planned before snapshot tracking, which
     // has to know whether this run carries anything forward.
-    let journal_plan = match plan_journal(&cli, &home, &mut config, &env.env.resume_roots) {
+    let journal_plan = match plan_journal(&cli, &home, &mut config, &env.env) {
         Ok(plan) => plan,
         Err(code) => return code,
     };

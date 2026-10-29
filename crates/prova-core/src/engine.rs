@@ -301,6 +301,9 @@ pub struct RunConfig {
     /// does execute depends on one, which then runs too — and names them in
     /// [`Summary::reused_paths`] instead of `deselected_paths`: they are evidence, not absence.
     pub reuse: std::collections::BTreeSet<String>,
+    /// Input-keyed reuse (docs/plans/resume.md#phase-2): where passes are filed by input key and
+    /// whether this run may carry them (`--reuse`). `None`: no store, so no keys are computed.
+    pub input_reuse: Option<crate::reuse::InputReuse>,
     /// This run's identity (`prova.run_id`) and, under `--resume`, the run it resumes
     /// (`prova.resume.from`): resume pushdown into conducts (docs/plans/resume.md#phase-1b). A
     /// deputy that stamped its artifact with the run that made it can tell, from these two alone,
@@ -401,6 +404,7 @@ impl Default for RunConfig {
             proofs_only: false,
             falsify: false,
             reuse: std::collections::BTreeSet::new(),
+            input_reuse: None,
             run_id: None,
             resumed_from: None,
             timeout_cap: None,
@@ -516,6 +520,12 @@ impl RunConfig {
     /// Carry these file-qualified passes forward instead of executing them (`--resume`).
     pub fn with_reuse(mut self, reuse: impl IntoIterator<Item = String>) -> Self {
         self.reuse = reuse.into_iter().collect();
+        self
+    }
+
+    /// File passes of input-declaring leaves in `store`, and — `carry` — reuse matching ones (`--reuse`).
+    pub fn with_input_reuse(mut self, input_reuse: Option<crate::reuse::InputReuse>) -> Self {
+        self.input_reuse = input_reuse;
         self
     }
 
@@ -1144,9 +1154,17 @@ fn execute_collected(
         let dropped = qualify_all(dropped, &col.file_paths);
         // Last, over exactly what would otherwise execute: a reused leaf is one this run was going
         // to run, so it never counts among what the selection left out.
-        let (plan, _reused_leaves, reused) =
-            apply_reuse_filter(plan, &config.reuse, &col.file_paths);
+        // Input-keyed reuse joins the same filter, so dependency closure and flow atomicity hold
+        // for it exactly as for `--resume`; which kind carried a leaf is kept apart for the record.
+        let (input_keys, offered_by_inputs) = plan_input_reuse(&plan, &col.file_paths, config);
+        let mut offered = config.reuse.clone();
+        offered.extend(offered_by_inputs.keys().cloned());
+        let (plan, _reused_leaves, reused) = apply_reuse_filter(plan, &offered, &col.file_paths);
         let reused = qualify_all(reused, &col.file_paths);
+        let reused_inputs: BTreeMap<String, String> = reused
+            .iter()
+            .filter_map(|p| offered_by_inputs.get(p).map(|from| (p.clone(), from.clone())))
+            .collect();
         let state = Rc::new(RunState {
             defs: col.fixtures.clone(),
             suite: Rc::new(RefCell::new(ScopeState::default())),
@@ -1161,8 +1179,9 @@ fn execute_collected(
             project_dir: config.project_dir.clone(),
             interned: config.interned.clone(),
         });
-        (plan, deselected, dropped, reused, switched_off, state)
+        (plan, deselected, dropped, (reused, reused_inputs, input_keys), switched_off, state)
     };
+    let (reused, reused_inputs, input_keys) = reused;
 
     // Held-topology attach (docs/design/topologies.md#attach-binds-by-name): rehydrate each
     // offered holder's recorded value and seed it into the scope caches exactly the way the warm
@@ -1199,6 +1218,8 @@ fn execute_collected(
         deselected_paths: dropped,
         reused: reused.len(),
         reused_paths: reused,
+        reused_inputs,
+        input_keys,
         switched_off,
         reminders_declared: col.borrow().reminders.len(),
         ..Summary::default()

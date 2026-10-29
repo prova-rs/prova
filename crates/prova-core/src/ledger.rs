@@ -21,9 +21,10 @@ pub enum Executed {
     #[serde(alias = "spec")]
     Promised,
     /// Did not run HERE: `--resume` carried a pass forward from an earlier run of the same lane over
-    /// the identical tree (docs/plans/resume.md). Evidence, because the same bytes produced it; never
-    /// spelled `passed`, because it did not execute in this run. `Record::reused_from` names the run
-    /// that did.
+    /// the identical tree, or `--reuse` carried one whose declared inputs are byte-identical
+    /// (docs/plans/resume.md, phases 1a and 2). Evidence, because the bytes it read produced it;
+    /// never spelled `passed`, because it did not execute in this run. `Record::reused_from` names
+    /// the run that did, and `Record::reused_inputs` says which kind of warrant carried it.
     Reused,
 }
 
@@ -49,8 +50,11 @@ pub struct Counts {
     pub skipped: usize,
     pub promised: usize,
     pub deselected: usize,
-    /// Leaves `--resume` carried forward instead of executing (docs/plans/resume.md).
+    /// Leaves `--resume` or `--reuse` carried forward instead of executing (docs/plans/resume.md).
     pub reused: usize,
+    /// Of `reused`, how many input-keyed reuse carried (`--reuse`, docs/plans/resume.md#phase-2);
+    /// the rest were carried over the identical tree.
+    pub reused_inputs: usize,
 }
 
 /// One reminder, as the run evaluated it — the attention account's row in the record.
@@ -156,6 +160,12 @@ pub struct Record {
     /// For every `Executed::Reused` leaf: the run that actually executed it.
     #[serde(default)]
     pub reused_from: BTreeMap<String, String>,
+    /// The `Executed::Reused` leaves carried by INPUT-keyed reuse (`--reuse`,
+    /// docs/plans/resume.md#phase-2), each with the key it matched; every other reused leaf was
+    /// carried over the identical tree. The two vouch for different things — only the leaf's
+    /// declared inputs, versus every tracked byte — so no reader may take one for the other.
+    #[serde(default)]
+    pub reused_inputs: BTreeMap<String, String>,
     /// How the run was narrowed, spelled as it was asked for. Empty means "everything".
     pub selection: Vec<String>,
     pub duration_ms: u64,
@@ -265,8 +275,10 @@ pub fn attest(record: &Record, bindings: &[String]) -> Attested {
             };
         }
         match record.executed.get(binding) {
-            // A reused pass is a pass of these same bytes, carried forward from the run that executed
-            // it (`--resume` refuses any tree, binary or selection mismatch before reusing anything).
+            // A reused pass is a pass over these same bytes, carried forward from the run that
+            // executed it: `--resume` refuses any tree, binary or selection mismatch before reusing
+            // anything, and `--reuse` carries only a leaf whose DECLARED inputs, declaring file and
+            // prova version are byte-identical — the author's declaration is the warrant there.
             Some(Executed::Passed) | Some(Executed::Reused) => {}
             Some(&outcome) => {
                 return Attested::Red {
@@ -376,6 +388,7 @@ mod tests {
             run_id: String::new(),
             tree: None,
             reused_from: BTreeMap::new(),
+            reused_inputs: BTreeMap::new(),
             selection: Vec::new(),
             duration_ms: 0,
             summary: Counts::default(),

@@ -15,6 +15,7 @@ mod modules;
 mod opts;
 mod packages;
 pub mod progress;
+pub mod reuse;
 pub mod suggest;
 mod suite;
 pub mod lanes;

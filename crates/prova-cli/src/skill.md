@@ -147,6 +147,8 @@ end)
   to the token: `writes` = exclusive, `reads` = concurrent; held across every prova instance at
   this home, so house rules like "one cargo at a time" survive `-j` and concurrent runs —
   `prova learn locks`), `serial = true` (run-scoped), `falsified_by = fn` (the mutation that must break it — `prova tests falsify`),
+  `inputs = { "src/**" }` (everything the verdict reads; opts it into `--reuse`, which carries a
+  prior pass while those bytes are unchanged),
   `promises = "reason"` (a
   proof authored ahead of its implementation — `prova learn promises`). `--jobs` is throughput
   only — it can never change what a run means.

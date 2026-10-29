@@ -39,6 +39,12 @@
 //! its canonical home path. Without that keying, one shared cache volume across a monorepo (or across
 //! this repo's own jj workspaces, which share a store but not a working copy) would have each
 //! package's record silently clobber the last — a worse failure than the churn the default fixes.
+//!
+//! One deliberate exception: the input-keyed reuse store (`--reuse`, docs/plans/resume.md#phase-2)
+//! lives at the override ROOT (`$PROVA_VAR_DIR/reuse/`), shared across checkouts. Its entries are
+//! content-addressed — each key already names the leaf, its declaring file and its inputs' bytes —
+//! so sharing cannot clobber, and sharing is its purpose: a fresh checkout carrying a pass earned in
+//! another.
 
 use std::path::{Path, PathBuf};
 

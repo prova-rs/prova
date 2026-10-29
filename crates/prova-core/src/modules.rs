@@ -716,6 +716,76 @@ pub(crate) fn digest_paths(patterns: &[String], root: Option<&Path>) -> String {
     hex::encode(hasher.finalize())
 }
 
+/// The LOCATION-INDEPENDENT sibling of [`digest_paths`], for identity that outlives one checkout:
+/// input-keyed reuse (docs/plans/resume.md#phase-2), where two checkouts of the same bytes must
+/// share a key. Each matched file contributes its path RELATIVE to `root` (`/`-separated) — never
+/// the absolute one — plus its length and bytes; a directory stands for everything under it; a
+/// pattern matching nothing contributes its own text behind an absence marker, so a file appearing
+/// or vanishing changes the answer. `digest_paths` stays absolute on purpose (conduct identity is
+/// one run on one machine — see its pinned test); this is the one to reach for across trees.
+pub(crate) fn digest_paths_relative(patterns: &[String], root: &Path) -> String {
+    use sha2::Digest as _;
+    let rel = |p: &Path| -> String {
+        match p.strip_prefix(root) {
+            Ok(r) => path_norm_seps(&r.to_string_lossy()),
+            // Outside the root (an absolute pattern): location-dependent by the author's own choice.
+            Err(_) => path_norm_seps(&p.to_string_lossy()),
+        }
+    };
+    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut absent: Vec<String> = Vec::new();
+    for pattern in patterns {
+        let resolved = if path_is_absolute(pattern) {
+            std::path::PathBuf::from(pattern)
+        } else {
+            root.join(pattern)
+        };
+        let mut matched = false;
+        let mut take = |p: &Path, files: &mut Vec<(String, Vec<u8>)>| {
+            if p.is_file() {
+                matched = true;
+                files.push((rel(p), std::fs::read(p).unwrap_or_default()));
+            }
+        };
+        if let Ok(paths) = glob::glob(&resolved.to_string_lossy()) {
+            for p in paths.filter_map(Result::ok) {
+                if p.is_dir() {
+                    let under = p.join("**").join("*");
+                    if let Ok(inner) = glob::glob(&under.to_string_lossy()) {
+                        for q in inner.filter_map(Result::ok) {
+                            take(&q, &mut files);
+                        }
+                    }
+                } else {
+                    take(&p, &mut files);
+                }
+            }
+        }
+        if !matched {
+            absent.push(path_norm_seps(pattern));
+        }
+    }
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    files.dedup_by(|a, b| a.0 == b.0);
+    absent.sort();
+    absent.dedup();
+    let mut hasher = sha2::Sha256::new();
+    let mut part = |bytes: &[u8]| {
+        hasher.update((bytes.len() as u64).to_le_bytes());
+        hasher.update(bytes);
+    };
+    for (path, bytes) in &files {
+        part(b"file");
+        part(path.as_bytes());
+        part(bytes);
+    }
+    for pattern in &absent {
+        part(b"absent");
+        part(pattern.as_bytes());
+    }
+    hex::encode(hasher.finalize())
+}
+
 /// A digest over already-computed parts (a command, a nested digest) — the outer half of a conduct
 /// identity. Length-prefixed so `("ab", "c")` and `("a", "bc")` cannot collide.
 pub(crate) fn digest_of_parts(parts: &[&str]) -> String {
@@ -1070,6 +1140,47 @@ mod identity_tests {
         let d1 = digest(&before, &["only.txt"]);
         std::fs::write(before.join("only.txt"), "two").unwrap();
         assert_ne!(d1, digest(&before, &["only.txt"]));
+    }
+
+    fn rel_digest(dir: &std::path::Path, patterns: &[&str]) -> String {
+        digest_paths_relative(&patterns.iter().map(|s| s.to_string()).collect::<Vec<_>>(), dir)
+    }
+
+    /// Input-keyed reuse exists so two checkouts of the same bytes share one verdict — so the
+    /// RELATIVE digest must answer identically for the same tree at two locations, the exact
+    /// property `digest_paths` deliberately lacks (pinned above).
+    #[test]
+    fn the_relative_digest_is_the_same_for_the_same_bytes_at_two_locations() {
+        let here = tree(&[("src/a.txt", "same bytes"), ("src/b.txt", "more")]);
+        let there = tree(&[("src/a.txt", "same bytes"), ("src/b.txt", "more")]);
+        assert_eq!(rel_digest(&here, &["src/*.txt"]), rel_digest(&there, &["src/*.txt"]));
+        assert_eq!(
+            rel_digest(&here, &["src"]),
+            rel_digest(&there, &["src/**/*"]),
+            "a directory stands for everything under it"
+        );
+    }
+
+    /// …and every other property a key needs still holds: an edit, a move, an absence, a framing.
+    #[test]
+    fn the_relative_digest_changes_with_bytes_paths_and_absence() {
+        let dir = tree(&[("src/a.txt", "one"), ("lib/a.txt", "one")]);
+        let before = rel_digest(&dir, &["src/a.txt"]);
+        assert_ne!(before, rel_digest(&dir, &["lib/a.txt"]), "same bytes elsewhere is another question");
+        std::fs::write(dir.join("src/a.txt"), "two").unwrap();
+        assert_ne!(before, rel_digest(&dir, &["src/a.txt"]), "an edit changes the key");
+
+        let missing = rel_digest(&dir, &["src/a.txt", "src/gen.txt"]);
+        assert_ne!(missing, rel_digest(&dir, &["src/a.txt"]), "a missing path is part of the answer");
+        std::fs::write(dir.join("src/gen.txt"), "").unwrap();
+        assert_ne!(
+            missing,
+            rel_digest(&dir, &["src/a.txt", "src/gen.txt"]),
+            "and its appearing, even empty, changes it again"
+        );
+        let split = tree(&[("x/1", "a"), ("x/2", "b")]);
+        let joined = tree(&[("x/1", "ab"), ("x/2", "")]);
+        assert_ne!(rel_digest(&split, &["x/*"]), rel_digest(&joined, &["x/*"]), "framed");
     }
 
     /// One file matched by two patterns is one contribution: a caller listing `src/*.rs` and

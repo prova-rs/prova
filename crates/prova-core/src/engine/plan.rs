@@ -98,6 +98,9 @@ pub(super) struct Leaf {
     /// — test-level only, never inherited. Drives the outcome inversion: red body →
     /// `Outcome::Promised`, green body → a failure demanding the flag's removal.
     pub(super) promises: Option<String>,
+    /// Effective `inputs` (own + every enclosing group's): what the verdict reads, and so the
+    /// opt-in to input-keyed reuse (docs/plans/resume.md#phase-2). Empty: never reused by inputs.
+    pub(super) inputs: Vec<String>,
 }
 
 /// Group-level options that flow down to every contained leaf: `depends_on`, `locks`, `serial`,
@@ -112,6 +115,8 @@ pub(super) struct Inherited {
     /// Opt-in classes from enclosing scopes (`switch = "…"` on a group or `suite.config`). A leaf
     /// runs only when EVERY switch on its path is thrown — nested classes intersect.
     pub(super) switches: Vec<String>,
+    /// `inputs` declared on enclosing groups: a group's declared reads are read by every leaf in it.
+    pub(super) inputs: Vec<String>,
 }
 
 /// The executable plan: a flat list of leaves plus the leaf-level dependency DAG.
@@ -151,6 +156,7 @@ pub(super) fn collect_leaves(
                 .extend(node.opts.requires.iter().cloned());
             child_inherited.tags.extend(node.opts.tags.iter().cloned());
             child_inherited.switches.extend(node.opts.switch.iter().cloned());
+            child_inherited.inputs.extend(node.opts.inputs.iter().cloned());
             let mut ids = Vec::new();
             for &child in &node.children {
                 ids.extend(collect_leaves(
@@ -203,6 +209,8 @@ pub(super) fn push_leaf(leaves: &mut Vec<Leaf>, unit: PlanUnit, node: &Node, inh
     tags.extend(node.opts.tags.iter().cloned());
     let mut switches = inherited.switches.clone();
     switches.extend(node.opts.switch.iter().cloned());
+    let mut inputs = inherited.inputs.clone();
+    inputs.extend(node.opts.inputs.iter().cloned());
     let id = leaves.len();
     leaves.push(Leaf {
         unit,
@@ -218,6 +226,7 @@ pub(super) fn push_leaf(leaves: &mut Vec<Leaf>, unit: PlanUnit, node: &Node, inh
         falsifiable: node.falsifier.is_some(),
         covers: node.opts.covers.clone(),
         promises: node.opts.promises.clone(),
+        inputs,
     });
     id
 }
@@ -338,6 +347,51 @@ pub(super) fn apply_reuse_filter(
         })
         .collect();
     narrow_plan(plan, keep)
+}
+
+/// Input-keyed reuse, planned (docs/plans/resume.md#phase-2): the reuse key of every item of every
+/// leaf that declares `inputs` (file-qualified path → key), and — under `--reuse` — the ones with a
+/// filed pass (path → the run that executed it). Keys are computed against the package root, so a
+/// run with no root, or no store, computes none and the default (always execute) holds.
+pub(super) fn plan_input_reuse(
+    plan: &Plan,
+    file_paths: &[PathBuf],
+    config: &RunConfig,
+) -> (BTreeMap<String, String>, BTreeMap<String, String>) {
+    let mut keys = BTreeMap::new();
+    let (Some(ir), Some(root)) = (&config.input_reuse, &config.project_dir) else {
+        return (keys, BTreeMap::new());
+    };
+    let mut files: HashMap<usize, (String, String)> = HashMap::new();
+    for leaf in plan.leaves.iter().filter(|l| !l.inputs.is_empty()) {
+        let inputs = crate::reuse::inputs_digest(&leaf.inputs, root);
+        for item in leaf.unit.items() {
+            let file = file_paths.get(item.file).map(PathBuf::as_path);
+            let (rel, digest) = files.entry(item.file).or_insert_with(|| match file {
+                Some(f) => (root_relative(f, root), crate::reuse::file_digest(f)),
+                None => (String::new(), "unreadable".into()),
+            });
+            let path = qualify_leaf_path(&item.path, file);
+            let key = crate::reuse::leaf_key(&path, rel, digest, &inputs);
+            keys.insert(path, key);
+        }
+    }
+    let carried = if ir.carry {
+        crate::reuse::carried(&ir.store, &keys, &config.reuse)
+    } else {
+        BTreeMap::new()
+    };
+    (keys, carried)
+}
+
+/// `file` relative to `root`, `/`-separated — trying the canonical spellings too (a symlinked temp
+/// dir, a `./` in the manifest path), because an absolute fallback makes the key location-dependent.
+fn root_relative(file: &Path, root: &Path) -> String {
+    let rel = file.strip_prefix(root).ok().map(Path::to_path_buf).or_else(|| {
+        let (f, r) = (file.canonicalize().ok()?, root.canonicalize().ok()?);
+        f.strip_prefix(r).ok().map(Path::to_path_buf)
+    });
+    crate::modules::emit_path(rel.as_deref().unwrap_or(file)).replace('\\', "/")
 }
 
 /// Keep exactly the marked leaves plus the dependency closure of every one of them (an outcome

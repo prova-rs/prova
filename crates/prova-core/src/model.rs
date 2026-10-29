@@ -123,6 +123,12 @@ pub struct UnitOpts {
     /// it. Runtime-inert — pass is pass, fail is fail — and mutually exclusive with `promises`:
     /// while the work is open its context lives in the promise flag.
     pub proves: Option<String>,
+    /// `inputs` — the package-root-relative paths/globs this unit's verdict reads
+    /// (docs/plans/resume.md#phase-2). Declaring them is the opt-in to input-keyed reuse: under
+    /// `--reuse`, a prior PASS whose inputs (and declaring file, leaf path and prova version) are
+    /// byte-identical is carried forward even though the tree around it changed. Inherits down from
+    /// groups. Empty means the default, sound behavior: always execute.
+    pub inputs: Vec<String>,
 }
 
 /// One reminder's evaluated state — the attention account's vocabulary (docs/design/reminders.md).
@@ -354,6 +360,14 @@ pub struct Summary {
     pub reused: usize,
     /// The file-qualified path of every reused leaf, for the record's `Executed::Reused` rows.
     pub reused_paths: Vec<String>,
+    /// The subset of `reused_paths` carried by INPUT-keyed reuse (`--reuse`,
+    /// docs/plans/resume.md#phase-2) rather than same-tree resume: path → the run that executed it.
+    /// Its own map because the two kinds vouch for different things — the identical tree, versus
+    /// only the leaf's declared inputs — and a reader must never be told the stronger one.
+    pub reused_inputs: std::collections::BTreeMap<String, String>,
+    /// Every leaf in this run's plan that declares `inputs`: path → its reuse key. The caller records
+    /// the ones that PASSED here, so a plain run seeds what a later `--reuse` may carry.
+    pub input_keys: std::collections::BTreeMap<String, String>,
     /// How many `prova.remind` declarations the run collected. Plumbing, not a tally: reminders are
     /// not tests and never enter the counts above — this exists so the caller knows whether an
     /// attention-account pass (`evaluate_reminders`) has anything to evaluate, without paying a
@@ -520,14 +534,21 @@ pub fn spec_summary_segment(summary: &Summary) -> String {
     format!(", {} promised", summary.promised)
 }
 
-/// The `, N reused` summary segment — present only on a `--resume` run that carried passes forward
-/// (docs/plans/resume.md). Beside the tally, never inside `passed`: the reader must see how much of
-/// the green this run executed.
+/// The `, N reused` summary segment — present only on a `--resume`/`--reuse` run that carried
+/// passes forward (docs/plans/resume.md). Beside the tally, never inside `passed`: the reader must
+/// see how much of the green this run executed. The two kinds are counted apart, because "the
+/// identical tree" and "only its declared inputs" are different warrants.
 pub fn reuse_summary_segment(summary: &Summary) -> String {
-    if summary.reused == 0 {
-        return String::new();
+    let by_inputs = summary.reused_inputs.len();
+    let same_tree = summary.reused.saturating_sub(by_inputs);
+    let mut out = String::new();
+    if same_tree > 0 {
+        out.push_str(&format!(", {same_tree} reused (same tree)"));
     }
-    format!(", {} reused (same tree)", summary.reused)
+    if by_inputs > 0 {
+        out.push_str(&format!(", {by_inputs} reused (inputs unchanged)"));
+    }
+    out
 }
 
 /// Serialize an event to a stable JSON shape (the wire protocol for frontends).
@@ -564,6 +585,7 @@ pub fn event_to_json(event: &Event) -> serde_json::Value {
             "promised": summary.promised,
             "deselected": summary.deselected,
             "reused": summary.reused,
+            "reusedInputs": summary.reused_inputs.len(),
             "durationMs": summary.duration.as_secs_f64() * 1000.0,
         }),
     }
@@ -985,6 +1007,8 @@ mod tests {
             deselected_paths: Vec::new(),
             reused: 0,
             reused_paths: Vec::new(),
+            reused_inputs: std::collections::BTreeMap::new(),
+            input_keys: std::collections::BTreeMap::new(),
             switched_off: std::collections::BTreeMap::new(),
             reminders_declared: 0,
             duration: Duration::from_millis(6),

@@ -239,7 +239,12 @@ pub(crate) fn attest_subcommand(args: Vec<String>) -> ExitCode {
     println!("prova: attest {address}");
     match &verdict {
         record::Attested::Yes { path } => match recorded.reused_from.get(path) {
-            // Said as what happened: the pass was carried forward, not executed in this record's run.
+            // Said as what happened: the pass was carried forward, not executed in this record's
+            // run — and on which warrant, since "its declared inputs" is not "the identical tree".
+            Some(origin) if recorded.reused_inputs.contains_key(path) => println!(
+                "  ↳ attested — {path} passed in run {origin}, reused because its declared inputs \
+                 are unchanged"
+            ),
             Some(origin) => println!(
                 "  ↳ attested — {path} passed in run {origin}, reused over the identical tree"
             ),
@@ -869,6 +874,7 @@ end)
                 run_id: String::new(),
                 tree: None,
                 reused_from: std::collections::BTreeMap::new(),
+                reused_inputs: std::collections::BTreeMap::new(),
                 selection: vec![],
                 duration_ms: 1,
                 summary: record::Counts::default(),

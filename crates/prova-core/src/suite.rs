@@ -289,6 +289,8 @@ fn run_sequential(suites: &[Suite], reporter: &mut dyn Reporter, config: &RunCon
                 summary.deselected_paths.extend(s.deselected_paths);
                 summary.reused += s.reused;
                 summary.reused_paths.extend(s.reused_paths);
+                summary.reused_inputs.extend(s.reused_inputs);
+                summary.input_keys.extend(s.input_keys);
                 for (class, n) in s.switched_off {
                     *summary.switched_off.entry(class).or_insert(0) += n;
                 }
@@ -336,6 +338,8 @@ fn run_pooled(suites: &[Suite], reporter: &mut dyn Reporter, config: &RunConfig)
                         let _ = dtx.send(PlanFacts {
                             deselected_paths: s.deselected_paths,
                             reused_paths: s.reused_paths,
+                            reused_inputs: s.reused_inputs,
+                            input_keys: s.input_keys,
                             switched_off: s.switched_off,
                             reminders_declared: s.reminders_declared,
                         });
@@ -377,6 +381,8 @@ fn run_pooled(suites: &[Suite], reporter: &mut dyn Reporter, config: &RunConfig)
         summary.deselected_paths.extend(facts.deselected_paths);
         summary.reused += facts.reused_paths.len();
         summary.reused_paths.extend(facts.reused_paths);
+        summary.reused_inputs.extend(facts.reused_inputs);
+        summary.input_keys.extend(facts.input_keys);
         for (class, n) in facts.switched_off {
             *summary.switched_off.entry(class).or_insert(0) += n;
         }
@@ -393,6 +399,9 @@ fn run_pooled(suites: &[Suite], reporter: &mut dyn Reporter, config: &RunConfig)
 struct PlanFacts {
     deselected_paths: Vec<String>,
     reused_paths: Vec<String>,
+    /// Which of those input-keyed reuse carried (path → origin run), and every computed input key.
+    reused_inputs: std::collections::BTreeMap<String, String>,
+    input_keys: std::collections::BTreeMap<String, String>,
     switched_off: std::collections::BTreeMap<String, usize>,
     reminders_declared: usize,
 }

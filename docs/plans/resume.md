@@ -1,6 +1,7 @@
 # Resume — a red run costs its failures, not the suite
 
-**Status:** plan (2026-09-22). Phase 1a is being built; 1b and 2 are designed here and not started.
+**Status:** plan (2026-09-22). Phase 1a is being built; 1b is designed here. **Phase 2 is built
+(2026-10-29)** — see its section for what landed and where it deviates from the sketch.
 
 ## The cost this removes
 
@@ -91,6 +92,46 @@ any prior green whose key matches is reused, even though the tree around it chan
   closure, from `cargo metadata` plus `Cargo.lock` and the toolchain. A rebase onto a sibling's
   disjoint chain then re-runs only the crates that chain can reach. This is the phase that
   shortens the commit-window re-gate.
+
+### Phase 2 as built (2026-10-29)
+
+- **Declaration.** `inputs = { "<path or glob>", … }` is a test/flow/group option (in the closed
+  `UNIT_OPTS`), package-root-relative; a group's inputs are inherited by every leaf under it. A
+  directory stands for everything under it. Any other shape is refused at load, naming the fix.
+  The Lua-function form of the sketch is not built: globs covered every case in hand.
+- **Key.** sha256 over length-prefixed parts: `inputs-v1`, the file-qualified leaf path, the
+  declaring file's package-relative path and its bytes' digest, the prova VERSION (not the binary
+  fingerprint, which carries the executable's path and mtime and would never match across
+  checkouts), and a ROOT-RELATIVE digest of the inputs (`modules::digest_paths_relative`: each
+  matched file's relative path, length and bytes, sorted; a pattern matching nothing contributes
+  its text behind an absence marker). Two checkouts of the same bytes compute the same key;
+  `fs.digest`'s absolute digest is untouched.
+- **Store.** One JSON file per key (`{schema, path, run_id, at}`), written to a temp name and
+  renamed, under `.prova/var/reuse/` — or, with `PROVA_VAR_DIR` set, `$PROVA_VAR_DIR/reuse/` at the
+  override ROOT rather than the package-keyed dir beneath it, because that dir is keyed by the
+  checkout's path and the point is for a fresh checkout (Herald's) to carry from the one that
+  earned the pass. Every run that can honestly file one does — a plain gate seeds the store — and
+  only an EXECUTED `passed` is filed (never a failure, skip, promise, or a pass the run itself
+  carried, so an origin is always the executing run). Entries older than 30 days are pruned when a
+  run files. Nothing is filed under `--falsify`, `--dep`, `--update-baseline` or `-u`.
+- **Carrying.** `--reuse` looks up every input-declaring leaf's key; matches join the same filter
+  `--resume` uses, so dependency closure (a carried leaf an executing leaf depends on runs again)
+  and flow atomicity hold unchanged. It composes with `--resume` (a path either would carry is
+  attributed to `--resume`, the stronger warrant) and with narrowing (`-k` etc.). One stderr line
+  says `--reuse: N of M input-declared leaves carried forward`; zero matches simply executes.
+- **Refusals (exit 2).** `--reuse` with `--update-baseline`, `--falsify` or a `--dep` override, or
+  with no package home to hold a store.
+- **Record (schema 4).** A carried leaf is `Executed::Reused` with `reused_from` naming the origin
+  run, as in 1a, plus `reused_inputs: { path → key }` marking it input-keyed; `summary.reused_inputs`
+  counts them (`reused` stays the total). The console prints `N reused (same tree)` and
+  `M reused (inputs unchanged)` separately. `attest` accepts it as evidence and says "reused
+  because its declared inputs are unchanged", never "identical tree".
+- **Open.** An input-carried leaf is not journaled, so a later `--resume` of that tree re-executes
+  it (unless `--reuse` is also given) rather than relabel an input-keyed pass "same tree". A carried
+  leaf that would have SKIPPED here (an unmet `requires`) reads as reused, as under `--resume`. The
+  declaration is the author's whole warrant: a helper module the proof `require`s, a subject binary
+  built from the tree, a remote service — anything the verdict reads must be in `inputs` or the
+  leaf must not declare them. Proven black-box by `proofs/resume/reuse.prova.lua`.
 
 ## Honesty rules (every phase)
 

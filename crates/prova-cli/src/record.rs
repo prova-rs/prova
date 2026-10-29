@@ -219,6 +219,7 @@ mod tests {
             run_id: "run-test".into(),
             tree: Some("tree-test".into()),
             reused_from: BTreeMap::new(),
+            reused_inputs: BTreeMap::new(),
             selection: vec!["engine".into()],
             duration_ms: 7,
             summary: Counts {

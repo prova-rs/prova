@@ -1,4 +1,4 @@
-//! The run journal and `--resume`, planned from the invocation (docs/plans/resume.md).
+//! The run journal, `--resume` and `--reuse`, planned from the invocation (docs/plans/resume.md).
 //!
 //! Reading and writing the journal belong to `crate::journal`. This is the half that needs the flag
 //! struct: what key a run is filed under, whether it keeps a journal at all, what a resume may carry
@@ -66,8 +66,10 @@ pub(super) fn plan_journal(
     cli: &Cli,
     home: &Option<Home>,
     config: &mut prova_core::RunConfig,
-    resume_roots: &[String],
+    env: &crate::suites::ManifestRun,
 ) -> Result<Option<JournalPlan>, ExitCode> {
+    let resume_roots = &env.resume_roots;
+    plan_input_reuse(cli, home, config, env)?;
     if cli.list || cli.switches_list || cli.reminders_list || cli.backfill {
         return Ok(None);
     }
@@ -123,6 +125,69 @@ pub(super) fn plan_journal(
         roots,
         reuse,
     }))
+}
+
+/// Where input-keyed passes are filed (docs/plans/resume.md#phase-2). Under `PROVA_VAR_DIR` it is the
+/// override ROOT's `reuse/`, not the package-keyed state dir beneath it: that dir is keyed by the
+/// checkout's PATH, and the store exists so a gate on a fresh checkout (Herald's throwaway trees)
+/// can carry a pass from the checkout that earned it. Sharing is sound because every key already
+/// names the leaf, its declaring file's package-relative path and bytes, and its inputs' bytes.
+pub(crate) fn reuse_store(home: &Home) -> std::path::PathBuf {
+    match crate::var::override_root() {
+        Ok(Some(root)) => root.join("reuse"),
+        _ => crate::var::path(home).join("reuse"),
+    }
+}
+
+/// A `--reuse` refusal: said once, exit 2.
+fn refuse_reuse<T>(why: impl std::fmt::Display) -> Result<T, ExitCode> {
+    eprintln!("prova: --reuse: {why}");
+    Err(ExitCode::from(2))
+}
+
+/// Hand the engine the input-reuse store (`config.input_reuse`): on every run that can honestly FILE
+/// a pass, so a plain gate seeds the store, and with `carry` under `--reuse`. A `--reuse` that would
+/// be dishonest refuses (exit 2) instead of quietly executing everything.
+fn plan_input_reuse(
+    cli: &Cli,
+    home: &Option<Home>,
+    config: &mut prova_core::RunConfig,
+    env: &crate::suites::ManifestRun,
+) -> Result<(), ExitCode> {
+    if cli.list || cli.switches_list || cli.reminders_list || cli.backfill {
+        return Ok(());
+    }
+    // A pass under these is not the pass a later run asks about: a falsify "pass" is a killed
+    // mutant, a `--dep` pass judged another dependency version than the inputs can see, and a
+    // banked baseline is a measurement a carried leaf never took.
+    let dishonest = if config.falsify {
+        Some("a falsify pass is a killed mutant, not the leaf's verdict — falsify executes everything")
+    } else if !env.dependency_overrides.is_empty() {
+        Some("--dep judges against a dependency version no declared input can see — run without it")
+    } else if cli.update_baseline.is_some() {
+        Some("--update-baseline banks this run's measurements, and a reused test took none")
+    } else {
+        None
+    };
+    if let Some(why) = dishonest {
+        return if cli.reuse { refuse_reuse(why) } else { Ok(()) };
+    }
+    let Some(h) = home.as_ref() else {
+        if cli.reuse {
+            return refuse_reuse("there is no package home, so no store of passes to reuse from");
+        }
+        return Ok(());
+    };
+    if cli.update_snapshots && !cli.reuse {
+        return Ok(()); // a pass that rewrote its own expectation is not filed
+    }
+    let store = reuse_store(h);
+    if cli.reuse && std::fs::create_dir_all(&store).is_err() {
+        return refuse_reuse(format!("the store {} cannot be created", store.display()));
+    }
+    *config = std::mem::take(config)
+        .with_input_reuse(Some(prova_core::reuse::InputReuse { store, carry: cli.reuse }));
+    Ok(())
 }
 
 /// The passes the previous run of this key lends a resume, and that run's id — or the refusal that
@@ -196,6 +261,8 @@ pub(super) struct Settled {
     pub(super) tree: Option<String>,
     pub(super) executed: BTreeMap<String, record::Executed>,
     pub(super) reused_from: BTreeMap<String, String>,
+    /// The reused leaves `--reuse` carried, each with the input key it matched.
+    pub(super) reused_inputs: BTreeMap<String, String>,
 }
 
 /// Close the journal and settle the record's account of it.
@@ -204,6 +271,8 @@ pub(super) struct Settled {
 /// single tree, so it carries none, and no resume will ever lend its passes. What the engine
 /// actually held back is spelled `reused`, never `passed`.
 pub(super) fn settle(
+    cli: &Cli,
+    config: &prova_core::RunConfig,
     plan: Option<&JournalPlan>,
     home: &Option<Home>,
     reporter: &mut FailureRecorder,
@@ -228,16 +297,52 @@ pub(super) fn settle(
     }
     let mut executed = std::mem::take(&mut reporter.executed);
     let mut reused_from = BTreeMap::new();
+    let mut reused_inputs = BTreeMap::new();
     for path in &summary.reused_paths {
         executed.insert(path.clone(), record::Executed::Reused);
-        if let Some(from) = plan.and_then(|p| p.reuse.get(path)) {
+        if let Some(from) = summary.reused_inputs.get(path) {
+            reused_from.insert(path.clone(), from.clone());
+            let key = summary.input_keys.get(path).cloned().unwrap_or_default();
+            reused_inputs.insert(path.clone(), key);
+        } else if let Some(from) = plan.and_then(|p| p.reuse.get(path)) {
             reused_from.insert(path.clone(), from.clone());
         }
     }
-    Settled {
-        run_id: plan.map(|p| p.header.run_id.clone()).unwrap_or_else(journal::new_run_id),
-        tree,
-        executed,
-        reused_from,
+    let run_id = plan.map(|p| p.header.run_id.clone()).unwrap_or_else(journal::new_run_id);
+    file_input_passes(cli, config, summary, &executed, &run_id);
+    Settled { run_id, tree, executed, reused_from, reused_inputs }
+}
+
+/// File this run's EXECUTED passes of input-declaring leaves (docs/plans/resume.md#phase-2), and
+/// under `--reuse` say in one line how much it carried. Only `Executed::Passed` is filed: a failure,
+/// and a pass this run merely carried, never are.
+fn file_input_passes(
+    cli: &Cli,
+    config: &prova_core::RunConfig,
+    summary: &prova_core::Summary,
+    executed: &BTreeMap<String, record::Executed>,
+    run_id: &str,
+) {
+    let Some(ir) = config.input_reuse.as_ref() else { return };
+    if cli.reuse {
+        eprintln!(
+            "prova: --reuse: {} of {} input-declared leaves carried forward (inputs unchanged)",
+            summary.reused_inputs.len(),
+            summary.input_keys.len()
+        );
+    }
+    if cli.update_snapshots {
+        return;
+    }
+    let passed: std::collections::BTreeSet<String> = executed
+        .iter()
+        .filter(|(_, e)| **e == record::Executed::Passed)
+        .map(|(p, _)| p.clone())
+        .collect();
+    if let Err(e) = prova_core::reuse::file_passes(&ir.store, &summary.input_keys, &passed, run_id) {
+        eprintln!(
+            "prova: --reuse store {} could not be written ({e}); passes not filed",
+            ir.store.display()
+        );
     }
 }
