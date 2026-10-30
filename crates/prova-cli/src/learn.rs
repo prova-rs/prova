@@ -162,6 +162,8 @@ impl Topic {
         ("scheduler", Topic::Locks),
         ("selection", Topic::Running),
         ("ci", Topic::Running),
+        ("flaky", Topic::Running),
+        ("flakes", Topic::Running),
         ("cli", Topic::Running),
         ("warm", Topic::Mcp),
         ("server", Topic::Mcp),
@@ -171,6 +173,7 @@ impl Topic {
         // `every_verb_resolves_in_learn` proof; new verbs that skip a home fail it.
         ("run", Topic::Running),
         ("eval", Topic::Running),
+        ("stress", Topic::Running),
         ("list", Topic::Running),
         ("ide", Topic::Init),
         ("skill", Topic::Pdd),
