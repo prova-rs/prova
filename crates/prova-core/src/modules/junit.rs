@@ -29,10 +29,41 @@ struct Case {
     /// The run that produced this verdict, when it was carried forward rather than conducted here:
     /// the `prova.reused_from` property `junit.merge` writes (docs/plans/resume.md#phase-1b).
     reused_from: Option<String>,
+    /// For a `flaky` case: the run whose failure it passed after — the `prova.flaky_from` property
+    /// `junit.merge` writes when a re-run pass replaces a red. `None` for a deputy's own retry.
+    flaky_from: Option<String>,
 }
 
 /// The testcase property that marks a verdict carried forward by `junit.merge`.
 const REUSED_FROM: &str = "prova.reused_from";
+/// The testcase property that names the run a `flaky` case failed in, written by `junit.merge`.
+const FLAKY_FROM: &str = "prova.flaky_from";
+
+/// Apply one child element of an open `<testcase>` to it — the outcome vocabulary.
+///
+/// `failure`/`error`/`skipped` set the outcome outright. nextest's (and surefire's) retry elements
+/// are the flake signal: `<flakyFailure>`/`<flakyError>` on a case with no `<failure>` means it failed
+/// and then passed on a retry, which is FLAKY — never `passed` (a flake read as a pass is the silent
+/// green this vocabulary exists to refuse). The FIRST flaky message is kept: it is the failure to
+/// explain. `<rerunFailure>`/`<rerunError>` accompany a `<failure>` that stayed failed, so they change
+/// nothing. A `<failure>` always wins over a flaky child, in either order.
+fn apply_child(case: &mut Case, tag: &[u8], message: Option<String>) {
+    match tag {
+        b"failure" | b"error" | b"skipped" => {
+            case.outcome = match tag {
+                b"failure" => "failed",
+                b"error" => "error",
+                _ => "skipped",
+            };
+            case.message = message;
+        }
+        b"flakyFailure" | b"flakyError" if case.outcome == "passed" => {
+            case.outcome = "flaky";
+            case.message = message;
+        }
+        _ => {}
+    }
+}
 
 /// Parse one JUnit XML document, appending its cases. Tolerant by design: elements the stable
 /// core doesn't include are skipped, a `<testcase>` with no failure/error/skipped child passed.
@@ -72,6 +103,7 @@ fn parse_document(xml: &str, file: &str, cases: &mut Vec<Case>) -> Result<(), St
             time_ms,
             file: file.to_string(),
             reused_from: None,
+            flaky_from: None,
         }
     };
 
@@ -80,37 +112,29 @@ fn parse_document(xml: &str, file: &str, cases: &mut Vec<Case>) -> Result<(), St
             Ok(Event::Start(e)) => match e.name().as_ref() {
                 b"testsuite" => suite_stack.push(attr(&e, "name").unwrap_or_default()),
                 b"testcase" => open = Some(start_case(&e, &suite_stack)),
-                b"failure" | b"error" | b"skipped" => {
+                tag => {
                     if let Some(case) = open.as_mut() {
-                        case.outcome = match e.name().as_ref() {
-                            b"failure" => "failed",
-                            b"error" => "error",
-                            _ => "skipped",
-                        };
-                        case.message = attr(&e, "message");
+                        apply_child(case, tag, attr(&e, "message"));
                     }
                 }
-                _ => {}
             },
             Ok(Event::Empty(e)) => match e.name().as_ref() {
                 b"testcase" => cases.push(start_case(&e, &suite_stack)),
                 // Only a case's own property: a suite-level <properties> block has no open case.
-                b"property" if attr(&e, "name").as_deref() == Some(REUSED_FROM) => {
+                b"property" => {
                     if let Some(case) = open.as_mut() {
-                        case.reused_from = attr(&e, "value");
+                        match attr(&e, "name").as_deref() {
+                            Some(REUSED_FROM) => case.reused_from = attr(&e, "value"),
+                            Some(FLAKY_FROM) => case.flaky_from = attr(&e, "value"),
+                            _ => {}
+                        }
                     }
                 }
-                b"failure" | b"error" | b"skipped" => {
+                tag => {
                     if let Some(case) = open.as_mut() {
-                        case.outcome = match e.name().as_ref() {
-                            b"failure" => "failed",
-                            b"error" => "error",
-                            _ => "skipped",
-                        };
-                        case.message = attr(&e, "message");
+                        apply_child(case, tag, attr(&e, "message"));
                     }
                 }
-                _ => {}
             },
             Ok(Event::Text(t)) => {
                 // A failure/error body with no `message` attribute carries its text as content —
@@ -153,6 +177,7 @@ fn report_table(lua: &Lua, files: &[PathBuf], cases: &[Case]) -> mlua::Result<Ta
     report.set("failed", count("failed"))?;
     report.set("errors", count("error"))?;
     report.set("skipped", count("skipped"))?;
+    report.set("flaky", count("flaky"))?;
 
     report.set("files", super::ingest::files_table(lua, files)?)?;
 
@@ -171,6 +196,9 @@ fn report_table(lua: &Lua, files: &[PathBuf], cases: &[Case]) -> mlua::Result<Ta
         row.set("file", c.file.as_str())?;
         if let Some(from) = &c.reused_from {
             row.set("reused_from", from.as_str())?;
+        }
+        if let Some(from) = &c.flaky_from {
+            row.set("flaky_from", from.as_str())?;
         }
         cases_t.set(i + 1, row)?;
     }
@@ -208,12 +236,20 @@ function junit.verify(t, opts)
   junit.ingest(report)
   t:expect(report.total, "junit.verify: zero cases parsed from " .. tostring(opts.results)
     .. " — wrong glob, or the deputy ran nothing"):gt(0)
-  local red = {}
+  local red, flaky = {}, {}
   for _, c in ipairs(report.cases) do
     if c.outcome == "failed" or c.outcome == "error" then
       red[#red + 1] = c.suite .. "#" .. c.name .. " — " .. (c.message or c.outcome)
+    elseif c.outcome == "flaky" then
+      flaky[#flaky + 1] = c.suite .. "#" .. c.name .. " — " .. (c.message or "failed, then passed")
     end
   end
+  -- A flaky case is named, never counted red and never counted green: the run's account marks it
+  -- FLAKY (and the run is not green), so the proof that adopted it is not where it fails.
+  if #flaky > 0 then
+    t:log("junit.verify: " .. #flaky .. " FLAKY deputed case(s):\n      " .. table.concat(flaky, "\n      "))
+  end
+  report.flaky_cases = flaky
   t:expect(#red, "deputed failures:\n  " .. table.concat(red, "\n  ")):equals(0)
   return report
 end
@@ -265,6 +301,7 @@ pub(crate) fn make(lua: &Lua, deputed: Option<DeputedRegistry>) -> mlua::Result<
                     time_ms: c.get("time_ms")?,
                     file: c.get::<Option<String>>("file")?.unwrap_or_default(),
                     reused_from: c.get("reused_from")?,
+                    flaky_from: c.get("flaky_from")?,
                 });
             }
             let n = rows.len();
@@ -323,6 +360,11 @@ pub(crate) fn make(lua: &Lua, deputed: Option<DeputedRegistry>) -> mlua::Result<
 /// case keeps the origin it already had (a resume of a resume names the run that CONDUCTED it) or
 /// takes `reused_from`. Carried failures stay failures: a merge carries verdicts forward, and only
 /// passes are evidence — a red that nobody re-ran is still red.
+///
+/// A re-run PASS over a prior red is not a pass: the same tree failed it and passed it, so the
+/// merged case is `flaky`, keeps the prior failure as its message (`<flakyFailure message=…>`), and
+/// names the run that failed it (`prova.flaky_from`). A merge that greened it would hide a
+/// concurrency defect behind a resume.
 fn merge_accounts(prior: Vec<Case>, rerun: Vec<Case>, reused_from: &str) -> String {
     let mut fresh: std::collections::HashMap<(String, String), Case> = rerun
         .into_iter()
@@ -331,7 +373,21 @@ fn merge_accounts(prior: Vec<Case>, rerun: Vec<Case>, reused_from: &str) -> Stri
     let mut order: Vec<Case> = Vec::new();
     for mut c in prior {
         match fresh.remove(&(c.suite.clone(), c.name.clone())) {
-            Some(again) => order.push(again),
+            Some(mut again) => {
+                let was_red = matches!(c.outcome, "failed" | "error" | "flaky");
+                if was_red && matches!(again.outcome, "passed" | "flaky") {
+                    again.outcome = "flaky";
+                    again.message = c.message.clone().or(again.message);
+                    // The run that FAILED it: an older flake keeps its origin, a carried red names
+                    // the run that conducted it, and a red this resume read is the resumed run's.
+                    again.flaky_from = c
+                        .flaky_from
+                        .clone()
+                        .or_else(|| c.reused_from.clone())
+                        .or_else(|| Some(reused_from.to_string()));
+                }
+                order.push(again)
+            }
             None => {
                 c.reused_from.get_or_insert_with(|| reused_from.to_string());
                 order.push(c);
@@ -373,13 +429,19 @@ fn render_account(cases: &[Case]) -> String {
                 "failed" => xml.push_str(&format!("      <failure{message}/>\n")),
                 "error" => xml.push_str(&format!("      <error{message}/>\n")),
                 "skipped" => xml.push_str("      <skipped/>\n"),
+                // nextest's own spelling of failed-then-passed, so every JUnit reader that knows
+                // retries reads it as a flake rather than a plain pass.
+                "flaky" => xml.push_str(&format!("      <flakyFailure{message}/>\n")),
                 _ => {}
             }
-            if let Some(from) = &c.reused_from {
-                xml.push_str(&format!(
-                    "      <properties><property name=\"{REUSED_FROM}\" value=\"{}\"/></properties>\n",
-                    escape(from)
-                ));
+            let props: Vec<String> = [(REUSED_FROM, &c.reused_from), (FLAKY_FROM, &c.flaky_from)]
+                .into_iter()
+                .filter_map(|(name, v)| {
+                    v.as_ref().map(|v| format!("<property name=\"{name}\" value=\"{}\"/>", escape(v)))
+                })
+                .collect();
+            if !props.is_empty() {
+                xml.push_str(&format!("      <properties>{}</properties>\n", props.concat()));
             }
             xml.push_str("    </testcase>\n");
         }
@@ -470,10 +532,52 @@ trace line</failure></testcase>
         assert_eq!(back.len(), 4);
         assert_eq!((by("tests::ok").outcome, by("tests::ok").reused_from.as_deref()), ("passed", Some("run-1")));
         assert_eq!(by("tests::ok").time_ms, Some(500), "timing survives the round trip");
-        assert_eq!((by("tests::flaky").outcome, by("tests::flaky").reused_from.as_deref()), ("passed", None), "re-run: conducted here, unmarked");
+        assert_eq!((by("tests::flaky").outcome, by("tests::flaky").reused_from.as_deref()), ("flaky", None), "re-run: conducted here, not carried — and a pass over a red is FLAKY, never passed");
+        assert_eq!(by("tests::flaky").flaky_from.as_deref(), Some("run-1"), "names the run that failed it");
+        assert_eq!(by("tests::flaky").message.as_deref(), Some("timed out & gone"), "keeps the first failure");
+        assert!(merged.contains("<flakyFailure message=\"timed out &amp; gone\"/>"), "{merged}");
+        assert!(merged.contains("prova.flaky_from"), "{merged}");
         assert_eq!(by("tests::still_red").outcome, "failed", "a red nobody re-ran stays red");
         assert_eq!(by("tests::still_red").message.as_deref(), Some("real"));
         assert_eq!(by("tests::older").reused_from.as_deref(), Some("run-0"), "an older origin is kept");
+    }
+
+    /// nextest's retry dialect: a case that failed then passed on retry carries `<flakyFailure>` and
+    /// no `<failure>` — FLAKY with the first message, never passed. One that failed every attempt
+    /// carries `<failure>` plus `<rerunFailure>` — still failed.
+    #[test]
+    fn a_retried_case_reads_flaky_and_a_failed_retry_stays_failed() {
+        let xml = r#"<testsuites><testsuite name="cos-daemon">
+          <testcase name="tests::flake" classname="cos-daemon">
+            <flakyFailure message="first: socket refused" type="test failure"><system-out>x</system-out></flakyFailure>
+            <flakyFailure message="second: timeout" type="test failure"/>
+          </testcase>
+          <testcase name="tests::red" classname="cos-daemon">
+            <failure message="final" type="test failure"/>
+            <rerunFailure message="retry" type="test failure"/>
+          </testcase>
+          <testcase name="tests::flaky_error" classname="cos-daemon"><flakyError message="crashed"/></testcase>
+        </testsuite></testsuites>"#;
+        let mut cases = Vec::new();
+        parse_document(xml, "n.xml", &mut cases).unwrap();
+        assert_eq!((cases[0].outcome, cases[0].message.as_deref()), ("flaky", Some("first: socket refused")));
+        assert_eq!((cases[1].outcome, cases[1].message.as_deref()), ("failed", Some("final")));
+        assert_eq!(cases[2].outcome, "flaky");
+    }
+
+    /// A merged flaky case round-trips: its `prova.flaky_from` and `prova.reused_from` both parse back.
+    #[test]
+    fn a_merged_flake_round_trips_its_origin() {
+        let prior = r#"<testsuites><testsuite name="s"><testcase name="t" classname="s"><failure message="m"/><properties><property name="prova.reused_from" value="run-0"/></properties></testcase></testsuite></testsuites>"#;
+        let rerun = r#"<testsuites><testsuite name="s"><testcase name="t" classname="s"/></testsuite></testsuites>"#;
+        let (mut p, mut r) = (Vec::new(), Vec::new());
+        parse_document(prior, "p.xml", &mut p).unwrap();
+        parse_document(rerun, "r.xml", &mut r).unwrap();
+        let merged = merge_accounts(p, r, "run-1");
+        let mut back = Vec::new();
+        parse_document(&merged, "m.xml", &mut back).unwrap();
+        assert_eq!(back[0].outcome, "flaky");
+        assert_eq!(back[0].flaky_from.as_deref(), Some("run-0"), "the run that conducted the red");
     }
 
     #[test]

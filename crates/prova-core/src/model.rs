@@ -241,6 +241,9 @@ pub struct DeputedCase {
     /// The run that conducted this verdict, when the deputy carried it forward from a resumed
     /// run's prior account instead of conducting it here (docs/plans/resume.md#phase-1b).
     pub reused_from: Option<String>,
+    /// For outcome `"flaky"`: the run whose failure this case passed after — `prova.flaky_from`,
+    /// which `junit.merge` writes. `None` for a deputy's own retry (nextest's `<flakyFailure>`).
+    pub flaky_from: Option<String>,
 }
 
 /// Where a run's ingested deputed cases accumulate — shared across workers, drained by the caller
@@ -373,6 +376,12 @@ pub struct Summary {
     /// attention-account pass (`evaluate_reminders`) has anything to evaluate, without paying a
     /// re-collection to find out that the answer is zero (the common case).
     pub reminders_declared: usize,
+    /// Flakes this run recorded: leaves that passed here after a failure recorded on the same tree
+    /// and prova (no longer counted in `passed`), plus deputed cases with outcome `"flaky"`. Filled
+    /// by the caller that holds the run's history (the CLI), never by the engine, which sees one run.
+    pub flaky: usize,
+    /// The flake events behind `flaky`, for the recap and the record.
+    pub flakes: Vec<crate::ledger::FlakeEvent>,
     pub duration: Duration,
 }
 
@@ -464,9 +473,10 @@ impl Reporter for ConsoleReporter {
             }
             Event::RunFinished { summary } => {
                 println!(
-                    "\n{} passed, {} failed, {} skipped{}{}{}   in {:.1?}",
+                    "\n{} passed, {} failed{}, {} skipped{}{}{}   in {:.1?}",
                     summary.passed,
                     summary.failed,
+                    flaky_summary_segment(summary),
                     summary.skipped,
                     spec_summary_segment(summary),
                     reuse_summary_segment(summary),
@@ -525,6 +535,15 @@ impl<W: Write> Reporter for JsonReporter<W> {
     }
 }
 
+
+/// The `, N FLAKY` summary segment — present only when a flake was recorded, and shouted: a flaky
+/// run is never green, and the tally is where the eye lands.
+pub fn flaky_summary_segment(summary: &Summary) -> String {
+    if summary.flaky == 0 {
+        return String::new();
+    }
+    format!(", {} FLAKY", summary.flaky)
+}
 
 /// The `, N promised` summary segment — present only while promises are open.
 pub fn spec_summary_segment(summary: &Summary) -> String {
@@ -586,6 +605,7 @@ pub fn event_to_json(event: &Event) -> serde_json::Value {
             "deselected": summary.deselected,
             "reused": summary.reused,
             "reusedInputs": summary.reused_inputs.len(),
+            "flaky": summary.flaky,
             "durationMs": summary.duration.as_secs_f64() * 1000.0,
         }),
     }
@@ -1011,6 +1031,8 @@ mod tests {
             input_keys: std::collections::BTreeMap::new(),
             switched_off: std::collections::BTreeMap::new(),
             reminders_declared: 0,
+            flaky: 0,
+            flakes: Vec::new(),
             duration: Duration::from_millis(6),
         };
         reporter.event(&Event::RunFinished { summary: &summary });

@@ -190,6 +190,7 @@ pub(super) fn attest_blocking(env: &McpEnv, req: AttestRequest) -> Result<(serde
             "reason": match outcome {
                 crate::record::Executed::Failed => "the covering proof ran and failed",
                 crate::record::Executed::Promised => "the covering proof is an open promise, red by definition",
+                crate::record::Executed::Flaky => "the covering proof is FLAKY: it failed and passed on the same tree, which is a defect, not evidence",
                 crate::record::Executed::Passed | crate::record::Executed::Reused => "unreachable",
             },
         }),

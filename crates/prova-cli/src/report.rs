@@ -14,7 +14,9 @@ use std::time::Duration;
 
 use anstream::AutoStream;
 use anstyle::{AnsiColor, Style};
-use prova_core::{reuse_summary_segment, spec_summary_segment, Event, Outcome, Reporter};
+use prova_core::{
+    flaky_summary_segment, reuse_summary_segment, spec_summary_segment, Event, Outcome, Reporter,
+};
 
 /// How to color stdout. Resolution order for the run path: `--color` flag > `PROVA_COLOR` env >
 /// manifest `color` key > `Auto`. Under `Auto`, anstream additionally honors `NO_COLOR` and
@@ -345,16 +347,37 @@ impl GitHubReporter {
             return;
         };
         let mut md = String::new();
-        let mark = if summary.failed > 0 { "❌" } else { "✅" };
+        // A flaky run is never plain green: ⚠️, and the FLAKY count beside the failures.
+        let mark = if summary.failed > 0 {
+            "❌"
+        } else if summary.flaky > 0 {
+            "⚠️"
+        } else {
+            "✅"
+        };
         md.push_str(&format!(
-            "### {mark} prova — {} passed, {} failed, {} skipped{}{} in {:.1?}\n",
+            "### {mark} prova — {} passed, {} failed{}, {} skipped{}{} in {:.1?}\n",
             summary.passed,
             summary.failed,
+            flaky_summary_segment(summary),
             summary.skipped,
             spec_summary_segment(summary),
             reuse_summary_segment(summary),
             summary.duration
         ));
+        for f in &summary.flakes {
+            md.push_str(&format!(
+                "\n- ⚠️ **FLAKY** `{}` — failed in {}, passed in {} ({}){}",
+                summary_cell(&f.test),
+                f.failed_run,
+                f.passed_run,
+                f.source,
+                f.first_failure.as_deref().map(|m| format!(": {}", summary_cell(m))).unwrap_or_default()
+            ));
+        }
+        if !summary.flakes.is_empty() {
+            md.push('\n');
+        }
         if !self.rows.is_empty() {
             md.push_str("\n| | test | location | detail |\n|---|---|---|---|\n");
             for row in &self.rows {
@@ -518,14 +541,33 @@ impl HumanReporter {
                 );
             }
         }
+        // The flake recap: every flake named, with the run that failed it, the run that passed it,
+        // and the line that reproduces it. A flake is a concurrency defect, never "load" — and
+        // never a plain pass, which is why it is recapped like a failure.
+        if !summary.flakes.is_empty() {
+            let _ = writeln!(out, "\n{SKIP}flaky (failed and passed on the same tree — a defect, not load):{SKIP:#}");
+            for f in &summary.flakes {
+                let _ = writeln!(out, "\n  {SKIP}FLAKY{SKIP:#}  {}  {DIM}({}){DIM:#}", f.test, f.source);
+                if let Some(m) = &f.first_failure {
+                    write_message(out, "        ", m);
+                }
+                let _ = writeln!(
+                    out,
+                    "        {DIM}failed in {}, passed in {}{DIM:#}",
+                    f.failed_run, f.passed_run
+                );
+                let _ = writeln!(out, "        {DIM}{}{DIM:#}", reproduce_line(f));
+            }
+        }
         // The tally sentence keeps its exact uncolored text (proofs and scripts match on
         // "N passed"); color only flags the failed count, and only when it is non-zero.
         let failed_style = if summary.failed > 0 { FAIL } else { Style::new() };
         let _ = writeln!(
             out,
-            "\n{PASS}{}{PASS:#} passed, {failed_style}{}{failed_style:#} failed, {} skipped{}{}{}   in {}",
+            "\n{PASS}{}{PASS:#} passed, {failed_style}{}{failed_style:#} failed{SKIP}{}{SKIP:#}, {} skipped{}{}{}   in {}",
             summary.passed,
             summary.failed,
+            flaky_summary_segment(summary),
             summary.skipped,
             spec_summary_segment(summary),
             reuse_summary_segment(summary),
@@ -551,6 +593,19 @@ impl HumanReporter {
                 "{DIM}switched off: {classes} — throw with -s <switch> or a profile's switches{DIM:#}"
             );
         }
+    }
+}
+
+/// The line that reproduces a flake: a nextest-shaped deputed case (suite = binary id) goes to
+/// `prova stress` as an exact filterset; a prova leaf re-runs by node.
+fn reproduce_line(f: &prova_core::ledger::FlakeEvent) -> String {
+    match (&f.deputed, &f.node) {
+        (Some(d), _) => format!(
+            "stress: prova stress -E 'binary_id(={}) & test(={})' --copies 32",
+            d.suite, d.name
+        ),
+        (None, Some(node)) => format!("rerun: prova --node {node:?}"),
+        (None, None) => format!("rerun: prova -k {:?}", f.test),
     }
 }
 

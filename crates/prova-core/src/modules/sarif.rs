@@ -222,6 +222,7 @@ pub(crate) fn make(lua: &Lua, deputed: Option<DeputedRegistry>) -> mlua::Result<
                     file: c.get::<Option<String>>("file")?.unwrap_or_default(),
                     // A SARIF scan is always conducted by the run that reads it.
                     reused_from: None,
+                    flaky_from: None,
                 });
             }
             let n = rows.len();

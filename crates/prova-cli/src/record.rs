@@ -83,6 +83,7 @@ pub fn deputed_rows(cases: &[prova_core::DeputedCase]) -> Vec<DeputedRow> {
             time_ms: c.time_ms,
             file: c.file.clone(),
             reused_from: c.reused_from.clone(),
+            flaky_from: c.flaky_from.clone(),
         })
         .collect()
 }
@@ -236,6 +237,8 @@ mod tests {
             reminders: vec![],
             deputed: vec![],
             deputed_narrowed: false,
+            verdict: "green".into(),
+            flakes: vec![],
         }
     }
 
@@ -284,6 +287,7 @@ mod tests {
             time_ms: Some(12),
             file: "target/junit.xml".into(),
             reused_from: None,
+            flaky_from: None,
         }]);
         assert_eq!(deputed[0].verifier, "junit");
         assert_eq!(deputed[0].outcome, "failed");

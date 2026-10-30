@@ -42,6 +42,8 @@ mod progress;
 /// The spawnable-mock adapter: `prova relay --to <addr>` (docs/plans/stdio-transport.md §4).
 mod relay;
 mod journal;
+/// The flake ledger's detection half: a pass after a failure on the same tree is FLAKY.
+mod flakes;
 mod record;
 mod report;
 mod runstate;
@@ -354,6 +356,8 @@ options:
       --reuse               carry forward a prior pass of every test declaring `inputs = {…}`
                             whose inputs, declaring file and prova version are byte-identical,
                             even across trees — recorded as reused (inputs unchanged)
+      --flakes fail|warn    a test that failed and passed on the same tree is FLAKY (a defect):
+                            `fail` (default) exits 1 on it, `warn` reports it without failing
       --topology NAME       require attaching to the held topology NAME (error when not running) —
                             judge the LIVE environment, never a silently fresh one
       --fresh               ignore held topologies: always provision fresh (the CI behavior)
@@ -786,10 +790,21 @@ struct FailureRecorder {
     /// The run journal (docs/plans/resume.md): every settled leaf, on disk the moment it settles.
     /// `None` for a narrowed run, or one with no tree to key it on.
     journal: Option<journal::Writer>,
+    /// The flake check (crate::flakes): what earlier runs on this tree failed, and the flakes found.
+    flakes: flakes::Watch,
 }
 
 impl Reporter for FailureRecorder {
     fn event(&mut self, event: &prova_core::Event) {
+        // The run's end: judge the deputed account, and hand the sinks a summary that counts the
+        // flakes — the tally is where a flake must be seen, never as a plain pass.
+        if let prova_core::Event::RunFinished { summary } = event {
+            self.flakes.settle_deputed();
+            let mut summary = (*summary).clone();
+            self.flakes.apply(&mut summary);
+            self.inner.event(&prova_core::Event::RunFinished { summary: &summary });
+            return;
+        }
         if let prova_core::Event::NodeFinished {
             path,
             outcome,
@@ -801,21 +816,29 @@ impl Reporter for FailureRecorder {
             // `--last-failed` re-selects with `--node`, which matches the raw path; the record is
             // keyed on the file-qualified one, so two files' same-named tests stay distinct.
             let key = record::qualified(path, *file);
-            if let Some(journal) = self.journal.as_mut() {
-                journal.row(journal::Row {
-                    path: key.clone(),
-                    outcome: outcome.as_str().to_string(),
-                    from: None,
-                });
-            }
+            let mut row = journal::Row {
+                path: key.clone(),
+                outcome: outcome.as_str().to_string(),
+                from: None,
+                first_failure: None,
+            };
             match outcome {
                 prova_core::Outcome::Failed => {
+                    row.first_failure = flakes::first_line(*message);
                     self.failed.push(path.to_string());
                     self.executed.insert(key, record::Executed::Failed);
                 }
-                prova_core::Outcome::Passed => {
-                    self.executed.insert(key, record::Executed::Passed);
-                }
+                prova_core::Outcome::Passed => match self.flakes.leaf_passed(&key, path) {
+                    Some((failed_run, first)) => {
+                        row.outcome = "flaky".into();
+                        row.from = Some(failed_run);
+                        row.first_failure = first;
+                        self.executed.insert(key, record::Executed::Flaky);
+                    }
+                    None => {
+                        self.executed.insert(key, record::Executed::Passed);
+                    }
+                },
                 prova_core::Outcome::Promised => {
                     self.executed.insert(key, record::Executed::Promised);
                 }
@@ -824,6 +847,9 @@ impl Reporter for FailureRecorder {
                     path: key,
                     reason: message.unwrap_or("skipped").to_string(),
                 }),
+            }
+            if let Some(journal) = self.journal.as_mut() {
+                journal.row(row);
             }
         }
         self.inner.event(event);

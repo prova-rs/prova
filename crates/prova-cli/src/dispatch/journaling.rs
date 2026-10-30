@@ -15,6 +15,37 @@ pub(super) struct JournalPlan {
     roots: Vec<std::path::PathBuf>,
     /// The offered passes: file-qualified path → the run that executed it. Empty without `--resume`.
     reuse: BTreeMap<String, String>,
+    /// What earlier runs on this tree and binary recorded as failing — the flake check's history,
+    /// loaded with or without `--resume`, BEFORE this run's journal replaces the previous one.
+    history: crate::flakes::History,
+}
+
+impl JournalPlan {
+    /// The flake check this run streams through (crate::flakes).
+    pub(super) fn flake_watch(&self, resume: bool, deputed: prova_core::DeputedRegistry) -> crate::flakes::Watch {
+        crate::flakes::Watch::new(
+            self.history.clone(),
+            self.header.run_id.clone(),
+            Some(self.header.tree.clone()),
+            self.header.binary.clone(),
+            resume,
+            Some(deputed),
+        )
+    }
+}
+
+/// The failures earlier runs recorded over `tree` by `binary`: the previous journal of this lane (a
+/// leaf's verdicts), and the previous run record (the deputed account, whatever lane wrote it). A
+/// journal whose tree moved during its run belongs to no single tree and lends nothing.
+fn flake_history(home: &Home, key: &[String], tree: &str, binary: &str) -> crate::flakes::History {
+    let leaves = journal::load(home, key)
+        .filter(|j| j.header.tree == tree && j.header.binary == binary && j.end != Some(None))
+        .map(|j| j.failures())
+        .unwrap_or_default();
+    let deputed = record::load(home)
+        .map(|r| crate::flakes::History::deputed_from(&r, tree, binary))
+        .unwrap_or_default();
+    crate::flakes::History { leaves, deputed }
 }
 
 /// Narrowed by the CLI, as opposed to the lane's own baked tags, which ARE the lane.
@@ -109,6 +140,7 @@ pub(super) fn plan_journal(
     } else {
         (BTreeMap::new(), None)
     };
+    let history = flake_history(h, &key, &tree, &binary);
     let run_id = journal::new_run_id();
     *config = std::mem::take(config)
         .with_reuse(reuse.keys().cloned())
@@ -124,6 +156,7 @@ pub(super) fn plan_journal(
         },
         roots,
         reuse,
+        history,
     }))
 }
 
@@ -250,6 +283,7 @@ pub(super) fn open_journal(
             path: path.clone(),
             outcome: "reused".into(),
             from: Some(from.clone()),
+            first_failure: None,
         });
     }
     Some(writer)
@@ -308,7 +342,9 @@ pub(super) fn settle(
             reused_from.insert(path.clone(), from.clone());
         }
     }
-    let run_id = plan.map(|p| p.header.run_id.clone()).unwrap_or_else(journal::new_run_id);
+    let run_id = plan
+        .map(|p| p.header.run_id.clone())
+        .unwrap_or_else(|| reporter.flakes.run_id.clone());
     file_input_passes(cli, config, summary, &executed, &run_id);
     Settled { run_id, tree, executed, reused_from, reused_inputs }
 }

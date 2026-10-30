@@ -65,15 +65,19 @@ prova.test("a resume executes only what did not pass, and carries the rest forwa
   t:expect(first_id ~= nil and first_id ~= "", "the record names its run"):is_true()
 
   local r = run(sb.pkg, "--resume")
-  t:expect(r.code, "green once the flake passes:\n" .. r.stdout):equals(0)
+  -- The red one passes when re-run over the SAME tree: that is a flake, never a green resume.
+  t:expect(r.code, "a resume never greens a flake:\n" .. r.stdout):equals(1)
   t:expect(r.stdout, "says how much it carried"):contains("2 reused (same tree)")
-  t:expect(r.stdout, "and how much it executed"):contains("1 passed")
+  t:expect(r.stdout, "and counts the flake apart from passed"):contains("0 passed, 0 failed, 1 FLAKY")
   t:expect(count(sb, "one"), "a reused proof did NOT execute again"):equals(1)
   t:expect(count(sb, "flaky"), "the red one did"):equals(2)
 
   local rec = record(sb)
   t:expect(rec.executed["widget_test › steady one"], "spelled reused, never passed"):equals("reused")
-  t:expect(rec.executed["widget_test › flaky"], "the executed one is passed"):equals("passed")
+  t:expect(rec.executed["widget_test › flaky"], "the re-executed red is flaky"):equals("flaky")
+  t:expect(rec.verdict):equals("flaky")
+  t:expect(rec.flakes[1].source, "found by the resume"):equals("resume")
+  t:expect(rec.flakes[1].failed_run):equals(first_id)
   t:expect(rec.reused_from["widget_test › steady one"], "naming the run that executed it"):equals(first_id)
   t:expect(rec.summary.reused, "and counted apart from passed"):equals(2)
 end)
@@ -102,11 +106,13 @@ prova.test("a resume of a resume keeps the ORIGIN of every carried pass", {
   local second_id = record(sb).run_id
 
   local r = run(sb.pkg, "--resume")
-  t:expect(r.code, r.stdout):equals(0)
-  t:expect(r.stdout, "everything carried, nothing executed"):contains("3 reused (same tree)")
+  t:expect(r.stdout, "the steady passes carried, the flake never"):contains("2 reused (same tree)")
   local rec = record(sb)
   t:expect(rec.reused_from["widget_test › steady one"], "passed in the first run"):equals(first_id)
-  t:expect(rec.reused_from["widget_test › flaky"], "passed in the second"):equals(second_id)
+  t:expect(rec.reused_from["widget_test › flaky"], "a flaky pass is never lent to a resume"):equals(nil)
+  t:expect(rec.executed["widget_test › flaky"], "and stays flaky on this tree"):equals("flaky")
+  t:expect(rec.flakes[1].failed_run, "naming the run that FAILED it, not the flaky one"):equals(first_id)
+  t:expect(second_id ~= first_id):is_true()
   t:expect(count(sb, "one"), "and never executed again"):equals(1)
 end)
 

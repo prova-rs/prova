@@ -50,11 +50,15 @@ pub struct Header {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Row {
     pub path: String,
-    /// `passed` | `failed` | `promised` | `skipped` | `reused`.
+    /// `passed` | `failed` | `promised` | `skipped` | `reused` | `flaky`.
     pub outcome: String,
-    /// For `reused`: the run that executed it.
+    /// For `reused`: the run that executed it. For `flaky`: the run that FAILED it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
+    /// For `failed` (and `flaky`, carried from the failure): the failure's first line — what the
+    /// flake ledger names when a later run on the same tree passes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_failure: Option<String>,
 }
 
 /// A journal as read back.
@@ -80,6 +84,28 @@ impl Journal {
                 "reused" => {
                     let from = r.from.clone().unwrap_or_else(|| self.header.run_id.clone());
                     out.insert(r.path.clone(), from);
+                }
+                _ => {
+                    out.remove(&r.path);
+                }
+            }
+        }
+        out
+    }
+
+    /// Every failure this journal records, keyed by path: the run that failed it and its first
+    /// failure line. The LAST row for a path decides, as for `passes`. A `flaky` row counts as a
+    /// failure from the run it names: a flake stays a flake for as long as the tree does not change.
+    pub fn failures(&self) -> std::collections::BTreeMap<String, (String, Option<String>)> {
+        let mut out = std::collections::BTreeMap::new();
+        for r in &self.rows {
+            match r.outcome.as_str() {
+                "failed" => {
+                    out.insert(r.path.clone(), (self.header.run_id.clone(), r.first_failure.clone()));
+                }
+                "flaky" => {
+                    let from = r.from.clone().unwrap_or_else(|| self.header.run_id.clone());
+                    out.insert(r.path.clone(), (from, r.first_failure.clone()));
                 }
                 _ => {
                     out.remove(&r.path);
@@ -197,7 +223,7 @@ mod tests {
     }
 
     fn row(path: &str, outcome: &str, from: Option<&str>) -> Row {
-        Row { path: path.into(), outcome: outcome.into(), from: from.map(str::to_string) }
+        Row { path: path.into(), outcome: outcome.into(), from: from.map(str::to_string), first_failure: None }
     }
 
     /// Written line by line, read back whole — and a KILLED run (no end line, a torn last line)
@@ -243,6 +269,29 @@ mod tests {
         assert!(!p.contains_key("f › e"), "the last row for a path is its verdict");
         assert_eq!(p["f › a"], "run-2");
         assert_eq!(p["f › b"], "run-1");
+    }
+
+    /// A failure is lent to the flake check under the run that failed it; a `flaky` row under the
+    /// run IT names (the original failure), and a later pass in the same journal clears it.
+    #[test]
+    fn failures_carry_the_run_that_failed_them() {
+        let mut failed = row("f › a", "failed", None);
+        failed.first_failure = Some("boom".into());
+        let j = Journal {
+            header: header("all", "run-2"),
+            rows: vec![
+                failed,
+                row("f › b", "flaky", Some("run-1")),
+                row("f › c", "failed", None),
+                row("f › c", "passed", None),
+            ],
+            end: Some(Some("jj:abc".into())),
+        };
+        let f = j.failures();
+        assert_eq!(f["f › a"], ("run-2".to_string(), Some("boom".to_string())));
+        assert_eq!(f["f › b"].0, "run-1");
+        assert!(!f.contains_key("f › c"), "the last row decides");
+        assert!(!j.passes().contains_key("f › b"), "a flaky pass is never lent to a resume");
     }
 
     /// Keys never collide on disk: `ut` and `all` each keep their own journal.

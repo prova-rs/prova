@@ -62,6 +62,9 @@ struct Cli {
     resume: bool,
     // `--reuse` (docs/plans/resume.md#phase-2): carry a prior pass of a leaf that declares `inputs`.
     reuse: bool,
+    // `--flakes=fail|warn` (default fail): whether a run whose only blemish is a flake exits
+    // non-zero. A flake is a defect (crate::flakes); `warn` reports it without failing the run.
+    flakes_warn: bool,
     record_to: Option<std::path::PathBuf>,
     // `--allow-empty`: opt out of the empty-selection error, for the matrix leg that legitimately
     // selects nothing. Off by default, because a selection matching nothing is nearly always a typo
@@ -116,6 +119,7 @@ impl Default for Cli {
             last_failed: false,
             resume: false,
             reuse: false,
+            flakes_warn: false,
             record_to: None,
             allow_empty: false,
             update_force: false,
@@ -192,6 +196,15 @@ impl Cli {
                 Ok(d) => self.timeout_cap = Some(d),
                 Err(e) => {
                     eprintln!("prova: {e}");
+                    return Err(ExitCode::from(2));
+                }
+            }
+        } else if let Some(v) = value_flag(arg, args, &["--flakes"]) {
+            match v.as_str() {
+                "fail" => self.flakes_warn = false,
+                "warn" => self.flakes_warn = true,
+                other => {
+                    eprintln!("prova: unknown --flakes {other:?} (expected fail|warn)");
                     return Err(ExitCode::from(2));
                 }
             }
@@ -932,6 +945,8 @@ fn build_reporter(
         skipped: Vec::new(),
         // Opened by `run` once the journal is planned (it needs the tree and the resume set).
         journal: None,
+        // Replaced by `run` once the journal is planned: the history is that plan's.
+        flakes: crate::flakes::Watch::inert(),
     })
 }
 
@@ -993,13 +1008,25 @@ fn store_run_record(
     };
 
     let settled = journaling::settle(cli, config, journal_plan, home, reporter, summary);
+    // The flake ledger: append-only, never truncated — the one account of "red in run A, green in
+    // run B on the same tree" that outlives both runs' records.
+    let flakes = reporter.flakes.events.clone();
+    if let (Some(h), false) = (home.as_ref(), flakes.is_empty()) {
+        if let Ok(dir) = crate::var::dir(h) {
+            let ledger = dir.join(prova_core::ledger::FLAKES_LEDGER);
+            if let Err(e) = prova_core::ledger::append_flakes(&ledger, &flakes) {
+                eprintln!("prova: the flake ledger {} could not be written ({e})", ledger.display());
+            }
+        }
+    }
     record::store(
         home,
         &record::Record {
             // 4: `reused_inputs` (input-keyed reuse). 3: `run_id`, `tree`, `reused_from` and the
             // `"reused"` executed value (docs/plans/resume.md). 2: the open-promise value is
             // `"promised"` (was `"spec"` in schema 1; `alias = "spec"` still reads an old record).
-            schema: 4,
+            // 5: the `"flaky"` executed value, `summary.flaky`, `verdict` and `flakes`.
+            schema: 5,
             version: env!("CARGO_PKG_VERSION").to_string(),
             binary: record::binary_fingerprint(),
             run_id: settled.run_id,
@@ -1016,7 +1043,10 @@ fn store_run_record(
                 deselected: summary.deselected,
                 reused: summary.reused,
                 reused_inputs: summary.reused_inputs.len(),
+                flaky: summary.flaky,
             },
+            verdict: prova_core::ledger::verdict(summary.failed, summary.flaky).to_string(),
+            flakes,
             executed: settled.executed,
             skipped: std::mem::take(&mut reporter.skipped),
             deselected: summary.deselected_paths.clone(),
@@ -1079,7 +1109,7 @@ fn conclude_run(
     home: &Option<Home>,
     suites: &[prova_core::Suite],
     config: &prova_core::RunConfig,
-    summary: prova_core::Summary,
+    mut summary: prova_core::Summary,
     mut reporter: FailureRecorder,
     accounts: Accounts,
     env_heed: crate::manifest::Heed,
@@ -1089,6 +1119,9 @@ fn conclude_run(
     journal_plan: Option<&JournalPlan>,
 ) -> ExitCode {
     store_last_failed(home, &reporter.failed);
+    // The engine's summary knows one run; the flake check knows this tree's history.
+    reporter.flakes.settle_deputed();
+    reporter.flakes.apply(&mut summary);
 
     // Drain this run's measurements once, up front: they feed the attention account (a
     // reminder condition can read them — the pre-authorship surface of the same claim a
@@ -1178,7 +1211,7 @@ fn conclude_run(
     // Open promises COUNT as matched: `--node "<a promised test>"` selected and ran that
     // node — its body being expectedly red is the promise mechanism, not an empty
     // selection. Field-reported: the error fired after a PROMISED node was plainly shown.
-    let ran = summary.passed + summary.failed + summary.skipped + summary.promised;
+    let ran = summary.passed + summary.failed + summary.skipped + summary.promised + summary.flaky;
     if ran == 0 && !config.selection.is_empty() && !cli.allow_empty {
         report_empty_selection(&config.selection, summary.deselected);
         return ExitCode::from(2);
@@ -1230,6 +1263,25 @@ fn conclude_run(
     }
 
     if summary.is_success() && !(cli.unreferenced == "warn" && orphaned) {
+        // A flake is a defect, never "load": by default it fails the run (exit 1), and `warn`
+        // reports it without failing. Either way the record's verdict is `flaky`, never `green`.
+        if summary.flaky > 0 {
+            let plural = if summary.flaky == 1 { "" } else { "s" };
+            if cli.flakes_warn {
+                eprintln!(
+                    "prova: {} FLAKY test{plural} — reported, not failed (--flakes=warn); see .prova/var/flakes.jsonl",
+                    summary.flaky
+                );
+            } else {
+                eprintln!(
+                    "prova: {} FLAKY test{plural} — failed and passed on the same tree: a concurrency defect, not \
+                     load (each is recapped above with the line that reproduces it); --flakes=warn reports \
+                     without failing",
+                    summary.flaky
+                );
+                return ExitCode::FAILURE;
+            }
+        }
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
@@ -1457,6 +1509,19 @@ pub(crate) fn run(cli_args: Vec<String>) -> ExitCode {
 
     let mut reporter = reporter;
     reporter.journal = open_journal(journal_plan.as_ref(), &home);
+    if let Some(plan) = journal_plan.as_ref() {
+        reporter.flakes = plan.flake_watch(cli.resume, accounts.deputed.clone());
+    } else {
+        // No tree to key history on (a narrowed run, no VCS): the deputy's own flake marks still count.
+        reporter.flakes = crate::flakes::Watch::new(
+            crate::flakes::History::default(),
+            journal::new_run_id(),
+            None,
+            record::binary_fingerprint(),
+            cli.resume,
+            Some(accounts.deputed.clone()),
+        );
+    }
     let outcome = run_suites(&suites, &mut reporter, &config);
     // The run is over, so the run-wide instances are reaped here — before the summary, because a
     // teardown that takes a minute must not look like a hung reporter, and after every suite,

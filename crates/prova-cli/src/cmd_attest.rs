@@ -254,6 +254,7 @@ pub(crate) fn attest_subcommand(args: Vec<String>) -> ExitCode {
             let what = match outcome {
                 record::Executed::Failed => "failed",
                 record::Executed::Promised => "is an open promise, red by definition",
+                record::Executed::Flaky => "is FLAKY — it failed and passed on the same tree, a defect rather than evidence",
                 record::Executed::Passed | record::Executed::Reused => {
                     unreachable!("a passing proof attests, reused or executed")
                 }
@@ -887,6 +888,8 @@ end)
                 reports: Vec::new(),
                 reminders: vec![],
                 deputed_narrowed: false,
+                verdict: String::new(),
+                flakes: Vec::new(),
                 deputed: vec![record::DeputedRow {
                     verifier: "junit".into(),
                     suite: "SuiteA".into(),
@@ -896,6 +899,7 @@ end)
                     time_ms: None,
                     file: "junit.xml".into(),
                     reused_from: None,
+                    flaky_from: None,
                 }],
             };
             let path = "ledger_test › covers the claim".to_string();

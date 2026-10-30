@@ -114,8 +114,11 @@ prova.test("without --reuse nothing is carried, though every pass is filed", {
   local plain = run(sb.pkg)
   t:expect(plain.stdout, "a plain run executes everything"):never():contains("reused")
   t:expect(count(sb, "keyed")):equals(2)
+  -- `flaky` failed in the first run and passed in the second over the SAME tree: a flake, so its
+  -- pass is not evidence and is never filed — only `keyed` seeded the store.
+  t:expect(plain.stdout, "the second run calls the flake what it is"):contains("1 FLAKY")
   local r = run(sb.pkg, "--reuse")
-  t:expect(r.stdout, "the plain runs seeded the store"):contains("2 reused (inputs unchanged)")
+  t:expect(r.stdout, "the plain runs seeded the store"):contains("1 reused (inputs unchanged)")
   t:expect(count(sb, "keyed")):equals(2)
 end)
 

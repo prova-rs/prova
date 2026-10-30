@@ -26,6 +26,11 @@ pub enum Executed {
     /// never spelled `passed`, because it did not execute in this run. `Record::reused_from` names
     /// the run that did, and `Record::reused_inputs` says which kind of warrant carried it.
     Reused,
+    /// Executed and passed HERE, but a failure is recorded for it on the same tree digest and the
+    /// same prova binary — an earlier run, the run this one resumed, or a retry. A flake is a
+    /// concurrency defect, never load, so it is spelled apart from `passed` and is never evidence:
+    /// `attest` reads it as red. `Record::flakes` names the run that failed and its first failure.
+    Flaky,
 }
 
 /// A leaf that ran into a gate before its body — and the gate's own words for why.
@@ -55,6 +60,9 @@ pub struct Counts {
     /// Of `reused`, how many input-keyed reuse carried (`--reuse`, docs/plans/resume.md#phase-2);
     /// the rest were carried over the identical tree.
     pub reused_inputs: usize,
+    /// Flake events this run recorded (`Record::flakes`): leaves that are `Executed::Flaky` plus
+    /// deputed cases whose outcome is `"flaky"`. A flaky leaf is NOT also in `passed`.
+    pub flaky: usize,
 }
 
 /// One reminder, as the run evaluated it — the attention account's row in the record.
@@ -94,7 +102,9 @@ pub struct DeputedRow {
     pub verifier: String,
     pub suite: String,
     pub name: String,
-    /// The deputy's own vocabulary, kept: `"passed"` | `"failed"` | `"error"` | `"skipped"`.
+    /// The deputy's own vocabulary, kept: `"passed"` | `"failed"` | `"error"` | `"skipped"` — plus
+    /// `"flaky"`: it passed here, and a failure is recorded for it on the same tree (a retry, the run
+    /// a resume re-ran it from, an earlier run). Never evidence, never red.
     pub outcome: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
@@ -105,6 +115,89 @@ pub struct DeputedRow {
     /// The run that conducted it, when a resumed deputy carried it forward instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reused_from: Option<String>,
+    /// For a `"flaky"` case: the run whose failure it passed after (`prova.flaky_from`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flaky_from: Option<String>,
+}
+
+/// Which deputed case a flake is, when it is one (`FlakeEvent::deputed`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeputedRef {
+    pub verifier: String,
+    pub suite: String,
+    pub name: String,
+}
+
+/// One flake event — a line of `.prova/var/flakes.jsonl` and a row of `Record::flakes`.
+///
+/// THE RULE: a test is flaky when a failure and a pass are recorded for it on the same tree digest
+/// and the same prova binary (the `--resume` soundness key). Its sources: `"rerun"` (an earlier run
+/// of the same tree failed it), `"resume"` (the run a `--resume` re-executed it from, or a
+/// `junit.merge` that replaced a red with a re-run pass), `"junit-retry"` (the deputy retried it
+/// itself — nextest's `<flakyFailure>`), `"stress"` (copies of one `prova stress` run disagreed).
+/// Herald and other readers key on these names; they are a wire format.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlakeEvent {
+    pub schema: u32,
+    /// Always `"flake"` — so the ledger can carry other kinds later without a reader guessing.
+    pub kind: String,
+    /// The record key of the test: a file-qualified leaf path, or `suite#name` for a deputed case.
+    pub test: String,
+    /// The deputed case, when the flake is one; `null` for a prova leaf.
+    pub deputed: Option<DeputedRef>,
+    /// The tree digest both verdicts were recorded over; `null` when the run had none.
+    pub tree: Option<String>,
+    /// The prova binary fingerprint both verdicts were recorded under.
+    pub binary: String,
+    pub failed_run: String,
+    pub passed_run: String,
+    /// The first line of the failure, when one was recorded.
+    pub first_failure: Option<String>,
+    /// `"resume"` | `"rerun"` | `"junit-retry"` | `"stress"`.
+    pub source: String,
+    /// RFC 3339, when this event was recorded.
+    pub at: String,
+    /// The raw node path a `--node` rerun matches, for the console recap. Not part of the wire format.
+    #[serde(skip)]
+    pub node: Option<String>,
+}
+
+/// The current `FlakeEvent::schema`.
+pub const FLAKE_SCHEMA: u32 = 1;
+
+/// The ledger's basename under `var/`.
+pub const FLAKES_LEDGER: &str = "flakes.jsonl";
+
+/// Append flake events to the ledger at `path` — append-only, never truncated: the ledger is the
+/// history that lets "red in run A, green in run B" outlive both runs' records.
+pub fn append_flakes(path: &Path, events: &[FlakeEvent]) -> std::io::Result<()> {
+    use std::io::Write;
+    if events.is_empty() {
+        return Ok(());
+    }
+    let mut text = String::new();
+    for e in events {
+        text.push_str(&serde_json::to_string(e).map_err(std::io::Error::other)?);
+        text.push('\n');
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    // One write: concurrent appenders (a stress run beside a gate) never interleave inside a line.
+    f.write_all(text.as_bytes())
+}
+
+/// The run's verdict, as `last-run.json` spells it: `"red"` when anything failed, else `"flaky"`
+/// when any flake was recorded, else `"green"`. Flaky is never green.
+pub fn verdict(failed: usize, flaky: usize) -> &'static str {
+    if failed > 0 {
+        "red"
+    } else if flaky > 0 {
+        "flaky"
+    } else {
+        "green"
+    }
 }
 /// One recorded measurement — a named scalar this run observed, with which way is better and which
 /// baseline set it belongs to. History for the record, and the source `--update-baseline` reads
@@ -210,6 +303,12 @@ pub struct Record {
     /// evidence surface it; the unnarrowed CI run records false here.
     #[serde(default)]
     pub deputed_narrowed: bool,
+    /// `"green"` | `"flaky"` | `"red"` (see [`verdict`]). Empty in a record from before it existed.
+    #[serde(default)]
+    pub verdict: String,
+    /// Every flake this run recorded, in the ledger's own shape.
+    #[serde(default)]
+    pub flakes: Vec<FlakeEvent>,
 }
 
 pub mod claims;
@@ -401,6 +500,8 @@ mod tests {
             reminders: Vec::new(),
             deputed: Vec::new(),
             deputed_narrowed: false,
+            verdict: String::new(),
+            flakes: Vec::new(),
             measurements: Vec::new(),
             attached: Vec::new(),
             dependency_overrides: Vec::new(),
@@ -450,5 +551,53 @@ mod tests {
         assert!(attest(&r, &["busy".to_string()]).is_attested());
         assert_eq!(serde_json::to_string(&Executed::Reused).unwrap(), "\"reused\"");
         assert_eq!(serde_json::from_str::<Executed>("\"reused\"").unwrap(), Executed::Reused);
+    }
+
+    /// A flaky pass is spelled `"flaky"` and attests NOTHING: a test that failed and passed on one
+    /// tree is a defect, not evidence.
+    #[test]
+    fn a_flaky_pass_never_attests() {
+        let r = record_with(&[("busy", Executed::Flaky)], &[], &[]);
+        assert_eq!(
+            attest(&r, &["busy".to_string()]),
+            Attested::Red { path: "busy".into(), outcome: Executed::Flaky }
+        );
+        assert_eq!(serde_json::to_string(&Executed::Flaky).unwrap(), "\"flaky\"");
+    }
+
+    #[test]
+    fn the_verdict_is_never_green_with_a_flake() {
+        assert_eq!(verdict(0, 0), "green");
+        assert_eq!(verdict(0, 2), "flaky");
+        assert_eq!(verdict(1, 2), "red");
+    }
+
+    /// The ledger appends: a second write keeps the first line, and each line is one parseable event.
+    #[test]
+    fn the_flake_ledger_appends_and_never_truncates() {
+        let dir = std::env::temp_dir().join(format!("prova-flakes-ut-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join(FLAKES_LEDGER);
+        let ev = |test: &str| FlakeEvent {
+            schema: FLAKE_SCHEMA,
+            kind: "flake".into(),
+            test: test.into(),
+            deputed: None,
+            tree: Some("jj:abc".into()),
+            binary: "b".into(),
+            failed_run: "run-1".into(),
+            passed_run: "run-2".into(),
+            first_failure: Some("boom".into()),
+            source: "rerun".into(),
+            at: "2026-10-30T00:00:00Z".into(),
+            node: None,
+        };
+        append_flakes(&path, &[ev("a")]).unwrap();
+        append_flakes(&path, &[ev("b")]).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<FlakeEvent> = text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert_eq!(lines.iter().map(|e| e.test.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+        assert!(text.contains("\"deputed\":null"), "a leaf flake says so: {text}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
