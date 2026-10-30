@@ -90,6 +90,10 @@ The engine is built and released (single static binary, no runtime to install):
   surgical selection (`-k`, `--tags`, `--node`, `--last-failed`), a streaming tree console
   with source locations and a failures recap, JSONL/TAP/JUnit reporters, GitHub Actions
   annotations + step summaries out of the box, and a full MCP server mode.
+- **Flakes are defects**: a test that failed and passed on the same tree is FLAKY — never green.
+  It is counted and recapped, recorded (`verdict: "flaky"`, an append-only `flakes.jsonl`), and
+  fails the run by default; `prova stress` reproduces one with N isolated copies of each nextest
+  case beside CPU burners ([flakes](docs/design/flakes.md)).
 
 Deep docs, in reading order:
 

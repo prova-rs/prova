@@ -212,6 +212,13 @@ const VERBS: &[Verb] = &[
         run: up_subcommand,
     },
     Verb {
+        name: "stress",
+        help: "  prova stress [-E F] [-k P] --copies N [--par P] [--burners M]  run each selected nextest case\n\
+               \x20                           as N isolated copies beside CPU burners — reproduce a FLAKY test\n\
+               \x20                           on purpose (`prova stress --help`)",
+        run: cmd_stress::run,
+    },
+    Verb {
         name: "lock",
         help: "  prova lock <token> [--reads] [--machine] -- <cmd>  hold a package lock while <cmd> runs — join\n\
                \x20                           the suite's house rules from any tool (`prova learn locks`)",
@@ -487,6 +494,9 @@ use cmd_attest::*;
 
 mod cmd_eval;
 use cmd_eval::*;
+
+/// `prova stress`: N copies of each selected nextest case, beside burners (docs/design/flakes.md).
+mod cmd_stress;
 
 mod cmd_topo;
 use cmd_topo::*;

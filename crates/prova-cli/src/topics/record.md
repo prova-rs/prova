@@ -20,6 +20,11 @@ mean *no evidence was produced*:
 - **deselected** — never in the run at all (`-k`, `--tags`, `--node`, `--promises`, `--falsify`).
   Narrowing a selection is the cheapest way there is to report green having tested nothing.
 
+And a **verdict** — `"green"`, `"flaky"` or `"red"` — with the run's `flakes`: a test that failed and
+passed on the same tree and prova is `"flaky"` in `executed`, never `"passed"`, and attests nothing.
+Every flake event is also appended to `.prova/var/flakes.jsonl`, which no run ever truncates
+(docs/design/flakes.md).
+
 ## attest — the question `owed` cannot answer
 
 `prova owed` is static: it reconciles anchors against `covers` bindings and reports that an
@@ -41,7 +46,7 @@ Exit 1 when the obligation is not attested; exit 2 for a usage error — in CI a
 broken pipeline, an unattested claim is a real finding.
 
 **Only an executed, passing proof attests.** Skipped, deselected, absent from the record, failed,
-still an open `spec`, or covered by nothing at all — every one of those is the absence of evidence.
+flaky, still an open `spec`, or covered by nothing at all — every one of those is the absence of evidence.
 Exiting 0 on "I found nothing to check" is the vacuous pass this whole line of work refuses. Where
 several proofs cover one claim they are all obligations, not a menu: one skipped sibling is enough
 to withhold the attestation.

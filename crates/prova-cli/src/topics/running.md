@@ -28,7 +28,7 @@ classes on one line ("switched off: ut (3) …"). Exact `--node` implies the thr
 | Code | Meaning |
 |---|---|
 | 0 | green (or green-with-skips) |
-| 1 | at least one failure |
+| 1 | at least one failure — or a FLAKY test (`--flakes=warn` reports one without failing) |
 | 2 | usage error, no tests found, or a `must_run` guarantee unmet (broken environment ≠ skipped test) |
 
 ## Output for machines
@@ -55,6 +55,15 @@ classes on one line ("switched off: ut (3) …"). Exact `--node` implies the thr
   pass. `--reuse` carries a prior pass of any test declaring `inputs = {…}` whose inputs are
   byte-identical, across trees. Both record carried leaves as `reused` (with the run that executed
   them, and which kind), never as `passed`; a failure always runs again.
+- A test that FAILED and PASSED on the same tree and prova — across two runs of a lane, within a
+  `--resume`, or by a deputy's own retry (nextest's `<flakyFailure>`) — is **FLAKY**: a concurrency
+  defect, never load, never green. The tally prints `K FLAKY`, a recap names each with both runs and
+  a reproduce line, `last-run.json` says `"verdict": "flaky"`, and `.prova/var/flakes.jsonl` keeps
+  every event (append-only). Exit 1 by default; `--flakes=warn` reports without failing.
+- `prova stress -E '<filterset>' --copies N [--par P] [--burners M]` reproduces one on purpose: each
+  nextest case as N isolated copies (own short TMPDIR, own process group) beside CPU burners,
+  built with `[stress] nextest = [...]` (the gate's own cargo flags). It writes
+  `var/stress/<run>/summary.json`, appends disagreeing cases to the ledger, never `last-run.json`.
 
 ## Profiles and guarantees
 

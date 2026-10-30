@@ -134,6 +134,21 @@ pub struct Manifest {
     /// depends on cannot vary by lane.
     #[serde(default)]
     pub resume: ResumeSection,
+    /// `[stress]` — how `prova stress` builds and lists the nextest cases it copies
+    /// (docs/design/flakes.md#stress-mode). A package property: the binaries a stress run copies must
+    /// be the ones the gate builds.
+    #[serde(default)]
+    pub stress: StressSection,
+}
+
+/// `[stress]` — `nextest` is the argument list `prova stress` hands `cargo nextest list` when the
+/// command line gives none after `--`: the gate's own build flags (`["--workspace", "--features",
+/// "cos-daemon/test-daemon", "--profile", "prova"]`), so a stress binary is the gate's binary.
+#[derive(Debug, Deserialize, Default, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct StressSection {
+    #[serde(default)]
+    pub nextest: Vec<String>,
 }
 
 /// `[resume]` — `roots` are directories OUTSIDE this package's repository that its runs read: a

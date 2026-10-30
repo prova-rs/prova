@@ -173,6 +173,41 @@ impl Watch {
     }
 }
 
+/// Append this run's flake events to `var/flakes.jsonl` — append-only, never truncated: the one
+/// account of "red in run A, green in run B on the same tree" that outlives both runs' records.
+pub(crate) fn append_ledger(home: Option<&crate::home::Home>, events: &[FlakeEvent]) {
+    let Some(h) = home else { return };
+    if events.is_empty() {
+        return;
+    }
+    if let Ok(dir) = crate::var::dir(h) {
+        let ledger = dir.join(prova_core::ledger::FLAKES_LEDGER);
+        if let Err(e) = prova_core::ledger::append_flakes(&ledger, events) {
+            eprintln!("prova: the flake ledger {} could not be written ({e})", ledger.display());
+        }
+    }
+}
+
+/// The exit of a run that is otherwise green. A flake is a defect, never "load": under
+/// `--flakes=fail` (the default) it fails the run, under `--flakes=warn` it is reported and the run
+/// passes. Either way the record's verdict is `flaky`, never `green`.
+pub(crate) fn exit_for(flaky: usize, warn: bool) -> std::process::ExitCode {
+    if flaky == 0 {
+        return std::process::ExitCode::SUCCESS;
+    }
+    let plural = if flaky == 1 { "" } else { "s" };
+    if warn {
+        eprintln!("prova: {flaky} FLAKY test{plural} — reported, not failed (--flakes=warn); see .prova/var/flakes.jsonl");
+        return std::process::ExitCode::SUCCESS;
+    }
+    eprintln!(
+        "prova: {flaky} FLAKY test{plural} — failed and passed on the same tree: a concurrency defect, not \
+         load (each is recapped above with the line that reproduces it); --flakes=warn reports \
+         without failing"
+    );
+    std::process::ExitCode::FAILURE
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

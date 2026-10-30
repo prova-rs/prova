@@ -20,18 +20,24 @@ pub(super) struct JournalPlan {
     history: crate::flakes::History,
 }
 
-impl JournalPlan {
-    /// The flake check this run streams through (crate::flakes).
-    pub(super) fn flake_watch(&self, resume: bool, deputed: prova_core::DeputedRegistry) -> crate::flakes::Watch {
-        crate::flakes::Watch::new(
-            self.history.clone(),
-            self.header.run_id.clone(),
-            Some(self.header.tree.clone()),
-            self.header.binary.clone(),
-            resume,
-            Some(deputed),
-        )
-    }
+/// The flake check this run streams through (crate::flakes): keyed on the plan's tree and history,
+/// or — with no tree to key history on (a narrowed run, no VCS) — on nothing, where the deputy's own
+/// flake marks still count.
+pub(super) fn flake_watch(
+    plan: Option<&JournalPlan>,
+    resume: bool,
+    deputed: &prova_core::DeputedRegistry,
+) -> crate::flakes::Watch {
+    let (history, run_id, tree, binary) = match plan {
+        Some(p) => (
+            p.history.clone(),
+            p.header.run_id.clone(),
+            Some(p.header.tree.clone()),
+            p.header.binary.clone(),
+        ),
+        None => (Default::default(), journal::new_run_id(), None, record::binary_fingerprint()),
+    };
+    crate::flakes::Watch::new(history, run_id, tree, binary, resume, Some(deputed.clone()))
 }
 
 /// The failures earlier runs recorded over `tree` by `binary`: the previous journal of this lane (a
