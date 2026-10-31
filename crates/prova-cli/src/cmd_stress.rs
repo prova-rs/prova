@@ -595,6 +595,70 @@ mod unix {
             ExitCode::FAILURE
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn scratch(tag: &str) -> PathBuf {
+            let d = std::env::temp_dir().join(format!("prova-stress-ut-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&d);
+            std::fs::create_dir_all(d.join("fail")).unwrap();
+            d
+        }
+
+        fn case(binary: &str, name: &str) -> Case {
+            Case { binary_id: "b".into(), binary: binary.into(), cwd: "/".into(), name: name.into() }
+        }
+
+        /// Every copy runs and is tallied per case: a passing copy leaves no log, a failing one keeps
+        /// its output, and the pool never runs more copies than asked.
+        #[test]
+        fn copies_are_run_and_tallied_per_case() {
+            let d = scratch("copies");
+            let a = Args { copies: 3, par: 2, timeout_secs: 30, ..Args::default() };
+            let live: Arc<Mutex<Live>> = Arc::default();
+            let t = run_copies(&a, vec![case("/usr/bin/true", "ok"), case("/usr/bin/false", "red")], &d.join("tmp"), &d.join("fail"), &live);
+            assert_eq!((t["b ok"].pass, t["b ok"].fail), (3, 0));
+            assert_eq!((t["b red"].pass, t["b red"].fail, t["b red"].logs.len()), (0, 3, 3));
+            assert!(std::fs::read_to_string(&t["b red"].logs[0]).unwrap().contains("# b red"));
+            assert!(live.lock().unwrap().groups.is_empty(), "every group reaped");
+            let _ = std::fs::remove_dir_all(&d);
+        }
+
+        /// A copy past its timeout is killed and failed; a copy after a stop never starts.
+        #[test]
+        fn a_hung_copy_is_killed_and_a_stopped_run_spawns_nothing() {
+            let d = scratch("timeout");
+            let live: Mutex<Live> = Mutex::default();
+            let sleeper = Case { binary_id: "b".into(), binary: "/bin/sleep".into(), cwd: "/".into(), name: "30".into() };
+            // `sleep --exact 30 …` is a usage error on some platforms; a real hang needs a shell.
+            let hang = d.join("hang.sh");
+            std::fs::write(&hang, "#!/bin/sh\nexec sleep 30\n").unwrap();
+            std::process::Command::new("chmod").arg("+x").arg(&hang).status().unwrap();
+            let hung = Case { binary: hang.display().to_string(), ..sleeper };
+            let log = d.join("fail/h.log");
+            let started = Instant::now();
+            assert!(!copy(&hung, 1, &d.join("t1"), &log, Duration::from_secs(1), &live));
+            assert!(started.elapsed() < Duration::from_secs(20));
+            assert!(std::fs::read_to_string(&log).unwrap().contains("TIMEOUT after 1s"));
+            live.lock().unwrap().stopping = true;
+            assert!(!copy(&case("/usr/bin/true", "ok"), 2, &d.join("t2"), &d.join("fail/s.log"), Duration::from_secs(5), &live));
+            let _ = std::fs::remove_dir_all(&d);
+        }
+
+        /// Burners start, run, and die by PID.
+        #[test]
+        fn burners_die_by_pid() {
+            let mut b = start_burners(2);
+            assert_eq!(b.len(), 2);
+            let pids: Vec<i32> = b.iter().map(|c| c.id() as i32).collect();
+            // SAFETY: signal 0 only probes for existence.
+            assert!(pids.iter().all(|p| unsafe { libc::kill(*p, 0) } == 0), "running");
+            stop_burners(&mut b);
+            assert!(pids.iter().all(|p| unsafe { libc::kill(*p, 0) } != 0), "gone and reaped");
+        }
+    }
 }
 
 #[cfg(test)]
