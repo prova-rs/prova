@@ -512,11 +512,23 @@ end)
 --- basis (unit 71.70 vs 71.9 ±1.0 · blackbox 63.37 vs 62.4 ±1.0 · merged 80.93 vs 80.9 ±0.5), so
 --- re-banking them would have LOOSENED the unit floor by 0.2pp for no reason — a basis re-bank is
 --- not an occasion to lower a bar that is being met.
+---
+--- **Re-banked 2026-10-30 (after prova 0.29.0)** for two legitimate additions of instrumented code:
+--- resume phase 2 (`--reuse`, input-keyed reuse), which landed without a re-bank and has failed the
+--- scheduled Coverage job since 2026-10-29 at 34713 lines (+7.0%), and the flake ledger plus
+--- `prova stress` (docs/design/flakes.md), ~1,000 lines more. Two consecutive conducts in a fresh
+--- workspace: the first read blackbox at 29910 (the transient regime — no nextest artifacts in the
+--- scan yet) and unit/merged at 35685; the second, steady state, read all three at 35685: unit
+--- 25636 (71.84%), blackbox 22539 (63.16%), merged 28786 (80.67%).
+---
+--- **The FLOORS are left where they are**, for the same reason as the 2026-09-02 re-bank: all three
+--- still hold against the new basis (unit 71.84 vs 71.9 ±1.0 · blackbox 63.16 vs 62.4 ±1.0 · merged
+--- 80.67 vs 80.9 ±0.5). Moving them would loosen unit and merged for no reason.
 local BASIS = {
-  -- layer      lines counted at bank time (2026-09-02, prova 0.26.1)
-  unit     = 32434,
-  blackbox = 32434,
-  merged   = 32434,
+  -- layer      lines counted at bank time (2026-10-30, after prova 0.29.0)
+  unit     = 35685,
+  blackbox = 35685,
+  merged   = 35685,
 }
 
 --- How far the basis may drift before the percentages stop being comparable. Small on purpose:
