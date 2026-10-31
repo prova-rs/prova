@@ -39,6 +39,32 @@ const REUSED_FROM: &str = "prova.reused_from";
 /// The testcase property that names the run a `flaky` case failed in, written by `junit.merge`.
 const FLAKY_FROM: &str = "prova.flaky_from";
 
+/// The longest label [`body_label`] keeps: a message names the failure, it is not the report.
+const LABEL_MAX: usize = 400;
+
+/// The label of a failure body that carries no `message` attribute. A Rust panic wins wherever it
+/// sits: nextest's body is the test's whole captured output, whose first line is always `running 1
+/// test`, so the first line would name nothing. The panic's location and the line after it (the
+/// assertion's own message) are the label. Anything else keeps the first non-empty line (pytest's
+/// `AssertionError: …`). Capped at [`LABEL_MAX`] characters.
+fn body_label(text: &str) -> Option<String> {
+    let lines: Vec<&str> = text.lines().map(str::trim).collect();
+    let label = match lines.iter().position(|l| l.contains("panicked at")) {
+        Some(at) => {
+            let place = lines[at].split_once("panicked at").map_or(lines[at], |(_, p)| p).trim();
+            match lines[at + 1..].iter().find(|l| !l.is_empty()) {
+                Some(said) => format!("panicked at {place} {said}"),
+                None => format!("panicked at {place}"),
+            }
+        }
+        None => lines.iter().find(|l| !l.is_empty())?.to_string(),
+    };
+    Some(match label.char_indices().nth(LABEL_MAX) {
+        Some((cut, _)) => format!("{}…", &label[..cut]),
+        None => label,
+    })
+}
+
 /// Apply one child element of an open `<testcase>` to it — the outcome vocabulary.
 ///
 /// `failure`/`error`/`skipped` set the outcome outright. nextest's (and surefire's) retry elements
@@ -138,14 +164,10 @@ fn parse_document(xml: &str, file: &str, cases: &mut Vec<Case>) -> Result<(), St
             },
             Ok(Event::Text(t)) => {
                 // A failure/error body with no `message` attribute carries its text as content —
-                // the pytest dialect. First line only: the message is a label, not a traceback.
+                // the pytest dialect, and nextest's captured output. See [`body_label`].
                 if let Some(case) = open.as_mut() {
                     if case.outcome != "passed" && case.message.is_none() {
-                        let text = t.unescape().unwrap_or_default();
-                        let first = text.lines().next().unwrap_or("").trim().to_string();
-                        if !first.is_empty() {
-                            case.message = Some(first);
-                        }
+                        case.message = body_label(&t.unescape().unwrap_or_default());
                     }
                 }
             }
@@ -503,6 +525,29 @@ trace line</failure></testcase>
         assert_eq!(cases[1].outcome, "failed");
         // First line only — a message is a label, not a traceback.
         assert_eq!(cases[1].message.as_deref(), Some("AssertionError: nope"));
+    }
+
+    /// nextest's dialect: the body is the captured output, opening with `running 1 test`. The
+    /// label is the panic — where, and what the assertion said — never that first line.
+    #[test]
+    fn a_nextest_body_is_labelled_by_its_panic() {
+        let xml = r#"<testsuites><testsuite name="cos-daemon::reaped_watch_path">
+          <testcase name="the_watch_path" classname="cos-daemon::reaped_watch_path"><failure type="test failure with exit code 101">running 1 test
+
+thread 'the_watch_path' panicked at crates/cos-daemon/tests/reaped_watch_path.rs:120:5:
+end_session reaps the settled child: 0199
+note: run with `RUST_BACKTRACE=1`</failure></testcase>
+        </testsuite></testsuites>"#;
+        let mut cases = Vec::new();
+        parse_document(xml, "nextest.xml", &mut cases).unwrap();
+        assert_eq!(
+            cases[0].message.as_deref(),
+            Some("panicked at crates/cos-daemon/tests/reaped_watch_path.rs:120:5: end_session reaps the settled child: 0199")
+        );
+        let long = format!("thread 't' panicked at a.rs:1:1:\n{}", "x".repeat(1000));
+        let label = body_label(&long).unwrap();
+        assert_eq!(label.chars().count(), LABEL_MAX + 1, "capped, with an ellipsis: {label}");
+        assert!(label.ends_with('…'));
     }
 
     /// A resumed deputy's account: the re-run case replaces its prior red, every other case is
