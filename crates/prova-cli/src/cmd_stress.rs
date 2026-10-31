@@ -288,6 +288,30 @@ mod unix {
         serde_json::from_slice(&out.stdout).map_err(|e| format!("cargo nextest list printed no JSON listing: {e}"))
     }
 
+    /// How many times a spawn refused "text file busy" is tried again, [`BUSY_PAUSE`] apart.
+    const BUSY_TRIES: u32 = 100;
+    /// The pause between two such tries.
+    const BUSY_PAUSE: Duration = Duration::from_millis(10);
+
+    /// Spawn `command`, past Linux's ETXTBSY. A binary written moments ago is refused as busy
+    /// while any process still holds a write descriptor to it — a sibling forked mid-write keeps
+    /// one until it execs — and nothing signals the moment it lets go. That refusal is the OS,
+    /// never the test: counted as a failed copy, it made a stress run report a flake the test did
+    /// not have (prova's own stress proof, release CI 2026-10-31). Every other error is returned
+    /// at once, and so is a binary still busy after [`BUSY_TRIES`] tries.
+    fn spawn_past_busy(command: &mut std::process::Command) -> std::io::Result<std::process::Child> {
+        let mut tries = 1;
+        loop {
+            match command.spawn() {
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < BUSY_TRIES => {
+                    tries += 1;
+                    std::thread::sleep(BUSY_PAUSE);
+                }
+                spawned => return spawned,
+            }
+        }
+    }
+
     /// Run one copy to its end, its group killed afterwards. `Ok(true)` passed.
     fn copy(case: &Case, n: usize, tmp: &Path, log: &Path, timeout: Duration, live: &Mutex<Live>) -> bool {
         let _ = std::fs::create_dir_all(tmp);
@@ -300,7 +324,8 @@ mod unix {
             if guard.stopping {
                 return false;
             }
-            let spawned = std::process::Command::new(&case.binary)
+            let mut command = std::process::Command::new(&case.binary);
+            command
                 .args(["--exact", &case.name, "--nocapture", "--test-threads=1"])
                 .current_dir(&case.cwd)
                 .env("TMPDIR", format!("{}/", tmp.display()))
@@ -309,9 +334,8 @@ mod unix {
                 .stdin(std::process::Stdio::null())
                 .stdout(out)
                 .stderr(err)
-                .process_group(0)
-                .spawn();
-            match spawned {
+                .process_group(0);
+            match spawn_past_busy(&mut command) {
                 Ok(c) => {
                     guard.groups.insert(c.id() as i32);
                     c
@@ -623,6 +647,41 @@ mod unix {
             assert_eq!((t["b red"].pass, t["b red"].fail, t["b red"].logs.len()), (0, 3, 3));
             assert!(std::fs::read_to_string(&t["b red"].logs[0]).unwrap().contains("# b red"));
             assert!(live.lock().unwrap().groups.is_empty(), "every group reaped");
+            let _ = std::fs::remove_dir_all(&d);
+        }
+
+        /// A binary still open for writing when its copy starts (ETXTBSY on Linux) runs once the
+        /// writer lets go: the refusal is the OS's, never a failed copy.
+        #[cfg(target_os = "linux")]
+        #[test]
+        fn a_copy_whose_binary_is_busy_runs_once_it_is_free() {
+            use std::os::unix::fs::PermissionsExt;
+            let d = scratch("busy");
+            let bin = d.join("fake-test");
+            let mut writer = std::fs::File::create(&bin).unwrap();
+            writer.write_all(b"#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let still_busy = std::process::Command::new(&bin).status();
+            assert_eq!(
+                still_busy.map_err(|e| e.kind()).err(),
+                Some(std::io::ErrorKind::ExecutableFileBusy),
+                "the writer's descriptor makes the binary busy"
+            );
+            let release = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(100));
+                drop(writer);
+            });
+            let live: Arc<Mutex<Live>> = Arc::default();
+            let ran = copy(
+                &case(bin.to_str().unwrap(), "ok"),
+                1,
+                &d.join("t"),
+                &d.join("fail/busy.log"),
+                Duration::from_secs(10),
+                &live,
+            );
+            release.join().unwrap();
+            assert!(ran, "{}", std::fs::read_to_string(d.join("fail/busy.log")).unwrap_or_default());
             let _ = std::fs::remove_dir_all(&d);
         }
 
