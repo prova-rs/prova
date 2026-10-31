@@ -106,7 +106,13 @@ prova.test("stress runs N copies of each case, and a case whose copies disagree 
   local r = stress(sb, "--copies 4 --par 4")
   t:expect(r.code, "a failed copy fails the stress:\n" .. r.stdout):equals(1)
   t:expect(r.stdout):contains("3 case(s) x 4 copies = 12 runs")
-  t:expect(r.stdout, "the flake is named"):contains("FLAKY  1/4  fake::bin tests::flaky")
+  -- A wrong tally names its copies: each failed copy's own log, which the elided stdout cannot show.
+  local copies = ""
+  for _, log in ipairs(summary(sb).cases["fake::bin tests::flaky"].logs or {}) do
+    copies = copies .. "\n--- " .. log .. "\n" .. (fs.exists(log) and fs.read(log) or "(no log)")
+  end
+  t:expect(r.stdout, "the flake is named; the flaky case's failed copies:" .. copies)
+    :contains("FLAKY  1/4  fake::bin tests::flaky")
   t:expect(r.stdout, "with its panic"):contains("lost the race")
   t:expect(r.stdout, "an always-red case is red, not flaky"):contains("RED  4/4  fake::bin tests::red")
 
