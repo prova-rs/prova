@@ -374,7 +374,58 @@ pub(crate) fn make(lua: &Lua, deputed: Option<DeputedRegistry>) -> mlua::Result<
         })?,
     )?;
 
+    register_union(lua, &junit)?;
+
     Ok(junit)
+}
+
+/// `junit.union(paths, { out })` — disjoint accounts made one: the slices of one partitioned
+/// conduct (`nextest --partition`), whose readers see one account. A case in two of them is
+/// REFUSED: slices never overlap, so a duplicate is a broken partition, never a re-run (`merge`).
+fn register_union(lua: &Lua, junit: &Table) -> mlua::Result<()> {
+    junit.set(
+        "union",
+        lua.create_function(|_, (paths, opts): (Vec<String>, Table)| {
+            let out: String = opts.get::<Option<String>>("out")?.ok_or_else(|| {
+                mlua::Error::RuntimeError("junit.union: out = <path to write> is required".into())
+            })?;
+            let mut slices = Vec::new();
+            for path in &paths {
+                let xml = std::fs::read_to_string(path).map_err(|e| {
+                    mlua::Error::RuntimeError(format!("junit.union: cannot read {path}: {e}"))
+                })?;
+                let mut cases = Vec::new();
+                parse_document(&xml, path, &mut cases).map_err(mlua::Error::RuntimeError)?;
+                slices.push(cases);
+            }
+            let xml = union_accounts(slices).map_err(mlua::Error::RuntimeError)?;
+            std::fs::write(&out, xml).map_err(|e| {
+                mlua::Error::RuntimeError(format!("junit.union: cannot write {out}: {e}"))
+            })?;
+            Ok(out)
+        })?,
+    )
+}
+
+/// Disjoint accounts made one, in slice order. A (suite, name) in two slices is an error naming
+/// both files: a partition's slices never overlap.
+fn union_accounts(slices: Vec<Vec<Case>>) -> Result<String, String> {
+    let mut seen: std::collections::HashMap<(String, String), String> =
+        std::collections::HashMap::new();
+    let mut all = Vec::new();
+    for slice in slices {
+        for c in slice {
+            let key = (c.suite.clone(), c.name.clone());
+            if let Some(first) = seen.insert(key, c.file.clone()) {
+                return Err(format!(
+                    "junit.union: {} {} is in two slices ({first} and {}): a partition's slices never overlap",
+                    c.suite, c.name, c.file
+                ));
+            }
+            all.push(c);
+        }
+    }
+    Ok(render_account(&all))
 }
 
 /// Merge a prior account with the cases re-run over it. The prior's order is kept; a re-run case
@@ -481,6 +532,31 @@ pub(crate) fn install_recipe(lua: &Lua) -> mlua::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn slice(xml: &str, file: &str) -> Vec<Case> {
+        let mut cases = Vec::new();
+        parse_document(xml, file, &mut cases).expect("parses");
+        cases
+    }
+
+    /// A partitioned conduct's slices are one account to its readers, and a case two slices both
+    /// claim is a broken partition, refused by name.
+    #[test]
+    fn union_makes_disjoint_slices_one_account_and_refuses_an_overlap() {
+        let first = r#"<testsuites><testsuite name="k::b"><testcase name="one" classname="k::b"/><testcase name="two" classname="k::b"><failure message="boom"/></testcase></testsuite></testsuites>"#;
+        let a = slice(first, "s1.xml");
+        let b = slice(
+            r#"<testsuites><testsuite name="k::b"><testcase name="three" classname="k::b"/></testsuite></testsuites>"#,
+            "s2.xml",
+        );
+        let xml = union_accounts(vec![a, b]).expect("disjoint");
+        let back = slice(&xml, "u.xml");
+        let names: Vec<(&str, &str)> = back.iter().map(|c| (c.name.as_str(), c.outcome)).collect();
+        assert_eq!(names, vec![("one", "passed"), ("two", "failed"), ("three", "passed")], "{xml}");
+        let err = union_accounts(vec![slice(first, "s1.xml"), slice(first, "s1b.xml")])
+            .expect_err("an overlap");
+        assert!(err.contains("two slices") && err.contains("s1.xml"), "{err}");
+    }
 
     const SUREFIRE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <testsuite name="com.acme.OrderTest" tests="3" failures="1" errors="0" skipped="1" time="0.31">
