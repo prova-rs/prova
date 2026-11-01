@@ -456,7 +456,12 @@ fn main() -> ExitCode {
     if let Some(first) = raw.peek() {
         if let Some(verb) = VERBS.iter().find(|v| v.name == *first) {
             raw.next();
-            return (verb.run)(raw.collect());
+            let args: Vec<String> = raw.collect();
+            // `prova run <lane>` is a heavy run: it waits for one of the machine's slots, when the
+            // machine has them (`machine_slot`). Listing lanes, and the inner loop, never wait.
+            let _slot = (verb.name == "run" && !args.iter().any(|a| a == "--list"))
+                .then(|| machine_slot::take(&format!("prova run {}", args.join(" "))));
+            return (verb.run)(args);
         }
         if let Some((old, new)) = DEPRECATED_VERBS.iter().find(|(old, _)| old == first) {
             eprintln!("prova: `prova {old}` is deprecated — use `prova {new}` (retires at 1.0)");
@@ -478,6 +483,8 @@ fn main() -> ExitCode {
     }
     run(std::env::args().skip(1).collect())
 }
+
+mod machine_slot;
 
 mod cmd_meta;
 use cmd_meta::*;

@@ -200,6 +200,8 @@ fn first_failure(log: &str) -> Option<String> {
 }
 
 pub(crate) fn run(argv: Vec<String>) -> ExitCode {
+    // Stress is heavy by design (copies beside burners): it holds one of the machine's slots.
+    let _slot = crate::machine_slot::take("prova stress");
     let a = match parse(argv) {
         Ok(a) => a,
         Err(code) => return code,
