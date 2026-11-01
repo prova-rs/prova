@@ -2952,7 +2952,7 @@ dependencies = [
 
 [[package]]
 name = "prova-archetect"
-version = "0.30.1"
+version = "0.30.2"
 dependencies = [
  "archetect-api",
  "archetect-core",
@@ -2964,7 +2964,7 @@ dependencies = [
 
 [[package]]
 name = "prova-cli"
-version = "0.30.1"
+version = "0.30.2"
 dependencies = [
  "anstream 0.6.21",
  "anstyle",
@@ -2992,7 +2992,7 @@ dependencies = [
 
 [[package]]
 name = "prova-core"
-version = "0.30.1"
+version = "0.30.2"
 dependencies = [
  "archetect-inflections",
  "base64",
@@ -3045,7 +3045,7 @@ dependencies = [
 
 [[package]]
 name = "prova-expect"
-version = "0.30.1"
+version = "0.30.2"
 dependencies = [
  "mlua",
  "tokio",
@@ -3053,7 +3053,7 @@ dependencies = [
 
 [[package]]
 name = "prova-terminal"
-version = "0.30.1"
+version = "0.30.2"
 dependencies = [
  "libc",
  "portable-pty",
@@ -5328,7 +5328,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.30.1"
+version = "0.30.2"
 dependencies = [
  "anyhow",
  "clap",
