@@ -18,8 +18,11 @@ case "$name" in
     echo "always red"
     exit 101 ;;
   tests::flaky)
-    # The first copy to claim the marker fails; every other copy passes.
-    if mkdir "$STRESS_STATE/flaky.claimed" 2>/dev/null; then
+    # The first copy to claim the marker fails; every other copy passes. The claim is the
+    # shell's own exclusive create (noclobber: O_CREAT|O_EXCL), never `mkdir`: uutils mkdir
+    # 0.10.0 (Ubuntu 26.04's default) lets two racing copies BOTH create one directory, 122
+    # times in 500, which read as FLAKY 2/4 on CI (row 28).
+    if (set -C; : > "$STRESS_STATE/flaky.claimed") 2>/dev/null; then
       echo "thread 'tests::flaky' panicked at src/lib.rs:2:2:"
       echo "lost the race"
       # Which marker this copy claimed, for a tally of two: the state it saw, and the inode.
