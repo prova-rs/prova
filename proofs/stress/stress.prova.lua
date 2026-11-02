@@ -22,6 +22,8 @@ case "$name" in
     if mkdir "$STRESS_STATE/flaky.claimed" 2>/dev/null; then
       echo "thread 'tests::flaky' panicked at src/lib.rs:2:2:"
       echo "lost the race"
+      # Which marker this copy claimed, for a tally of two: the state it saw, and the inode.
+      echo "claimed $(ls -id "$STRESS_STATE/flaky.claimed") pid $$ ppid $PPID"
       exit 101
     fi
     exit 0 ;;
