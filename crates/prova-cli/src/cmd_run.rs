@@ -132,6 +132,21 @@ pub(crate) fn newer_than(root: &std::path::Path, stamped: std::time::SystemTime)
     }
 }
 
+/// The declared `[runner] bin` on this platform: the path as written, else with the platform's
+/// executable suffix. A manifest names `target/debug/prova` once for every OS; on Windows the
+/// file is `prova.exe`, and reading the bare name found nothing, so freshness fell back to the
+/// cached stamp and the hop rebuilt the very binary it was running in (Build, windows, 2026-11-02).
+fn subject_path(home: &Home, bin: &str) -> std::path::PathBuf {
+    let path = home.dir.join(bin);
+    if path.exists() || std::env::consts::EXE_SUFFIX.is_empty() {
+        return path;
+    }
+    let mut suffixed = path.clone().into_os_string();
+    suffixed.push(std::env::consts::EXE_SUFFIX);
+    let suffixed = std::path::PathBuf::from(suffixed);
+    if suffixed.exists() { suffixed } else { path }
+}
+
 /// When the subject was last made current: the LATER of the provision stamp and the bin's own
 /// mtime. A direct `cargo build` of the subject produces exactly the artifact `prova.bin`
 /// injects — it IS a provision, and the stamp not knowing about it once sent an MCP handshake
@@ -142,7 +157,7 @@ fn provision_reference(
 ) -> Option<std::time::SystemTime> {
     let read = |p: std::path::PathBuf| std::fs::metadata(p).and_then(|m| m.modified()).ok();
     let stamp = read(home.dir.join("target").join(".prova-runner-stamp"));
-    let bin = read(home.dir.join(&runner.bin));
+    let bin = read(subject_path(home, &runner.bin));
     match (stamp, bin) {
         (Some(a), Some(b)) => Some(a.max(b)),
         (a, b) => a.or(b),
@@ -322,7 +337,7 @@ pub(crate) fn subject_bin(home: Option<&Home>) -> Option<std::path::PathBuf> {
     }
     if let Some(home) = home {
         if let Some(Ok(runner)) = declared_subject(home) {
-            return Some(home.dir.join(runner.bin));
+            return Some(subject_path(home, &runner.bin));
         }
     }
     prova_core::current_exe().ok()
@@ -604,6 +619,20 @@ pub(crate) fn lock_subcommand(args: Vec<String>) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One manifest `bin` for every OS: the subject is found whether the file carries the
+    /// platform's executable suffix or not, so freshness reads the binary just built.
+    #[test]
+    fn the_declared_bin_is_found_with_the_platform_executable_suffix() {
+        let dir = std::env::temp_dir().join(format!("prova-subject-path-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("target/debug")).unwrap();
+        let built = dir.join(format!("target/debug/prova{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&built, b"").unwrap();
+        let home = Home { manifest: dir.join(".prova.toml"), dir: dir.clone() };
+        assert_eq!(subject_path(&home, "target/debug/prova"), built);
+        assert_eq!(subject_path(&home, "target/debug/absent"), dir.join("target/debug/absent"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     /// A lane's `--list` line: the declared description verbatim when present, else a chip
     /// summary of exactly what the lane overrides — and an honest "same as default" when nothing.
