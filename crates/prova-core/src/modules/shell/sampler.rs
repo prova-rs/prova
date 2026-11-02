@@ -102,6 +102,40 @@ pub(crate) async fn list() -> Vec<Proc> {
     }
 }
 
+/// A conduct's sampling: what it asked for, what it has seen, and when it looks next.
+pub(crate) struct Sampling {
+    opts: Option<SampleOpts>,
+    watch: Watch,
+    every: Duration,
+    next: tokio::time::Instant,
+}
+
+impl Sampling {
+    pub(crate) fn new(opts: Option<SampleOpts>) -> Self {
+        let every = look_every(opts.as_ref().map_or(Duration::MAX, |o| o.after));
+        Sampling { opts, watch: Watch::default(), every, next: tokio::time::Instant::now() + every }
+    }
+
+    /// When the next look is due.
+    pub(crate) fn at(&self) -> tokio::time::Instant {
+        self.next
+    }
+
+    /// Whether this conduct samples at all (it asked to, and its child has a pid to walk from).
+    pub(crate) fn armed(&self, root: Option<u32>) -> bool {
+        self.opts.is_some() && root.is_some()
+    }
+
+    /// One look at the tree below `root`: every process now due is sampled.
+    pub(crate) async fn look(&mut self, root: Option<u32>) {
+        self.next += self.every;
+        let (Some(opts), Some(root)) = (&self.opts, root) else { return };
+        for p in self.watch.due(&descendants(&list().await, root), opts, Instant::now()) {
+            sample(p, opts);
+        }
+    }
+}
+
 /// Sample `p` into `opts.into` on a blocking thread; says where on stderr.
 pub(crate) fn sample(p: Proc, opts: &SampleOpts) {
     let into = opts.into.clone();
@@ -204,8 +238,8 @@ mod tests {
         assert!(w.due(&[nextest.clone(), test.clone()], &o, t0 + Duration::from_secs(300)).is_empty(), "never twice");
         let recycled = Proc { pid: 12, ppid: 11, command: "/t/deps/a tests::other".into() };
         let at = t0 + Duration::from_secs(301);
-        assert!(w.due(&[recycled.clone()], &o, at).is_empty(), "a recycled pid starts its own clock");
-        assert_eq!(w.due(&[recycled.clone()], &o, at + Duration::from_secs(150)), vec![recycled]);
+        assert!(w.due(std::slice::from_ref(&recycled), &o, at).is_empty(), "a recycled pid starts its own clock");
+        assert_eq!(w.due(std::slice::from_ref(&recycled), &o, at + Duration::from_secs(150)), vec![recycled]);
     }
 
     #[test]

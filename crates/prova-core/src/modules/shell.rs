@@ -635,9 +635,7 @@ pub(super) async fn run_supervised(
     let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
     let (mut out_done, mut err_done) = (false, false);
     let (mut buf_o, mut buf_e) = ([0u8; 8192], [0u8; 8192]);
-    let mut watch = sampler::Watch::default();
-    let look_every = sample.as_ref().map_or(sampler::look_every(std::time::Duration::MAX), |o| sampler::look_every(o.after));
-    let mut next_look = tokio::time::Instant::now() + look_every;
+    let mut sampling = sampler::Sampling::new(sample);
     while !(out_done && err_done) {
         tokio::select! {
             r = out.read(&mut buf_o), if !out_done => match r? {
@@ -681,15 +679,7 @@ pub(super) async fn run_supervised(
                 return Ok(Supervised::Mute);
             }
             // The sampler's look: evidence only, it never ends the conduct.
-            () = tokio::time::sleep_until(next_look), if sample.is_some() && pid.is_some() => {
-                next_look += look_every;
-                if let (Some(opts), Some(root)) = (&sample, pid) {
-                    let below = sampler::descendants(&sampler::list().await, root);
-                    for p in watch.due(&below, opts, std::time::Instant::now()) {
-                        sampler::sample(p, opts);
-                    }
-                }
-            }
+            () = tokio::time::sleep_until(sampling.at()), if sampling.armed(pid) => sampling.look(pid).await,
         }
     }
     // Streams closed, exit pending: the same clocks and the same evidence bound the wait — a
