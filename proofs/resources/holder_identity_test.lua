@@ -48,7 +48,12 @@ prova.test("`prova locks` names the pid and command behind a held token", {
   t:expect(out, "the token reads held"):matches("HELD%s+" .. pat(tok))
   t:expect(out, "…by a writer with a pid"):matches("writer pid %d+")
   t:expect(out, "…naming what it is doing:\n" .. out):contains("lock " .. tok)
-  t:expect(out, "…and where the file that IS the contract lives"):contains("/prova/locks")
+  -- Where the file that IS the contract lives: the header names the directory, and the held
+  -- token's lock file is in it. Asserted as that fact, not as a path shape — the directory is the
+  -- platform's (a temp dir, or a cache dir for root with no XDG), ledger row 36.
+  local dir = out:match("machine%s+%(([^)\n]+)%)")
+  t:expect(dir, "…and where the file that IS the contract lives:\n" .. out):is_truthy()
+  t:expect(fs.exists(dir .. "/" .. tok .. ".lock"), "…its lock file is in " .. tostring(dir)):is_true()
 
   hold:wait()
   -- Release takes the record with it. A record outliving its flock would accuse a pid that
