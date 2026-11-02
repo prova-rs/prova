@@ -32,7 +32,18 @@ M.nextest = prova.fixture("nextest-junit", Scope.Run, function()
       cmd[#cmd + 1] = "test(" .. k .. ")"
     end
   end
-  shell.run(cmd, { cwd = prova.root, merge_stderr = true, idle_timeout = "600s", timeout = "1800s" })
+  local ran = shell.run(cmd, { cwd = prova.root, merge_stderr = true, idle_timeout = "600s", timeout = "1800s" })
+  -- No artifact is a deputy that died before emitting (a compile error, a crash): its output is
+  -- then the only evidence, so its tail is the error. Dropping it left CI saying "zero cases
+  -- parsed" over a Windows compile failure nobody could read (Build, windows, 2026-11-02).
+  if not fs.exists(artifact) then
+    local lines = {}
+    for l in (ran.stdout or ""):gmatch("[^\n]+") do
+      lines[#lines + 1] = l
+    end
+    error(string.format("nextest exited %s and wrote no junit; the last of its output:\n%s",
+      tostring(ran.code), table.concat(lines, "\n", math.max(1, #lines - 59))), 0)
+  end
 
   -- CUSTODY (docs/design/verifiers.md#reports-are-custody-not-visualization). The account already
   -- adopts every CASE from this artifact; the artifact itself lives under `target/`, which the

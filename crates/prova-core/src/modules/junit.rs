@@ -24,6 +24,10 @@ struct Case {
     name: String,
     outcome: &'static str,
     message: Option<String>,
+    /// A failed case's captured text, every fragment in document order: a failure body (pytest)
+    /// and nextest's `<system-out>`/`<system-err>`, where its empty `<failure/>` leaves the panic.
+    /// Labelled once the case closes; its tail reaches the report ([`OUTPUT_TAIL`]).
+    output: String,
     time_ms: Option<u64>,
     file: String,
     /// The run that produced this verdict, when it was carried forward rather than conducted here:
@@ -41,6 +45,16 @@ const FLAKY_FROM: &str = "prova.flaky_from";
 
 /// The longest label [`body_label`] keeps: a message names the failure, it is not the report.
 const LABEL_MAX: usize = 400;
+
+/// How many of a failed case's last output lines reach the report. A label names the failure;
+/// the tail is the evidence, so a red read off CI says why without the junit file at hand.
+const OUTPUT_TAIL: usize = 40;
+
+/// The last [`OUTPUT_TAIL`] lines of `text`.
+fn tail(text: &str) -> String {
+    let lines: Vec<&str> = text.trim_end().lines().collect();
+    lines[lines.len().saturating_sub(OUTPUT_TAIL)..].join("\n")
+}
 
 /// The label of a failure body that carries no `message` attribute. A Rust panic wins wherever it
 /// sits: nextest's body is the test's whole captured output, whose first line is always `running 1
@@ -126,6 +140,7 @@ fn parse_document(xml: &str, file: &str, cases: &mut Vec<Case>) -> Result<(), St
             name: attr(e, "name").unwrap_or_default(),
             outcome: "passed",
             message: None,
+            output: String::new(),
             time_ms,
             file: file.to_string(),
             reused_from: None,
@@ -163,11 +178,16 @@ fn parse_document(xml: &str, file: &str, cases: &mut Vec<Case>) -> Result<(), St
                 }
             },
             Ok(Event::Text(t)) => {
-                // A failure/error body with no `message` attribute carries its text as content —
-                // the pytest dialect, and nextest's captured output. See [`body_label`].
+                // A failure/error body carries its text as content (the pytest dialect), and
+                // nextest's captured output follows its empty `<failure/>`. Every fragment is
+                // kept and labelled at the case's end: labelling the first fragment alone lost
+                // the assertion message after a panic line (row 28's sibling, 2026-11-02).
                 if let Some(case) = open.as_mut() {
-                    if case.outcome != "passed" && case.message.is_none() {
-                        case.message = body_label(&t.unescape().unwrap_or_default());
+                    if case.outcome != "passed" {
+                        if !case.output.is_empty() {
+                            case.output.push('\n');
+                        }
+                        case.output.push_str(&t.unescape().unwrap_or_default());
                     }
                 }
             }
@@ -176,7 +196,10 @@ fn parse_document(xml: &str, file: &str, cases: &mut Vec<Case>) -> Result<(), St
                     suite_stack.pop();
                 }
                 b"testcase" => {
-                    if let Some(case) = open.take() {
+                    if let Some(mut case) = open.take() {
+                        if case.message.is_none() {
+                            case.message = body_label(&case.output);
+                        }
                         cases.push(case);
                     }
                 }
@@ -214,6 +237,9 @@ fn report_table(lua: &Lua, files: &[PathBuf], cases: &[Case]) -> mlua::Result<Ta
         }
         if let Some(t) = c.time_ms {
             row.set("time_ms", t)?;
+        }
+        if !c.output.trim().is_empty() {
+            row.set("output", tail(&c.output))?;
         }
         row.set("file", c.file.as_str())?;
         if let Some(from) = &c.reused_from {
@@ -262,6 +288,9 @@ function junit.verify(t, opts)
   for _, c in ipairs(report.cases) do
     if c.outcome == "failed" or c.outcome == "error" then
       red[#red + 1] = c.suite .. "#" .. c.name .. " — " .. (c.message or c.outcome)
+      if c.output then
+        t:log("junit.verify: " .. c.suite .. "#" .. c.name .. ", the tail of its output:\n" .. c.output)
+      end
     elseif c.outcome == "flaky" then
       flaky[#flaky + 1] = c.suite .. "#" .. c.name .. " — " .. (c.message or "failed, then passed")
     end
@@ -624,6 +653,32 @@ note: run with `RUST_BACKTRACE=1`</failure></testcase>
         let label = body_label(&long).unwrap();
         assert_eq!(label.chars().count(), LABEL_MAX + 1, "capped, with an ellipsis: {label}");
         assert!(label.ends_with('…'));
+    }
+
+    /// nextest's own shape: an empty `<failure/>`, the panic in `<system-out>` and its message in
+    /// `<system-err>`. The label reads both, and the output's tail is kept as evidence.
+    #[test]
+    fn a_nextest_panic_split_across_its_output_is_labelled_whole_and_its_tail_kept() {
+        let xml = r#"<testsuites><testsuite name="prova-core::docker">
+          <testcase name="t" classname="prova-core::docker"><failure type="test failure with exit code 101"/>
+            <system-out>running 1 test
+thread 't' (8989) panicked at crates/prova-core/tests/common/mod.rs:49:5:</system-out>
+            <system-err>docker_failure_reporting.lua reported 1 failure(s):
+  - a container that exits: names the exit code</system-err>
+          </testcase>
+          <testcase name="ok" classname="prova-core::docker"><system-out>quiet</system-out></testcase>
+        </testsuite></testsuites>"#;
+        let mut cases = Vec::new();
+        parse_document(xml, "nextest.xml", &mut cases).unwrap();
+        assert_eq!(
+            cases[0].message.as_deref(),
+            Some("panicked at crates/prova-core/tests/common/mod.rs:49:5: docker_failure_reporting.lua reported 1 failure(s):")
+        );
+        assert!(tail(&cases[0].output).ends_with("- a container that exits: names the exit code"), "{}", cases[0].output);
+        assert!(cases[1].output.is_empty(), "a passing case keeps no output");
+        let long = (0..100).map(|i| i.to_string()).collect::<Vec<_>>().join("\n");
+        assert_eq!(tail(&long).lines().count(), OUTPUT_TAIL);
+        assert!(tail(&long).ends_with("99"));
     }
 
     /// A resumed deputy's account: the re-run case replaces its prior red, every other case is
