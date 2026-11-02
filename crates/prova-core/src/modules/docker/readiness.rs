@@ -349,15 +349,25 @@ pub(super) async fn wait_ready(
                 Probe::Failed => false,
                 // The image cannot answer (no `cat`/procfs). Fall back to the coarse host-port
                 // check — no worse than before, but do not pretend it is a true signal.
+                // A port is never ready on a STOPPED container, and "cannot answer" is a fact
+                // only about a running one: a container that just exited answers no exec either,
+                // and Linux's docker-proxy accepts on the published port with nothing behind it,
+                // so the coarse check read a dead container as ready (prova CI, ubuntu 26.04,
+                // 2026-11-02: "docker.run on a dying container: expected false, got true").
                 Probe::Unsupported => {
-                    probe_supported = false;
-                    match container.ports.get(&port) {
-                        Some(&host_port) => {
-                            tokio::net::TcpStream::connect(("127.0.0.1", host_port))
-                                .await
-                                .is_ok()
-                        }
-                        None => false,
+                    if exited_status(&container.client, &container.id).await.is_some() {
+                        false
+                    } else {
+                        probe_supported = false;
+                        let reachable = match container.ports.get(&port) {
+                            Some(&host_port) => {
+                                tokio::net::TcpStream::connect(("127.0.0.1", host_port))
+                                    .await
+                                    .is_ok()
+                            }
+                            None => false,
+                        };
+                        reachable && exited_status(&container.client, &container.id).await.is_none()
                     }
                 }
             }
