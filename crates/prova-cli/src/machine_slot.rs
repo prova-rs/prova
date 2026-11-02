@@ -8,8 +8,8 @@
 //! file for its whole run and writes who it is into it, and the kernel frees the slot when the
 //! process ends, however it ends. Nothing to configure for a machine that has no such directory:
 //! a project opts in with `[machine] slots = "<dir>"` in prova.toml, or the environment names it
-//! (`PROVA_MACHINE_SLOTS`). `prova run <lane>` and `prova stress` take a slot; the inner loop does
-//! not. A process whose caller already holds a slot for it (`PROVA_MACHINE_SLOT_HELD`, which a
+//! (`PROVA_MACHINE_SLOTS`). `prova run <lane>`, `prova stress` and `prova lock … -- cargo <heavy>`
+//! (the way agents build and test mid-edit) take a slot; light cargo and the inner loop do not. A process whose caller already holds a slot for it (`PROVA_MACHINE_SLOT_HELD`, which a
 //! run sets for its own children) takes none, so nested runs never count twice or deadlock.
 
 use std::fs::{File, OpenOptions};
@@ -114,9 +114,54 @@ pub(crate) fn take(who: &str) -> Held {
     Held { _slot: file }
 }
 
+/// Whether `prova <verb> <args>` is heavy work that waits for a machine slot: `prova run <lane>`
+/// (not a listing), and `prova lock … -- cargo <heavy>`. Light cargo and the inner loop never wait.
+pub(crate) fn heavy(verb: &str, args: &[String]) -> bool {
+    match verb {
+        "run" => !args.iter().any(|a| a == "--list"),
+        "lock" => wraps_heavy_cargo(args),
+        _ => false,
+    }
+}
+
+/// Cargo subcommands that compile or run nothing: the only ones `prova lock` runs without a slot.
+const LIGHT_CARGO: [&str; 9] = ["fmt", "metadata", "tree", "locate-project", "pkgid", "search", "version", "help", "--version"];
+
+/// Whether `prova lock <args>` wraps cargo doing heavy work: the command after `--` is cargo (bare
+/// or by path) and its subcommand, after any `+toolchain` and flags, is not one that builds
+/// nothing. Every other cargo is heavy by default, so a new subcommand never slips past.
+pub(crate) fn wraps_heavy_cargo(args: &[String]) -> bool {
+    let Some(at) = args.iter().position(|a| a == "--") else { return false };
+    let mut command = args[at + 1..].iter();
+    let Some(program) = command.next() else { return false };
+    if Path::new(program).file_name().and_then(|n| n.to_str()) != Some("cargo") {
+        return false;
+    }
+    let toolchain_or_flag = |a: &&String| a.starts_with('+') || (a.starts_with('-') && a.as_str() != "--version");
+    command.find(|a| !toolchain_or_flag(a)).is_some_and(|sub| !LIGHT_CARGO.contains(&sub.as_str()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn lock(cmd: &str) -> bool {
+        wraps_heavy_cargo(&cmd.split(' ').map(String::from).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn a_lock_wrapping_heavy_cargo_takes_a_slot_and_light_cargo_or_anything_else_does_not() {
+        assert!(lock("cargo -- cargo nextest run -p cos-daemon --profile prova"));
+        assert!(lock("cargo -- /Users/x/.cargo/bin/cargo +nightly build --release"));
+        assert!(lock("cargo -- cargo -q clippy --workspace"));
+        assert!(lock("cargo -- cargo xtask cosd install"), "an unknown subcommand is heavy by default");
+        assert!(!lock("cargo -- cargo fmt --check"));
+        assert!(!lock("cargo -- cargo metadata --format-version 1"));
+        assert!(!lock("cargo -- cargo --version"));
+        assert!(!lock("cargo -- jj st"), "not cargo");
+        assert!(!lock("cargo"), "nothing wrapped");
+        assert!(heavy("run", &["ut".into()]) && !heavy("run", &["--list".into()]));
+    }
 
     #[test]
     fn a_machine_has_n_slots_and_a_dropped_one_is_free_again() {
