@@ -19,8 +19,16 @@
 -- `os.time()` is only second-resolution, which is why the bounds below are coarse.
 local function now() return os.time() end
 
+-- The image is made local BEFORE the clock starts: the bounds below time the diagnosis, and a
+-- cold pull on a fresh CI runner is a registry's speed, not the diagnosis (flake class A3, a
+-- duration that measured an event it did not mean to).
+local function image_local(image)
+  shell.run({ "docker", "pull", "-q", image }, { check = true, timeout = "300s" })
+end
+
 prova.test("a container that exits is reported at once, with its exit code and logs",
            { requires = { "docker" } }, function(t)
+  image_local("alpine:3.20")
   local started = now()
   local ok, err = pcall(function()
     docker.run{
@@ -47,6 +55,7 @@ end)
 
 prova.test("a live container that is merely slow is NOT failed early",
            { requires = { "docker" } }, function(t)
+  image_local("alpine:3.20")
   local started = now()
   local ok, err = pcall(function()
     docker.run{
