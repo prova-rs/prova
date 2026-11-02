@@ -57,9 +57,20 @@ jobs:
       # top-level run, one job-summary table), and PROVA_RUN_DEPTH propagates through the deputy's
       # environment to the prova binaries the unit tests spawn, so the ~24 fixture children no
       # longer masquerade as top-level runs.
+      #
+      # Windows cannot replace a running .exe, and this leg's nextest rebuilds the workspace,
+      # prova's own binary included ("failed to remove file target\debug\prova.exe"). There the
+      # conductor is a copy, so the build can replace the original; the subject nested proofs
+      # reach is still the manifest's [runner] bin, this commit's build.
       - name: Unit tests (prova run ut)
         shell: bash
-        run: ./target/debug/prova run ut
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cp target/debug/prova.exe "$RUNNER_TEMP/prova-conductor.exe"
+            "$RUNNER_TEMP/prova-conductor.exe" run ut
+          else
+            ./target/debug/prova run ut
+          fi
         env:
           # Opt-in for the suites that bind 0.0.0.0 to prove the cross-substrate mock vantage
           # (mock_network_vantage, c2_e2e). Off by default so a local run never trips the
