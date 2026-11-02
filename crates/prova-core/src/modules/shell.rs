@@ -8,6 +8,8 @@ use mlua::{Lua, Table, UserData, UserDataFields, UserDataMethods, Value};
 
 use crate::progress::{self, Kind, Progress};
 
+pub(crate) mod sampler;
+
 /// `prova.containerized(spec)` — build a grammar-conformant namespace (`{ client?, container }`) from
 /// a compact spec, so first-party recipes and third-party plugins are authored the same way and come
 /// out the same shape (the tier-agnostic interface — see docs/design/ecosystem.md).
@@ -357,6 +359,9 @@ struct RunOpts {
     check: bool,
     merge_stderr: bool,
     stdin: Option<String>,
+    /// Sample a long-lived descendant before anything kills it (`sampler`): its stacks and open
+    /// files, once, while it is still alive to be read.
+    sample: Option<sampler::SampleOpts>,
 }
 
 /// Every option `shell.run` honors — closed by construction
@@ -368,6 +373,7 @@ const RUN_OPTS: &[&str] = &[
     "first_byte",
     "idle_timeout",
     "merge_stderr",
+    "sample",
     "stdin",
     "timeout",
 ];
@@ -446,7 +452,29 @@ fn parse_run_opts(opts: &Option<Table>) -> mlua::Result<RunOpts> {
             .unwrap_or(false),
         // Feed the program's stdin — the portable replacement for a `printf x | cmd` pipe.
         stdin: opt_string(opts, "stdin")?,
+        sample: opt_sample(opts)?,
     })
+}
+
+/// `sample = { after = "<duration>", matching = "<substring of a command line>", into = "<dir>" }`:
+/// every key required, none other taken.
+fn opt_sample(opts: &Option<Table>) -> mlua::Result<Option<sampler::SampleOpts>> {
+    let Some(t) = opts.as_ref().map(|o| o.get::<Option<Table>>("sample")).transpose()?.flatten() else {
+        return Ok(None);
+    };
+    let sample = Some(t.clone());
+    crate::opts::Closed { accepted: &["after", "into", "matching"], hidden: &[], teachings: &[], example: None }
+        .check(&t, "shell.run sample")?;
+    let need = |key: &str| -> mlua::Result<String> {
+        opt_string(&sample, key)?.ok_or_else(|| {
+            mlua::Error::RuntimeError(format!(
+                "shell.run: sample needs `{key}` (sample = {{ after = \"150s\", matching = \"/deps/\", into = dir }})"
+            ))
+        })
+    };
+    let after = crate::model::require_duration("shell.run sample", "after", &need("after")?)
+        .map_err(mlua::Error::RuntimeError)?;
+    Ok(Some(sampler::SampleOpts { after, matching: need("matching")?, into: std::path::PathBuf::from(need("into")?) }))
 }
 
 /// Cumulative CPU consumed by `pid`, in opaque monotonic ticks — units are irrelevant, only
@@ -567,6 +595,7 @@ pub(super) async fn run_supervised(
     idle: Option<std::time::Duration>,
     wall: Option<std::time::Duration>,
     first_byte: Option<std::time::Duration>,
+    sample: Option<sampler::SampleOpts>,
 ) -> std::io::Result<Supervised> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     command
@@ -606,6 +635,9 @@ pub(super) async fn run_supervised(
     let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
     let (mut out_done, mut err_done) = (false, false);
     let (mut buf_o, mut buf_e) = ([0u8; 8192], [0u8; 8192]);
+    let mut watch = sampler::Watch::default();
+    let look_every = sample.as_ref().map_or(sampler::look_every(std::time::Duration::MAX), |o| sampler::look_every(o.after));
+    let mut next_look = tokio::time::Instant::now() + look_every;
     while !(out_done && err_done) {
         tokio::select! {
             r = out.read(&mut buf_o), if !out_done => match r? {
@@ -647,6 +679,16 @@ pub(super) async fn run_supervised(
                 crate::lease::kill_group(pid);
                 child.kill().await.ok();
                 return Ok(Supervised::Mute);
+            }
+            // The sampler's look: evidence only, it never ends the conduct.
+            () = tokio::time::sleep_until(next_look), if sample.is_some() && pid.is_some() => {
+                next_look += look_every;
+                if let (Some(opts), Some(root)) = (&sample, pid) {
+                    let below = sampler::descendants(&sampler::list().await, root);
+                    for p in watch.due(&below, opts, std::time::Instant::now()) {
+                        sampler::sample(p, opts);
+                    }
+                }
             }
         }
     }
@@ -714,9 +756,9 @@ async fn run_command(
     // group (docs/design/verifiers.md#conduct-process-group-reaping). kill_on_drop stays as the
     // last-resort child-only kill for an externally-cancelled future.
     command.kill_on_drop(true);
-    let output = if o.idle_timeout.is_some() || o.timeout.is_some() || o.first_byte.is_some() {
+    let output = if o.idle_timeout.is_some() || o.timeout.is_some() || o.first_byte.is_some() || o.sample.is_some() {
         let supervised =
-            run_supervised(command, o.stdin.clone(), o.idle_timeout, o.timeout, o.first_byte)
+            run_supervised(command, o.stdin.clone(), o.idle_timeout, o.timeout, o.first_byte, o.sample.clone())
                 .await
             .map_err(|e| spawn_failed(cmd, &e))?;
         match supervised {

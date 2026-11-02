@@ -535,7 +535,7 @@ async fn build(spec: BuildSpec) -> mlua::Result<String> {
     // wedged builder into a named failure in seconds, and routing through the supervisor also puts
     // the build in its own process group under prova's lease — so `kill -9 prova` no longer leaves
     // a `docker build` running.
-    let output = match super::shell::run_supervised(cmd, None, None, None, spec.first_byte)
+    let output = match super::shell::run_supervised(cmd, None, None, None, spec.first_byte, None)
         .await
         .map_err(derr)?
     {

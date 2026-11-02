@@ -257,6 +257,19 @@ The wall-clock `timeout` remains the optional outer bound; the two compose. (Fie
 2026-08-11: a cold two-crate nextest conduct was killed at `timeout=600s` while making steady
 progress — the author's guess about build time became a false failure.)
 
+<!-- claim: conduct-samples-the-long-lived recorded=2026-11-02 -->
+**A conduct can ask for evidence before anything kills: `shell.run { sample = { after,
+matching, into } }` samples each descendant process whose command line contains `matching` once
+it has lived past `after` — its stacks and its open files, written to `into`, once per process,
+while it is still alive to be read.** A hung test killed at nextest's slow-timeout used to leave
+only "has been running for over 60 seconds" (Substrate's ledger rows 30 and 32, 2026-11-01): the
+evidence died with the process. Sampling is evidence, never a verdict: it never ends or fails the
+conduct, a sampler that cannot run says so in the sample file, and each sample is announced on
+stderr with its path. The tree is read with POSIX `ps -o pid=,ppid=,command=` (no dialect
+fields); stacks with `sample` on macOS and `gdb` elsewhere; open files with `lsof`. The caller
+names what is worth sampling (nextest's test binaries live under `/deps/`) and sets `after` below
+the bound that would kill it.
+
 <!-- claim: suite-scoped-shared-deputies recorded=2026-08-11 -->
 **`Scope.Run` — one conduct, every suite: the fifth scope crosses the Lua-state boundary as
 data.** A run-scoped fixture is declared once (a `require`d package is the recipe-sharing
