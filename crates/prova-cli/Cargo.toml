@@ -62,6 +62,11 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 # it) — a declaration of what this crate uses, not new weight.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+# Never linked to the host's openssl: git2 (through archetect-core) reaches openssl-sys on unix, and
+# a dynamic link made the v0.30.5 macOS binary run only where Homebrew had openssl@4. `vendored`
+# builds it in, for the one copy cargo unifies (release.yml checks the binary links nothing outside
+# the OS).
+openssl-sys = { version = "0.9", features = ["vendored"] }
 
 # Detached `prova start` needs one Win32 call std does not expose: clearing HANDLE_FLAG_INHERIT, so
 # the background `prova up` cannot inherit — and then hold open forever — a pipe our caller is
