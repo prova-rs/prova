@@ -90,10 +90,14 @@ function M.connect(ctx, addr)
 	---
 	--- `event` frames sharing the id are collected and returned alongside, so a streaming op reads
 	--- the same as a plain one at the call site.
+	--- `wait` overrides the socket's 10 s read timeout for an op whose honest duration is the
+	--- host's load (a `materialize` checks out a whole tree): a ceiling that only names a hang,
+	--- never a verdict on how fast the op ran.
 	---@param op string
 	---@param fields table|nil
+	---@param wait string|nil a read timeout ("120s"); the socket's default when nil
 	---@return table response, table events
-	function client:request(op, fields)
+	function client:request(op, fields, wait)
 		next_id = next_id + 1
 		local frame = { id = next_id, op = op }
 		for k, v in pairs(fields or {}) do
@@ -103,7 +107,7 @@ function M.connect(ctx, addr)
 
 		local events = {}
 		while true do
-			local decoded = json.decode(conn:recv())
+			local decoded = json.decode(conn:recv(wait and { timeout = wait } or nil))
 			if decoded.event then
 				events[#events + 1] = decoded
 			else

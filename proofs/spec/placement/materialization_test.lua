@@ -59,6 +59,11 @@ local function current_change(t)
 	return (result.stdout:gsub("%s+$", ""))
 end
 
+-- A materialize checks out a whole tree, so it takes as long as the host's load says: this is a
+-- ceiling that names a hang, not a clock on how fast it ran (it was the socket's 10 s default, and
+-- went red under a loaded `prova run all`, 2026-11-03).
+local MATERIALIZE_WAIT = "120s"
+
 prova.test("materializing a change id yields a path holding that tree", UNIX, function(t)
 	local broker, lease = leased(t)
 	local change = current_change(t)
@@ -68,7 +73,7 @@ prova.test("materializing a change id yields a path holding that tree", UNIX, fu
 		vcs = "jj",
 		change = change,
 		source = prova.root,
-	})
+	}, MATERIALIZE_WAIT)
 
 	t:expect(response.ok):is_true()
 	t:expect(response.path, "a path to work in"):never():is_nil()
@@ -91,7 +96,7 @@ prova.test("an unknown change id is an error, not an empty workspace", C("unfetc
 		vcs = "jj",
 		change = "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
 		source = prova.root,
-	})
+	}, MATERIALIZE_WAIT)
 
 	-- Silently materializing something else — trunk, or an empty tree — is the worst available
 	-- outcome: the suite runs, passes, and proves nothing about the code you meant to test. Whatever
@@ -106,10 +111,10 @@ prova.test("materialization is idempotent for the same change", UNIX, function(t
 
 	local first = broker:request("materialize", {
 		lease = lease, vcs = "jj", change = change, source = prova.root,
-	})
+	}, MATERIALIZE_WAIT)
 	local second = broker:request("materialize", {
 		lease = lease, vcs = "jj", change = change, source = prova.root,
-	})
+	}, MATERIALIZE_WAIT)
 
 	-- Asking twice must not rebuild the world. This is what makes a retry cheap, and it is the
 	-- foundation the warmth report below is built on.
@@ -123,7 +128,7 @@ prova.test("warmth reports the nearest shared ancestor, or none when cold", UNIX
 
 	local response = broker:request("materialize", {
 		lease = lease, vcs = "jj", change = change, source = prova.root,
-	})
+	}, MATERIALIZE_WAIT)
 
 	t:expect(response.ok):is_true()
 	-- Warmth is the input to a scheduler's rebuild-cost estimate — the direct analogue of preferring
@@ -145,7 +150,7 @@ prova.test("materialize requires a lease", C("materialize-lease-bounded"), funct
 		vcs = "jj",
 		change = "zzzz",
 		source = prova.root,
-	})
+	}, MATERIALIZE_WAIT)
 
 	-- Materializing without a lease would let a client fill a node's disk with trees nobody is
 	-- scheduled to use, and nothing would ever clean them up: the lease is what bounds the
@@ -162,7 +167,7 @@ prova.test("an unsupported vcs is refused by name", C("unfetchable-refused"), fu
 		vcs = "hg",
 		change = "tip",
 		source = prova.root,
-	})
+	}, MATERIALIZE_WAIT)
 
 	t:expect(response.ok):is_falsy()
 	t:expect(response.outcome):equals("error")
