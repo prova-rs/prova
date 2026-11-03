@@ -27,6 +27,10 @@ humantime = "2"
 toml = "0.8"
 # Filesystem globbing for the `fs` module (fs.glob(root, "**/*.rs")).
 glob = "0.3"
+# Input-keyed reuse walks a tree the way its `.gitignore` files say (reuse.rs): what the tree
+# ignores is build output, never an input. `globset` matches the declared patterns on that walk.
+ignore = "0.4"
+globset = "0.4"
 # `[capabilities] pattern = "..."` — picking a version out of a tool's output when the
 # first-version-shaped-token heuristic can't (`kubectl version --client`, `terraform version -json`).
 # Already in the graph transitively; this is a declaration, not new weight.

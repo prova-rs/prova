@@ -723,47 +723,35 @@ pub(crate) fn digest_paths(patterns: &[String], root: Option<&Path>) -> String {
 /// pattern matching nothing contributes its own text behind an absence marker, so a file appearing
 /// or vanishing changes the answer. `digest_paths` stays absolute on purpose (conduct identity is
 /// one run on one machine — see its pinned test); this is the one to reach for across trees.
+/// A wildcard or a directory never reaches what the tree's `.gitignore` files ignore (see
+/// [`walk_relative`]); a path named exactly counts whether ignored or not.
 pub(crate) fn digest_paths_relative(patterns: &[String], root: &Path) -> String {
     use sha2::Digest as _;
-    let rel = |p: &Path| -> String {
-        match p.strip_prefix(root) {
-            Ok(r) => path_norm_seps(&r.to_string_lossy()),
-            // Outside the root (an absolute pattern): location-dependent by the author's own choice.
-            Err(_) => path_norm_seps(&p.to_string_lossy()),
-        }
-    };
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
     let mut absent: Vec<String> = Vec::new();
+    let mut relative: Vec<String> = Vec::new();
     for pattern in patterns {
-        let resolved = if path_is_absolute(pattern) {
-            std::path::PathBuf::from(pattern)
+        if path_is_absolute(pattern) {
+            // Outside the root: location-dependent by the author's own choice, globbed as written.
+            if !take_absolute(pattern, &mut files) {
+                absent.push(path_norm_seps(pattern));
+            }
+            continue;
+        }
+        let norm = path_norm_seps(pattern);
+        let norm = norm.trim_start_matches("./").to_string();
+        let named = root.join(&norm);
+        if !has_glob_meta(&norm) && named.is_file() {
+            // Named exactly: counted even when the tree ignores it (the author asked for it).
+            files.push((norm, std::fs::read(&named).unwrap_or_default()));
         } else {
-            root.join(pattern)
-        };
-        let mut matched = false;
-        let mut take = |p: &Path, files: &mut Vec<(String, Vec<u8>)>| {
-            if p.is_file() {
-                matched = true;
-                files.push((rel(p), std::fs::read(p).unwrap_or_default()));
-            }
-        };
-        if let Ok(paths) = glob::glob(&resolved.to_string_lossy()) {
-            for p in paths.filter_map(Result::ok) {
-                if p.is_dir() {
-                    let under = p.join("**").join("*");
-                    if let Ok(inner) = glob::glob(&under.to_string_lossy()) {
-                        for q in inner.filter_map(Result::ok) {
-                            take(&q, &mut files);
-                        }
-                    }
-                } else {
-                    take(&p, &mut files);
-                }
-            }
+            relative.push(norm);
         }
-        if !matched {
-            absent.push(path_norm_seps(pattern));
-        }
+    }
+    if !relative.is_empty() {
+        let (found, unmatched) = walk_relative(&relative, root);
+        files.extend(found);
+        absent.extend(unmatched);
     }
     files.sort_by(|a, b| a.0.cmp(&b.0));
     files.dedup_by(|a, b| a.0 == b.0);
@@ -784,6 +772,115 @@ pub(crate) fn digest_paths_relative(patterns: &[String], root: &Path) -> String 
         part(pattern.as_bytes());
     }
     hex::encode(hasher.finalize())
+}
+
+/// Whether a pattern holds a glob metacharacter (else it names one path).
+fn has_glob_meta(pattern: &str) -> bool {
+    pattern.contains(['*', '?', '[', '{'])
+}
+
+/// An absolute pattern's files, globbed as written (a directory stands for everything under it).
+fn take_absolute(pattern: &str, files: &mut Vec<(String, Vec<u8>)>) -> bool {
+    let mut matched = false;
+    let mut take = |p: &Path, files: &mut Vec<(String, Vec<u8>)>| {
+        if p.is_file() {
+            matched = true;
+            files.push((path_norm_seps(&p.to_string_lossy()), std::fs::read(p).unwrap_or_default()));
+        }
+    };
+    for p in glob::glob(pattern).into_iter().flatten().filter_map(Result::ok) {
+        if p.is_dir() {
+            let under = p.join("**").join("*");
+            for q in glob::glob(&under.to_string_lossy()).into_iter().flatten().filter_map(Result::ok) {
+                take(&q, files);
+            }
+        } else {
+            take(&p, files);
+        }
+    }
+    matched
+}
+
+/// The files under `root` that root-relative `patterns` reach, and the patterns that reached none.
+///
+/// A file is reached when a pattern matches its path or one of its directories (a directory stands
+/// for everything under it). The walk honours the `.gitignore` files INSIDE `root` and nothing
+/// else (no global or per-checkout excludes, no files above `root`), so two checkouts of one tree
+/// agree, and what the tree ignores is build output, never an input: a pattern like `Sources/**`
+/// can no longer pull in a SwiftPM `.build/` or a cargo `target/` that changes every run, which
+/// both costs the hash and keeps the key from ever matching. It reads only the directories a
+/// pattern can reach, and never descends into `.git` or `.jj`.
+fn walk_relative(patterns: &[String], root: &Path) -> (Vec<(String, Vec<u8>)>, Vec<String>) {
+    let matchers: Vec<(String, Option<globset::GlobMatcher>)> = patterns
+        .iter()
+        .map(|p| {
+            let glob = globset::GlobBuilder::new(p.trim_end_matches('/')).literal_separator(true).build();
+            (p.clone(), glob.ok().map(|g| g.compile_matcher()))
+        })
+        .collect();
+    // The literal leading directories of each pattern: the walk enters a directory only on the way
+    // to, or under, one of them.
+    let bases: Vec<String> = patterns
+        .iter()
+        .map(|p| {
+            let literal: Vec<&str> = p.split('/').take_while(|c| !has_glob_meta(c)).collect();
+            literal.join("/")
+        })
+        .collect();
+    let reachable = move |rel: &str| {
+        bases.iter().any(|b| b.is_empty() || b == rel || b.starts_with(&format!("{rel}/")) || rel.starts_with(&format!("{b}/")))
+    };
+    let root_owned = root.to_path_buf();
+    let walk = ignore::WalkBuilder::new(root)
+        .standard_filters(false)
+        .git_ignore(true)
+        .require_git(false)
+        .parents(false)
+        .filter_entry(move |e| {
+            if e.depth() == 0 {
+                return true;
+            }
+            let name = e.file_name();
+            if name == ".git" || name == ".jj" {
+                return false;
+            }
+            let rel = e.path().strip_prefix(&root_owned).map(|r| path_norm_seps(&r.to_string_lossy()));
+            !e.file_type().is_some_and(|t| t.is_dir()) || rel.is_ok_and(|r| reachable(&r))
+        })
+        .build();
+    let mut hit = vec![false; matchers.len()];
+    let mut files = Vec::new();
+    for entry in walk.filter_map(Result::ok) {
+        if !entry.file_type().is_some_and(|t| t.is_file()) {
+            continue;
+        }
+        let Ok(rel) = entry.path().strip_prefix(root).map(|r| path_norm_seps(&r.to_string_lossy())) else {
+            continue;
+        };
+        let mut reached = false;
+        for (i, (_, matcher)) in matchers.iter().enumerate() {
+            let Some(m) = matcher else { continue };
+            let mut candidate = rel.as_str();
+            let hits = loop {
+                if m.is_match(candidate) {
+                    break true;
+                }
+                match candidate.rsplit_once('/') {
+                    Some((parent, _)) => candidate = parent,
+                    None => break false,
+                }
+            };
+            if hits {
+                hit[i] = true;
+                reached = true;
+            }
+        }
+        if reached {
+            files.push((rel, std::fs::read(entry.path()).unwrap_or_default()));
+        }
+    }
+    let unmatched = matchers.iter().zip(&hit).filter(|(_, h)| !**h).map(|((p, _), _)| p.clone()).collect();
+    (files, unmatched)
 }
 
 /// A digest over already-computed parts (a command, a nested digest) — the outer half of a conduct
@@ -1181,6 +1278,45 @@ mod identity_tests {
         let split = tree(&[("x/1", "a"), ("x/2", "b")]);
         let joined = tree(&[("x/1", "ab"), ("x/2", "")]);
         assert_ne!(rel_digest(&split, &["x/*"]), rel_digest(&joined, &["x/*"]), "framed");
+    }
+
+    /// What the tree ignores is build output: a wildcard or a directory never reaches it, so a
+    /// build writing under `.build/` (SwiftPM) or `target/` changes neither the key nor its cost.
+    #[test]
+    fn a_wildcard_never_reaches_what_the_tree_ignores() {
+        let clean = tree(&[(".gitignore", ".build/\n*.log\n"), ("pkg/Sources/a.swift", "a")]);
+        let built = tree(&[
+            (".gitignore", ".build/\n*.log\n"),
+            ("pkg/Sources/a.swift", "a"),
+            ("pkg/Sources/.build/debug/a.o", "object bytes"),
+            ("pkg/Sources/run.log", "noise"),
+        ]);
+        for pattern in ["pkg/Sources/**", "pkg/Sources", "pkg/**/*", "**/*.swift"] {
+            assert_eq!(rel_digest(&clean, &[pattern]), rel_digest(&built, &[pattern]), "{pattern}");
+        }
+        std::fs::write(built.join("pkg/Sources/a.swift"), "b").unwrap();
+        assert_ne!(rel_digest(&clean, &["pkg/Sources/**"]), rel_digest(&built, &["pkg/Sources/**"]), "a source edit still counts");
+    }
+
+    /// A nested `.gitignore` rules its own directory; a path NAMED exactly counts even when ignored
+    /// (the author asked for that file), and `.git`/`.jj` are never read.
+    #[test]
+    fn a_named_path_counts_even_when_ignored_and_nested_ignores_apply() {
+        let dir = tree(&[
+            (".gitignore", "Package.resolved\n"),
+            ("Package.resolved", "pins v1"),
+            ("state/.gitignore", "*\n"),
+            ("state/lock", "x"),
+            (".jj/repo/store", "y"),
+            ("src/a.rs", "a"),
+        ]);
+        let named = rel_digest(&dir, &["Package.resolved"]);
+        std::fs::write(dir.join("Package.resolved"), "pins v2").unwrap();
+        assert_ne!(named, rel_digest(&dir, &["Package.resolved"]), "an ignored file named exactly is hashed");
+        let all = rel_digest(&dir, &["**"]);
+        std::fs::write(dir.join("state/lock"), "changed").unwrap();
+        std::fs::write(dir.join(".jj/repo/store"), "changed").unwrap();
+        assert_eq!(all, rel_digest(&dir, &["**"]), "nested-ignored state and .jj are not inputs");
     }
 
     /// One file matched by two patterns is one contribution: a caller listing `src/*.rs` and

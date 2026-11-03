@@ -23,7 +23,7 @@ use std::time::{Duration, SystemTime};
 use serde::{Deserialize, Serialize};
 
 /// The key's version tag: bump it whenever what a key covers changes, so no old entry can match.
-pub const KEY_VERSION: &str = "inputs-v1";
+pub const KEY_VERSION: &str = "inputs-v2";
 
 /// Entries older than this are pruned when a run records: a store that only grows is a disk leak,
 /// and a pass this old is a poor warrant anyway.

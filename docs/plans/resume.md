@@ -99,7 +99,14 @@ any prior green whose key matches is reused, even though the tree around it chan
   `UNIT_OPTS`), package-root-relative; a group's inputs are inherited by every leaf under it. A
   directory stands for everything under it. Any other shape is refused at load, naming the fix.
   The Lua-function form of the sketch is not built: globs covered every case in hand.
-- **Key.** sha256 over length-prefixed parts: `inputs-v1`, the file-qualified leaf path, the
+- **What the tree ignores is never an input** (2026-11-03, `inputs-v2`). A wildcard or a
+  directory reaches only what the `.gitignore` files inside the package root admit (none above it,
+  no global or per-checkout excludes, so two checkouts agree; `.git`/`.jj` never read); a path
+  named exactly counts whether ignored or not. Before this, `Sources/**` beside a SwiftPM `.build/`
+  hashed 2 GB on every run, and that output changed every run, so the key never matched (Substrate's
+  COSKit proof, 2026-11-02). Asking the VCS what is tracked was not taken: a jj workspace has no
+  `.git`, and a file jj tracks that git's index has not seen would drop out of the key silently.
+- **Key.** sha256 over length-prefixed parts: `inputs-v2`, the file-qualified leaf path, the
   declaring file's package-relative path and its bytes' digest, the prova VERSION (not the binary
   fingerprint, which carries the executable's path and mtime and would never match across
   checkouts), and a ROOT-RELATIVE digest of the inputs (`modules::digest_paths_relative`: each
