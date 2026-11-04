@@ -10,6 +10,10 @@ lands, its outcome is folded into the design docs and the plan trimmed to a `LAN
 
 ## Active plans
 
+- [module-proofs.md](module-proofs.md) — **drafted 2026-11-04 (E).** A change runs exactly the
+  proofs it can reach: proofs live per build module, a build-tool adapter (Cargo first) derives each
+  module's input closure from the dependency graph and rustc's dep-info, and one batched conduct runs
+  only the executing modules. Composes Phase 2 reuse, `Scope.Run`, selection pushdown. Four decisions open.
 - [query-consolidation.md](query-consolidation.md) — **drafted 2026-08-08.** The sequel to
   terminology.md: nails the *commands, selectors, and cross-surface parity* on top of the settled
   nouns. Three lanes (specs / tests / reminders), each a medium with a two-state duality; one
