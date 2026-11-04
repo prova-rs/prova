@@ -255,6 +255,14 @@ jobs:
           echo "ARCHIVE_PREFIX=${archive_prefix}" >> $GITHUB_ENV
           echo "ARCHIVE_SUM=${archive_sum}" >> $GITHUB_ENV
 
+      # Each archive names the workflow and commit that built it (GitHub build provenance): what
+      # Artichoke's importer verifies before it keeps a prova build, so every host can run the public
+      # release byte for byte (fabric CONNECTORS.md, P1; User ruling 2026-11-04).
+      - name: Attest Build Provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ env.ARCHIVE }}
+
       - name: Upload Release Archive
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
