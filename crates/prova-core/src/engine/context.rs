@@ -35,6 +35,10 @@ pub(super) struct Ctx {
     /// context — test bodies, ordinary `prova.fixture` factories, `prova eval` — leaves it `false`,
     /// so `ctx.network` is nil and resources provisioned there never auto-join a network.
     pub(super) topology: bool,
+    /// The file index of the test this context belongs to, for `t.module`. `None` for contexts no
+    /// one test owns: a `Scope.Run`/`Scope.Suite` factory (memoized across tests and files), `prova
+    /// eval`, and a topology stood up by `prova up`.
+    pub(super) file: Option<usize>,
 }
 
 impl Ctx {
@@ -182,6 +186,10 @@ pub(super) async fn resolve_use(lua: &Lua, this: &Ctx, target: Value) -> mlua::R
         flow_scope: this.flow_scope.clone(),
         own_scope: def.scope,
         case: None,
+        file: match def.scope {
+            ScopeKind::Test | ScopeKind::File => this.file,
+            _ => None,
+        },
         // A topology's factory context is topology-capable: `ctx.network` provisions/serves its
         // ambient managed network. Reached through every terminal verb — `t:use`, `prova up`, and the
         // warm MCP path all provision a topology through this one `resolve_use` seam.
@@ -286,16 +294,7 @@ async fn resolve_run_scoped(lua: &Lua, this: &Ctx, def: &FixtureDef) -> mlua::Re
         done: false,
     };
 
-    let child = Ctx {
-        run: this.run.clone(),
-        state: this.state.clone(),
-        test_scope: this.test_scope.clone(),
-        file_scope: this.file_scope.clone(),
-        flow_scope: this.flow_scope.clone(),
-        own_scope: ScopeKind::Run,
-        case: None,
-        topology: def.is_topology,
-    };
+    let child = Ctx { own_scope: ScopeKind::Run, case: None, topology: def.is_topology, file: None, ..this.clone() };
     let child_ud = lua.create_userdata(child)?;
     let settled = match def.factory.call_async::<Value>(child_ud).await {
         Ok(value) => match crate::modules::formats::lua_value_to_json(lua, &value) {
@@ -327,6 +326,38 @@ async fn resolve_run_scoped(lua: &Lua, this: &Ctx, def: &FixtureDef) -> mlua::Re
 
 impl UserData for Ctx {
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
+        // `t.module` — the module the test's file belongs to (docs/plans/module-proofs.md): `{ dir }`,
+        // the root-relative directory above the `proofs/` it was discovered in, or nil for a proof
+        // in the root's own `proofs/` and for contexts no one test owns. An adapter maps `dir` to
+        // its build tool's name for the module.
+        fields.add_field_method_get("module", |lua, this| {
+            let Some(path) = this.file.and_then(|f| this.state.file_paths.get(f)).map(|p| crate::modules::emit_path(p))
+            else {
+                return Ok(Value::Nil);
+            };
+            let prova: Table = lua.globals().get("prova")?;
+            let modules: Table = prova.get("modules")?;
+            let of: Table = modules.get("of")?;
+            // `of` maps each module's proofs directory to the module; the innermost one holding
+            // this file is its module (a `proofs/` never nests in another: discovery prunes there).
+            let mut best: Option<(usize, String)> = None;
+            for pair in of.pairs::<String, String>() {
+                let (proofs, dir) = pair?;
+                let holds = path.strip_prefix(proofs.as_str()).is_some_and(|rest| rest.starts_with('/'));
+                if holds && best.as_ref().is_none_or(|(len, _)| proofs.len() > *len) {
+                    best = Some((proofs.len(), dir));
+                }
+            }
+            match best.map(|(_, dir)| dir) {
+                Some(dir) => {
+                    let t = lua.create_table()?;
+                    t.set("dir", dir)?;
+                    Ok(Value::Table(t))
+                }
+                None => Ok(Value::Nil),
+            }
+        });
+
         // `t.case` — the current `test_each` case (nil for ordinary tests).
         fields.add_field_method_get("case", |_, this| {
             Ok(this.case.clone().unwrap_or(Value::Nil))

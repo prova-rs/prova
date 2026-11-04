@@ -498,6 +498,15 @@ fn install_run_facts(lua: &Lua, prova: &Table, config: &RunConfig) -> mlua::Resu
         prova.set("resume", resume)?;
     }
 
+    // `prova.modules` and `prova.conduct_cache` (docs/plans/module-proofs.md): what a module
+    // adapter reads. `prova.modules` is `[modules]` as data: `from` (the adapters) and `reads`
+    // (module → its tests' run-time reads), both always present. The cache is the engine's whole
+    // contribution to "cache the conduct, never the proof": a key over the adapter's parts and a
+    // closure's root-relative bytes, a lookup that `--uncached` bypasses, and filing that a run which
+    // may not file refuses, saying why. The adapter decides WHAT to file (only an all-green,
+    // unnarrowed account); the engine decides WHERE, and when not at all.
+    install_modules(lua, prova, config)?;
+
     // `prova.selection` — the run's resolved selection, as plain data
     // (docs/design/verifiers.md#selection-pushdown-into-conducts). The engine's whole
     // contribution to pushdown: a deputy's factory reads these axes and translates them to its
@@ -560,6 +569,94 @@ fn install_run_facts(lua: &Lua, prova: &Table, config: &RunConfig) -> mlua::Resu
 /// manifest, before any test) to do that. `load_project_config` overwrites this stub with the
 /// working table when it loads the companion. Keeping it off `prova` — the authoring surface — is
 /// what makes the boundary self-evident.
+fn install_modules(lua: &Lua, prova: &Table, config: &RunConfig) -> mlua::Result<()> {
+    let list = |v: &[String]| -> mlua::Result<Table> {
+        let out = lua.create_table()?;
+        for (i, s) in v.iter().enumerate() {
+            out.set(i + 1, s.as_str())?;
+        }
+        Ok(out)
+    };
+    let modules = lua.create_table()?;
+    modules.set("from", list(&config.build_modules.from)?)?;
+    let reads = lua.create_table()?;
+    for (name, paths) in &config.build_modules.reads {
+        reads.set(name.as_str(), list(paths)?)?;
+    }
+    modules.set("reads", reads)?;
+    // each module's proofs directory → its module dir; `t.module` reads it.
+    let of = lua.create_table()?;
+    for (proofs, dir) in &config.module_dirs {
+        of.set(crate::modules::emit_path(proofs), dir.as_str())?;
+    }
+    modules.set("of", of)?;
+    prova.set("modules", modules)?;
+
+    let cache = lua.create_table()?;
+    let root = config.project_dir.clone();
+    cache.set(
+        "key",
+        lua.create_function(move |_, (parts, paths): (Vec<String>, Vec<String>)| {
+            let Some(root) = &root else {
+                return Err(mlua::Error::RuntimeError(
+                    "prova.conduct_cache.key: a key is root-relative, and this run has no package root".into(),
+                ));
+            };
+            Ok(crate::conduct_cache::key(&parts, &paths, root))
+        })?,
+    )?;
+    let store = config.conduct_cache.clone();
+    cache.set(
+        "lookup",
+        lua.create_function(move |lua, key: String| {
+            let Some((filed, dir)) = store.as_ref().and_then(|c| c.lookup(&key)) else {
+                return Ok(Value::Nil);
+            };
+            let t = lua.create_table()?;
+            t.set("run_id", filed.run_id)?;
+            t.set("at", filed.at)?;
+            let files = lua.create_table()?;
+            for (name, file) in filed.files {
+                files.set(name, crate::modules::emit_path(&dir.join(file)))?;
+            }
+            t.set("files", files)?;
+            Ok(Value::Table(t))
+        })?,
+    )?;
+    let store = config.conduct_cache.clone();
+    let run_id = config.run_id.clone();
+    cache.set(
+        "file",
+        lua.create_function(move |_, (key, files): (String, std::collections::BTreeMap<String, String>)| {
+            let Some(store) = &store else {
+                return Err(mlua::Error::RuntimeError(
+                    "prova.conduct_cache.file: this run has no package home, so no store to file into".into(),
+                ));
+            };
+            let files = files.into_iter().map(|(k, v)| (k, std::path::PathBuf::from(v))).collect();
+            // A run that may not file says so first, whatever else it lacks.
+            let run_id = match (&store.unfileable, &run_id) {
+                (Some(_), _) => "",
+                (None, Some(id)) => id.as_str(),
+                (None, None) => {
+                    return Err(mlua::Error::RuntimeError(
+                        "prova.conduct_cache.file: this run is not journaled (no VCS tree, or a narrowed selection), \
+                         so it has no id to name as the conduct's origin and files nothing"
+                            .into(),
+                    ));
+                }
+            };
+            store
+                .file(&key, &files, run_id)
+                .map(|dir| crate::modules::emit_path(&dir))
+                .map_err(|e| mlua::Error::RuntimeError(format!("prova.conduct_cache.file: {e}")))
+        })?,
+    )?;
+    cache.set("fresh", config.conduct_cache.as_ref().is_some_and(|c| c.fresh))?;
+    prova.set("conduct_cache", cache)?;
+    Ok(())
+}
+
 fn install_runtime_stub(lua: &Lua) -> mlua::Result<()> {
         let stub = lua.create_table()?;
         let mt = lua.create_table()?;

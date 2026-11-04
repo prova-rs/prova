@@ -139,6 +139,22 @@ pub struct Manifest {
     /// be the ones the gate builds.
     #[serde(default)]
     pub stress: StressSection,
+    /// `[modules]` — the build tool's units a module adapter reads (docs/plans/module-proofs.md).
+    /// A package property: which build tool owns which directory cannot vary by lane.
+    #[serde(default)]
+    pub modules: ModulesSection,
+}
+
+/// `[modules]` — `from` names the adapters (a bundled `prova.<name>` or a `[dependencies]` package;
+/// several may share a repository, e.g. cargo + swiftpm), and `reads` names, per module, the paths
+/// only its TESTS read at run time (never propagated to dependents; the adapter's census checks it).
+#[derive(Debug, Deserialize, Default, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ModulesSection {
+    #[serde(default)]
+    pub from: Vec<String>,
+    #[serde(default)]
+    pub reads: BTreeMap<String, Vec<String>>,
 }
 
 /// `[stress]` — `nextest` is the argument list `prova stress` hands `cargo nextest list` when the
@@ -474,21 +490,21 @@ impl Heed {
 }
 
 /// Where a dependency package's Lua comes from. The string shorthand is a local path; the table
-/// form adds git and an in-repo `module` path.
+/// form adds git and an in-repo `entry` path.
 ///
 /// ```toml
 /// [dependencies]
 /// greet    = "./packages/greet.lua"                                  # local path shorthand
 /// fixtures = { path = "./test-support" }                             # local dir (fixtures.lua / init.lua)
 /// rabbitmq = { git = "https://github.com/acme/prova-rabbitmq", tag = "v1.0.0" }
-/// nats     = { git = "https://github.com/acme/prova-nats", rev = "abc123", module = "src/nats.lua" }
+/// nats     = { git = "https://github.com/acme/prova-nats", rev = "abc123", entry = "src/nats.lua" }
 /// ```
 #[derive(Debug, Deserialize, Clone, PartialEq)]
 #[serde(untagged)]
 pub enum PackageSource {
     /// A local path to a `.lua` file or a directory (resolved to `<name>.lua` then `init.lua`).
     Path(String),
-    /// The detailed form: a local `path` or a `git` repo, with an optional in-repo `module` path and
+    /// The detailed form: a local `path` or a `git` repo, with an optional in-repo `entry` path and
     /// a pin (`tag` / `branch` / `rev`).
     Detailed(PackageDetail),
 }
@@ -507,8 +523,10 @@ pub struct PackageDetail {
     pub branch: Option<String>,
     /// Pin to a specific commit (cloned, then checked out).
     pub rev: Option<String>,
-    /// Path within the repo/dir to the module file; defaults to `<name>.lua` then `init.lua`.
-    pub module: Option<String>,
+    /// Path within the repo/dir to the entry file; overrides the package's own `[package] entry`,
+    /// then `init.lua`, then `<name>.lua`. (Was `module`, renamed 2026-11-04 so "module" names a
+    /// build tool's unit: docs/plans/module-proofs.md#decisions-user-2026-11-04.)
+    pub entry: Option<String>,
 }
 
 /// A named topology (`[topologies] <name> = { package = "...", … }`). It names one of a package's
@@ -1221,7 +1239,7 @@ proofs = ["tests"]
 greet    = "./plugins/greet.lua"
 fixtures = { path = "./test-support" }
 rabbitmq = { git = "https://example.com/acme/prova-rabbitmq", tag = "v1.0.0" }
-nats     = { git = "https://example.com/acme/prova-nats", rev = "abc123", module = "src/nats.lua" }
+nats     = { git = "https://example.com/acme/prova-nats", rev = "abc123", entry = "src/nats.lua" }
 "#,
         )
         .unwrap();
@@ -1251,7 +1269,7 @@ nats     = { git = "https://example.com/acme/prova-nats", rev = "abc123", module
             PackageSource::Detailed(PackageDetail {
                 git: Some("https://example.com/acme/prova-nats".into()),
                 rev: Some("abc123".into()),
-                module: Some("src/nats.lua".into()),
+                entry: Some("src/nats.lua".into()),
                 ..Default::default()
             })
         );

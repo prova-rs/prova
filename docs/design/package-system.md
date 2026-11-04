@@ -278,7 +278,7 @@ Wired now (the "easy to install" story):
 - **The declared package root** — `[run] packages` in the manifest, resolved against the package
   root. The only directory scanned; there is no global install dir (see "Everything is declared").
 - **Manifest-declared packages** — `prova.toml` `[dependencies]` maps a name to a local path or a **git
-  source** (`{ git = "…", tag/branch/rev = "…", module = "…" }`). Git sources are fetched (shelling
+  source** (`{ git = "…", tag/branch/rev = "…", entry = "…" }`). Git sources are fetched (shelling
   to `git`, like archetect fetches archetype sources) into `cache_dir/packages`, pinned by ref and
   reused on the next run. The resolved `name → file` map is authoritative over disk roots, so a
   declared package resolves the same way in every environment:
@@ -293,7 +293,7 @@ Wired now (the "easy to install" story):
   loadtest = "github:acme/prova-loadtest@v2"                          # host shorthand
   vault    = "acme/prova-vault@v3"                                    # bare org/repo (defaults to github)
   rabbitmq = { git = "https://github.com/acme/prova-rabbitmq", tag = "v1.0.0" }
-  nats     = { git = "https://github.com/acme/prova-nats", rev = "abc123", module = "src/nats.lua" }
+  nats     = { git = "https://github.com/acme/prova-nats", rev = "abc123", entry = "src/nats.lua" }
   ```
 
   A bare `org/repo` shorthand **requires an `@ref`** so a plain relative path is never mistaken for a
@@ -319,7 +319,7 @@ Wired now (the "easy to install" story):
   <!-- claim: entry-decouples-alias -->
   - **`entry`** removes the frail step: the author declares the entry file once, so a consumer can
     pull the package under *any* alias (`mq = "prova-rs/prova-rabbitmq@v1"`) and it still resolves.
-    Entry precedence for a directory source: consumer `module =` override → manifest `entry` →
+    Entry precedence for a directory source: consumer `entry =` override → manifest `entry` →
     `init.lua` → `<alias>.lua` (last-ditch back-compat; the reason to declare `entry`).
   <!-- claim: requires-prova-gates-load -->
   - **`[requires] prova`** gates compatibility against the running version, exactly like

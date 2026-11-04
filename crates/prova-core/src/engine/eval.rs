@@ -314,6 +314,7 @@ pub(super) fn eval_with_state(
         own_scope: ScopeKind::File,
         case: None,
         topology: false,
+        file: None,
     };
     lua.globals().set("ctx", lua.create_userdata(ctx)?)?;
 

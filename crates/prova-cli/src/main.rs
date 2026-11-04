@@ -363,6 +363,8 @@ options:
       --reuse               carry forward a prior pass of every test declaring `inputs = {…}`
                             whose inputs, declaring file and prova version are byte-identical,
                             even across trees — recorded as reused (inputs unchanged)
+      --uncached            serve no module's account from the conduct cache: every module adapter
+                            conducts in full (the audit run); what it conducts green is still filed
       --flakes fail|warn    a test that failed and passed on the same tree is FLAKY (a defect):
                             `fail` (default) exits 1 on it, `warn` reports it without failing
       --topology NAME       require attaching to the held topology NAME (error when not running) —

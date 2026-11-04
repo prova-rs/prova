@@ -78,6 +78,9 @@ const BUNDLED: &[(&str, &str)] = &[
     // The transport-agnostic programmable double (mock / proxy / spy, with an ordered event log).
     // The reusable heart of http.mock/grpc.mock for an in-process, Lua-driven boundary.
     ("prova.double", include_str!("packages/prova/double.lua")),
+    // The Cargo module adapter (docs/plans/module-proofs.md): per-module accounts from one batched
+    // nextest, cached by each module's build closure.
+    ("prova.cargo", include_str!("packages/prova/cargo.lua")),
 ];
 
 /// Install the plugin searcher into `lua`'s `package.searchers`.

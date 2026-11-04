@@ -228,6 +228,7 @@ pub(super) async fn provision(
         own_scope: ScopeKind::File,
         case: None,
         topology: false,
+        file: None,
     };
     let handle = lua.create_userdata(FixtureHandle { id })?;
     let value = resolve_use(lua, &ctx, Value::UserData(handle)).await?;

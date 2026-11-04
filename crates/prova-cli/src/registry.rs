@@ -120,7 +120,7 @@ fn registry_dir(
             tag: None,
             branch: None,
             rev: None,
-            module: None,
+            entry: None,
         };
         let (dir, lease) = crate::packages::fetch_git(&reg.source, &detail, layout, git_opts)
             .map_err(|e| format!("registry {}: {e}", reg.name))?;

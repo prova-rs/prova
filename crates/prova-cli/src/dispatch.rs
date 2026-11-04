@@ -64,6 +64,9 @@ struct Cli {
     resume: bool,
     // `--reuse` (docs/plans/resume.md#phase-2): carry a prior pass of a leaf that declares `inputs`.
     reuse: bool,
+    // `--uncached` (docs/plans/module-proofs.md): serve no conduct from the conduct cache, so every
+    // module adapter conducts in full: the audit run. Its all-green conducts are still filed.
+    uncached: bool,
     // `--flakes=fail|warn` (default fail): whether a run whose only blemish is a flake exits
     // non-zero. A flake is a defect (crate::flakes); `warn` reports it without failing the run.
     flakes_warn: bool,
@@ -121,6 +124,7 @@ impl Default for Cli {
             last_failed: false,
             resume: false,
             reuse: false,
+            uncached: false,
             flakes_warn: false,
             record_to: None,
             allow_empty: false,
@@ -356,6 +360,7 @@ impl Cli {
             "--last-failed" => self.last_failed = true,
             "--resume" => self.resume = true,
             "--reuse" => self.reuse = true,
+            "--uncached" => self.uncached = true,
             "--falsify" => self.falsify = true,
             "--fresh" => self.fresh = true,
             // The tests lane's state flags, derived from the registry (`--promise(s)` /
@@ -438,7 +443,7 @@ fn resolve_env(cli: &mut Cli, home: &Option<Home>, layout: &XdgSystemLayout) -> 
             );
             return Err(ExitCode::from(2));
         };
-        let mut env = resolve_from_manifest(
+        let env = resolve_from_manifest(
             home,
             cli.profile.clone(),
             cli.jobs,
@@ -455,7 +460,9 @@ fn resolve_env(cli: &mut Cli, home: &Option<Home>, layout: &XdgSystemLayout) -> 
             // proof patterns, `config`, and `plugin_root` all resolve against it. `proofs/` lives
             // at the root while prova's own files tuck into the nook.
             base_dir: home.dir.clone(),
-            paths: std::mem::take(&mut env.proofs),
+            // Cloned, not taken: `[modules]` maps each module's proofs directory from these same
+            // patterns, whatever paths the run selects.
+            paths: env.proofs.clone(),
             env,
         });
     }
@@ -511,6 +518,7 @@ fn resolve_env(cli: &mut Cli, home: &Option<Home>, layout: &XdgSystemLayout) -> 
                 lane_tags: Vec::new(),             // no manifest, no lanes
                 switches: Vec::new(),              // no manifest, nothing thrown
                 resume_roots: Vec::new(),          // no manifest, no extra roots
+                modules: Default::default(),       // no manifest, no module adapters
             },
         }),
     }
@@ -584,6 +592,16 @@ fn build_config(
         reports.clone(),
         home.as_ref().map(|h| h.dir.join(".prova/var/reports")),
     );
+    // `[modules]` and each module's proofs directory (docs/plans/module-proofs.md): what a module
+    // adapter reads as `prova.modules`, and what `t.module` answers from.
+    if let Some(h) = home.as_ref() {
+        let dirs = crate::suites::module_dirs(&h.dir, &env.env.proofs);
+        let m = &env.env.modules;
+        config = config.with_modules(
+            prova_core::BuildModules { from: m.from.clone(), reads: m.reads.clone() },
+            dirs,
+        );
+    }
 
     // `--last-failed`: fold the previous run's failed node paths into the selection as exact nodes.
     if cli.last_failed {

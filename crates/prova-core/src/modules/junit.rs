@@ -404,8 +404,40 @@ pub(crate) fn make(lua: &Lua, deputed: Option<DeputedRegistry>) -> mlua::Result<
     )?;
 
     register_union(lua, &junit)?;
+    register_select(lua, &junit)?;
 
     Ok(junit)
+}
+
+/// `junit.select(path, { suites, out })` — the part of one account whose suites are named: a suite
+/// `s` in `suites` takes the suite `s` itself and every `s::…` (nextest names a binary
+/// `<package>::<binary>`), so one batched conduct splits into per-module accounts
+/// (docs/plans/module-proofs.md#3-cache-the-conduct-never-the-proof). Every case keeps its verdict
+/// and origin. Returns the number of cases written, so an empty selection is visible to its caller.
+fn register_select(lua: &Lua, junit: &Table) -> mlua::Result<()> {
+    junit.set(
+        "select",
+        lua.create_function(|_, (path, opts): (String, Table)| {
+            let suites: Vec<String> = opts.get::<Option<Vec<String>>>("suites")?.ok_or_else(|| {
+                mlua::Error::RuntimeError("junit.select: suites = { <suite or package>, … } is required".into())
+            })?;
+            let out: String = opts.get::<Option<String>>("out")?.ok_or_else(|| {
+                mlua::Error::RuntimeError("junit.select: out = <path to write> is required".into())
+            })?;
+            let xml = std::fs::read_to_string(&path)
+                .map_err(|e| mlua::Error::RuntimeError(format!("junit.select: cannot read {path}: {e}")))?;
+            let mut cases = Vec::new();
+            parse_document(&xml, &path, &mut cases).map_err(mlua::Error::RuntimeError)?;
+            let named = |suite: &str| {
+                suites.iter().any(|s| suite == s || suite.strip_prefix(s.as_str()).is_some_and(|r| r.starts_with("::")))
+            };
+            let kept: Vec<Case> = cases.into_iter().filter(|c| named(&c.suite)).collect();
+            std::fs::write(&out, render_account(&kept))
+                .map_err(|e| mlua::Error::RuntimeError(format!("junit.select: cannot write {out}: {e}")))?;
+            Ok(kept.len())
+        })?,
+    )?;
+    Ok(())
 }
 
 /// `junit.union(paths, { out })` — disjoint accounts made one: the slices of one partitioned

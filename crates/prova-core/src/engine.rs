@@ -304,6 +304,16 @@ pub struct RunConfig {
     /// Input-keyed reuse (docs/plans/resume.md#phase-2): where passes are filed by input key and
     /// whether this run may carry them (`--reuse`). `None`: no store, so no keys are computed.
     pub input_reuse: Option<crate::reuse::InputReuse>,
+    /// The conduct cache (docs/plans/module-proofs.md#3-cache-the-conduct-never-the-proof): where
+    /// adapters file a module's all-green account, whether this run is served from it (`--uncached`
+    /// is not), and why it may not file. `None` without a package home: nothing is served or filed.
+    pub conduct_cache: Option<crate::conduct_cache::ConductCache>,
+    /// `[modules]` (docs/plans/module-proofs.md#1-a-proof-belongs-to-its-module): the adapters and
+    /// the test-only reads, surfaced to Lua as `prova.modules` for the adapters to read.
+    pub build_modules: BuildModules,
+    /// Each module's `proofs/` directory → its module directory (root-relative): the parent of a
+    /// discovered `proofs/` that is not the root's own. `t.module` answers from it.
+    pub module_dirs: std::collections::BTreeMap<std::path::PathBuf, String>,
     /// This run's identity (`prova.run_id`) and, under `--resume`, the run it resumes
     /// (`prova.resume.from`): resume pushdown into conducts (docs/plans/resume.md#phase-1b). A
     /// deputy that stamped its artifact with the run that made it can tell, from these two alone,
@@ -348,6 +358,14 @@ pub struct RunConfig {
     /// the whole run. Absent — the default, and every package that declares nothing — leaves every
     /// topology file-local, provisioned per declaring file exactly as before.
     pub(crate) interned: Option<InternedTopologies>,
+}
+
+/// `[modules]` as the engine carries it: adapter names, and per module the paths only its tests
+/// read at run time (never propagated to dependents).
+#[derive(Clone, Debug, Default)]
+pub struct BuildModules {
+    pub from: Vec<String>,
+    pub reads: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 /// A held topology a run may attach to: its name plus the holder's recorded JSON projection of
@@ -405,6 +423,9 @@ impl Default for RunConfig {
             falsify: false,
             reuse: std::collections::BTreeSet::new(),
             input_reuse: None,
+            conduct_cache: None,
+            build_modules: BuildModules::default(),
+            module_dirs: std::collections::BTreeMap::new(),
             run_id: None,
             resumed_from: None,
             timeout_cap: None,
@@ -526,6 +547,23 @@ impl RunConfig {
     /// File passes of input-declaring leaves in `store`, and — `carry` — reuse matching ones (`--reuse`).
     pub fn with_input_reuse(mut self, input_reuse: Option<crate::reuse::InputReuse>) -> Self {
         self.input_reuse = input_reuse;
+        self
+    }
+
+    /// The conduct cache adapters file into and are served from (`None`: neither).
+    pub fn with_conduct_cache(mut self, cache: Option<crate::conduct_cache::ConductCache>) -> Self {
+        self.conduct_cache = cache;
+        self
+    }
+
+    /// `[modules]`, and each proof file's module directory.
+    pub fn with_modules(
+        mut self,
+        modules: BuildModules,
+        dirs: std::collections::BTreeMap<std::path::PathBuf, String>,
+    ) -> Self {
+        self.build_modules = modules;
+        self.module_dirs = dirs;
         self
     }
 

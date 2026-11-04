@@ -1,0 +1,102 @@
+--- `prova.cargo`, black-box on a real workspace (docs/plans/module-proofs.md#phases, phase 2): a
+--- change conducts exactly the modules it can reach, and every other module's account is served
+--- from the conduct cache.
+---
+--- The workspace: `a → b → c`. `c` EMBEDS `data/x.txt` (`include_str!`, outside every crate, so only
+--- rustc's dep-info knows it); `b`'s TESTS read `data/y.txt` at run time (`[modules] reads`). Each
+--- crate has one test and its own `proofs/` adopting its account with `cargo.verify`. The adapter
+--- prints one line per run: "N module(s) conducted, M served".
+
+local function crate(root, name, dep, body, test)
+  fs.mkdir(root .. "/" .. name .. "/src")
+  fs.mkdir(root .. "/" .. name .. "/proofs")
+  fs.write(root .. "/" .. name .. "/Cargo.toml", table.concat({
+    "[package]", 'name = "' .. name .. '"', 'version = "0.1.0"', 'edition = "2021"', "",
+    "[dependencies]", dep and (dep .. ' = { path = "../' .. dep .. '" }') or "", "",
+  }, "\n"))
+  fs.write(root .. "/" .. name .. "/src/lib.rs", body .. "\n#[cfg(test)]\nmod tests {\n" .. test .. "\n}\n")
+  fs.write(root .. "/" .. name .. "/proofs/" .. name .. "_test.lua", string.format([[
+local cargo = require("prova.cargo")
+cargo.configure{ profile = "prova" }
+prova.test("%s's cases pass", { locks = { prova.writes("cargo") } }, function(t) cargo.verify(t) end)
+]], name))
+end
+
+local workspace = prova.fixture("cargo-workspace", Scope.Test, function(ctx)
+  local root = ctx:tempdir() .. "/ws"
+  fs.mkdir(root .. "/data")
+  fs.mkdir(root .. "/.config")
+  fs.write(root .. "/data/x.txt", "x1")
+  fs.write(root .. "/data/y.txt", "y1")
+  fs.write(root .. "/Cargo.toml", '[workspace]\nmembers = ["a", "b", "c"]\nresolver = "2"\n')
+  fs.write(root .. "/.config/nextest.toml", '[profile.prova]\njunit = { path = "junit.xml" }\n')
+  fs.write(root .. "/.gitignore", "target/\n.prova/\n")
+  fs.write(root .. "/prova.toml", '[run]\nproofs = ["proofs"]\n[modules]\nfrom = ["cargo"]\nreads = { "b" = ["data/y.txt"] }\n')
+  crate(root, "c", nil, 'pub const X: &str = include_str!("../../data/x.txt");',
+    '#[test] fn embeds() { assert!(super::X.starts_with("x")); }')
+  crate(root, "b", "c", "pub fn x() -> &'static str { c::X }",
+    '#[test] fn reads() { let y = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../data/y.txt")).unwrap(); assert!(y.starts_with("y")); }')
+  crate(root, "a", "b", "pub fn x() -> &'static str { b::x() }", "#[test] fn chains() { assert!(super::x().starts_with(\"x\")); }")
+  shell.run({ "cargo", "generate-lockfile", "--offline" }, { cwd = root, check = true })
+  shell.run({ "git", "init", "-q" }, { cwd = root, check = true })
+  shell.run({ "git", "add", "-A" }, { cwd = root, check = true })
+  return root
+end)
+
+local function run(root, args)
+  local r = shell.run(prova.bin .. " " .. (args or ""), {
+    cwd = root, env = { PROVA_VAR_DIR = "" }, merge_stderr = true, idle_timeout = "600s",
+  })
+  local conducted, served = r.stdout:match("(%d+) module%(s%) conducted, (%d+) served")
+  return r, tonumber(conducted), tonumber(served)
+end
+
+local function expect_run(t, root, label, conducted, served, args)
+  local r, c, s = run(root, args)
+  t:expect(r.code, label .. ":\n" .. r.stdout):equals(0)
+  t:expect(string.format("%s conducted, %s served", c, s), label .. ":\n" .. r.stdout)
+    :equals(string.format("%d conducted, %d served", conducted, served))
+end
+
+prova.test("a change conducts exactly the modules it can reach, and the rest are served", {
+  requires = { "cargo", "cargo-nextest", "git" },
+  covers = "docs/plans/module-proofs.md#2-the-adapter-answers-one-question",
+  timeout = "1800s",
+}, function(t)
+  local ws = t:use(workspace)
+  expect_run(t, ws, "the first run conducts all three", 3, 0)
+  expect_run(t, ws, "nothing changed: all three served", 0, 3)
+
+  fs.write(ws .. "/a/src/lib.rs", fs.read(ws .. "/a/src/lib.rs") .. "\n// edited\n")
+  expect_run(t, ws, "an edit to a, which nothing depends on: only a", 1, 2)
+
+  fs.write(ws .. "/c/src/lib.rs", fs.read(ws .. "/c/src/lib.rs") .. "\n// edited\n")
+  expect_run(t, ws, "an edit to c reaches b and a through their dependencies", 3, 0)
+
+  fs.write(ws .. "/data/x.txt", "x2")
+  expect_run(t, ws, "a file c embeds (only dep-info knows it) reaches all three", 3, 0)
+
+  fs.write(ws .. "/data/y.txt", "y2")
+  expect_run(t, ws, "a file only b's tests read reaches b alone", 1, 2)
+
+  fs.mkdir(ws .. "/target/scratch")
+  fs.write(ws .. "/target/scratch/noise.txt", "noise")
+  expect_run(t, ws, "build output under target/ reaches nothing", 0, 3)
+
+  expect_run(t, ws, "--uncached conducts everything (the audit)", 3, 0, "--uncached")
+end)
+
+prova.test("a red module is conducted again and never served", {
+  requires = { "cargo", "cargo-nextest", "git" },
+  covers = "docs/plans/module-proofs.md#3-cache-the-conduct-never-the-proof",
+  timeout = "1800s",
+}, function(t)
+  local ws = t:use(workspace)
+  fs.write(ws .. "/data/y.txt", "not y")
+  local r, c, s = run(ws)
+  t:expect(r.code, "b's test reads y and fails:\n" .. r.stdout):never():equals(0)
+  t:expect(string.format("%s/%s", c, s), "all three conducted on a fresh workspace"):equals("3/0")
+  local again, c2 = run(ws)
+  t:expect(again.code):never():equals(0)
+  t:expect(c2, "the red module was not filed, so it conducts again"):gte(1)
+end)

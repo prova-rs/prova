@@ -107,6 +107,7 @@ pub(super) fn plan_journal(
 ) -> Result<Option<JournalPlan>, ExitCode> {
     let resume_roots = &env.resume_roots;
     plan_input_reuse(cli, home, config, env)?;
+    plan_conduct_cache(cli, home, config, env);
     if cli.list || cli.switches_list || cli.reminders_list || cli.backfill {
         return Ok(None);
     }
@@ -176,6 +177,43 @@ pub(crate) fn reuse_store(home: &Home) -> std::path::PathBuf {
         Ok(Some(root)) => root.join("reuse"),
         _ => crate::var::path(home).join("reuse"),
     }
+}
+
+/// Where module adapters file all-green accounts: beside the reuse store, at the override root under
+/// `PROVA_VAR_DIR`, so a fresh checkout is served what a lane's run filed.
+pub(crate) fn conduct_store(home: &Home) -> std::path::PathBuf {
+    match crate::var::override_root() {
+        Ok(Some(root)) => root.join("conducts"),
+        _ => crate::var::path(home).join("conducts"),
+    }
+}
+
+/// Hand the engine the conduct cache (docs/plans/module-proofs.md#3-cache-the-conduct-never-the-proof):
+/// served unless `--uncached`; filing refused, saying why, on a run whose conducts are not the conduct
+/// a later run asks about. No package home: no cache, so every adapter conducts and files nothing.
+fn plan_conduct_cache(
+    cli: &Cli,
+    home: &Option<Home>,
+    config: &mut prova_core::RunConfig,
+    env: &crate::suites::ManifestRun,
+) {
+    let Some(h) = home.as_ref() else { return };
+    let unfileable = if config.falsify {
+        Some("--falsify executes mutants, not the module's tests")
+    } else if !env.dependency_overrides.is_empty() {
+        Some("--dep conducts against a dependency version the key cannot see")
+    } else if cli.update_baseline.is_some() {
+        Some("--update-baseline banks this run's measurements")
+    } else if cli.update_snapshots {
+        Some("-u rewrites expectations, so its conducts are not the tree's")
+    } else {
+        None
+    };
+    *config = std::mem::take(config).with_conduct_cache(Some(prova_core::conduct_cache::ConductCache {
+        store: conduct_store(h),
+        fresh: cli.uncached,
+        unfileable: unfileable.map(str::to_owned),
+    }));
 }
 
 /// A `--reuse` refusal: said once, exit 2.

@@ -271,6 +271,7 @@ pub(super) async fn run_one(
         own_scope: ScopeKind::Test,
         case: item.case.clone(),
         topology: false,
+        file: Some(item.file),
     };
     let ctx_ud = match lua.create_userdata(ctx) {
         Ok(ud) => ud,

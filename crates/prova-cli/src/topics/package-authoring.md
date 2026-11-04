@@ -20,7 +20,7 @@ my-package/
 ```toml
 [package]
 name        = "greet"
-entry       = "init.lua"          # precedence: consumer module= > entry > init.lua > <alias>.lua
+entry       = "init.lua"          # precedence: consumer entry= > [package] entry > init.lua > <alias>.lua
 description = "..."
 [[package.topologies]]            # optional: advertise topologies by name
 name = "vm"

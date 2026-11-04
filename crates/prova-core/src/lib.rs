@@ -7,6 +7,7 @@
 
 pub mod barrier;
 pub mod baselines;
+pub mod conduct_cache;
 mod engine;
 pub mod help;
 pub mod layout;
@@ -145,8 +146,7 @@ pub use engine::{
     Capabilities, CapabilityExplanation, CapabilityFactory, CapabilityRegistration, CommandProbe,
     DeclKind, Endpoint, HeldTopology, InternedHandle, Module, Stream, TopologyPool,
     ListNode, PackageReport, PackageShape, PortMode, RunConfig, Selection, SnapshotRegistry,
-    TopologyRegistration, UndeclaredPolicy, VersionQuery,
-};
+    TopologyRegistration, UndeclaredPolicy, VersionQuery, BuildModules};
 pub use lanes::{Lane, LANES};
 pub use layout::{RootedSystemLayout, SystemLayout, XdgSystemLayout};
 pub use progress::{Activity, Kind as ActivityKind, NullProgress, Progress};

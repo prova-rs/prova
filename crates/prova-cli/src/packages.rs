@@ -530,9 +530,9 @@ fn resolve_one(
         }
     }
 
-    // Entry precedence: consumer `module=` override → manifest `entry` → filename conventions.
+    // Entry precedence: consumer `entry=` override → manifest `entry` → filename conventions.
     let manifest_entry = manifest.as_ref().and_then(|m| m.package.entry.as_deref());
-    let entry = module_file(&root, name, detail.module.as_deref(), manifest_entry)?;
+    let entry = module_file(&root, name, detail.entry.as_deref(), manifest_entry)?;
 
     // Canonical namespace: manifest `[plugin] name`, else the consumer's key.
     let canonical = manifest
@@ -623,14 +623,14 @@ fn resolve_relative(base_dir: &Path, path: &str) -> PathBuf {
 }
 
 /// Pick the entry file inside a resolved directory (or accept a direct file). Precedence:
-/// the consumer's `module=` override → the manifest's `entry` → `init.lua` → `<name>.lua`. The
+/// the consumer's `entry=` override → the manifest's `entry` → `init.lua` → `<name>.lua`. The
 /// manifest/`init.lua` are the robust paths; `<name>.lua` is a last-ditch back-compat fallback that
 /// couples the file to the consumer's alias (which is exactly why a published plugin declares
 /// `entry` in `prova.toml [plugin]` instead).
 fn module_file(
     root: &Path,
     name: &str,
-    module: Option<&str>,
+    entry: Option<&str>,
     manifest_entry: Option<&str>,
 ) -> Result<PathBuf, String> {
     if root.is_file() {
@@ -641,7 +641,7 @@ fn module_file(
     }
     // A declared entry (consumer override, then the plugin's own manifest) must exist if given.
     for (source, declared) in [
-        ("module", module),
+        ("[dependencies] entry", entry),
         ("prova.toml [package] entry", manifest_entry),
     ] {
         if let Some(rel) = declared {
@@ -664,7 +664,7 @@ fn module_file(
     }
     Err(format!(
         "no entry file in {} (add `[package] entry = \"…\"` to prova.toml, an `init.lua`, \
-         or set `module`)",
+         or set `entry` on the dependency)",
         root.display()
     ))
 }

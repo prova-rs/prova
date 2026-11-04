@@ -85,6 +85,8 @@ pub(crate) struct ManifestRun {
     pub(crate) switches: Vec<String>,
     /// `[resume] roots` — home-relative directories the `--resume` tree fingerprint covers too.
     pub(crate) resume_roots: Vec<String>,
+    /// `[modules]` — the module adapters and their test-only reads (docs/plans/module-proofs.md).
+    pub(crate) modules: crate::manifest::ModulesSection,
 }
 
 /// If a linted plugin ships no LuaCATS stub (`library/<canonical>.lua`), return an advisory message.
@@ -209,6 +211,23 @@ pub(crate) fn name_matches(name: &str, patterns: &[String]) -> bool {
             p == name
         }
     })
+}
+
+/// Each module's proofs directory → its module directory (docs/plans/module-proofs.md#1-a-proof-belongs-to-its-module):
+/// a discovered `proofs/` belongs to the directory above it, unless that is the root, whose proofs
+/// belong to no module. Root-relative, `/`-separated, so `t.module.dir` reads the same everywhere.
+pub(crate) fn module_dirs(root: &Path, patterns: &[String]) -> BTreeMap<PathBuf, String> {
+    find_proof_dirs(root, patterns)
+        .into_iter()
+        .filter_map(|proofs| {
+            let module = proofs.parent()?;
+            let rel = module.strip_prefix(root).ok()?;
+            if rel.as_os_str().is_empty() {
+                return None;
+            }
+            Some((proofs.clone(), rel.to_string_lossy().replace('\\', "/")))
+        })
+        .collect()
 }
 
 /// Every directory below `root` whose name matches a `proofs` pattern — the discovery model for
@@ -853,6 +872,7 @@ pub(crate) fn resolve_from_manifest(
         lane_tags: resolved.lane_tags,
         switches: resolved.switches,
         resume_roots: resolved.resume_roots,
+        modules: manifest.modules.clone(),
         dependency_overrides: applied.iter().map(crate::dep_override::Applied::line).collect(),
     })
 }

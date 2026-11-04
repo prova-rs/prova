@@ -1,6 +1,8 @@
 # Module proofs: a change runs exactly the proofs it can reach
 
-Status: **drafted 2026-11-04 (E), at the User's direction**: "smart resolution based on dependency
+Status: **phases 1–2 built 2026-11-04** (engine: `[modules]`, `t.module`, the conduct cache,
+`--uncached`, `junit.select`, `entry =`; the `prova.cargo` adapter, proven on a three-crate workspace
+in `proofs/modules/`). Phase 3, the Substrate pilot, is next. Drafted 2026-11-04 (E), at the User's direction: "smart resolution based on dependency
 changes sounds like the difference between good and great", and "the right shape instead of Rube
 Goldberg machines". It builds [resume.md Phase 2](resume.md#phase-2-as-built-2026-10-29), whose
 sketch named it ("per-crate nextest deputies whose inputs are the crate's dependency closure, from
@@ -179,7 +181,7 @@ came from or the first closure path that differs from the filed one
   JSON names it, so a gate reports it as an infrastructure event (Herald notifies the gates lane),
   never as a silent slow run and never as a narrower one. The Cargo adapter reads with `--locked
   --offline`, so reading the graph never needs the network.
-- **The full run is the audit.** A run with the conduct cache off (`--fresh`, nightly, and before a
+- **The full run is the audit.** A run with the conduct cache off (`--uncached`, nightly, and before a
   release) conducts every module and is the ground truth. A cached account the audit turns red is a hole in a closure: a gate-reliability
   defect, fixed by class, never called a flake.
 - **A run-time read nobody declared is found, not trusted away.** The adapter ships a census (as
@@ -197,7 +199,7 @@ proof does; only conducts are cached.
 
 1. **Prova engine:** `[modules]`, `prova.module`, the conduct cache (a store primitive with the
    honesty rules above: filed only from an all-green, unnarrowed, executing conduct; pruned at 30
-   days; `--fresh` bypasses it), and `[dependencies] module` renamed `entry`.
+   days; `--uncached` bypasses it), and `[dependencies] module` renamed `entry`.
 2. **The `cargo` adapter:** `closure()` from metadata + dep-info + reads, and `verify()`/`account()`
    over the one batched conduct of stale modules. Proven on a fixture workspace (`a → b → c`, `c` embedding `data/x.txt`,
    `b`'s tests reading `data/y.txt`): an edit to `c` conducts all three, an edit to `a` conducts only `a`,

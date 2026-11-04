@@ -11,7 +11,7 @@ postgres = "prova-rs/prova-postgres@v1"                        # owner/repo@ref 
 greet    = "./packages/greet.lua"                              # local file
 support  = { path = "./test-support" }                         # local dir (init.lua)
 rabbitmq = { git = "https://github.com/acme/prova-rabbitmq", tag = "v1.0.0" }
-nats     = { git = "…", rev = "abc123", module = "src/nats.lua" }
+nats     = { git = "…", rev = "abc123", entry = "src/nats.lua" }
 
 [sources]                       # alias → base, so teams shorten their own hosts
 acme = "github:acme"            # then: package = "acme:prova-redis@v1"

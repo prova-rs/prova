@@ -5,7 +5,7 @@ fn git(tag: Option<&str>, rev: Option<&str>) -> PackageSource {
         git: Some("https://example.invalid/standards".into()),
         tag: tag.map(String::from),
         rev: rev.map(String::from),
-        module: Some("src/standards.lua".into()),
+        entry: Some("src/standards.lua".into()),
         ..PackageDetail::default()
     })
 }
@@ -35,7 +35,7 @@ fn a_tag_override_keeps_the_git_url_and_module_and_names_both_pins() {
     let applied = apply(&mut d, &[parse("project-standards=v1.4.0", "--dep").unwrap()]).unwrap();
     let PackageSource::Detailed(detail) = &d["project-standards"] else { panic!("still git") };
     assert_eq!(detail.git.as_deref(), Some("https://example.invalid/standards"));
-    assert_eq!(detail.module.as_deref(), Some("src/standards.lua"));
+    assert_eq!(detail.entry.as_deref(), Some("src/standards.lua"));
     assert_eq!((detail.tag.as_deref(), detail.rev.as_deref()), (Some("v1.4.0"), None));
     assert_eq!(applied[0].line(), "project-standards: tag v1.3.0 -> tag v1.4.0 (--dep)");
 }
