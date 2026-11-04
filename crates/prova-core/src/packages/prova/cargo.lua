@@ -206,9 +206,17 @@ cargo.accounts = prova.fixture("prova.cargo.accounts", Scope.Run, function()
   local conduct_key = settings.profile .. "\0" .. table.concat(settings.args, "\0")
   local out = { modules = {}, by_dir = {}, off = off, conducted = {}, served = {} }
   local stale = {}
+  -- The modules are the members with their own proofs/ (`prova.modules.of`): only they are this
+  -- adapter's to conduct. A workspace that keeps a whole-workspace deputy beside a few modules
+  -- must not have that workspace conducted twice.
+  local has_proofs = {}
+  for _, dir in pairs((prova.modules or {}).of or {}) do has_proofs[dir] = true end
   if g then
     for name, mod in pairs(g.modules) do
       out.by_dir[mod.dir] = name
+    end
+    for name, mod in pairs(g.modules) do
+      if not has_proofs[mod.dir] then goto continue end
       local key = prova.conduct_cache.key({ "cargo", name, tool, conduct_key }, mod.paths)
       local filed = prova.conduct_cache.lookup(key)
       if filed then
@@ -219,6 +227,7 @@ cargo.accounts = prova.fixture("prova.cargo.accounts", Scope.Run, function()
       else
         stale[#stale + 1] = { name = name, key = key }
       end
+      ::continue::
     end
   end
   table.sort(out.served)

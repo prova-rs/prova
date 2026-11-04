@@ -6,7 +6,8 @@
 --- rustc's dep-info knows it); `b`'s TESTS read `data/y.txt` at run time (`[modules] reads`). Each
 --- crate has one test and its own `proofs/` adopting its account with `cargo.verify`; `a`'s second
 --- test reads an env var only `cargo.configure{ run = { env = … } }` hands the conduct. The adapter
---- prints one line per run: "N module(s) conducted, M served".
+--- prints one line per run: "N module(s) conducted, M served". A fourth member, `d`, has tests
+--- and no proofs/: it is no module, and the counts prove it is never conducted.
 
 local function crate(root, name, dep, body, test)
   fs.mkdir(root .. "/" .. name .. "/src")
@@ -29,7 +30,7 @@ local workspace = prova.fixture("cargo-workspace", Scope.Test, function(ctx)
   fs.mkdir(root .. "/.config")
   fs.write(root .. "/data/x.txt", "x1")
   fs.write(root .. "/data/y.txt", "y1")
-  fs.write(root .. "/Cargo.toml", '[workspace]\nmembers = ["a", "b", "c"]\nresolver = "2"\n')
+  fs.write(root .. "/Cargo.toml", '[workspace]\nmembers = ["a", "b", "c", "d"]\nresolver = "2"\n')
   fs.write(root .. "/.config/nextest.toml", '[profile.prova]\njunit = { path = "junit.xml" }\n')
   fs.write(root .. "/.gitignore", "target/\n.prova/\n")
   fs.write(root .. "/prova.toml", '[run]\nproofs = ["proofs"]\n[modules]\nfrom = ["cargo"]\nreads = { "b" = ["data/y.txt"] }\n')
@@ -38,6 +39,9 @@ local workspace = prova.fixture("cargo-workspace", Scope.Test, function(ctx)
   crate(root, "b", "c", "pub fn x() -> &'static str { c::X }",
     '#[test] fn reads() { let y = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../data/y.txt")).unwrap(); assert!(y.starts_with("y")); }')
   crate(root, "a", "b", "pub fn x() -> &'static str { b::x() }", "#[test] fn chains() { assert!(super::x().starts_with(\"x\")); }\n#[test] fn hears_the_conducts_env() { assert_eq!(std::env::var(\"PROVA_CARGO_MARK\").as_deref(), Ok(\"through\")); }")
+  -- d is a workspace member with tests and NO proofs/: no module, so never this adapter's to conduct.
+  crate(root, "d", nil, "pub fn d() {}", "#[test] fn not_a_module() {}")
+  fs.remove_all(root .. "/d/proofs")
   shell.run({ "cargo", "generate-lockfile", "--offline" }, { cwd = root, check = true })
   shell.run({ "git", "init", "-q" }, { cwd = root, check = true })
   shell.run({ "git", "add", "-A" }, { cwd = root, check = true })
