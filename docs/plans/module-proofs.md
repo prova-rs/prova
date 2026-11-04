@@ -121,40 +121,56 @@ file already in that target's closure (its source or its `build.rs`), so the key
 module runs, and the rebuild refreshes the dep-info. A module with no dep-info (a fresh target
 directory) has no key and runs. Every path is read through the inputs-v2 ignore rules.
 
-### 3. Declaring: one line
+### 3. Cache the conduct, never the proof
 
-`inputs` accepts the function form Phase 2 sketched and did not build, and the adapter provides it:
+This is the line incremental-prova.md drew, kept exactly. What costs is the conduct (nextest's
+build and run), never the proofs that read its account, so **the conduct is what is cached, per
+module, and a module proof always executes**: it parses an account, which costs milliseconds.
 
 ```lua
 local cargo = require("prova.cargo")
-prova.group("scm", { inputs = cargo.closure() }, function(g)          -- this module's closure
-	g:test("its unit cases pass", { switch = "ut" }, function(t) cargo.verify(t) end)
+prova.test("scm's unit cases pass", { switch = "ut" }, function(t)
+	cargo.verify(t)                                -- this module's account, adopted
 end)
 ```
 
-A group's `inputs` is inherited by its leaves, so a module's `proofs/` declares once. A proof
-anywhere that binds claims to another module's cases declares that module's closure
-(`cargo.closure("cos-systems-epistemic")`), so it is carried exactly when the cases it reads are.
+`cargo.verify(t)` adopts `prova.module`'s account; `cargo.account("cos-systems-epistemic")` hands a
+proof anywhere another module's account to bind claims to its named cases. No author declares
+`inputs`: the key is the adapter's, computed from the graph.
 
-### 4. The deputy: one build, one conduct, the executing modules
+**The conduct cache.** Under the reuse store (`$PROVA_VAR_DIR/conducts/` when set, so a fresh
+checkout, Herald's, carries what a lane earned), the adapter files a module's account after a
+conduct in which **every one of its cases passed**, keyed by `sha256(adapter, module, its closure's
+root-relative digest, prova version)`. Nothing else is filed: a red, a narrowed conduct, or a run
+under `--falsify`, `-u` or `--update-baseline`.
 
-The engine's one new fact, beside `prova.selection`: **`prova.plan`**, the leaves that will execute
-in this run after reuse and selection, each with its module. `cargo.verify(t)` reads its module's
-account from one `Scope.Run` conduct, which runs
-`cargo nextest run --workspace -E 'package(a) | package(b) | …'` over the modules `prova.plan`
-names. One workspace build, so no `-p` feature drift and no recompile per module. One process, so
-nextest schedules every case across all cores. An account from that conduct is narrowed, and
-`attest` already refuses a case it excluded. Phase 1b's resume composes unchanged.
+**One conduct per run, over every stale module.** The first `verify`/`account` call in a run (a
+`Scope.Run` fixture: lazy, single-flight across workers) computes every module's key, finds the
+stale ones (no filed account under the current key), and conducts them in one process:
+`cargo nextest run --workspace -E 'package(a) | package(b) | …'`. One workspace build, so no `-p`
+feature drift and no recompile per module; one nextest, so every case is scheduled across all
+cores. Fresh modules' accounts come from the cache, each case marked `reused_from` with the run
+that executed it (as `junit.merge` already marks a resumed case). Under a non-empty
+`prova.selection` (`-k`, `--node`), the conduct is narrowed to what was asked for, and marked so,
+as shared-deputies.md requires.
 
-### 5. Seeing why
+**Dependents fall out of the key.** `cos-daemon`'s closure contains `cos-systems-graph`'s lib
+dep-info, so an edit there changes `cos-daemon`'s key and it is conducted; a sibling the edit cannot
+reach keeps its key and its cached account. No second "dependents" pass exists to get wrong.
 
-`prova why <proof>` prints the proof's module, its key, and either the run it would be carried
-from or the first input that differs from the last pass (`crates/cos-systems-graph/src/edge.rs`).
-`--reuse`'s summary line counts carried and executing modules.
+Phase 2's `inputs` stays for what it is for: a leaf whose own work is expensive and whose inputs
+its author can name. A module proof does not need it.
+
+### 4. Seeing why
+
+`prova why <proof>` prints the proof's module, the account's key, and either the run its account
+came from or the first closure path that differs from the filed one
+(`crates/cos-systems-graph/src/edge.rs`). The run's summary counts conducted and cached modules.
 
 ## Honesty rules (beside Phase 2's)
 
-- A module proof that declares nothing is never carried, even inside a module's `proofs/`.
+- **Cached never reads as conducted.** Every case from a cached account carries `reused_from`, the
+  record and the console count conducted and cached modules apart, and `attest` names the origin run.
 - **An adapter that cannot read the graph runs every module, and is noticed** (lesson 3). The
   causes differ, and none is covered: the change broke the build's own files (a run that executes
   everything then goes red on the build's own error, which is the change's verdict); the host lacks
@@ -163,8 +179,8 @@ from or the first input that differs from the last pass (`crates/cos-systems-gra
   JSON names it, so a gate reports it as an infrastructure event (Herald notifies the gates lane),
   never as a silent slow run and never as a narrower one. The Cargo adapter reads with `--locked
   --offline`, so reading the graph never needs the network.
-- **The full run is the audit.** A run without `--reuse` (nightly, and before a release) is the
-  ground truth. A carried pass the audit turns red is a hole in a closure: a gate-reliability
+- **The full run is the audit.** A run with the conduct cache off (`--fresh`, nightly, and before a
+  release) conducts every module and is the ground truth. A cached account the audit turns red is a hole in a closure: a gate-reliability
   defect, fixed by class, never called a flake.
 - **A run-time read nobody declared is found, not trusted away.** The adapter ships a census (as
   Substrate's `library_embeds` does for embeds): a test run under file-access tracing whose reads
@@ -174,16 +190,19 @@ from or the first input that differs from the last pass (`crates/cos-systems-gra
 
 `PROVA_AFFECTED`, `PROVA_AFFECTED_EXACT`, `outside_scope` and `lib.scope_skips`, the crate half of
 `vault/lib/affected.lua` and its embeds table. Its reads rows move to `[modules] reads`. The proof
-half (a proof that names a vault script it drives) becomes that proof's own `inputs`.
+half (a proof that names a vault script it drives) is a black-box proof and always runs, as every
+proof does; only conducts are cached.
 
 ## Phases
 
-1. **Prova engine:** `[modules]`, `prova.module`, `inputs` as a function, `prova.plan`.
-2. **The `cargo` adapter:** `closure()` from metadata + dep-info + reads, and `verify()` over the
-   one batched conduct. Proven on a fixture workspace (`a → b → c`, `c` embedding `data/x.txt`,
-   `b`'s tests reading `data/y.txt`): an edit to `c` runs all three, an edit to `a` runs only `a`,
-   `data/x.txt` runs all three, `data/y.txt` runs only `b`, a `Cargo.lock` bump runs all three, a
-   file under `c/target` runs nothing, an unreadable graph runs all three loudly. Each case is first
+1. **Prova engine:** `[modules]`, `prova.module`, the conduct cache (a store primitive with the
+   honesty rules above: filed only from an all-green, unnarrowed, executing conduct; pruned at 30
+   days; `--fresh` bypasses it), and `[dependencies] module` renamed `entry`.
+2. **The `cargo` adapter:** `closure()` from metadata + dep-info + reads, and `verify()`/`account()`
+   over the one batched conduct of stale modules. Proven on a fixture workspace (`a → b → c`, `c` embedding `data/x.txt`,
+   `b`'s tests reading `data/y.txt`): an edit to `c` conducts all three, an edit to `a` conducts only `a`,
+   `data/x.txt` conducts all three, `data/y.txt` conducts only `b`, a `Cargo.lock` bump conducts all three, a
+   file under `c/target` conducts nothing, an unreadable graph conducts all three loudly. Each case is first
    seen red against an adapter that leaves the path out.
 3. **Substrate pilot:** two leaf crates' proofs move into their own `proofs/`; the workspace deputy
    runs the rest. Each pilot gate is compared with a full run of the same commit until ten agree,
