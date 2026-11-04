@@ -20,6 +20,7 @@ local settings = {
   profile = "default", -- the nextest profile; its junit must be enabled ([profile.<p>.junit] path)
   junit = "junit.xml", -- that profile's junit file name, under <target>/nextest/<profile>/
   args = {},           -- extra `cargo nextest run` arguments (features, --test-threads, …)
+  run = {},            -- extra `shell.run` options for the conduct: `env`, `sample`, `idle_timeout`
 }
 
 --- Set the conduct's nextest profile, junit file name and extra arguments. Call it where the
@@ -28,7 +29,7 @@ local settings = {
 function cargo.configure(opts)
   for k, v in pairs(opts or {}) do
     if settings[k] == nil then
-      error("prova.cargo.configure: unknown option " .. tostring(k) .. " (profile, junit, args)", 2)
+      error("prova.cargo.configure: unknown option " .. tostring(k) .. " (profile, junit, args, run)", 2)
     end
     settings[k] = v
   end
@@ -237,7 +238,9 @@ cargo.accounts = prova.fixture("prova.cargo.accounts", Scope.Run, function()
     local target = g and g.target_dir or (prova.root .. "/target")
     local artifact = target .. "/nextest/" .. settings.profile .. "/" .. settings.junit
     fs.remove_all(artifact)
-    local ran = shell.run(argv, { cwd = prova.root, merge_stderr = true, idle_timeout = "600s" })
+    local opts = { cwd = prova.root, merge_stderr = true, idle_timeout = "600s" }
+    for k, v in pairs(settings.run) do opts[k] = v end
+    local ran = shell.run(argv, opts)
     if not fs.exists(artifact) then
       error(string.format("prova.cargo: nextest exited %s and wrote no junit at %s (is junit enabled "
         .. "for profile %q?); the last of its output:\n%s", tostring(ran.code), artifact,

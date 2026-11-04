@@ -4,7 +4,8 @@
 ---
 --- The workspace: `a → b → c`. `c` EMBEDS `data/x.txt` (`include_str!`, outside every crate, so only
 --- rustc's dep-info knows it); `b`'s TESTS read `data/y.txt` at run time (`[modules] reads`). Each
---- crate has one test and its own `proofs/` adopting its account with `cargo.verify`. The adapter
+--- crate has one test and its own `proofs/` adopting its account with `cargo.verify`; `a`'s second
+--- test reads an env var only `cargo.configure{ run = { env = … } }` hands the conduct. The adapter
 --- prints one line per run: "N module(s) conducted, M served".
 
 local function crate(root, name, dep, body, test)
@@ -17,7 +18,7 @@ local function crate(root, name, dep, body, test)
   fs.write(root .. "/" .. name .. "/src/lib.rs", body .. "\n#[cfg(test)]\nmod tests {\n" .. test .. "\n}\n")
   fs.write(root .. "/" .. name .. "/proofs/" .. name .. "_test.lua", string.format([[
 local cargo = require("prova.cargo")
-cargo.configure{ profile = "prova" }
+cargo.configure{ profile = "prova", run = { env = { PROVA_CARGO_MARK = "through" } } }
 prova.test("%s's cases pass", { locks = { prova.writes("cargo") } }, function(t) cargo.verify(t) end)
 ]], name))
 end
@@ -36,7 +37,7 @@ local workspace = prova.fixture("cargo-workspace", Scope.Test, function(ctx)
     '#[test] fn embeds() { assert!(super::X.starts_with("x")); }')
   crate(root, "b", "c", "pub fn x() -> &'static str { c::X }",
     '#[test] fn reads() { let y = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../data/y.txt")).unwrap(); assert!(y.starts_with("y")); }')
-  crate(root, "a", "b", "pub fn x() -> &'static str { b::x() }", "#[test] fn chains() { assert!(super::x().starts_with(\"x\")); }")
+  crate(root, "a", "b", "pub fn x() -> &'static str { b::x() }", "#[test] fn chains() { assert!(super::x().starts_with(\"x\")); }\n#[test] fn hears_the_conducts_env() { assert_eq!(std::env::var(\"PROVA_CARGO_MARK\").as_deref(), Ok(\"through\")); }")
   shell.run({ "cargo", "generate-lockfile", "--offline" }, { cwd = root, check = true })
   shell.run({ "git", "init", "-q" }, { cwd = root, check = true })
   shell.run({ "git", "add", "-A" }, { cwd = root, check = true })
