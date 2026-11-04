@@ -86,14 +86,27 @@ it carries no `prova.toml`, and module proofs run in the root's one run.
 
 ```toml
 [modules]
-from  = "cargo"                     # the adapter (cargo first; swiftpm, maven, uv, npm from need)
+from  = ["cargo", "swiftpm"]        # the adapters: a bundled name, or a [dependencies] package
 reads = { "cos-daemon" = ["vault/recipes/**", "vault/checks/**"] }   # run-time reads by tests only
 ```
 
 ### 2. The adapter answers one question
 
-An adapter is a package. For module `m`, `closure(m)` is every path whose bytes `m`'s tests are
-built from or read. For Cargo:
+An adapter is a package, resolved like any other `require`: a bundled `prova.<name>` first, then a
+`[dependencies]` package of that name, so a team writes its own for a build tool Prova does not
+ship. A repository may use several (Substrate needs `cargo` for its crates and `swiftpm` for
+COSKit); a directory claimed by two adapters is refused at load, naming both. The contract is
+small, and Prova's own suite proves every bundled adapter against it:
+
+| Function | Returns |
+|---|---|
+| `modules(root)` | every module: `{ name, dir }` |
+| `closure(name)` | every path `name`'s tests are built from or read (below) |
+| `conduct(names, ctx)` | one tool run over those modules, returning `{ [name] = account path }` |
+| `census(name)` *(optional)* | the reads a traced run made outside `closure(name)` |
+
+For module `m`, `closure(m)` is every path whose bytes `m`'s tests are built from or read. For
+Cargo:
 
 - **embeds**: the dep-info of `m`'s test targets, plus the dep-info of the lib and build-script
   targets of `m` and every crate it depends on transitively (normal, dev and build edges). Because a
@@ -142,8 +155,14 @@ from or the first input that differs from the last pass (`crates/cos-systems-gra
 ## Honesty rules (beside Phase 2's)
 
 - A module proof that declares nothing is never carried, even inside a module's `proofs/`.
-- **An adapter that cannot read the graph runs every module, and says so** (lesson 3). It is never a
-  silent full run and never a narrower one.
+- **An adapter that cannot read the graph runs every module, and is noticed** (lesson 3). The
+  causes differ, and none is covered: the change broke the build's own files (a run that executes
+  everything then goes red on the build's own error, which is the change's verdict); the host lacks
+  the tool or its network (infrastructure, as a full disk is); or the adapter has a bug (Prova's).
+  The record carries `selection: off` with the adapter's error, the summary prints it, and the run's
+  JSON names it, so a gate reports it as an infrastructure event (Herald notifies the gates lane),
+  never as a silent slow run and never as a narrower one. The Cargo adapter reads with `--locked
+  --offline`, so reading the graph never needs the network.
 - **The full run is the audit.** A run without `--reuse` (nightly, and before a release) is the
   ground truth. A carried pass the audit turns red is a hole in a closure: a gate-reliability
   defect, fixed by class, never called a flake.
@@ -173,15 +192,12 @@ half (a proof that names a vault script it drives) becomes that proof's own `inp
    retire when nothing reads them.
 5. **`prova why`; the read census; more adapters** (swiftpm for COSKit, maven, uv, npm) from need.
 
-## Decisions
+## Decisions (User, 2026-11-04)
 
-- **D1, the word.** "module" for the build tool's unit (recommended: Maven's and the User's word,
-  and it leaves "package" to Prova packages). The cost: `[dependencies] module = "…"` already means
-  an entry file; it would be renamed `entry =`, which `[package] entry` already spells.
-- **D2, where the cargo adapter lives.** Bundled and loadable as `prova.cargo` (recommended: the
-  most common adapter, versioned with the engine whose `prova.plan` it reads), with others as
-  `prova-rs` packages; vs every adapter a separate package.
-- **D3, an unreadable graph.** Run everything, loudly (recommended: lesson 3, and a gate keeps
-  moving) vs refuse `--reuse` with exit 2 (Phase 2's posture for a key mismatch).
-- **D4, where reads are declared.** `[modules] reads` in the root manifest (recommended: one file
-  answers it, and the census checks it) vs a file beside each module's proofs.
+- **D1, the word: "module"**, for the build tool's unit; "package" stays a Prova package.
+  `[dependencies] module = "…"` (an entry file) is renamed `entry =`, as `[package] entry` spells it.
+- **D2, adapters: `prova.cargo` bundled, any other a package**, and a repository may use several
+  ("we need a way to support different adapters"): the contract in §2.
+- **D3, an unreadable graph: run everything, and it is noticed** (§Honesty). The User asked whether
+  it is a bug being covered; it is one of three causes, each surfaced, none hidden.
+- **D4, reads: `[modules] reads` in the root manifest**, checked by the adapter's census.
