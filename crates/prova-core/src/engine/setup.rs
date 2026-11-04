@@ -587,7 +587,8 @@ fn install_modules(lua: &Lua, prova: &Table, config: &RunConfig) -> mlua::Result
     // each module's proofs directory → its module dir; `t.module` reads it.
     let of = lua.create_table()?;
     for (proofs, dir) in &config.module_dirs {
-        of.set(crate::modules::emit_path(proofs), dir.as_str())?;
+        let proofs = proofs.canonicalize().unwrap_or_else(|_| proofs.clone());
+        of.set(crate::modules::emit_path(&proofs), dir.as_str())?;
     }
     modules.set("of", of)?;
     prova.set("modules", modules)?;

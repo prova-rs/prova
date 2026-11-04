@@ -82,6 +82,15 @@ prova.test("a proof belongs to the module its proofs/ sits in, and [modules] rea
   t:expect(r.stdout):contains("4 passed")
 end)
 
+prova.test("a module proof knows its module when the run names its path", {
+  covers = COVER,
+}, function(t)
+  local sb = t:use(sandbox)
+  local r = run(sb.pkg, nil, "./crates/scm/proofs")
+  t:expect(r.code, "an explicit-path run, relative as a person types it:\n" .. r.stdout):equals(0)
+  t:expect(r.stdout):contains("3 passed")
+end)
+
 prova.test("the conduct cache serves a filed account to a later run, naming the run that filed it", {
   requires = { "git" },
   covers = "docs/plans/module-proofs.md#3-cache-the-conduct-never-the-proof",

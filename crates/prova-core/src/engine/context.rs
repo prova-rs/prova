@@ -331,7 +331,12 @@ impl UserData for Ctx {
         // in the root's own `proofs/` and for contexts no one test owns. An adapter maps `dir` to
         // its build tool's name for the module.
         fields.add_field_method_get("module", |lua, this| {
-            let Some(path) = this.file.and_then(|f| this.state.file_paths.get(f)).map(|p| crate::modules::emit_path(p))
+            // Canonical on both sides: a run of explicit paths records `./crates/x/proofs/…`, and
+            // the module map holds discovered (absolute) directories.
+            let Some(path) = this
+                .file
+                .and_then(|f| this.state.file_paths.get(f))
+                .map(|p| crate::modules::emit_path(&p.canonicalize().unwrap_or_else(|_| p.clone())))
             else {
                 return Ok(Value::Nil);
             };
