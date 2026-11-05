@@ -179,12 +179,24 @@ local function graph()
     for _, g in ipairs(GLOBAL_INPUTS) do paths[#paths + 1] = g end
     modules[p.name] = { dir = rel(dirname(p.manifest_path)) or ".", paths = paths }
   end
-  return { modules = modules, target_dir = m.target_directory }
+  return { modules = modules, target_dir = m.target_directory, workspace_root = m.workspace_root }
 end
 
 local function toolchain()
   local r = run({ "rustc", "-vV" })
   return r.code == 0 and r.stdout or "rustc unknown"
+end
+
+-- Where nextest writes its junit: its STORE, which is NOT the cargo target directory. nextest's
+-- `store.dir` (default `target/nextest`) is relative to the WORKSPACE root, so a build under a
+-- `CARGO_TARGET_DIR` elsewhere (Herald's gate) still writes its junit beside the workspace. A
+-- `[store] dir` in .config/nextest.toml wins, absolute or workspace-relative.
+local function nextest_store(workspace_root)
+  local cfg = workspace_root .. "/.config/nextest.toml"
+  local text = fs.exists(cfg) and fs.read(cfg) or ""
+  local dir = ("\n" .. text):match("\n%[store%][^%[]-\n%s*dir%s*=%s*\"([^\"]+)\"")
+  if not dir then return workspace_root .. "/target/nextest" end
+  return dir:sub(1, 1) == "/" and dir or (workspace_root .. "/" .. dir)
 end
 
 local function nextest_filter(names)
@@ -244,8 +256,7 @@ cargo.accounts = prova.fixture("prova.cargo.accounts", Scope.Run, function()
       argv[#argv + 1] = nextest_filter(names)
     end
     for _, a in ipairs(settings.args) do argv[#argv + 1] = a end
-    local target = g and g.target_dir or (prova.root .. "/target")
-    local artifact = target .. "/nextest/" .. settings.profile .. "/" .. settings.junit
+    local artifact = nextest_store(g and g.workspace_root or prova.root) .. "/" .. settings.profile .. "/" .. settings.junit
     fs.remove_all(artifact)
     local opts = { cwd = prova.root, merge_stderr = true, idle_timeout = "600s" }
     for k, v in pairs(settings.run) do opts[k] = v end

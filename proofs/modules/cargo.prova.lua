@@ -48,9 +48,11 @@ local workspace = prova.fixture("cargo-workspace", Scope.Test, function(ctx)
   return root
 end)
 
-local function run(root, args)
+local function run(root, args, env)
+  local e = { PROVA_VAR_DIR = "" }
+  for k, v in pairs(env or {}) do e[k] = v end
   local r = shell.run(prova.bin .. " " .. (args or ""), {
-    cwd = root, env = { PROVA_VAR_DIR = "" }, merge_stderr = true, idle_timeout = "600s",
+    cwd = root, env = e, merge_stderr = true, idle_timeout = "600s",
   })
   local conducted, served = r.stdout:match("(%d+) module%(s%) conducted, (%d+) served")
   return r, tonumber(conducted), tonumber(served)
@@ -104,4 +106,19 @@ prova.test("a red module is conducted again and never served", {
   local again, c2 = run(ws)
   t:expect(again.code):never():equals(0)
   t:expect(c2, "the red module was not filed, so it conducts again"):gte(1)
+end)
+
+--- Herald builds under a CARGO_TARGET_DIR outside the tree, and nextest still writes its junit under
+--- the WORKSPACE's target/nextest (its store is workspace-relative): the adapter finds it there
+--- (2026-11-05, Substrate's pilot went red on "nextest exited 0 and wrote no junit").
+prova.test("a build under a CARGO_TARGET_DIR elsewhere still finds nextest's junit", {
+  requires = { "cargo", "cargo-nextest", "git" },
+  covers = "docs/plans/module-proofs.md#3-cache-the-conduct-never-the-proof",
+  timeout = "1800s",
+}, function(t)
+  local ws = t:use(workspace)
+  local elsewhere = t:tempdir() .. "/build"
+  local r, c = run(ws, "", { CARGO_TARGET_DIR = elsewhere })
+  t:expect(r.code, "green with the build elsewhere:\n" .. r.stdout):equals(0)
+  t:expect(c, "every module conducted"):equals(3)
 end)
