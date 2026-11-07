@@ -10,14 +10,64 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
-#[cfg(feature = "eventually")]
-use std::time::Instant;
 
 #[allow(unused_imports)]
 use mlua::{Lua, Table, UserData, UserDataMethods, Value};
 
 mod matchers;
 pub use matchers::*;
+
+/// What `:eventually` reads the time from and waits on. A host whose proofs run on a clock of its
+/// own (a manual clock a test advances, an injected one) hands its own to [`set_waiter`]; without
+/// one, `:eventually` uses [`SystemWaiter`], the real time. Prova names no clock library: a host
+/// adapts whichever it uses in a few lines.
+#[cfg(feature = "eventually")]
+pub trait Waiter: Send + Sync {
+    /// Now, as time since an origin of the waiter's choosing: only differences are read.
+    fn now(&self) -> Duration;
+    /// Resolves once `duration` has passed on this waiter's clock.
+    fn sleep(&self, duration: Duration) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>;
+}
+
+/// The real time: a monotonic clock and tokio's timer.
+#[cfg(feature = "eventually")]
+pub struct SystemWaiter {
+    origin: std::time::Instant,
+}
+
+#[cfg(feature = "eventually")]
+impl Default for SystemWaiter {
+    fn default() -> Self {
+        Self { origin: std::time::Instant::now() }
+    }
+}
+
+#[cfg(feature = "eventually")]
+impl Waiter for SystemWaiter {
+    fn now(&self) -> Duration {
+        self.origin.elapsed()
+    }
+    fn sleep(&self, duration: Duration) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        Box::pin(tokio::time::sleep(duration))
+    }
+}
+
+/// The waiter `:eventually` uses in `lua`, kept in the VM's app data.
+#[cfg(feature = "eventually")]
+#[derive(Clone)]
+struct WaiterSlot(Arc<dyn Waiter>);
+
+/// Make `waiter` the one `:eventually` reads and waits on in `lua` (until set again).
+#[cfg(feature = "eventually")]
+pub fn set_waiter(lua: &Lua, waiter: Arc<dyn Waiter>) {
+    lua.set_app_data(WaiterSlot(waiter));
+}
+
+/// The waiter set for `lua`, or the real time.
+#[cfg(feature = "eventually")]
+pub(crate) fn waiter_of(lua: &Lua) -> Arc<dyn Waiter> {
+    lua.app_data_ref::<WaiterSlot>().map_or_else(|| Arc::new(SystemWaiter::default()) as Arc<dyn Waiter>, |w| w.0.clone())
+}
 
 /// What `t:skip(reason)` raises: a host's runner reads the record's `skip`, not the error text.
 pub const SKIP_SENTINEL: &str = "__prova_skip__";

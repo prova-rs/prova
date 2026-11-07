@@ -19,3 +19,5 @@ tokio = { version = "1", features = ["time"], optional = true }
 [dev-dependencies]
 # A host supplies the Lua build; built alone (its own tests), prova-expect vendors one.
 mlua = { version = "0.11", features = ["lua54", "vendored"] }
+# `:eventually`'s own tests drive an async call on a current-thread runtime.
+tokio = { version = "1", features = ["rt", "macros", "time"] }

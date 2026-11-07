@@ -92,7 +92,10 @@ impl UserData for Eventually {
                     let dispatch: mlua::Function = lua
                         .load("return function(m, name, ...) return m[name](m, ...) end")
                         .eval()?;
-                    let deadline = Instant::now() + ev.timeout;
+                    // Time is the host's (`set_waiter`), the real time by default: a proof on a manual
+                    // clock waits by advancing it, never by sleeping for real.
+                    let waiter = crate::waiter_of(&lua);
+                    let deadline = waiter.now() + ev.timeout;
                     let mut last = format!("the probe was never evaluated (timeout {:?})", ev.timeout);
                     loop {
                         // Re-evaluate the subject; a raise means "not yet", exactly like prova.retry.
@@ -140,7 +143,7 @@ impl UserData for Eventually {
                             }
                             Err(err) => last = err.to_string(),
                         }
-                        if Instant::now() >= deadline {
+                        if waiter.now() >= deadline {
                             let real = Matcher {
                                 subject: Value::Nil,
                                 label: None,
@@ -153,7 +156,7 @@ impl UserData for Eventually {
                                 format!("eventually timed out after {timeout:?} — last: {last}")
                             });
                         }
-                        tokio::time::sleep(ev.every).await;
+                        waiter.sleep(ev.every).await;
                     }
                 }
             })
@@ -1158,6 +1161,55 @@ pub fn display(v: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use crate::*;
+
+    /// A clock that moves only when `:eventually` sleeps on it, by exactly what it asked.
+    #[cfg(feature = "eventually")]
+    struct VirtualWaiter {
+        now_ms: std::sync::atomic::AtomicU64,
+        sleeps: std::sync::atomic::AtomicUsize,
+    }
+
+    #[cfg(feature = "eventually")]
+    impl Waiter for VirtualWaiter {
+        fn now(&self) -> Duration {
+            Duration::from_millis(self.now_ms.load(std::sync::atomic::Ordering::SeqCst))
+        }
+        fn sleep(&self, d: Duration) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+            let ms = u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
+            self.now_ms.fetch_add(ms, std::sync::atomic::Ordering::SeqCst);
+            self.sleeps.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(std::future::ready(()))
+        }
+    }
+
+    /// `:eventually` reads the time and waits only through the host's waiter (`set_waiter`), so a
+    /// host on a manual or injected clock drives it by that clock: a 30 s timeout polled every
+    /// second times out after 30 s of ITS time, in a moment of real time, having slept 30 times.
+    #[cfg(feature = "eventually")]
+    #[tokio::test]
+    async fn eventually_waits_on_the_hosts_clock_not_the_real_one() {
+        let lua = Lua::new();
+        let waiter = Arc::new(VirtualWaiter {
+            now_ms: std::sync::atomic::AtomicU64::new(0),
+            sleeps: std::sync::atomic::AtomicUsize::new(0),
+        });
+        set_waiter(&lua, waiter.clone());
+        let run = new_run();
+        let never: mlua::Function = lua.load("return function() return 1 end").eval().unwrap();
+        let m = lua
+            .create_userdata(Matcher { subject: Value::Function(never), label: None, negated: false, run: run.clone(), probe: None })
+            .unwrap();
+        lua.globals().set("m", m).unwrap();
+        let began = std::time::Instant::now();
+        let outcome = lua
+            .load(r#"return m:eventually({ timeout = "30s", every = "1s" }):equals(2)"#)
+            .call_async::<()>(())
+            .await;
+        assert!(began.elapsed() < Duration::from_secs(5), "waited for real: {:?}", began.elapsed());
+        assert_eq!(waiter.sleeps.load(std::sync::atomic::Ordering::SeqCst), 30, "one sleep per poll, on the host's clock");
+        let failure = lock(&run).failure.clone().or_else(|| outcome.err().map(|e| e.to_string())).unwrap_or_default();
+        assert!(failure.contains("timed out after 30s"), "the timeout is the host clock's 30 s: {failure}");
+    }
 
     fn lua_table(lua: &Lua, pairs: &[(&str, Value)]) -> Table {
         let t = lua.create_table().unwrap();
