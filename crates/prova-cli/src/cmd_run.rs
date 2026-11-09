@@ -137,7 +137,12 @@ pub(crate) fn newer_than(root: &std::path::Path, stamped: std::time::SystemTime)
 /// file is `prova.exe`, and reading the bare name found nothing, so freshness fell back to the
 /// cached stamp and the hop rebuilt the very binary it was running in (Build, windows, 2026-11-02).
 fn subject_path(home: &Home, bin: &str) -> std::path::PathBuf {
-    let path = declared_under(&home.dir, bin, std::env::var_os("CARGO_TARGET_DIR").as_deref());
+    subject_path_with(home, bin, std::env::var_os("CARGO_TARGET_DIR").as_deref())
+}
+
+/// [`subject_path`] with the target dir given, so a test never reads the environment it runs in.
+fn subject_path_with(home: &Home, bin: &str, cargo_target_dir: Option<&std::ffi::OsStr>) -> std::path::PathBuf {
+    let path = declared_under(&home.dir, bin, cargo_target_dir);
     if path.exists() || std::env::consts::EXE_SUFFIX.is_empty() {
         return path;
     }
@@ -645,8 +650,8 @@ mod tests {
         let built = dir.join(format!("target/debug/prova{}", std::env::consts::EXE_SUFFIX));
         std::fs::write(&built, b"").unwrap();
         let home = Home { manifest: dir.join(".prova.toml"), dir: dir.clone() };
-        assert_eq!(subject_path(&home, "target/debug/prova"), built);
-        assert_eq!(subject_path(&home, "target/debug/absent"), dir.join("target/debug/absent"));
+        assert_eq!(subject_path_with(&home, "target/debug/prova", None), built);
+        assert_eq!(subject_path_with(&home, "target/debug/absent", None), dir.join("target/debug/absent"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -345,7 +345,11 @@ prova.test("PROVA_SUBJECT_BIN names the subject, and the whole recursion inherit
   -- `prova.bin` is already the instrumented build, so asserting "unchanged from real" would be
   -- asserting the override is still in force — the opposite of the point. Empty counts as unset,
   -- matching `PROVA_RUN_DEPTH`, so this covers both spellings of "no override".
-  local declared = prova.root .. "/target/debug/prova"
+  -- Where cargo put it: a declared bin under target/ follows CARGO_TARGET_DIR (Herald sets one).
+  local ctd = os.getenv("CARGO_TARGET_DIR")
+  local declared = (ctd and ctd ~= "")
+    and ((ctd:sub(1, 1) == "/" and ctd or (prova.root .. "/" .. ctd)) .. "/debug/prova")
+    or (prova.root .. "/target/debug/prova")
   local cleared = shell.run({ real, "eval", report },
     { env = { PROVA_SUBJECT_BIN = "" }, merge_stderr = true })
   t:expect(cleared.stdout, "an emptied variable is not an override — the manifest decides")

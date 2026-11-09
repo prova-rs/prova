@@ -1003,6 +1003,13 @@ impl CommandSpec {
         // depth deliberately (proving the top-level behavior from inside a nested run needs exactly
         // that) while the default costs the author nothing.
         c.env(crate::RUN_DEPTH_ENV, (crate::run_depth() + 1).to_string());
+        // A state-dir override (`PROVA_VAR_DIR`) is the invoking run's, never its children's: a
+        // proof that runs prova in a sandbox package expects that package's own `.prova/var`, and
+        // inheriting the outer root moved every such child's record elsewhere (Herald sets it for
+        // every gate; Prova's own gate went red on missing last-run.json, 2026-11-09). Empty is
+        // "unset" by definition (prova-cli var.rs), and the caller's `env` overlay still wins, as
+        // the proofs that pin it explicitly already do.
+        c.env("PROVA_VAR_DIR", "");
         c
     }
 }
