@@ -39,6 +39,10 @@ pub(super) struct Ctx {
     /// one test owns: a `Scope.Run`/`Scope.Suite` factory (memoized across tests and files), `prova
     /// eval`, and a topology stood up by `prova up`.
     pub(super) file: Option<usize>,
+    /// The fixture whose factory this context serves, `None` for a test body, `prova eval` and a
+    /// topology stood up by `prova up`. It keys the fixture's own tempdirs: two fixtures of one scope
+    /// share that scope's state, and an unnamed `ctx:tempdir()` must still be each fixture's own.
+    pub(super) fixture: Option<String>,
 }
 
 impl Ctx {
@@ -186,6 +190,7 @@ pub(super) async fn resolve_use(lua: &Lua, this: &Ctx, target: Value) -> mlua::R
         flow_scope: this.flow_scope.clone(),
         own_scope: def.scope,
         case: None,
+        fixture: Some(def.name.clone()),
         file: match def.scope {
             ScopeKind::Test | ScopeKind::File => this.file,
             _ => None,
@@ -294,7 +299,14 @@ async fn resolve_run_scoped(lua: &Lua, this: &Ctx, def: &FixtureDef) -> mlua::Re
         done: false,
     };
 
-    let child = Ctx { own_scope: ScopeKind::Run, case: None, topology: def.is_topology, file: None, ..this.clone() };
+    let child = Ctx {
+        own_scope: ScopeKind::Run,
+        case: None,
+        topology: def.is_topology,
+        file: None,
+        fixture: Some(def.name.clone()),
+        ..this.clone()
+    };
     let child_ud = lua.create_userdata(child)?;
     let settled = match def.factory.call_async::<Value>(child_ud).await {
         Ok(value) => match crate::modules::formats::lua_value_to_json(lua, &value) {
@@ -445,7 +457,14 @@ impl UserData for Ctx {
         // can surprise its second caller. The key also lands in the directory NAME, so a failed
         // run's scratch tree says which sandbox is which.
         methods.add_method("tempdir", |_, this, key: Option<String>| {
-            let key = key.unwrap_or_default();
+            // A fixture's tempdirs are its own, even where it shares a scope with another fixture: two
+            // `Scope.File` fixtures each asking `ctx:tempdir()` once shared one directory, so the second
+            // found the first's files (D, 2026-11-09, two archetype renders in one proof file).
+            let key = match (&this.fixture, key.unwrap_or_default()) {
+                (Some(fixture), key) if key.is_empty() => fixture.clone(),
+                (Some(fixture), key) => format!("{fixture}-{key}"),
+                (None, key) => key,
+            };
             let state = this.own_scope_state()?;
             if let Some(cached) = state.borrow().tempdirs_by_key.get(&key) {
                 return Ok(cached.clone());

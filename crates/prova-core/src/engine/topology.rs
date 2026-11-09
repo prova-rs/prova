@@ -229,6 +229,7 @@ pub(super) async fn provision(
         case: None,
         topology: false,
         file: None,
+        fixture: None,
     };
     let handle = lua.create_userdata(FixtureHandle { id })?;
     let value = resolve_use(lua, &ctx, Value::UserData(handle)).await?;

@@ -222,3 +222,31 @@ end)
   t:expect(other.code, other.stdout):equals(0)
   t:expect(fs.exists(scratch), "the LIVE run's scratch survived the sweep"):is_true()
 end)
+
+prova.test("two fixtures of one scope each get a tempdir of their own", {
+  covers = "docs/design/agent-ergonomics.md#context-tempdir-not-idempotent",
+  proves = "a fixture's ctx:tempdir() is the fixture's, not merely its scope's: two Scope.File fixtures in one proof file each asking for the unnamed tempdir once shared one directory, so the second render found the first's files (D, 2026-11-09, two archetype renders in one file). Within a fixture the accessor stays idempotent",
+}, function(t)
+  local r = ran(t, [[
+local one = prova.fixture("one", Scope.File, function(ctx)
+  local dir = ctx:tempdir()
+  t_one_again = ctx:tempdir()
+  fs.write(dir .. "/marker", "one")
+  return { dir = dir, named = ctx:tempdir("x") }
+end)
+local two = prova.fixture("two", Scope.File, function(ctx)
+  local dir = ctx:tempdir()
+  t_two_found = fs.exists(dir .. "/marker")
+  return { dir = dir, named = ctx:tempdir("x") }
+end)
+prova.test("each fixture's tempdir is its own", function(t)
+  local a, b = t:use(one), t:use(two)
+  t:expect(a.dir, "two fixtures, two directories"):never():equals(b.dir)
+  t:expect(a.named, "a named one is the fixture's too"):never():equals(b.named)
+  t:expect(t_one_again, "within a fixture the accessor is idempotent"):equals(a.dir)
+  t:expect(t_two_found, "the second fixture sees nothing the first wrote"):equals(false)
+  t:expect(t:tempdir(), "and the test's own is neither"):never():equals(a.dir)
+end)
+]])
+  t:expect(r.code, "the subject holds the contract: " .. r.stdout):equals(0)
+end)

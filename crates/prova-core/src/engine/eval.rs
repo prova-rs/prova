@@ -315,6 +315,7 @@ pub(super) fn eval_with_state(
         case: None,
         topology: false,
         file: None,
+        fixture: None,
     };
     lua.globals().set("ctx", lua.create_userdata(ctx)?)?;
 

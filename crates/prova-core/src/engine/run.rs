@@ -272,6 +272,7 @@ pub(super) async fn run_one(
         case: item.case.clone(),
         topology: false,
         file: Some(item.file),
+        fixture: None,
     };
     let ctx_ud = match lua.create_userdata(ctx) {
         Ok(ud) => ud,
