@@ -12,6 +12,9 @@ use std::process::Command;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
+mod release;
+mod team;
+
 /// The binary crate the `prova` executable is built and installed from.
 const BIN_CRATE: &str = "crates/prova-cli";
 /// The cargo package name of that crate (for `--package`).
@@ -42,6 +45,20 @@ enum Commands {
     },
 
 
+
+    /// The publish contract Herald runs after a green gate (artichoke RELEASE.md §4): build the
+    /// release `prova`, sign it, check the signature, smoke-check `--version`, write release.json
+    Release {
+        /// Where the signed binary and release.json go
+        #[arg(long)]
+        out: PathBuf,
+        /// local (this machine's COS Local Signing), team (team P9DJA3JCKP), or an identity
+        #[arg(long, default_value = "local")]
+        sign: String,
+        /// The commit Herald checked out; without it, a clean jj working copy's parent
+        #[arg(long)]
+        commit: Option<String>,
+    },
 
     /// Build the release binary
     Build,
@@ -83,6 +100,14 @@ fn main() -> Result<()> {
             let mut cmd_args = vec!["run", "--package", BIN_PACKAGE, "--"];
             cmd_args.extend(args.iter().map(|s| s.as_str()));
             cargo(&cmd_args)?;
+        }
+
+        Commands::Release { out, sign, commit } => {
+            let mut args = vec!["--out".to_string(), out.display().to_string(), "--sign".to_string(), sign];
+            if let Some(commit) = commit {
+                args.extend(["--commit".to_string(), commit]);
+            }
+            release::release(&args).map_err(|e| anyhow::anyhow!("{}", e.trim_end()))?;
         }
 
         Commands::Build => {
@@ -251,4 +276,25 @@ fn quote(s: &str) -> String {
     }
     out.push('"');
     out
+}
+
+/// The workspace root: the xtask crate's parent.
+pub(crate) fn workspace_root() -> PathBuf {
+    let xtask = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    xtask.parent().map_or(xtask.clone(), PathBuf::from)
+}
+
+/// Run `command`, naming it on stderr; `Err` says what failed (the release contract's runner).
+pub(crate) fn run_command(command: &mut Command) -> std::result::Result<(), String> {
+    let shown = format!(
+        "{} {}",
+        command.get_program().to_string_lossy(),
+        command.get_args().map(|a| a.to_string_lossy()).collect::<Vec<_>>().join(" ")
+    );
+    eprintln!("→ {shown}");
+    let status = command.status().map_err(|e| format!("cannot run {shown}: {e}\n"))?;
+    if !status.success() {
+        return Err(format!("{shown} failed ({status})\n"));
+    }
+    Ok(())
 }
