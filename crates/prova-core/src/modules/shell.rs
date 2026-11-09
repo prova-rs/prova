@@ -976,11 +976,20 @@ impl CommandSpec {
     pub(super) fn build(&self) -> tokio::process::Command {
         let mut c = match self {
             Self::Shell(s) => shell_command(s),
-            Self::Argv(argv) => {
-                let mut c = tokio::process::Command::new(&argv[0]);
-                c.args(&argv[1..]);
-                c
-            }
+            Self::Argv(argv) => match horai_for(argv) {
+                // A test build records what it used and prunes its build dir as it ends (horai
+                // HORAI.md §4.4): every conduct, deputy and gate, without one of them remembering to.
+                Some(horai) => {
+                    let mut c = tokio::process::Command::new(horai);
+                    c.args(["run", "--"]).args(argv);
+                    c
+                }
+                None => {
+                    let mut c = tokio::process::Command::new(&argv[0]);
+                    c.args(&argv[1..]);
+                    c
+                }
+            },
         };
         // Everything launched from a suite is, by construction, INSIDE a prova run — so stamp the
         // nesting depth here, at the one place both `shell.run` and `shell.spawn` pass through,
@@ -996,6 +1005,57 @@ impl CommandSpec {
         c.env(crate::RUN_DEPTH_ENV, (crate::run_depth() + 1).to_string());
         c
     }
+}
+
+/// Set to `0` to run a `cargo nextest run` without horai.
+pub const HORAI_ENV: &str = "PROVA_HORAI";
+
+/// The `horai` to wrap `argv` in: only an argv `cargo nextest run …` (`cargo +toolchain …` too), only
+/// when `horai` is on PATH, and never with `PROVA_HORAI=0`. `horai run` brackets the build, records the
+/// units it used and prunes the build dir; the command's exit code and output are unchanged.
+fn horai_for(argv: &[String]) -> Option<std::path::PathBuf> {
+    if !is_nextest_run(argv) || std::env::var(HORAI_ENV).is_ok_and(|v| v == "0") {
+        return None;
+    }
+    let horai = std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|dir| dir.join("horai"))
+        .find(|p| p.is_file())?;
+    horai_has_run(&horai).then_some(horai)
+}
+
+/// Whether this `horai` knows `run` (an older one would fail every wrapped build): asked once per
+/// binary path per process. `horai run` with no command answers with its own usage.
+fn horai_has_run(horai: &std::path::Path) -> bool {
+    static KNOWN: std::sync::Mutex<Vec<(std::path::PathBuf, bool)>> =
+        std::sync::Mutex::new(Vec::new());
+    let mut known = KNOWN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((_, has)) = known.iter().find(|(p, _)| p == horai) {
+        return *has;
+    }
+    let has = std::process::Command::new(horai)
+        .arg("run")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stderr).contains("run: usage"));
+    known.push((horai.to_path_buf(), has));
+    has
+}
+
+/// `cargo nextest run …` or `cargo +toolchain nextest r …`, by argv.
+fn is_nextest_run(argv: &[String]) -> bool {
+    let at = if argv.get(1).is_some_and(|a| a.starts_with('+')) {
+        2
+    } else {
+        1
+    };
+    argv.first().is_some_and(|p| {
+        std::path::Path::new(p)
+            .file_name()
+            .is_some_and(|n| n == "cargo")
+    }) && argv.get(at).is_some_and(|a| a == "nextest")
+        && argv.get(at + 1).is_some_and(|a| a == "run" || a == "r")
 }
 
 /// How the command reads back in an error — the argv form joined for legibility (it is a display,
@@ -1104,4 +1164,25 @@ fn tail(s: &str, max: usize) -> String {
         start += 1;
     }
     format!("[... truncated ...]\n{}", &s[start..])
+}
+
+#[cfg(test)]
+mod horai_tests {
+    use super::is_nextest_run;
+
+    fn argv(s: &str) -> Vec<String> {
+        s.split_whitespace().map(String::from).collect()
+    }
+
+    #[test]
+    fn only_a_cargo_nextest_run_is_wrapped_in_horai() {
+        assert!(is_nextest_run(&argv(
+            "cargo nextest run --workspace --profile prova"
+        )));
+        assert!(is_nextest_run(&argv("/usr/bin/cargo +nightly nextest r")));
+        assert!(!is_nextest_run(&argv("cargo nextest list")));
+        assert!(!is_nextest_run(&argv("cargo build")));
+        assert!(!is_nextest_run(&argv("cargo llvm-cov nextest run")));
+        assert!(!is_nextest_run(&argv("horai run -- cargo nextest run")));
+    }
 }
