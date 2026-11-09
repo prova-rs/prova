@@ -137,7 +137,7 @@ pub(crate) fn newer_than(root: &std::path::Path, stamped: std::time::SystemTime)
 /// file is `prova.exe`, and reading the bare name found nothing, so freshness fell back to the
 /// cached stamp and the hop rebuilt the very binary it was running in (Build, windows, 2026-11-02).
 fn subject_path(home: &Home, bin: &str) -> std::path::PathBuf {
-    let path = home.dir.join(bin);
+    let path = declared_under(&home.dir, bin, std::env::var_os("CARGO_TARGET_DIR").as_deref());
     if path.exists() || std::env::consts::EXE_SUFFIX.is_empty() {
         return path;
     }
@@ -145,6 +145,22 @@ fn subject_path(home: &Home, bin: &str) -> std::path::PathBuf {
     suffixed.push(std::env::consts::EXE_SUFFIX);
     let suffixed = std::path::PathBuf::from(suffixed);
     if suffixed.exists() { suffixed } else { path }
+}
+
+/// Where a declared `bin` is: under `home`, except that one under `target/` follows a non-empty
+/// `CARGO_TARGET_DIR`, exactly as the cargo build that provisions it does. A gate that points cargo
+/// elsewhere (Herald's per-repository target) otherwise looked for the subject in a `target/` cargo
+/// never wrote, and every nested proof ran a missing binary (exit 127, Herald, 2026-11-09).
+fn declared_under(
+    home: &std::path::Path,
+    bin: &str,
+    cargo_target_dir: Option<&std::ffi::OsStr>,
+) -> std::path::PathBuf {
+    let declared = std::path::Path::new(bin);
+    match (declared.strip_prefix("target"), cargo_target_dir.filter(|d| !d.is_empty())) {
+        (Ok(rest), Some(target)) => home.join(target).join(rest),
+        _ => home.join(declared),
+    }
 }
 
 /// When the subject was last made current: the LATER of the provision stamp and the bin's own
@@ -632,6 +648,25 @@ mod tests {
         assert_eq!(subject_path(&home, "target/debug/prova"), built);
         assert_eq!(subject_path(&home, "target/debug/absent"), dir.join("target/debug/absent"));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A subject declared under `target/` is found where cargo put it: under `CARGO_TARGET_DIR`
+    /// when one is set (relative to home, or absolute), else under home; any other path is home's.
+    #[test]
+    fn a_declared_bin_under_target_follows_cargo_target_dir() {
+        let home = std::path::Path::new("/repo");
+        let ctd = |d: &str| Some(std::ffi::OsString::from(d));
+        assert_eq!(declared_under(home, "target/debug/prova", None), home.join("target/debug/prova"));
+        assert_eq!(
+            declared_under(home, "target/debug/prova", ctd("/work/prova/target").as_deref()),
+            std::path::PathBuf::from("/work/prova/target/debug/prova")
+        );
+        assert_eq!(
+            declared_under(home, "target/debug/prova", ctd("out").as_deref()),
+            home.join("out/debug/prova")
+        );
+        assert_eq!(declared_under(home, "target/debug/prova", ctd("").as_deref()), home.join("target/debug/prova"));
+        assert_eq!(declared_under(home, "bin/prova", ctd("/elsewhere").as_deref()), home.join("bin/prova"));
     }
 
     /// A lane's `--list` line: the declared description verbatim when present, else a chip
