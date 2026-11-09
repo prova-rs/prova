@@ -5,6 +5,10 @@
 //!       build the release binary named for the commit, sign it with the product's identifier, check
 //!       the signature, and write <dir>/release.json; Herald then `artichoke release`s it
 //!
+//! Herald gates Prova with `cargo xtask run -- run all --reuse` (herald.toml), so the suite runs the
+//! tree's own `prova`, as CI does: Prova's proofs spawn `target/debug/prova`, which an installed prova
+//! never builds (the first Herald gate, 3685444e, went red 127 without it).
+//!
 //! `--commit` is how Herald names the commit it checked out; without it, a person's jj working copy
 //! must be clean and its parent is the commit. `--sign team` signs with team P9DJA3JCKP's Apple
 //! Development identity (the `anemnez-signing` keychain, else the login keychain's: `team.rs`, fabric
