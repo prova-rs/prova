@@ -1010,6 +1010,11 @@ impl CommandSpec {
         // "unset" by definition (prova-cli var.rs), and the caller's `env` overlay still wins, as
         // the proofs that pin it explicitly already do.
         c.env("PROVA_VAR_DIR", "");
+        // `[isolation]`: the run's own roots in place of the host's live services, for every child.
+        // Before the caller's overlay, which still wins for a proof that names the host on purpose.
+        for (name, value) in crate::isolation::applied() {
+            c.env(name, value);
+        }
         c
     }
 }

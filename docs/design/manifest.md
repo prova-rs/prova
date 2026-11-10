@@ -284,3 +284,22 @@ and that case names which thing is distrusted: `--reprovision` rebuilds the subj
 fresh, while -U (now "refresh cached assets", registry.md#update-flag-means-cached-assets)
 leaves a fresh provision untouched. A run under -U that also rebuilt the subject was paying a
 build for a flag about caches.
+
+<!-- claim: isolation recorded=2026-11-10 -->
+**`[isolation]`: every process a proof spawns reaches the run's own roots, never the host's live
+services.** `env` maps a variable to a value in which `{run}` names this run's own scratch directory
+(made at run start, reaped with the run); Prova sets each one for every child, at the single point
+`shell.run` and `shell.spawn` share, so a deputed `cargo nextest run`, a service and a one-off command
+all start against fresh roots. A proof's own `env = { … }` still wins, so reaching the host is always
+said by name. `unless` names a switch that, thrown for the run, turns isolation off (a live lane).
+
+```toml
+[isolation]
+unless = "live"
+[isolation.env]
+ANEMNEZ_FABRIC_ROOT = "{run}/fabric"
+```
+
+Prova knows no product's variables: a project (or its standards package) names them. Without this,
+on 2026-11-10 an agora test binary spawned by its own black-box proof dialled the host's installed
+swarm and tried to re-write three real agents' leases; only the swarm's guard stopped it.

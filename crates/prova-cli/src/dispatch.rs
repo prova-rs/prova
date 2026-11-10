@@ -515,6 +515,7 @@ fn resolve_env(cli: &mut Cli, home: &Option<Home>, layout: &XdgSystemLayout) -> 
                 placement_broker: None,
                 heed: crate::manifest::Heed::None, // no manifest, nothing promised attention
                 budget: None,                      // no manifest, no lane to price
+                isolation: None,                   // no manifest, the host's own environment
                 lane_tags: Vec::new(),             // no manifest, no lanes
                 switches: Vec::new(),              // no manifest, nothing thrown
                 resume_roots: Vec::new(),          // no manifest, no extra roots
@@ -548,6 +549,20 @@ fn resolve_progress(cli: &Cli, manifest: &ManifestRun) -> Result<progress::Mode,
     Ok(if quiet && cli.progress.is_none() { progress::Mode::Never } else { mode })
 }
 
+/// `[isolation] env` resolved for this run: `{run}` is this run's own scratch directory (made here), and
+/// nothing at all when the manifest has none or its `unless` switch is thrown.
+fn isolation(env: &ManifestRun, cli_switches: &[String]) -> Vec<(String, String)> {
+    let Some(iso) = &env.isolation else { return Vec::new() };
+    let thrown = |s: &str| env.switches.iter().chain(cli_switches.iter()).any(|t| t == s);
+    if iso.unless.as_deref().is_some_and(thrown) {
+        return Vec::new();
+    }
+    let run = prova_core::scratch::owned_root("run").join("isolation");
+    drop(std::fs::create_dir_all(&run));
+    let run = run.to_string_lossy().into_owned();
+    iso.env.iter().map(|(k, v)| (k.clone(), v.replace("{run}", &run))).collect()
+}
+
 /// Assemble the engine `RunConfig`: builder flags, thrown switches, the selection (CLI axes,
 /// `--last-failed` folds, the lane's baked tags), and the shared tracking registries.
 #[allow(clippy::too_many_arguments)]
@@ -567,6 +582,8 @@ fn build_config(
         );
         return Err(ExitCode::from(2));
     }
+    // `[isolation]`: every process this run's proofs spawn gets the run's own roots.
+    prova_core::isolation::set(isolation(&env.env, &cli.switches));
     let mut config = engine_config(
         env.env.jobs,
         &env.env.dependencies,

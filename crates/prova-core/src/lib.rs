@@ -24,6 +24,7 @@ pub mod locks;
 pub mod lease;
 pub mod ledger;
 /// Where machine-scoped transient state lives, and who reaps it.
+pub mod isolation;
 pub mod scratch;
 pub mod state;
 

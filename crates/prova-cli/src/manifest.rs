@@ -143,6 +143,9 @@ pub struct Manifest {
     /// A package property: which build tool owns which directory cannot vary by lane.
     #[serde(default)]
     pub modules: ModulesSection,
+    /// `[isolation]` (docs/design/manifest.md#isolation, [`prova_core::isolation::Isolation`]).
+    #[serde(default)]
+    pub isolation: Option<prova_core::isolation::Isolation>,
 }
 
 /// `[modules]` — `from` names the adapters (a bundled `prova.<name>` or a `[dependencies]` package;

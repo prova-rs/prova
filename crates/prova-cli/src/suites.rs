@@ -77,6 +77,8 @@ pub(crate) struct ManifestRun {
     /// The selected lane's time budget — the run goes red past it (`Resolved::budget`; declared
     /// where it binds, never inherited).
     pub(crate) budget: Option<std::time::Duration>,
+    /// `[isolation]` — applied to every spawned process unless its switch is thrown.
+    pub(crate) isolation: Option<prova_core::isolation::Isolation>,
     /// The lane's baked tag selection (`tags` on `[run]`/the profile) — folded into the run's
     /// Selection as an independent gate the CLI narrows within.
     pub(crate) lane_tags: Vec<String>,
@@ -869,6 +871,7 @@ pub(crate) fn resolve_from_manifest(
         placement_broker: manifest.placement.as_ref().and_then(|p| p.broker.clone()),
         heed: resolved.heed,
         budget: resolved.budget,
+        isolation: manifest.isolation.clone(),
         lane_tags: resolved.lane_tags,
         switches: resolved.switches,
         resume_roots: resolved.resume_roots,
