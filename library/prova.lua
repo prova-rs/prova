@@ -77,6 +77,14 @@ function TestContext:expect_all(body) end
 ---@param reason string
 function TestContext:skip(reason) end
 
+---Report an advisory measure that moved: `family` went from `was` to `now`. It returns, and it
+---changes no verdict and no tally, so a test may advise several families and then pass or skip
+---as before. Each is sent as an `advice` event (`{type, path, family, was, now}`) just before the
+---test's `node_finished`, so a reader (a gate, a bot) acts on it by kind, never by a skip's words.
+---For a census ruled advisory: say what grew here, then skip with the human sentence.
+---@param entry { family: string, was: integer, now: integer }
+function TestContext:advise(entry) end
+
 ------------------------------------------------------------------------------------------
 -- Fixtures
 ------------------------------------------------------------------------------------------

@@ -340,6 +340,7 @@ pub(super) fn teardown_results(
     errors
         .into_iter()
         .map(|message| NodeResult {
+            advice: Vec::new(),
             path: format!("{label} ⟶ teardown"),
             outcome: Outcome::Failed,
             duration: Duration::ZERO,

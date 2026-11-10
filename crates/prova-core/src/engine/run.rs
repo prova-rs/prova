@@ -5,6 +5,8 @@ use super::*;
 
 pub(super) struct NodeResult {
     pub(super) path: String,
+    /// What the test advised (`t:advise`): reported as `Event::Advised` before its `NodeFinished`.
+    pub(super) advice: Vec<prova_expect::Advice>,
     pub(super) outcome: Outcome,
     pub(super) duration: Duration,
     pub(super) assertions: usize,
@@ -280,6 +282,7 @@ pub(super) async fn run_one(
         // the whole worker — the one honest outcome a broken allocation has.
         Err(e) => {
             return vec![NodeResult {
+                advice: Vec::new(),
                 path: item.path.clone(),
                 outcome: Outcome::Failed,
                 duration: std::time::Duration::ZERO,
@@ -308,6 +311,7 @@ pub(super) async fn run_one(
             // cleanup is most likely to raise, so its errors are reported rather than dropped.
             let errors = teardown_scope(&test_scope).await;
             let mut out = vec![NodeResult {
+                advice: Vec::new(),
                 path: item.path.clone(),
                 outcome: Outcome::Failed,
                 duration: start.elapsed(),
@@ -330,7 +334,7 @@ pub(super) async fn run_one(
     };
     let duration = start.elapsed();
 
-    let (outcome, message, assertions) = {
+    let (outcome, message, assertions, advice) = {
         let r = lock(&run);
         let (outcome, message) = if r.skip.is_some() {
             (Outcome::Skipped, r.skip.clone())
@@ -342,7 +346,7 @@ pub(super) async fn run_one(
         } else {
             (Outcome::Passed, None)
         };
-        (outcome, message, r.assertions)
+        (outcome, message, r.assertions, r.advice.clone())
     };
 
     let (outcome, message) = if state.falsify && item.falsifier.is_some() {
@@ -355,6 +359,7 @@ pub(super) async fn run_one(
 
     let mut out = vec![NodeResult {
         path: item.path.clone(),
+        advice,
         outcome,
         duration,
         assertions,
@@ -380,6 +385,7 @@ pub(super) async fn run_flow(lua: &Lua, steps: &[PlanItem], state: &Rc<RunState>
     for step in steps {
         if let Some(reason) = &cascade {
             results.push(NodeResult {
+                advice: Vec::new(),
                 path: step.path.clone(),
                 outcome: Outcome::Skipped,
                 duration: Duration::ZERO,
@@ -460,6 +466,7 @@ pub(super) fn skip_leaf(unit: &PlanUnit, reason: &str, state: &RunState) -> Vec<
     unit.items()
         .into_iter()
         .map(|item| NodeResult {
+            advice: Vec::new(),
             path: item.path.clone(),
             outcome: Outcome::Skipped,
             duration: Duration::ZERO,
@@ -476,6 +483,9 @@ pub(super) fn skip_leaf(unit: &PlanUnit, reason: &str, state: &RunState) -> Vec<
 pub(super) fn emit_finished(reporter: &mut dyn Reporter, summary: &mut Summary, results: &[NodeResult]) {
     for result in results {
         summary.tally(result.outcome);
+        for a in &result.advice {
+            reporter.event(&Event::Advised { path: &result.path, family: &a.family, was: a.was, now: a.now });
+        }
         reporter.event(&Event::NodeFinished {
             path: &result.path,
             outcome: result.outcome,
@@ -815,6 +825,7 @@ mod tests {
 
     fn node(path: &str, outcome: Outcome, teardown: bool) -> NodeResult {
         NodeResult {
+            advice: Vec::new(),
             path: path.to_string(),
             outcome,
             duration: std::time::Duration::ZERO,

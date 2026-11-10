@@ -408,6 +408,14 @@ pub enum Event<'a> {
     NodeStarted {
         path: &'a str,
     },
+    /// An advisory measure a test reported (`t:advise`), sent just before its `NodeFinished`. It
+    /// changes no verdict and no tally: a reader that does not know it ignores it.
+    Advised {
+        path: &'a str,
+        family: &'a str,
+        was: i64,
+        now: i64,
+    },
     NodeFinished {
         path: &'a str,
         outcome: Outcome,
@@ -576,6 +584,9 @@ pub fn event_to_json(event: &Event) -> serde_json::Value {
     match event {
         Event::RunStarted => json!({ "type": "run_started" }),
         Event::NodeStarted { path } => json!({ "type": "node_started", "path": path }),
+        Event::Advised { path, family, was, now } => {
+            json!({ "type": "advice", "path": path, "family": family, "was": was, "now": now })
+        }
         Event::NodeFinished {
             path,
             outcome,

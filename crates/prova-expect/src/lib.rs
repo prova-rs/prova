@@ -89,6 +89,23 @@ pub fn add_expect_methods<T: UserData + 'static, M: UserDataMethods<T>>(
         })
     });
 
+    // `t:advise{ family = "leg_vocabulary", was = 2798, now = 2807 }`: record an advisory measure. It
+    // returns, so a test may advise several families and then skip or pass; it never fails a test.
+    methods.add_method("advise", move |_, this, entry: mlua::Table| -> mlua::Result<()> {
+        let family: String = entry
+            .get::<Option<String>>("family")?
+            .filter(|f| !f.is_empty())
+            .ok_or_else(|| mlua::Error::RuntimeError("t:advise needs a family (a non-empty string)".into()))?;
+        let number = |key: &str| -> mlua::Result<i64> {
+            entry
+                .get::<Option<i64>>(key)?
+                .ok_or_else(|| mlua::Error::RuntimeError(format!("t:advise needs {key} (an integer) for {family:?}")))
+        };
+        let advice = Advice { was: number("was")?, now: number("now")?, family: family.clone() };
+        lock(run_of(this)).advice.push(advice);
+        Ok(())
+    });
+
     methods.add_method("skip", move |_, this, reason: String| -> mlua::Result<()> {
         lock(run_of(this)).skip = Some(reason);
         Err(mlua::Error::RuntimeError(SKIP_SENTINEL.into()))
@@ -128,6 +145,9 @@ pub struct TestRun {
     pub assertions: usize,
     pub failure: Option<String>,
     pub skip: Option<String>,
+    /// What `t:advise{ family, was, now }` recorded: an advisory measure that moved, reported beside the
+    /// test's outcome and never changing it, so a reader (Herald) can act on it by kind, not by words.
+    pub advice: Vec<Advice>,
     /// Inside `t:expect_all(...)`, a failed assertion is collected here instead of aborting, so the
     /// block reports *every* failure. `soft` is the active flag; `soft_failures` accumulates.
     pub soft: bool,
@@ -135,6 +155,15 @@ pub struct TestRun {
     /// Snapshot context for `matches_snapshot` (where `.snap` files live, the key base, update mode,
     /// and a per-test counter for auto-named snapshots). `None` when the test has no source file path.
     pub snapshot: Option<SnapshotCtx>,
+}
+
+/// One advisory measure a test reports: `family` went from `was` to `now`. It changes no verdict: a
+/// census the User ruled advisory says what grew this way, and the test then passes or skips as before.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Advice {
+    pub family: String,
+    pub was: i64,
+    pub now: i64,
 }
 
 /// The shared handle to a test's record: every matcher of the test writes through it.

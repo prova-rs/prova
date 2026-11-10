@@ -72,6 +72,12 @@ enum OwnedEvent {
     NodeStarted {
         path: String,
     },
+    Advised {
+        path: String,
+        family: String,
+        was: i64,
+        now: i64,
+    },
     NodeFinished {
         path: String,
         outcome: Outcome,
@@ -95,6 +101,12 @@ impl Reporter for ChannelReporter {
         let owned = match event {
             Event::NodeStarted { path } => OwnedEvent::NodeStarted {
                 path: (*path).to_string(),
+            },
+            Event::Advised { path, family, was, now } => OwnedEvent::Advised {
+                path: (*path).to_string(),
+                family: (*family).to_string(),
+                was: *was,
+                now: *now,
             },
             Event::NodeFinished {
                 path,
@@ -411,6 +423,9 @@ fn forward(reporter: &mut dyn Reporter, summary: &mut Summary, event: OwnedEvent
     match event {
         OwnedEvent::NodeStarted { path } => {
             reporter.event(&Event::NodeStarted { path: &path });
+        }
+        OwnedEvent::Advised { path, family, was, now } => {
+            reporter.event(&Event::Advised { path: &path, family: &family, was, now });
         }
         OwnedEvent::NodeFinished {
             path,
