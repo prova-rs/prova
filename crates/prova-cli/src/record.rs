@@ -40,10 +40,19 @@ use crate::var;
 /// directory, and a second layer of hiding only makes it harder to read while debugging.
 pub const LAST_RUN: &str = "last-run.json";
 
+/// Where a run that was not green keeps its own record, by run id (`runs/<run-id>.json`): the
+/// rerun that follows a red overwrites `last-run.json`, and with it the only copy of which case
+/// failed and what it said. A flake row names its `failed_run`; this is where that run is read.
+pub const KEPT_RUNS: &str = "runs";
+
+/// How many not-green records `runs/` keeps, newest first: a count, never an age, so a quiet
+/// package keeps its last reds however long ago they were.
+pub const KEPT_RUNS_MAX: usize = 32;
+
 // The canonical run-record types live in the core ledger so embeddings can read the same file.
 pub use prova_core::ledger::{
-    attest, Attested, Counts, DeputedRow, Executed, MeasurementRow, Record, ReminderEntry, ReportRow,
-    Skipped,
+    attest, Attested, Counts, DeputedRow, Executed, MeasurementRow, Record, ReminderEntry,
+    ReportRow, Skipped,
 };
 
 /// Convert the engine's evaluated reminders into record rows.
@@ -179,6 +188,9 @@ pub fn store(home: &Option<Home>, record: &Record, also: Option<&Path>) {
     if let Some(home) = home.as_ref() {
         if let Ok(dir) = var::dir(home) {
             let _ = std::fs::write(dir.join(LAST_RUN), &text);
+            if record.verdict != "green" {
+                keep(&dir.join(KEPT_RUNS), &record.run_id, &text);
+            }
         }
     }
     if let Some(dest) = also {
@@ -193,13 +205,45 @@ pub fn store(home: &Option<Home>, record: &Record, also: Option<&Path>) {
     }
 }
 
+/// Keep a not-green record as `<runs>/<run_id>.json`, then prune to the newest [`KEPT_RUNS_MAX`].
+/// Run ids lead with their start in epoch milliseconds (`run-<ms>-<pid>`), so name order is age
+/// order. Best effort, as `store` is.
+fn keep(runs: &Path, run_id: &str, text: &str) {
+    if run_id.is_empty() || run_id.contains(['/', '\\']) || std::fs::create_dir_all(runs).is_err() {
+        return;
+    }
+    let _ = std::fs::write(runs.join(format!("{run_id}.json")), text);
+    let Ok(entries) = std::fs::read_dir(runs) else {
+        return;
+    };
+    let mut names: Vec<String> = entries
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .filter(|n| n.starts_with("run-") && n.ends_with(".json"))
+        .collect();
+    names.sort_by(|a, b| b.cmp(a));
+    for stale in names.iter().skip(KEPT_RUNS_MAX) {
+        let _ = std::fs::remove_file(runs.join(stale));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
+    /// A kept not-green record, by run id (`runs/<run-id>.json`).
+    fn kept(home: &Home, run_id: &str) -> Option<prova_core::ledger::Record> {
+        prova_core::ledger::read_record(
+            &var::path(home)
+                .join(KEPT_RUNS)
+                .join(format!("{run_id}.json")),
+        )
+        .ok()
+    }
+
     fn tempdir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("prova-record-ut-{tag}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("prova-record-ut-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -270,11 +314,15 @@ mod tests {
         };
         assert_eq!(spell(ReminderState::Watching), ("watching".into(), None));
         assert_eq!(
-            spell(ReminderState::Due { why: Some("date passed".into()) }),
+            spell(ReminderState::Due {
+                why: Some("date passed".into())
+            }),
             ("due".into(), Some("date passed".into()))
         );
         assert_eq!(
-            spell(ReminderState::Unevaluated { reason: "no clock".into() }),
+            spell(ReminderState::Unevaluated {
+                reason: "no clock".into()
+            }),
             ("unevaluated".into(), Some("no clock".into()))
         );
 
@@ -327,6 +375,55 @@ mod tests {
         store(&None, &record, Some(&also));
         assert!(also.is_file(), "--record writes even with no package home");
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A rerun overwrites `last-run.json`; the red it reran stays readable by its run id, a green
+    /// run keeps nothing, and `runs/` holds only the newest KEPT_RUNS_MAX.
+    #[test]
+    fn a_red_run_outlives_the_rerun_that_follows_it() {
+        let dir = tempdir("kept");
+        let home = home_in(&dir);
+        let mut red = minimal_record();
+        red.run_id = "run-1000000000001-1".into();
+        red.verdict = "red".into();
+        red.summary.failed = 1;
+        store(&Some(home.clone()), &red, None);
+        let mut green = minimal_record();
+        green.run_id = "run-1000000000002-1".into();
+        store(&Some(home.clone()), &green, None);
+        assert_eq!(
+            load(&home).expect("last").run_id,
+            green.run_id,
+            "the rerun is the last run"
+        );
+        assert_eq!(
+            kept(&home, &red.run_id)
+                .expect("the red is kept")
+                .summary
+                .failed,
+            1
+        );
+        assert!(
+            kept(&home, &green.run_id).is_none(),
+            "a green run keeps nothing"
+        );
+
+        for n in 0..KEPT_RUNS_MAX + 3 {
+            let mut r = red.clone();
+            r.run_id = format!("run-{}-1", 2000000000000u64 + n as u64);
+            store(&Some(home.clone()), &r, None);
+        }
+        let held = std::fs::read_dir(var::path(&home).join(KEPT_RUNS))
+            .expect("runs/")
+            .count();
+        assert_eq!(held, KEPT_RUNS_MAX, "pruned to the newest");
+        assert!(kept(&home, &red.run_id).is_none(), "the oldest went first");
+        assert!(kept(
+            &home,
+            &format!("run-{}-1", 2000000000000u64 + KEPT_RUNS_MAX as u64 + 2)
+        )
+        .is_some());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
