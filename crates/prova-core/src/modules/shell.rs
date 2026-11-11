@@ -977,11 +977,16 @@ impl CommandSpec {
         let mut c = match self {
             Self::Shell(s) => shell_command(s),
             Self::Argv(argv) => match horai_for(argv) {
-                // A test build records what it used and prunes its build dir as it ends (horai
-                // HORAI.md §4.4): every conduct, deputy and gate, without one of them remembering to.
-                Some(horai) => {
+                // A build records what it used and prunes its build dir as it ends (horai HORAI.md
+                // §4.4): every conduct, deputy and gate, without one of them remembering to. With
+                // sessions, every cargo build of the run is one kept build, so a prune at the end of
+                // nextest never takes the units the run's later build, clippy or graph still need.
+                Some((horai, sessions)) => {
                     let mut c = tokio::process::Command::new(horai);
                     c.args(["run", "--"]).args(argv);
+                    if let Some(id) = session().filter(|_| sessions) {
+                        c.env(HORAI_SESSION_ENV, id);
+                    }
                     c
                 }
                 None => {
@@ -1019,55 +1024,169 @@ impl CommandSpec {
     }
 }
 
-/// Set to `0` to run a `cargo nextest run` without horai.
+/// Set to `0` to run every cargo build without horai.
 pub const HORAI_ENV: &str = "PROVA_HORAI";
 
-/// The `horai` to wrap `argv` in: only an argv `cargo nextest run …` (`cargo +toolchain …` too), only
-/// when `horai` is on PATH, and never with `PROVA_HORAI=0`. `horai run` brackets the build, records the
-/// units it used and prunes the build dir; the command's exit code and output are unchanged.
-fn horai_for(argv: &[String]) -> Option<std::path::PathBuf> {
-    if !is_nextest_run(argv) || std::env::var(HORAI_ENV).is_ok_and(|v| v == "0") {
+/// The session horai counts kept builds by: every cargo build of one run is one kept build.
+pub const HORAI_SESSION_ENV: &str = "HORAI_SESSION";
+
+/// This run's identity, as the session its builds share; set once when the run is named.
+static SESSION: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Name the session this process's wrapped builds share (the run's id).
+pub fn set_session(id: &str) {
+    *SESSION
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(id.to_owned());
+}
+
+/// The session: one inherited from the environment wins (a gate, or an outer run, is one session
+/// even when prova runs nested), else this run's own id.
+fn session() -> Option<String> {
+    std::env::var(HORAI_SESSION_ENV)
+        .ok()
+        .filter(|v| !v.is_empty())
+        .or_else(|| {
+            SESSION
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        })
+}
+
+/// What an installed horai can do, read from `horai run`'s own usage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Horai {
+    run: bool,
+    sessions: bool,
+}
+
+/// Whether to wrap `argv` in a horai that can do `can`: a `cargo nextest run` whenever horai knows
+/// `run`; any other cargo build (build, check, clippy, test) only when it also knows sessions, since
+/// a horai counting commands would prune after each one and take what the run's next step needs.
+fn wraps(argv: &[String], can: Horai) -> bool {
+    can.run && (is_nextest_run(argv) || (can.sessions && is_cargo_build(argv)))
+}
+
+/// The `horai` to wrap `argv` in, and whether it knows sessions: only when `horai` is on PATH,
+/// never with `PROVA_HORAI=0`, and only for what [`wraps`] says. `horai run` brackets the build,
+/// records the units it used and prunes the build dir; the command's exit code and output are
+/// unchanged.
+fn horai_for(argv: &[String]) -> Option<(std::path::PathBuf, bool)> {
+    if cargo_at(argv).is_none() || std::env::var(HORAI_ENV).is_ok_and(|v| v == "0") {
         return None;
     }
     let horai = std::env::split_paths(&std::env::var_os("PATH")?)
         .map(|dir| dir.join("horai"))
         .find(|p| p.is_file())?;
-    horai_has_run(&horai).then_some(horai)
+    let can = horai_can(&horai);
+    wraps(argv, can).then_some((horai, can.sessions))
 }
 
-/// Whether this `horai` knows `run` (an older one would fail every wrapped build): asked once per
-/// binary path per process. `horai run` with no command answers with its own usage.
-fn horai_has_run(horai: &std::path::Path) -> bool {
-    static KNOWN: std::sync::Mutex<Vec<(std::path::PathBuf, bool)>> =
+/// What this `horai` can do (an older one would fail every wrapped build), asked once per binary
+/// path per process: `horai run` with no command answers with its own usage, which names `run`, and
+/// names HORAI_SESSION once it counts kept builds by session.
+fn horai_can(horai: &std::path::Path) -> Horai {
+    static KNOWN: std::sync::Mutex<Vec<(std::path::PathBuf, Horai)>> =
         std::sync::Mutex::new(Vec::new());
     let mut known = KNOWN
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some((_, has)) = known.iter().find(|(p, _)| p == horai) {
-        return *has;
+    if let Some((_, can)) = known.iter().find(|(p, _)| p == horai) {
+        return *can;
     }
-    let has = std::process::Command::new(horai)
+    let usage = std::process::Command::new(horai)
         .arg("run")
         .stdin(std::process::Stdio::null())
         .output()
-        .is_ok_and(|o| String::from_utf8_lossy(&o.stderr).contains("run: usage"));
-    known.push((horai.to_path_buf(), has));
-    has
+        .map(|o| String::from_utf8_lossy(&o.stderr).into_owned())
+        .unwrap_or_default();
+    let can = Horai {
+        run: usage.contains("run: usage"),
+        sessions: usage.contains(HORAI_SESSION_ENV),
+    };
+    known.push((horai.to_path_buf(), can));
+    can
+}
+
+/// Where cargo's subcommand sits in `argv` (`cargo x` at 1, `cargo +toolchain x` at 2), or `None`
+/// when `argv` is not cargo.
+fn cargo_at(argv: &[String]) -> Option<usize> {
+    let cargo = argv.first().is_some_and(|p| {
+        std::path::Path::new(p)
+            .file_name()
+            .is_some_and(|n| n == "cargo")
+    });
+    cargo.then(|| {
+        if argv.get(1).is_some_and(|a| a.starts_with('+')) {
+            2
+        } else {
+            1
+        }
+    })
 }
 
 /// `cargo nextest run …` or `cargo +toolchain nextest r …`, by argv.
 fn is_nextest_run(argv: &[String]) -> bool {
-    let at = if argv.get(1).is_some_and(|a| a.starts_with('+')) {
-        2
-    } else {
-        1
-    };
-    argv.first().is_some_and(|p| {
-        std::path::Path::new(p)
-            .file_name()
-            .is_some_and(|n| n == "cargo")
-    }) && argv.get(at).is_some_and(|a| a == "nextest")
-        && argv.get(at + 1).is_some_and(|a| a == "run" || a == "r")
+    cargo_at(argv).is_some_and(|at| {
+        argv.get(at).is_some_and(|a| a == "nextest")
+            && argv.get(at + 1).is_some_and(|a| a == "run" || a == "r")
+    })
+}
+
+/// A cargo command that builds into the target: build, check, clippy, test (and short forms).
+fn is_cargo_build(argv: &[String]) -> bool {
+    cargo_at(argv).is_some_and(|at| {
+        argv.get(at).is_some_and(|a| {
+            matches!(
+                a.as_str(),
+                "build" | "b" | "check" | "c" | "clippy" | "test" | "t"
+            )
+        })
+    })
+}
+
+#[cfg(test)]
+mod horai_session_tests {
+    use super::*;
+
+    fn v(s: &[&str]) -> Vec<String> {
+        s.iter().map(|x| (*x).to_owned()).collect()
+    }
+
+    /// E, L 2026-11-11 (horai's used sets): with sessions, every cargo build of a run is wrapped,
+    /// so a prune at the end of nextest never takes what the run's later build, clippy or graph
+    /// still need; without them only nextest is, as before, since a horai counting commands would
+    /// prune after each one.
+    #[test]
+    fn every_cargo_build_is_wrapped_only_when_horai_counts_sessions() {
+        let old = Horai {
+            run: true,
+            sessions: false,
+        };
+        let new = Horai {
+            run: true,
+            sessions: true,
+        };
+        let none = Horai {
+            run: false,
+            sessions: false,
+        };
+        let nextest = v(&["cargo", "nextest", "run", "--workspace"]);
+        let clippy = v(&["cargo", "+nightly", "clippy", "--workspace"]);
+        let build = v(&["cargo", "build", "--workspace"]);
+        let fmt = v(&["cargo", "fmt", "--all", "--check"]);
+        let other = v(&["git", "status"]);
+        assert!(wraps(&nextest, old) && wraps(&nextest, new), "nextest, as before");
+        assert!(
+            !wraps(&clippy, old) && !wraps(&build, old),
+            "an older horai wraps nothing new"
+        );
+        assert!(wraps(&clippy, new) && wraps(&build, new), "with sessions, every build");
+        assert!(!wraps(&fmt, new), "fmt builds nothing");
+        assert!(!wraps(&other, new), "not cargo");
+        assert!(!wraps(&nextest, none), "a horai without run wraps nothing");
+    }
 }
 
 /// How the command reads back in an error — the argv form joined for legibility (it is a display,

@@ -332,6 +332,7 @@ pub(crate) fn runtime_only(what: &str) -> mlua::Result<()> {
 }
 
 mod shell;
+pub(crate) use shell::set_session as set_horai_session;
 
 // ---------------------------------------------------------------------------------------------
 // fs

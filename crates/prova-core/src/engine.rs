@@ -569,6 +569,8 @@ impl RunConfig {
 
     /// Name this run, and the run it resumes when it does (`prova.run_id`, `prova.resume.from`).
     pub fn with_run_identity(mut self, run_id: String, resumed_from: Option<String>) -> Self {
+        // The run's builds share one horai session (modules::shell::set_session).
+        crate::modules::set_horai_session(&run_id);
         self.run_id = Some(run_id);
         self.resumed_from = resumed_from;
         self
