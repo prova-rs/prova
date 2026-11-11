@@ -6,19 +6,30 @@
 --- the horai that WRAPPED the build counts; a command of the proof's own that happens to end 75 is an
 --- ordinary failure, or anything could launder red into "not now".
 
-local function project(ctx, body)
+--- A horai that counts sessions (its usage names HORAI_SESSION) and ends every build 75. With
+--- `records`, it refuses admission and records the refusal under the session, answering
+--- `horai refused <session>` as horai does; without, the 75 is the build's own, passed through.
+local function project(ctx, body, records)
   local root = ctx:tempdir()
   local bin = root .. "/bin"
   fs.mkdir(bin)
-  -- A horai that counts sessions (its usage names HORAI_SESSION) and refuses every admission.
-  fs.write(bin .. "/horai", [[#!/bin/sh
+  fs.mkdir(root .. "/refusals")
+  fs.write(bin .. "/horai", ([[#!/bin/sh
+R=%s/refusals
 if [ "$1" = run ] && [ $# -eq 1 ]; then
   echo "run: usage: horai run -- <command> (HORAI_SESSION)" >&2
   exit 2
 fi
-echo "horai: admission refused: the build dir is over budget" >&2
+if [ "$1" = refused ]; then
+  test -f "$R/$2"
+  exit $?
+fi
+if [ %s = yes ]; then
+  : > "$R/$HORAI_SESSION"
+  echo "horai: admission refused: the build dir is over budget" >&2
+fi
 exit 75
-]])
+]]):format(root, records and "yes" or "no"))
   shell.run({ "chmod", "+x", bin .. "/horai" }, { check = true })
   local proj = root .. "/pkg"
   fs.mkdir(proj .. "/proofs")
@@ -45,7 +56,7 @@ prova.test("builds", function(t)
   local r = shell.run({ "cargo", "build" }, { merge_stderr = true })
   t:expect(r.code):equals(0)
 end)
-]])
+]], true)
   local r, record = run(proj, bin)
   t:expect(r.code, r.stdout):equals(75)
   t:expect(r.stdout):contains("not now")
@@ -63,5 +74,20 @@ end)
 ]])
   local r, record = run(proj, bin)
   t:expect(r.code, r.stdout):equals(1)
+  t:expect(record.verdict):equals("red")
+end)
+
+prova.test("a wrapped build's own exit 75, with no horai refusal recorded, is red", {
+  proves = "75 is ambiguous: horai run passes its child's exit through, so only horai's record of a refusal makes it 'not now' (D m/8928)",
+}, function(t)
+  local proj, bin = project(t, [[
+prova.test("builds", function(t)
+  local r = shell.run({ "cargo", "build" }, { merge_stderr = true })
+  t:expect(r.code):equals(0)
+end)
+]], false)
+  local r, record = run(proj, bin)
+  t:expect(r.code, r.stdout):equals(1)
+  t:expect(r.stdout):contains("exit 75 without a horai refusal")
   t:expect(record.verdict):equals("red")
 end)

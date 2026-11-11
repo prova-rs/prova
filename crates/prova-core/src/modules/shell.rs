@@ -1034,12 +1034,31 @@ pub const HORAI_NOT_NOW: i32 = 75;
 /// Whether a horai-wrapped build of this run was refused admission (exit [`HORAI_NOT_NOW`]).
 static NOT_NOW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Wrapped in horai, a build that horai refuses admission ends 75 (EX_TEMPFAIL): "not now". Only
-/// a command horai wraps counts, so a proof's own exit 75 stays an ordinary failure.
+/// Wrapped in horai, a build that horai refuses admission ends 75 (EX_TEMPFAIL): "not now". The
+/// exit alone is ambiguous, since `horai run` passes its child's own 75 through, so it counts only
+/// when horai's refusal record for this run's session says so (`horai refused <session>` exits 0;
+/// D m/8928). Anything else stays an ordinary failure, said as such.
 fn note_refusal(cmd: &CommandSpec, code: i32) {
-    if code == HORAI_NOT_NOW && matches!(cmd, CommandSpec::Argv(argv) if horai_for(argv).is_some())
-    {
+    if code != HORAI_NOT_NOW {
+        return;
+    }
+    let CommandSpec::Argv(argv) = cmd else { return };
+    let Some((horai, true)) = horai_for(argv) else {
+        return;
+    };
+    let refused = session().is_some_and(|id| {
+        std::process::Command::new(&horai)
+            .args(["refused", &id])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    });
+    if refused {
         NOT_NOW.store(true, std::sync::atomic::Ordering::SeqCst);
+    } else {
+        eprintln!("prova: exit 75 without a horai refusal: {cmd} failed");
     }
 }
 
@@ -1063,17 +1082,28 @@ pub fn set_session(id: &str) {
 }
 
 /// The session: one inherited from the environment wins (a gate, or an outer run, is one session
-/// even when prova runs nested), else this run's own id.
+/// even when prova runs nested), else this run's own id, else (a run with no journal, outside a
+/// version-controlled tree) one minted for this process, so every build is in a session and a
+/// refusal can always be asked about.
 fn session() -> Option<String> {
-    std::env::var(HORAI_SESSION_ENV)
+    if let Some(inherited) = std::env::var(HORAI_SESSION_ENV)
         .ok()
         .filter(|v| !v.is_empty())
-        .or_else(|| {
-            SESSION
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone()
+    {
+        return Some(inherited);
+    }
+    let mut own = SESSION
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    Some(
+        own.get_or_insert_with(|| {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos());
+            format!("prova-{}-{nanos}", std::process::id())
         })
+        .clone(),
+    )
 }
 
 /// What an installed horai can do, read from `horai run`'s own usage.
