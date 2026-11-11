@@ -30,7 +30,9 @@ impl History {
     /// The deputed failures a prior record lends — only when it was recorded over `tree` by `binary`.
     pub(crate) fn deputed_from(record: &prova_core::ledger::Record, tree: &str, binary: &str) -> BTreeMap<CaseKey, (String, Option<String>)> {
         let mut out = BTreeMap::new();
-        if record.tree.as_deref() != Some(tree) || record.binary != binary {
+        // A not-now record judged nothing, so it lends no failure (a refused attempt never pairs
+        // with a later pass to make a flake).
+        if record.tree.as_deref() != Some(tree) || record.binary != binary || record.verdict == "not-now" {
             return out;
         }
         for d in &record.deputed {

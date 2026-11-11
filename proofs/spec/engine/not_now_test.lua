@@ -91,3 +91,52 @@ end)
   t:expect(r.stdout):contains("exit 75 without a horai refusal")
   t:expect(record.verdict):equals("red")
 end)
+
+prova.test("a refused run never pairs with a later pass to make a flake", {
+  proves = "a not-now run judged nothing, so it lends no failure to the next run's flake watch: refused, then admitted on the same tree, is green, never flaky (L, 2026-11-11: a budget raised mid-gate made Herald record a refusal as a flake)",
+}, function(t)
+  local root = t:tempdir()
+  local bin = root .. "/bin"
+  fs.mkdir(bin)
+  fs.mkdir(root .. "/refusals")
+  -- Refuses (and records it) while `full` exists; past that, admits and the build "succeeds".
+  fs.write(bin .. "/horai", ([[#!/bin/sh
+R=%s
+if [ "$1" = run ] && [ $# -eq 1 ]; then
+  echo "run: usage: horai run -- <command> (HORAI_SESSION)" >&2
+  exit 2
+fi
+if [ "$1" = refused ]; then
+  test -f "$R/refusals/$2"
+  exit $?
+fi
+if [ -f "$R/full" ]; then
+  : > "$R/refusals/$HORAI_SESSION"
+  exit 75
+fi
+exit 0
+]]):format(root))
+  shell.run({ "chmod", "+x", bin .. "/horai" }, { check = true })
+  fs.write(root .. "/full", "")
+  local proj = root .. "/pkg"
+  fs.mkdir(proj .. "/proofs")
+  fs.write(proj .. "/prova.toml", '[run]\nproofs = ["proofs"]\n')
+  fs.write(proj .. "/proofs/build_test.lua", [[
+prova.test("builds", function(t)
+  local r = shell.run({ "cargo", "build" }, { merge_stderr = true })
+  t:expect(r.code):equals(0)
+end)
+]])
+  shell.run({ "git", "init", "-q" }, { cwd = proj, check = true })
+  shell.run({ "git", "add", "prova.toml", "proofs" }, { cwd = proj, check = true })
+
+  local refused, first = run(proj, bin)
+  t:expect(refused.code, refused.stdout):equals(75)
+  t:expect(first.verdict):equals("not-now")
+
+  fs.remove_all(root .. "/full")
+  local admitted, second = run(proj, bin)
+  t:expect(admitted.code, admitted.stdout):equals(0)
+  t:expect(second.verdict, "the pass after a refusal is green, not a flake"):equals("green")
+  t:expect(second.summary.flaky):equals(0)
+end)

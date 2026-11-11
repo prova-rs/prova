@@ -370,6 +370,10 @@ pub(super) fn settle(
             None
         }
     });
+    // A run horai refused ("not now") judged nothing, so like a run whose tree moved its verdicts
+    // belong to no tree: ended without one, it never lends a failure to the next run's flake watch,
+    // and a refused attempt can never pair with a later pass to make a flake (L, 2026-11-11).
+    let tree = tree.filter(|_| !prova_core::admission_refused());
     if let Some(writer) = reporter.journal.as_mut() {
         writer.end(tree.clone());
     }

@@ -1047,7 +1047,12 @@ fn store_run_record(
     let settled = journaling::settle(cli, config, journal_plan, home, reporter, summary);
     // The flake ledger: append-only, never truncated — the one account of "red in run A, green in
     // run B on the same tree" that outlives both runs' records.
-    let flakes = reporter.flakes.events.clone();
+    // A not-now run has no flakes: what failed was the environment, never the proof.
+    let flakes = if prova_core::admission_refused() {
+        Vec::new()
+    } else {
+        reporter.flakes.events.clone()
+    };
     crate::flakes::append_ledger(home.as_ref(), &flakes);
     record::store(
         home,
