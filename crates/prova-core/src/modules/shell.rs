@@ -1037,7 +1037,8 @@ static NOT_NOW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::n
 /// Wrapped in horai, a build that horai refuses admission ends 75 (EX_TEMPFAIL): "not now". Only
 /// a command horai wraps counts, so a proof's own exit 75 stays an ordinary failure.
 fn note_refusal(cmd: &CommandSpec, code: i32) {
-    if code == HORAI_NOT_NOW && matches!(cmd, CommandSpec::Argv(argv) if horai_for(argv).is_some()) {
+    if code == HORAI_NOT_NOW && matches!(cmd, CommandSpec::Argv(argv) if horai_for(argv).is_some())
+    {
         NOT_NOW.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }
