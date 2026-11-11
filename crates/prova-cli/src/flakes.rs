@@ -32,7 +32,10 @@ impl History {
         let mut out = BTreeMap::new();
         // A not-now record judged nothing, so it lends no failure (a refused attempt never pairs
         // with a later pass to make a flake).
-        if record.tree.as_deref() != Some(tree) || record.binary != binary || record.verdict == "not-now" {
+        if record.tree.as_deref() != Some(tree)
+            || record.binary != binary
+            || record.verdict == "not-now"
+        {
             return out;
         }
         for d in &record.deputed {
