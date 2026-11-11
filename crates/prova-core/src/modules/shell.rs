@@ -721,8 +721,6 @@ async fn run_command(
     o: &RunOpts,
     progress: &Arc<dyn Progress>,
 ) -> mlua::Result<ShellResult> {
-    // Wrapped in horai, a build that horai refuses admission ends 75 (EX_TEMPFAIL): "not now".
-    let wrapped = matches!(cmd, CommandSpec::Argv(argv) if horai_for(argv).is_some());
     let mut command = cmd.build();
     if let Some(dir) = &o.cwd {
         command.current_dir(dir);
@@ -832,9 +830,7 @@ async fn run_command(
         stderr,
         duration: start.elapsed().as_secs_f64(),
     };
-    if wrapped && result.code == HORAI_NOT_NOW {
-        NOT_NOW.store(true, std::sync::atomic::Ordering::SeqCst);
-    }
+    note_refusal(cmd, result.code);
     if result.code == 0 {
         activity.done();
     } else {
@@ -1037,6 +1033,14 @@ pub const HORAI_NOT_NOW: i32 = 75;
 
 /// Whether a horai-wrapped build of this run was refused admission (exit [`HORAI_NOT_NOW`]).
 static NOT_NOW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Wrapped in horai, a build that horai refuses admission ends 75 (EX_TEMPFAIL): "not now". Only
+/// a command horai wraps counts, so a proof's own exit 75 stays an ordinary failure.
+fn note_refusal(cmd: &CommandSpec, code: i32) {
+    if code == HORAI_NOT_NOW && matches!(cmd, CommandSpec::Argv(argv) if horai_for(argv).is_some()) {
+        NOT_NOW.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
 
 /// Whether this run met a horai refusal: the run is then "not now", no verdict, never red (horai
 /// HORAI.md §6; E, L 2026-11-11). A gate that ends this way is retried, never bounced.

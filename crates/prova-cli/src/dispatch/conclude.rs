@@ -120,15 +120,8 @@ pub(super) fn conclude_run(
         return ExitCode::from(2);
     }
 
-    // Horai refused a build admission to the disk: the environment wasn't ready, so whatever
-    // failed after it says nothing about the change. No verdict, never red: exit 75 (EX_TEMPFAIL),
-    // which a gate (Herald) reads as "try again later", never a bounce.
-    if prova_core::admission_refused() {
-        eprintln!(
-            "prova: not now — horai refused a build admission (exit {}); this run has no verdict",
-            prova_core::HORAI_NOT_NOW
-        );
-        return ExitCode::from(prova_core::HORAI_NOT_NOW as u8);
+    if let Some(not_now) = not_now() {
+        return not_now;
     }
 
     // The attention section, after the evidence summary — console only, and only when
@@ -182,4 +175,17 @@ pub(super) fn conclude_run(
     } else {
         ExitCode::FAILURE
     }
+}
+
+/// Horai refused a build admission to the disk: the environment wasn't ready, so whatever failed
+/// after it says nothing about the change. No verdict, never red: exit 75 (EX_TEMPFAIL), which a
+/// gate (Herald) reads as "try again later", never a bounce.
+fn not_now() -> Option<ExitCode> {
+    prova_core::admission_refused().then(|| {
+        eprintln!(
+            "prova: not now — horai refused a build admission (exit {}); this run has no verdict",
+            prova_core::HORAI_NOT_NOW
+        );
+        ExitCode::from(prova_core::HORAI_NOT_NOW as u8)
+    })
 }
