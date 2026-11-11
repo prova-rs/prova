@@ -1075,7 +1075,11 @@ fn store_run_record(
                 reused_inputs: summary.reused_inputs.len(),
                 flaky: summary.flaky,
             },
-            verdict: prova_core::ledger::verdict(summary.failed, summary.flaky).to_string(),
+            verdict: if prova_core::admission_refused() {
+                "not-now".to_string()
+            } else {
+                prova_core::ledger::verdict(summary.failed, summary.flaky).to_string()
+            },
             flakes,
             executed: settled.executed,
             skipped: std::mem::take(&mut reporter.skipped),

@@ -163,6 +163,9 @@ pub use suite::{discover_files, discover_suite, discover_suites, is_test_file, r
 /// it and people paste it into shells, so a `\\` in JSON is an escape nobody meant.
 pub use crate::modules::emit_path;
 
+/// A run whose horai-wrapped build was refused admission is "not now": no verdict (exit 75).
+pub use crate::modules::{admission_refused, HORAI_NOT_NOW};
+
 #[cfg(test)]
 mod exe_path_tests {
     use super::usable_exe_path;

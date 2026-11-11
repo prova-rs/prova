@@ -333,6 +333,7 @@ pub(crate) fn runtime_only(what: &str) -> mlua::Result<()> {
 
 mod shell;
 pub(crate) use shell::set_session as set_horai_session;
+pub use shell::{admission_refused, HORAI_NOT_NOW};
 
 // ---------------------------------------------------------------------------------------------
 // fs
