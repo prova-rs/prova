@@ -69,7 +69,7 @@ pub(crate) fn run(args: Vec<String>) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
-        match rt.block_on(pump(&cli.addr)) {
+        match rt.block_on(pump(&cli.addr, tokio::io::stdin(), tokio::io::stdout())) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 // stderr, never stdout: stdout IS the protocol channel here, and a diagnostic
@@ -118,11 +118,16 @@ async fn dial(addr: &str) -> Result<Box<dyn Duplex>, String> {
 trait Duplex: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin {}
 impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> Duplex for T {}
 
-async fn pump(addr: &str) -> Result<(), String> {
+/// The relay between `stdin` and `stdout` (the process's own, in production) and the dialed peer.
+/// The ends are handed in so a proof never reads the test process's real stdin, which is at EOF
+/// under nextest but left open by a `cargo test` started from a shell (where it waited forever).
+async fn pump<I, O>(addr: &str, mut stdin: I, mut stdout: O) -> Result<(), String>
+where
+    I: tokio::io::AsyncRead + Unpin,
+    O: tokio::io::AsyncWrite + Unpin,
+{
     let sock = dial(addr).await?;
     let (mut sock_r, mut sock_w) = tokio::io::split(sock);
-    let mut stdin = tokio::io::stdin();
-    let mut stdout = tokio::io::stdout();
 
     use tokio::io::AsyncWriteExt;
 
@@ -204,9 +209,11 @@ mod tests {
                 got
             });
 
-            // stdin is already at EOF in the test process, so `up` completes immediately —
-            // exactly the race that used to cancel `down`.
-            pump(&format!("tcp://{addr}")).await.unwrap();
+            // An empty stdin: `up` completes immediately, exactly the race that used to cancel
+            // `down`. Handed in, never the test process's own stdin (open under `cargo test`).
+            let mut reply = Vec::new();
+            pump(&format!("tcp://{addr}"), tokio::io::empty(), &mut reply).await.unwrap();
+            assert_eq!(reply, b"ANSWER\n", "the reply after the half-close is delivered");
             let got = server.await.unwrap();
             assert!(got.is_empty(), "nothing to send, but the EOF still traveled");
         });
@@ -218,7 +225,7 @@ mod tests {
     #[test]
     fn an_unknown_scheme_is_refused_naming_both() {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let e = rt.block_on(pump("http://127.0.0.1:9")).unwrap_err();
+        let e = rt.block_on(pump("http://127.0.0.1:9", tokio::io::empty(), tokio::io::sink())).unwrap_err();
         assert!(e.contains("tcp://host:port"), "both accepted shapes are named: {e}");
         assert!(e.contains("unix:///path"), "{e}");
     }
