@@ -315,7 +315,7 @@ pub mod claims;
 
 pub use claims::{
     Claim, ClaimError, Kind, Owed, Status, backlog, digest, matching_id, pin, promote, reconcile,
-    scan, split_pin,
+    scan, scan_reporting, split_pin,
 };
 
 /// Read the record at the given path.

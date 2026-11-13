@@ -38,8 +38,9 @@ pub(crate) fn spec_scan_roots(manifest: &Manifest) -> Vec<String> {
 /// (in-repo deferrals) and unproven claims (obligations that entered from prose) land in one list
 /// with origin as a column. An answer that lives in two places has one that goes stale.
 ///
-/// Reports, never gates. The single exception is a duplicate claim id, which makes an address
-/// ambiguous and is a defect rather than unfinished work.
+/// Reports, never gates. The single exception is an unreadable anchor or a duplicate claim id: a
+/// defect rather than unfinished work. It is listed as MALFORMED with the rest of the account and
+/// the exit is non-zero, but it never stops the other claims being answered.
 pub(crate) fn owed_subcommand(args: Vec<String>) -> ExitCode {
     let pinning = args.iter().any(|a| a == "--pin");
     let home = match resolve_home(None) {
@@ -58,8 +59,10 @@ pub(crate) fn owed_subcommand(args: Vec<String>) -> ExitCode {
     // has something to say.
     let docs = spec_scan_roots(&manifest);
 
-    let claims = match claims::scan(&home.dir, &docs) {
-        Ok(claims) => claims,
+    // A malformed anchor or a duplicate id is a MALFORMED row, never a refusal of the whole
+    // ledger: one bad line must not leave every other claim unanswered.
+    let (claims, malformed) = match claims::scan_reporting(&home.dir, &docs) {
+        Ok(scanned) => scanned,
         Err(e) => {
             eprintln!("prova: {e}");
             return ExitCode::FAILURE;
@@ -82,6 +85,12 @@ pub(crate) fn owed_subcommand(args: Vec<String>) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
+        // Pinning writes digests into proof files: refuse it while any anchor is unreadable, so a
+        // pin is never taken against a ledger with a hole in it.
+        if let Some(first) = malformed.first() {
+            eprintln!("prova: malformed anchor at {} — {}", first.subject, first.detail);
+            return ExitCode::FAILURE;
+        }
         match claims::pin(&files, &claims) {
             Ok(n) => println!("prova: pinned claim text in {n} file(s)"),
             Err(e) => {
@@ -92,7 +101,8 @@ pub(crate) fn owed_subcommand(args: Vec<String>) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let owed = claims::reconcile(&claims, &proofs);
+    let mut owed = malformed;
+    owed.extend(claims::reconcile(&claims, &proofs));
 
     // DUE reminders join the narrowing (docs/design/reminders.md): an arriving agent asks ONE
     // question — what is owed here? — and attention owed is part of the answer. Read from the run
@@ -127,6 +137,11 @@ pub(crate) fn owed_subcommand(args: Vec<String>) -> ExitCode {
     }
     println!();
     println!("  {} owed", owed.len() + due.len());
+    // Every debt is answered above; an unreadable anchor still exits non-zero, because it is a
+    // defect in the docs rather than unfinished work (as a duplicate id always was).
+    if owed.iter().any(|o| o.status == claims::Status::Malformed) {
+        return ExitCode::FAILURE;
+    }
     ExitCode::SUCCESS
 }
 

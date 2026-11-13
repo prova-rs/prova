@@ -601,7 +601,8 @@ pub(crate) fn evidence_account(
     packages_resolved: &packages::ResolvedPackages,
 ) -> Result<prova_core::ledger::Account, String> {
     let docs = spec_scan_roots(manifest);
-    let claims = claims::scan(&home.dir, &docs).map_err(|e| e.to_string())?;
+    // A report, so a malformed anchor is a MALFORMED debt, never a refusal of the whole account.
+    let (claims, malformed) = claims::scan_reporting(&home.dir, &docs).map_err(|e| e.to_string())?;
     let proofs = collect_obligations(home, manifest, packages_resolved)?;
     // Tolerant on purpose, and `.ok()` is the whole of it: a missing record and an unreadable one
     // both mean "no evidence of a run", which the account already renders as an absence rather than
@@ -609,7 +610,9 @@ pub(crate) fn evidence_account(
     // record — wrong for a verb whose contract is to report rather than gate, and inconsistent with
     // the DEPUTED section below, which reads the same file through `record::load` and tolerates it.
     let recorded = record::load(home);
-    Ok(prova_core::ledger::account(&claims, &proofs, recorded.as_ref()))
+    let mut account = prova_core::ledger::account(&claims, &proofs, recorded.as_ref());
+    account.owed.splice(0..0, malformed);
+    Ok(account)
 }
 
 /// `prova evidence` — the whole account: every stage of the obligation lifecycle with its count,

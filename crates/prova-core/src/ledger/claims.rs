@@ -140,6 +140,10 @@ pub fn backlog(claims: &[Claim]) -> Vec<&Claim> {
 /// points at — and the earlier names (`UNBOUND` for the first) did not say which was which.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum Status {
+    /// A line that means to be an anchor (the `claim:`/`backlog:` keyword is there) but cannot be
+    /// read, or an id anchored twice in one file. Worst first: until it is fixed, whatever it
+    /// meant to claim is claimed by nothing. `owed` names it and still answers for the rest.
+    Malformed,
     /// A `covers` naming an address with no anchor. Two situations produce this — prose not
     /// written yet, and prose deleted once the proof captured the contract — and the remedies
     /// differ, so the message names both rather than guessing.
@@ -161,6 +165,7 @@ pub enum Status {
 impl Status {
     pub fn tag(self) -> &'static str {
         match self {
+            Status::Malformed => "MALFORMED",
             Status::Dangling => "DANGLING",
             Status::Backlogged => "BACKLOGGED",
             Status::Unproven => "UNPROVEN",
@@ -219,20 +224,66 @@ impl std::fmt::Display for ClaimError {
 /// obligation must still read as prose, or authors stop writing it.
 pub fn scan(root: &Path, docs: &[String]) -> Result<Vec<Claim>, ClaimError> {
     let mut claims = Vec::new();
+    let mut problems = Vec::new();
+    collect(root, docs, &mut claims, &mut problems)?;
+    match problems.into_iter().next() {
+        Some(first) => Err(first),
+        None => Ok(claims),
+    }
+}
+
+/// [`scan`] for the report verbs (`owed`, `evidence`): an unreadable anchor or a duplicate id is
+/// handed back as a `MALFORMED` row, and every other anchor is still read. One bad line must not
+/// silence a whole project's account; the gate (`attest`) keeps the strict [`scan`]. An unreadable
+/// file is still an error: that is the environment, not an anchor.
+pub fn scan_reporting(root: &Path, docs: &[String]) -> Result<(Vec<Claim>, Vec<Owed>), ClaimError> {
+    let mut claims = Vec::new();
+    let mut problems = Vec::new();
+    collect(root, docs, &mut claims, &mut problems)?;
+    let rows = problems
+        .into_iter()
+        .map(|p| match p {
+            ClaimError::Malformed { ref file, line, ref reason } => Owed {
+                status: Status::Malformed,
+                subject: format!("{}:{line}", file.display()),
+                detail: reason.clone(),
+            },
+            ClaimError::Duplicate { ref file, again, .. } => Owed {
+                status: Status::Malformed,
+                subject: format!("{}:{again}", file.display()),
+                detail: p.to_string(),
+            },
+            ClaimError::Io { .. } => unreachable!("collect returns Io as its error"),
+        })
+        .collect();
+    Ok((claims, rows))
+}
+
+fn collect(
+    root: &Path,
+    docs: &[String],
+    claims: &mut Vec<Claim>,
+    problems: &mut Vec<ClaimError>,
+) -> Result<(), ClaimError> {
     for entry in docs {
         let path = root.join(entry);
         if path.is_dir() {
-            collect_dir(root, &path, &mut claims)?;
+            collect_dir(root, &path, claims, problems)?;
         } else if path.exists() {
-            collect_file(root, &path, &mut claims)?;
+            collect_file(root, &path, claims, problems)?;
         }
         // A declared-but-missing path is not an error here: docs get moved, and `owed` reporting a
         // missing directory as a hard failure would block the very reconciliation you ran it for.
     }
-    Ok(claims)
+    Ok(())
 }
 
-fn collect_dir(root: &Path, dir: &Path, out: &mut Vec<Claim>) -> Result<(), ClaimError> {
+fn collect_dir(
+    root: &Path,
+    dir: &Path,
+    out: &mut Vec<Claim>,
+    problems: &mut Vec<ClaimError>,
+) -> Result<(), ClaimError> {
     let entries = std::fs::read_dir(dir).map_err(|source| ClaimError::Io {
         path: dir.to_path_buf(),
         source,
@@ -241,15 +292,20 @@ fn collect_dir(root: &Path, dir: &Path, out: &mut Vec<Claim>) -> Result<(), Clai
     paths.sort();
     for path in paths {
         if path.is_dir() {
-            collect_dir(root, &path, out)?;
+            collect_dir(root, &path, out, problems)?;
         } else if path.extension().is_some_and(|e| e == "md" || e == "markdown") {
-            collect_file(root, &path, out)?;
+            collect_file(root, &path, out, problems)?;
         }
     }
     Ok(())
 }
 
-fn collect_file(root: &Path, path: &Path, out: &mut Vec<Claim>) -> Result<(), ClaimError> {
+fn collect_file(
+    root: &Path,
+    path: &Path,
+    out: &mut Vec<Claim>,
+    problems: &mut Vec<ClaimError>,
+) -> Result<(), ClaimError> {
     let text = std::fs::read_to_string(path).map_err(|source| ClaimError::Io {
         path: path.to_path_buf(),
         source,
@@ -266,21 +322,23 @@ fn collect_file(root: &Path, path: &Path, out: &mut Vec<Claim>) -> Result<(), Cl
         let (kind, id, props) = match parse_anchor(line) {
             Anchor::Prose => continue,
             Anchor::Malformed(reason) => {
-                return Err(ClaimError::Malformed {
-                    file: relative,
+                problems.push(ClaimError::Malformed {
+                    file: relative.clone(),
                     line: line_no,
                     reason,
                 });
+                continue;
             }
             Anchor::Found { kind, id, props } => (kind, id, props),
         };
         if let Some(&first) = seen.get(&id) {
-            return Err(ClaimError::Duplicate {
+            problems.push(ClaimError::Duplicate {
                 id,
-                file: relative,
+                file: relative.clone(),
                 first,
                 again: line_no,
             });
+            continue;
         }
         out.push(Claim {
             kind,
@@ -326,6 +384,12 @@ fn parse_anchor(line: &str) -> Anchor {
     // Past the keyword, the author meant an anchor — every failure from here is Malformed, not Prose.
     let kw = kind.keyword();
     let Some(body) = rest.trim_start().strip_suffix("-->").map(str::trim) else {
+        if rest.contains("-->") {
+            return Anchor::Malformed(format!(
+                "`{kw}:` anchor must end its line — move the text after `-->` to the next line \
+                 (the claim's prose follows its anchor)"
+            ));
+        }
         return Anchor::Malformed(format!("`{kw}:` anchor is not closed with `-->` on this line"));
     };
     let mut parts = body.split_whitespace();
@@ -744,6 +808,48 @@ mod tests {
             panic!("a bare date must be malformed now");
         };
         assert!(why.contains("recorded=2026-09-01") && why.contains("due=2026-09-01"), "{why}");
+    }
+
+    #[test]
+    fn an_anchor_followed_by_prose_says_it_must_end_its_line() {
+        let line = "<!-- claim: x --> A stream append may carry";
+        let Anchor::Malformed(why) = parse_anchor(line) else {
+            panic!("an anchor with prose after it on its line must be malformed");
+        };
+        assert!(why.contains("must end its line"), "{why}");
+        let Anchor::Malformed(why) = parse_anchor("<!-- claim: x") else { panic!("unclosed") };
+        assert!(why.contains("not closed"), "{why}");
+    }
+
+    /// A's m/9104 and m/9196: one bad anchor refused `prova owed` for a whole project for a day.
+    /// The report scan names it and still reads every other anchor; the strict scan still refuses.
+    #[test]
+    fn a_malformed_anchor_is_named_and_the_rest_still_answer() {
+        let root = crate::engine::make_tempdir().unwrap();
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+        std::fs::write(
+            root.join("docs/a.md"),
+            "<!-- claim: before -->\nprose\n\n<!-- claim: bad --> prose on its line\n\n\
+             <!-- claim: after -->\nprose\n\n<!-- claim: before -->\nagain\n",
+        )
+        .unwrap();
+        let docs = vec!["docs".to_string()];
+        let (claims, rows) = scan_reporting(&root, &docs).unwrap();
+        let ids: Vec<&str> = claims.iter().map(|c| c.address.as_str()).collect();
+        assert_eq!(ids, vec!["docs/a.md#before", "docs/a.md#after"]);
+        let subjects: Vec<(Status, &str)> =
+            rows.iter().map(|r| (r.status, r.subject.as_str())).collect();
+        assert_eq!(
+            subjects,
+            vec![(Status::Malformed, "docs/a.md:4"), (Status::Malformed, "docs/a.md:9")]
+        );
+        assert!(rows[0].detail.contains("must end its line"), "{}", rows[0].detail);
+        assert!(rows[1].detail.contains("duplicate claim id 'before'"), "{}", rows[1].detail);
+        // The gate's scan is unchanged: the first problem, in file order, refuses.
+        let Err(ClaimError::Malformed { line, .. }) = scan(&root, &docs) else {
+            panic!("the strict scan must still refuse a malformed anchor");
+        };
+        assert_eq!(line, 4);
     }
 
     #[test]
