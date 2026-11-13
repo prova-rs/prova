@@ -123,14 +123,16 @@ prova.test("a malformed anchor is a helpful error, not a silent disappearance", 
   proves = "the keyword is the line of intent — a `<!-- backlog: … -->` the author wrote must never vanish into prose; a typo'd date says WHY at file:line, or it becomes a thing hunted for and never found. Prose without the keyword stays invisible; this is the difference",
 }, function(t)
   local proj = t:use(sandbox)
-  fs.write(proj .. "/docs/oops.md", "<!-- backlog: flaky-teardown 2026-13-45 -->\nAn impossible month.\n")
+  fs.write(proj .. "/docs/oops.md", "<!-- backlog: flaky-teardown 2026-13-45 -->\nAn impossible month.\n\n<!-- claim: still-answered -->\nA claim beside it.\n")
   local r = shell.run(prova.bin .. " owed", { cwd = proj, merge_stderr = true })
   fs.remove_all(proj .. "/docs/oops.md")
 
-  t:expect(r.code, "a defect, so it errors like a duplicate id"):never():equals(0)
-  t:expect(r.stdout, "it says the anchor is malformed"):contains("malformed")
-  t:expect(r.stdout, "and names where"):contains("oops.md")
+  t:expect(r.code, "a defect, so it exits non-zero like a duplicate id"):never():equals(0)
+  t:expect(r.stdout, "it says the anchor is malformed"):contains("MALFORMED")
+  t:expect(r.stdout, "and names where"):contains("oops.md:1")
   t:expect(r.stdout, "and why — the bad token"):contains("2026-13-45")
+  -- One bad line never silences the rest (A m/9104: a whole project's ledger went unanswered).
+  t:expect(r.stdout, "every other anchor is still answered"):contains("oops.md#still-answered")
 end)
 
 prova.test("no [specs] section means the whole subsystem is inert", {
