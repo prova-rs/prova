@@ -270,6 +270,17 @@ fn install_remind(lua: &Lua, prova: &Table, col: &SharedCollector) -> mlua::Resu
 
 /// The async utilities: `prova.sleep` and `prova.retry`.
 fn install_utilities(lua: &Lua, prova: &Table) -> mlua::Result<()> {
+    // prova.infra(msg) — fail this node for a cause in the environment, not the code under proof (a
+    // build tool that cannot read the workspace, a toolchain that cannot run). The node is `failed` as
+    // ever; its JSON event also says `cause = "infra"` and the line, BY VALUE, so a gate never reads
+    // prova's words to tell an infra red from a real one (E m/11669, L m/11668). Only this call sets
+    // it: a proof's own error() or a failed assertion is never infra.
+    prova.set(
+        "infra",
+        lua.create_function(|_, msg: String| -> mlua::Result<()> {
+            Err(mlua::Error::RuntimeError(format!("{}{msg}", crate::model::INFRA_MARK)))
+        })?,
+    )?;
     prova.set(
         "sleep",
         lua.create_async_function(|_, millis: u64| async move {

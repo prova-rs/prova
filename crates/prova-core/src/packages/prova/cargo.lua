@@ -310,8 +310,10 @@ local function module_name(t, accounts)
   local name = accounts.by_dir[m.dir]
   if not name and accounts.off then
     -- The graph could not be read, so no directory is a member: say why, never blame the module.
-    error("prova.cargo: " .. accounts.off .. "\n(so no workspace member could be read, and " .. m.dir
-      .. "'s account is unknown)", 3)
+    -- An infra cause, by value (prova.infra): the environment can't read the workspace, so the gate
+    -- must not bisect it or call it flaky (E m/11669).
+    prova.infra("prova.cargo: " .. accounts.off .. "\n(so no workspace member could be read, and " .. m.dir
+      .. "'s account is unknown)")
   end
   if not name then
     error("prova.cargo: " .. m.dir .. " is no workspace member's directory", 3)

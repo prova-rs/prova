@@ -596,17 +596,22 @@ pub fn event_to_json(event: &Event) -> serde_json::Value {
             file,
             line,
             promise_reason,
-        } => json!({
-            "type": "node_finished",
-            "path": path,
-            "outcome": outcome.as_str(),
-            "durationMs": duration.as_secs_f64() * 1000.0,
-            "assertions": assertions,
-            "message": message,
-            "file": file,
-            "line": line,
-            "specReason": promise_reason,
-        }),
+        } => {
+            let cause_line = infra_line(*message);
+            json!({
+                "type": "node_finished",
+                "path": path,
+                "outcome": outcome.as_str(),
+                "durationMs": duration.as_secs_f64() * 1000.0,
+                "assertions": assertions,
+                "message": message,
+                "file": file,
+                "line": line,
+                "specReason": promise_reason,
+                "cause": cause_line.as_ref().map(|_| "infra"),
+                "cause_line": cause_line,
+            })
+        }
         Event::RunFinished { summary } => json!({
             "type": "run_finished",
             "passed": summary.passed,
@@ -979,6 +984,16 @@ pub fn require_duration(site: &str, key: &str, s: &str) -> Result<Duration, Stri
 }
 
 pub use prova_expect::parse_duration;
+
+/// What `prova.infra(msg)` puts before its message, so a failed node's cause is read by value (E m/11669).
+pub const INFRA_MARK: &str = "[prova.infra] ";
+
+/// The infra cause's line, when a failed node's message carries [`INFRA_MARK`]: the text after the
+/// mark up to its line's end. `None` for every other failure.
+fn infra_line(message: Option<&str>) -> Option<String> {
+    let after = message?.split_once(INFRA_MARK)?.1;
+    Some(after.lines().next().unwrap_or_default().trim().to_owned())
+}
 
 #[cfg(test)]
 mod tests {
