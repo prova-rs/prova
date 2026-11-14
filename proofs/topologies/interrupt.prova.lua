@@ -49,13 +49,10 @@ return M
   }, "\n"))
 end
 
---- A topology name of this run's own: the holder's argv carries it, so `pgrep`/`pkill` below see
---- this run's holder and never another prova's running the same proof on the host (two gates at
---- once: one's cleanup killed the other's holder mid-release, and each saw the other's as a
---- survivor; prova red at 0325818f, 0f2d1687).
-local function own_name(base)
-  return base .. "-" .. uuid.v4():gsub("-", ""):sub(1, 12)
-end
+--- Topology names of this run's own (`strays.name`): the holder's argv carries it, so the probe and
+--- the reap see this run's holder, never another prova's running the same proof on the host (prova red
+--- at 0325818f and 0f2d1687).
+local strays = require("strays")
 
 local function wait_until(cond, seconds)
   for _ = 1, seconds * 10 do
@@ -65,12 +62,9 @@ local function wait_until(cond, seconds)
   return cond()
 end
 
---- Is a holder for `name` still running? `interrupte[d]` matches the holder's argv but never the
---- probe's own — on Linux `pgrep -f` sees the wrapping shell, whose command line carries the
---- pattern verbatim, so an unbracketed probe reports itself as the survivor.
+--- Is this run's holder for `name` still running?
 local function holder_alive(name)
-  local probe = name:sub(1, -2) .. "[" .. name:sub(-1) .. "]"
-  return shell.run("pgrep -f 'prova up " .. probe .. "'").code == 0
+  return strays.alive("prova up", name)
 end
 
 prova.test("Ctrl-C on `prova start` stops the holder instead of orphaning it", {
@@ -79,13 +73,13 @@ prova.test("Ctrl-C on `prova start` stops the holder instead of orphaning it", {
   proves = "the supervisor is the ONLY thing that can hear the interrupt — the holder sits in its own process group precisely so the terminal cannot reach it — so a `start` that simply died left a provisioning holder with no record, no supervisor and no reaper: `prova down` said `not running` while the containers kept arriving, and the operator's only remaining tool was `docker ps`",
 }, function(t)
   local root = t:tempdir("start") .. "/pkg"
-  local name = own_name("interrupted")
+  local name = strays.name("interrupted")
   hanging_package(root, name)
 
   local proc = shell.spawn({ prova.bin, "start", name }, { cwd = root })
   t:defer(function()
     shell.run({ prova.bin, "down", name }, { cwd = root, merge_stderr = true, timeout = "60s" })
-    shell.run("pkill -f 'prova up " .. name:sub(1, -2) .. "[" .. name:sub(-1) .. "]' 2>/dev/null; true")
+    strays.reap("prova up", name)
   end)
 
   t:expect(wait_until(function() return fs.exists(root .. "/created.txt") end, 60),
@@ -111,12 +105,12 @@ prova.test("a second Ctrl-C stops the WAITING, never the holder mid-release", {
   proves = "the tempting reading of an impatient second interrupt is `kill it already`, and obeying that is how containers get stranded: the holder is at that moment RUNNING the teardown that releases them, so killing it is the one action guaranteed to leave the mess behind. Stepping back instead costs the user nothing — the release finishes on its own — and the line must name the pid and the log rather than `prova ps`/`prova down`, which have no record to find this early",
 }, function(t)
   local root = t:tempdir("second") .. "/pkg"
-  local name = own_name("lingering")
+  local name = strays.name("lingering")
   hanging_package(root, name, 6)
 
   local proc = shell.spawn({ prova.bin, "start", name }, { cwd = root })
   t:defer(function()
-    shell.run("pkill -f 'prova up " .. name:sub(1, -2) .. "[" .. name:sub(-1) .. "]' 2>/dev/null; true")
+    strays.reap("prova up", name)
   end)
 
   t:expect(wait_until(function() return fs.exists(root .. "/created.txt") end, 60),

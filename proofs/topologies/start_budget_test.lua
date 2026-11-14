@@ -38,20 +38,22 @@ return M
   return dir
 end
 
---- `77.9x` probes as `77[.]9x`: Linux pgrep -f matches the wrapping shell's own argv.
+--- Each token is this run's own (`strays.duration`), probed and reaped scoped to it (D m/11882).
+local strays = require("strays")
+
 local function alive(token)
-  return shell.run("pgrep -f 'sleep " .. (token:gsub("%.", "[.]")) .. "'").code == 0
+  return strays.alive("sleep", token)
 end
 
 local function reap(token)
-  shell.run("pkill -f 'sleep " .. (token:gsub("%.", "[.]")) .. "' 2>/dev/null; true")
+  strays.reap("sleep", token)
 end
 
 prova.test("a topology's declared `startup` is the budget start honors", {
   covers = "docs/design/agent-ergonomics.md#start-timeout-is-unconfigurable",
   proves = "the definition knows its own cost, and without a way to say so the inhabited half of the inhabited/fixture pair is simply unavailable to any stack slower than five minutes — a kind cluster with eight rollouts can be a suite fixture and can never be `prova start`ed",
 }, function(t)
-  local token = "77.911"
+  local token = strays.duration("77.911")
   local dir = hanging_package(t, token, ', startup = "2s"')
 
   local started = os.time()
@@ -71,7 +73,7 @@ prova.test("`--timeout` overrides the declaration, and the declaration overrides
   covers = "docs/design/agent-ergonomics.md#start-timeout-is-unconfigurable",
   proves = "the machine having a bad day is not the definition being wrong: an override that required editing the manifest would make every slow CI runner a source-control event",
 }, function(t)
-  local token = "77.922"
+  local token = strays.duration("77.922")
   -- A generous declaration, overridden downward by the flag: only the flag can explain a fast exit.
   local dir = hanging_package(t, token, ', startup = "10m"')
 

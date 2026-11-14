@@ -68,15 +68,13 @@ prova.test("a first-byte kill reaps the conduct's whole tree, like every other b
   covers = "docs/design/agent-ergonomics.md#buildkit-wedge-hangs-suites-silently",
   proves = "a new bound is a new way to leak: `docker build` spawns helpers, and a bound that only abandons the wait would leave the very builder processes the report just called dead (docs/design/verifiers.md#timeout-reaps-the-conduct is the standing rule, and it holds per-clock, not per-module)",
 }, function(t)
-  local token = "77.221"
-  -- `77.221` probes as `77[.]221`: on Linux pgrep -f matches the wrapping shell's own argv, so a
-  -- literal pattern finds the probe itself (the release gate caught this once already).
-  local pattern = (token:gsub("%.", "[.]"))
+  local strays = require("strays")
+  local token = strays.duration("77.221") -- this run's own: never another prova's on the host
   subject_eval('pcall(function() return shell.run("(sleep ' .. token
     .. ' &); sleep 20", { first_byte = "400ms" }) end); return "done"')
   shell.run("sleep 0.5") -- let the group kill settle past reaping races
-  local alive = shell.run("pgrep -f 'sleep " .. pattern .. "'").code == 0
-  shell.run("pkill -f 'sleep " .. pattern .. "' 2>/dev/null; true")
+  local alive = strays.alive("sleep", token)
+  strays.reap("sleep", token)
   t:expect(alive, "the backgrounded grandchild died with the muted conduct"):is_false()
 end)
 

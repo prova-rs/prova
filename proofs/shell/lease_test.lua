@@ -7,15 +7,12 @@
 --- prova, or reached via `prova.bin eval`); the outer kills use raw `kill`, never the
 --- conductor's own process machinery, so an old conductor cannot fake or break a verdict.
 
---- The probe pattern: `87.331` becomes `87[.]331` — matches the process's literal cmdline but
---- NOT the probe's own (Linux pgrep -f sees the wrapping shell, whose argv carries the pattern;
---- caught live by the release gate: every sweep assertion read as a survivor on ubuntu).
-local function pattern(token)
-  return (token:gsub("%.", "[.]"))
-end
+--- Each token is this run's own (`strays.duration`), and the probe is scoped to it, so another prova
+--- running these proofs on the host is never seen or reaped (D m/11882).
+local strays = require("strays")
 
 local function alive(token)
-  return shell.run("pgrep -f 'sleep " .. pattern(token) .. "'").code == 0
+  return strays.alive("sleep", token)
 end
 
 local function wait_until(cond, seconds)
@@ -27,19 +24,19 @@ local function wait_until(cond, seconds)
 end
 
 local function reap_stray(token)
-  shell.run("pkill -f 'sleep " .. pattern(token) .. "' 2>/dev/null; true")
+  strays.reap("sleep", token)
 end
 
 prova.test("a bound's kill reaps the whole tree — a backgrounded grandchild dies with the shell", {
   covers = "docs/design/verifiers.md#conduct-process-group-reaping",
   proves = "the direct-child kill left a pipeline's grandchildren holding exactly the locks the red report freed (the orphaned-nextest shape) — dead means the TREE is dead, which only a process-group kill can say",
 }, function(t)
-  local token = "87.331"
+  local token = strays.duration("87.331")
   -- The shell backgrounds a grandchild, then hangs silently past the idle bound. Both live in
   -- the conduct's group; the idle kill must take both.
   shell.run({ prova.bin, "eval", [[
 pcall(function()
-  return shell.run("(sleep 87.331 &); sleep 30", { idle_timeout = "400ms" })
+  return shell.run("(sleep ]] .. token .. [[ &); sleep 30", { idle_timeout = "400ms" })
 end)
 return "done"
 ]] }, { timeout = "20s" })
@@ -62,7 +59,7 @@ prova.test("kill -9 on prova sweeps its leased conducts — the death no cleanup
   covers = "docs/design/verifiers.md#conduct-lease-survives-prova-death",
   proves = "SIGKILL runs no destructors, no signal handlers, nothing — if the conduct dies anyway, the lease is genuinely held OUTSIDE the dying process: the reaper's pipe EOF is kernel-delivered for every death, so this is the strongest case, and Ctrl-C/SIGTERM are strictly easier",
 }, function(t)
-  local token = "88.442"
+  local token = strays.duration("88.442")
   local proj = conducting_package(t, token)
   local inner = shell.spawn({ prova.bin }, { cwd = proj })
 
@@ -78,7 +75,7 @@ prova.test("an interrupted prova takes its conducts with it — Ctrl-C stays who
   covers = "docs/design/verifiers.md#conduct-lease-survives-prova-death",
   proves = "the trap that stalled the naive fix: conducts in their own groups stop hearing the terminal's SIGINT, so the lease must make interrupt behavior stronger than the shared-group accident it replaces — prova dies of SIGINT, the pipe closes, the sweep happens",
 }, function(t)
-  local token = "89.553"
+  local token = strays.duration("89.553")
   local proj = conducting_package(t, token)
   local inner = shell.spawn({ prova.bin }, { cwd = proj })
 

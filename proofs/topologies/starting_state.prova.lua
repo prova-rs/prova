@@ -221,21 +221,24 @@ function M.web(ctx)
 end
 return M
 ]])
+  -- This run's own name, so the reap below never takes another prova's holder (D m/11882).
+  local strays = require("strays")
+  local name = strays.name("raced")
   fs.write(root .. "/prova.toml", table.concat({
     '[run]', 'proofs = ["proofs"]', '',
     '[dependencies]', 'svc = "plugins/svc.lua"', '',
-    '[topologies]', 'raced = { package = "svc", factory = "web" }',
+    '[topologies]', name .. ' = { package = "svc", factory = "web" }',
   }, "\n"))
 
   t:defer(function()
-    shell.run({ prova.bin, "down", "raced" }, { cwd = root, merge_stderr = true, timeout = "60s" })
-    shell.run("pkill -f 'prova up race[d]' 2>/dev/null; true")
+    shell.run({ prova.bin, "down", name }, { cwd = root, merge_stderr = true, timeout = "60s" })
+    strays.reap("prova up", name)
   end)
 
   -- Fire them together and let them fight over the name.
   local procs = {}
   for _ = 1, 6 do
-    table.insert(procs, shell.spawn({ prova.bin, "up", "raced" }, { cwd = root }))
+    table.insert(procs, shell.spawn({ prova.bin, "up", name }, { cwd = root }))
   end
   shell.run("sleep 4")
 

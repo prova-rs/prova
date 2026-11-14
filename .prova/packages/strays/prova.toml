@@ -1,0 +1,3 @@
+[package]
+name = "strays"
+description = "Per-run process tokens for proofs that find or reap their own children by command line: pgrep and pkill see this run's processes, never another prova's on the same host."

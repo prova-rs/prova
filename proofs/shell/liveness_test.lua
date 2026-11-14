@@ -67,16 +67,15 @@ end)
 --- Run a bounded sleep in the SUBJECT, wait out the bound, and answer whether the child
 --- outlived the report. The token makes the process findable; strays are reaped either way,
 --- so a red here never litters the host.
-local function leaks_after(bounds, token)
+local function leaks_after(bounds, base)
+  local strays = require("strays")
+  local token = strays.duration(base) -- this run's own: never another prova's on the host
   local snippet = 'pcall(function() return shell.run("sleep ' .. token .. '", ' .. bounds
     .. ') end); return "done"'
   shell.run({ prova.bin, "eval", snippet }, { merge_stderr = true, timeout = "20s" })
   shell.run("sleep 0.5") -- let the kill (or the leak) settle past reaping races
-  -- `38.111` probes as `38[.]111`: Linux pgrep -f sees the wrapping shell's own argv, so a
-  -- literal pattern matches the probe itself (caught live by the release gate).
-  local esc = token:gsub("%.", "[.]")
-  local alive = shell.run("pgrep -f 'sleep " .. esc .. "'").code == 0
-  shell.run("pkill -f 'sleep " .. esc .. "' 2>/dev/null; true")
+  local alive = strays.alive("sleep", token)
+  strays.reap("sleep", token)
   return alive
 end
 
