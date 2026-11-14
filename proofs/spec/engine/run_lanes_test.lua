@@ -157,3 +157,32 @@ prova.test("bare `prova run` runs the default lane, exactly like bare `prova`", 
 	t:expect(r.code, r.stdout):equals(0)
 	t:expect(r.stdout):contains("4 passed")
 end)
+
+--- `prova run --list --json` is the listing for machinery (Horai's sweep and push check pick a lane
+--- by name; L m/11642, E m/11644): every lane by name, with its line and whether it is the default,
+--- read from whichever manifest prova finds, never by parsing the human listing's indentation.
+prova.test("`prova run --list --json` names every lane for machinery", function(t)
+	local proj = t:use(sandbox)
+	local r = shell.run(prova.bin .. " run --list --json", { cwd = proj })
+	t:expect(r.code, r.stdout .. (r.stderr or "")):equals(0)
+	local listed = json.decode(r.stdout)
+	t:expect(listed.manifest, "names the manifest it read"):contains("prova.toml")
+	local lanes = listed.profiles
+	local by = {}
+	for _, l in ipairs(lanes) do by[l.name] = l end
+	t:expect(by["(default)"] and by["(default)"].default, "the default lane, marked"):equals(true)
+	t:expect(by.ut and by.ut.about, "a lane's line is its description"):equals("the fast unit lane")
+	t:expect(by.ut.default, "a named lane is not the default"):equals(false)
+	t:expect(by.bare ~= nil, "an empty lane is listed too"):equals(true)
+	t:expect(#lanes, "the default and the two declared lanes, nothing else"):equals(3)
+end)
+
+--- No manifest is an answer, never an error whose words a reader must match (L m/11656).
+prova.test("`prova run --list --json` with no manifest says so by value, exit 0", function(t)
+	local bare = t:tempdir()
+	local r = shell.run(prova.bin .. " run --list --json", { cwd = bare })
+	t:expect(r.code, r.stdout .. (r.stderr or "")):equals(0)
+	local listed = json.decode(r.stdout)
+	t:expect(listed.manifest == nil or listed.manifest == json.null, "no manifest: " .. r.stdout):equals(true)
+	t:expect(#listed.profiles, "no profiles"):equals(0)
+end)
