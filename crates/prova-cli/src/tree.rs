@@ -1,12 +1,15 @@
 //! The tree fingerprint — the key `--resume` reuses a verdict under (docs/plans/resume.md#phase-1a).
 //!
-//! A digest of every file the VCS tracks: each path and its bytes, in path order. Content, not a
+//! A digest of every file the VCS does not ignore: each path and its bytes, in path order. Content, not a
 //! commit id. Describing a jj change must not invalidate a resume, and editing a tracked file always
 //! must. The VCS answers only "which files"; the bytes are read here, so an edit the VCS has not
 //! recorded as a commit yet still moves the digest.
 //!
-//! Ignored and untracked-by-git files are out by construction: build output, caches and prova's own
-//! `var/` are not the subject of a proof, and hashing a `target/` would cost more than the run.
+//! Ignored files are out by construction: build output, caches and prova's own `var/` are not the
+//! subject of a proof, and hashing a `target/` would cost more than the run. A file git does not track
+//! yet but does not ignore is IN, as jj's snapshot already counts it: a new proof is part of the tree it
+//! runs in, so adding or editing one moves the digest (a new, untracked proof once read as FLAKY across
+//! two runs whose trees really differed).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -48,8 +51,9 @@ fn tracked(vcs: &Vcs) -> Result<(PathBuf, Vec<String>), String> {
         ),
         Vcs::Git(root) => (
             root,
+            // Tracked, and untracked but not ignored: the same files jj's snapshot counts.
             Command::new("git")
-                .args(["ls-files", "-z"])
+                .args(["ls-files", "-z", "--cached", "--others", "--exclude-standard"])
                 .current_dir(root)
                 .output(),
             b'\0',
@@ -57,7 +61,7 @@ fn tracked(vcs: &Vcs) -> Result<(PathBuf, Vec<String>), String> {
     };
     let tool = match vcs {
         Vcs::Jj(_) => "jj file list",
-        Vcs::Git(_) => "git ls-files",
+        Vcs::Git(_) => "git ls-files --cached --others --exclude-standard",
     };
     let out = output.map_err(|e| format!("{tool} could not start in {}: {e}", root.display()))?;
     if !out.status.success() {
@@ -158,6 +162,34 @@ mod tests {
 
         let deleted = digest(&dir, &paths);
         assert_ne!(edited, deleted, "a tracked file gone from disk moves the digest");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// In git, a file not yet added but not ignored is part of the tree: creating it and editing it
+    /// each move the fingerprint, while an ignored one never does. Before this, an untracked new proof
+    /// left the digest unmoved, so two runs of really different trees read as one, and a fix in
+    /// progress was named FLAKY (E, 2026-11-14).
+    #[test]
+    fn an_untracked_file_git_does_not_ignore_moves_the_fingerprint() {
+        let dir = tempdir("git-untracked");
+        let git = |args: &[&str]| {
+            let out = Command::new("git").args(args).current_dir(&dir).output().expect("git starts");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        git(&["init", "-q"]);
+        std::fs::write(dir.join(".gitignore"), "/target\n").unwrap();
+        std::fs::write(dir.join("a.lua"), "one").unwrap();
+        git(&["add", "."]);
+        let base = fingerprint(&dir).unwrap();
+        assert!(base.starts_with("git:"), "{base}");
+        std::fs::create_dir_all(dir.join("target")).unwrap();
+        std::fs::write(dir.join("target/out"), "build output").unwrap();
+        assert_eq!(fingerprint(&dir).unwrap(), base, "an ignored file is not the tree");
+        std::fs::write(dir.join("new_test.lua"), "draft").unwrap();
+        let added = fingerprint(&dir).unwrap();
+        assert_ne!(added, base, "an untracked, unignored file is part of the tree");
+        std::fs::write(dir.join("new_test.lua"), "fixed").unwrap();
+        assert_ne!(fingerprint(&dir).unwrap(), added, "and editing it moves the digest");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
