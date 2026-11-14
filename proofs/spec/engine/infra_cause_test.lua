@@ -11,6 +11,9 @@ local sandbox = prova.fixture("infra-sandbox", Scope.File, function(ctx)
 prova.test("the toolchain can't run", function(t) prova.infra("cargo metadata failed: error: offline\nmore") end)
 prova.test("a proof's own error", function(t) error("a bug in the proof") end)
 prova.test("a failed assertion", function(t) t:expect(1):equals(2) end)
+prova.test("a message that quotes infra", function(t) t:expect(1, "child said: [prova.infra] x"):equals(2) end)
+prova.test("an error that re-raises infra's words", function(t) error("infra: cargo metadata failed: error: offline") end)
+prova.test("a proof spoofing the old mark", function(t) error("[prova.infra] spoof") end)
 ]])
 	return proj
 end)
@@ -28,7 +31,9 @@ prova.test("only prova.infra marks a failure's cause as infra, with its first li
 	t:expect(infra.outcome, "still failed"):equals("failed")
 	t:expect(infra.cause, "infra, by value"):equals("infra")
 	t:expect(infra.cause_line, "its first line"):equals("cargo metadata failed: error: offline")
-	for _, name in ipairs({ "a proof's own error", "a failed assertion" }) do
+	-- Typed, never textual (D m/11771): a message that carries infra's words is still a plain red.
+	for _, name in ipairs({ "a proof's own error", "a failed assertion", "a message that quotes infra",
+		"an error that re-raises infra's words", "a proof spoofing the old mark" }) do
 		local e = by[name] or {}
 		t:expect(e.outcome, name):equals("failed")
 		t:expect(e.cause == nil or e.cause == json.null, name .. " is never infra"):equals(true)

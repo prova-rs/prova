@@ -350,6 +350,7 @@ pub(super) fn teardown_results(
             line,
             teardown: true,
             promises: None,
+            cause: None,
         })
         .collect()
 }

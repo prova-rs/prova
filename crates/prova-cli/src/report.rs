@@ -621,6 +621,7 @@ impl Reporter for HumanReporter {
                 file,
                 line,
                 promise_reason,
+                ..
             } => self.node_finished(
                 path,
                 *outcome,

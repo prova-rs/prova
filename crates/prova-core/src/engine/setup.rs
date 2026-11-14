@@ -278,7 +278,7 @@ fn install_utilities(lua: &Lua, prova: &Table) -> mlua::Result<()> {
     prova.set(
         "infra",
         lua.create_function(|_, msg: String| -> mlua::Result<()> {
-            Err(mlua::Error::RuntimeError(format!("{}{msg}", crate::model::INFRA_MARK)))
+            Err(mlua::Error::external(InfraCause(msg)))
         })?,
     )?;
     prova.set(
@@ -1289,5 +1289,31 @@ impl UserData for FlowBuilder {
             );
             Ok(())
         });
+    }
+}
+
+/// `prova.infra(msg)`'s error: its TYPE is the cause, so a message that merely quotes "infra" (a child
+/// prova's output, a re-raised error's text) is never read as one (D m/11771).
+#[derive(Debug)]
+pub(crate) struct InfraCause(pub(crate) String);
+
+impl std::fmt::Display for InfraCause {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "infra: {}", self.0)
+    }
+}
+
+impl std::error::Error for InfraCause {}
+
+/// The infra cause's first line, when `err` is (or was raised through Lua as) `prova.infra`'s error:
+/// found by its type down the error's own chain, never in its text.
+pub(crate) fn infra_cause(err: &mlua::Error) -> Option<String> {
+    match err {
+        mlua::Error::ExternalError(e) => {
+            e.downcast_ref::<InfraCause>().map(|c| c.0.lines().next().unwrap_or_default().trim().to_owned())
+        }
+        mlua::Error::CallbackError { cause, .. } => infra_cause(cause),
+        mlua::Error::WithContext { cause, .. } => infra_cause(cause),
+        _ => None,
     }
 }

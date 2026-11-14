@@ -432,6 +432,9 @@ pub enum Event<'a> {
         /// `None` for every other outcome. Reporters that render the spec distinctly (TAP's
         /// `# TODO`, JUnit's skip message) read it from here; `message` stays the failure text.
         promise_reason: Option<&'a str>,
+        /// The first line of a `prova.infra(msg)` failure: its cause is the environment's, typed by
+        /// the error itself, never inferred from a message (E m/11669, D m/11771). `None` otherwise.
+        infra: Option<&'a str>,
     },
     RunFinished {
         summary: &'a Summary,
@@ -596,8 +599,9 @@ pub fn event_to_json(event: &Event) -> serde_json::Value {
             file,
             line,
             promise_reason,
+            infra,
         } => {
-            let cause_line = infra_line(*message);
+            let cause_line = *infra;
             json!({
                 "type": "node_finished",
                 "path": path,
@@ -851,6 +855,7 @@ impl<W: Write> Reporter for JUnitReporter<W> {
                 file,
                 line,
                 promise_reason,
+                ..
             } => {
                 let (classname, name) = split_classname(path, &self.suite_name);
                 self.cases.push(JUnitCase {
@@ -985,15 +990,6 @@ pub fn require_duration(site: &str, key: &str, s: &str) -> Result<Duration, Stri
 
 pub use prova_expect::parse_duration;
 
-/// What `prova.infra(msg)` puts before its message, so a failed node's cause is read by value (E m/11669).
-pub const INFRA_MARK: &str = "[prova.infra] ";
-
-/// The infra cause's line, when a failed node's message carries [`INFRA_MARK`]: the text after the
-/// mark up to its line's end. `None` for every other failure.
-fn infra_line(message: Option<&str>) -> Option<String> {
-    let after = message?.split_once(INFRA_MARK)?.1;
-    Some(after.lines().next().unwrap_or_default().trim().to_owned())
-}
 
 #[cfg(test)]
 mod tests {
@@ -1013,6 +1009,7 @@ mod tests {
             file: Some("/proj/proofs/orders_test.lua"),
             line: Some(12),
             promise_reason: None,
+            infra: None,
         });
         reporter.event(&Event::NodeFinished {
             path: "orders › rejects <bad> & \"quoted\"",
@@ -1023,6 +1020,7 @@ mod tests {
             file: Some("/proj/proofs/orders_test.lua"),
             line: Some(31),
             promise_reason: None,
+            infra: None,
         });
         reporter.event(&Event::NodeFinished {
             path: "top-level check",
@@ -1033,6 +1031,7 @@ mod tests {
             file: None,
             line: None,
             promise_reason: None,
+            infra: None,
         });
         reporter.event(&Event::NodeFinished {
             path: "formats › json round-trips",
@@ -1043,6 +1042,7 @@ mod tests {
             file: Some("/proj/proofs/formats_test.lua"),
             line: Some(7),
             promise_reason: Some("api-freeze §1"),
+            infra: None,
         });
         let summary = Summary {
             passed: 1,

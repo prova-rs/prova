@@ -136,10 +136,13 @@ prova.test("a workspace cargo cannot read says cargo's error, never that a modul
   -- A dependency the lock does not hold yet: `cargo metadata --locked` refuses the tree, while nextest
   -- (which may update the lock) still builds and runs it, as in the gate.
   fs.write(ws .. "/a/Cargo.toml", fs.read(ws .. "/a/Cargo.toml") .. 'd = { path = "../d" }\n')
-  local r = run(ws)
+  -- One run, as JSON (a second would find the lock nextest updated): its messages carry the words.
+  local r = run(ws, "--format json")
   t:expect(r.code, "red:\n" .. r.stdout):never():equals(0)
   t:expect(r.stdout, "names cargo's failure"):contains("cargo metadata failed")
   -- Its first line is cargo's own error, so a classifier keyed on the first line reads it.
   t:expect(r.stdout, "cargo's error line first"):contains("prova.cargo: cargo metadata failed: error:")
+  -- And typed, so a gate reads it as the environment's (prova.infra; E m/11669, D m/11771).
+  t:expect(r.stdout, "the failure's cause is infra, by value"):contains('"cause":"infra"')
   t:expect(r.stdout, "never the misleading member error"):never():contains("is no workspace member's directory")
 end)

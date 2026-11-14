@@ -27,6 +27,9 @@ pub(super) struct NodeResult {
     /// The spec flag's reason for an `Outcome::Promised` result (set by the inversion, threaded into
     /// `Event::NodeFinished::promise_reason`). `None` for every other outcome.
     pub(super) promises: Option<String>,
+    /// The infra cause's line when the body ended on `prova.infra(msg)`'s typed error, read from the
+    /// error's type, never from its text (D m/11771). `None` for every other outcome.
+    pub(super) cause: Option<String>,
 }
 
 /// The spec outcome inversion, applied to a promises-flagged leaf's results after it ran
@@ -117,6 +120,12 @@ fn invert_for_falsify(
             other => (other, message),
         },
     }
+}
+
+/// The body's infra cause: its own error when that is prova.infra's, found by type and never read from
+/// a message (D m/11771), and only on a plain failure, since a falsify inversion judges the proof.
+fn infra_of(err: Option<&mlua::Error>, outcome: Outcome, falsifying: bool) -> Option<String> {
+    err.and_then(super::setup::infra_cause).filter(|_| outcome == Outcome::Failed && !falsifying)
 }
 
 /// The falsification pass: break the system FIRST, then run the body against the wreckage. A
@@ -292,6 +301,7 @@ pub(super) async fn run_one(
                 line: item.line,
                 teardown: false,
                 promises: None,
+                cause: None,
             }];
         }
     };
@@ -321,6 +331,7 @@ pub(super) async fn run_one(
                 line: item.line,
                 teardown: false,
                 promises: None,
+                cause: None,
             }];
             out.extend(teardown_results(&item.path, errors, file.as_deref(), item.line));
             // RETURNED HERE, never falling through to `invert_for_falsify`
@@ -349,11 +360,13 @@ pub(super) async fn run_one(
         (outcome, message, r.assertions, r.advice.clone())
     };
 
-    let (outcome, message) = if state.falsify && item.falsifier.is_some() {
+    let falsifying = state.falsify && item.falsifier.is_some();
+    let (outcome, message) = if falsifying {
         invert_for_falsify(outcome, message, falsifier_error)
     } else {
         (outcome, message)
     };
+    let cause = infra_of(result.as_ref().err(), outcome, falsifying);
 
     let errors = teardown_scope(&test_scope).await;
 
@@ -368,6 +381,7 @@ pub(super) async fn run_one(
         line: item.line,
         teardown: false,
         promises: None,
+        cause,
     }];
     out.extend(teardown_results(&item.path, errors, file.as_deref(), item.line));
     out
@@ -395,6 +409,7 @@ pub(super) async fn run_flow(lua: &Lua, steps: &[PlanItem], state: &Rc<RunState>
                 line: step.line,
                 teardown: false,
                 promises: None,
+                cause: None,
             });
             continue;
         }
@@ -476,6 +491,7 @@ pub(super) fn skip_leaf(unit: &PlanUnit, reason: &str, state: &RunState) -> Vec<
             line: item.line,
             teardown: false,
             promises: None,
+            cause: None,
         })
         .collect()
 }
@@ -495,6 +511,7 @@ pub(super) fn emit_finished(reporter: &mut dyn Reporter, summary: &mut Summary, 
             file: result.file.as_deref(),
             line: result.line,
             promise_reason: result.promises.as_deref(),
+            infra: result.cause.as_deref(),
         });
     }
 }
@@ -835,6 +852,7 @@ mod tests {
             line: None,
             teardown,
             promises: None,
+            cause: None,
         }
     }
 

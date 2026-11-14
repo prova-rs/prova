@@ -87,6 +87,7 @@ enum OwnedEvent {
         file: Option<String>,
         line: Option<u32>,
         promise_reason: Option<String>,
+        infra: Option<String>,
     },
 }
 
@@ -117,6 +118,7 @@ impl Reporter for ChannelReporter {
                 file,
                 line,
                 promise_reason,
+                infra,
             } => OwnedEvent::NodeFinished {
                 path: (*path).to_string(),
                 outcome: *outcome,
@@ -126,6 +128,7 @@ impl Reporter for ChannelReporter {
                 file: file.map(str::to_string),
                 line: *line,
                 promise_reason: promise_reason.map(str::to_string),
+                infra: infra.map(str::to_string),
             },
             Event::RunStarted | Event::RunFinished { .. } => return,
         };
@@ -371,6 +374,7 @@ fn run_pooled(suites: &[Suite], reporter: &mut dyn Reporter, config: &RunConfig)
                             file: file.as_deref(),
                             line: None,
                             promise_reason: None,
+                            infra: None,
                         });
                     }
                 }
@@ -436,6 +440,7 @@ fn forward(reporter: &mut dyn Reporter, summary: &mut Summary, event: OwnedEvent
             file,
             line,
             promise_reason,
+            infra,
         } => {
             summary.tally(outcome);
             reporter.event(&Event::NodeFinished {
@@ -447,6 +452,7 @@ fn forward(reporter: &mut dyn Reporter, summary: &mut Summary, event: OwnedEvent
                 file: file.as_deref(),
                 line,
                 promise_reason: promise_reason.as_deref(),
+                infra: infra.as_deref(),
             });
         }
     }
@@ -470,5 +476,6 @@ fn report_suite_error(
         file: file.as_deref(),
         line: None,
         promise_reason: None,
+        infra: None,
     });
 }
