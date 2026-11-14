@@ -33,6 +33,7 @@ local M = {}
 function M.slow(ctx)
   fs.write("]] .. root .. [[/created.txt", "the resource exists\n")
   ctx:defer(function()
+    fs.write("]] .. root .. [[/releasing.txt", "the release began\n")
     shell.run("sleep ]] .. (settle or 0) .. [[")
     fs.write("]] .. root .. [[/released.txt", "torn down\n")
   end)
@@ -46,6 +47,14 @@ return M
     '[dependencies]', 'slow = "plugins/slow.lua"', '',
     '[topologies]', name .. ' = { package = "slow", factory = "slow" }',
   }, "\n"))
+end
+
+--- A topology name of this run's own: the holder's argv carries it, so `pgrep`/`pkill` below see
+--- this run's holder and never another prova's running the same proof on the host (two gates at
+--- once: one's cleanup killed the other's holder mid-release, and each saw the other's as a
+--- survivor; prova red at 0325818f, 0f2d1687).
+local function own_name(base)
+  return base .. "-" .. uuid.v4():gsub("-", ""):sub(1, 12)
 end
 
 local function wait_until(cond, seconds)
@@ -70,12 +79,13 @@ prova.test("Ctrl-C on `prova start` stops the holder instead of orphaning it", {
   proves = "the supervisor is the ONLY thing that can hear the interrupt — the holder sits in its own process group precisely so the terminal cannot reach it — so a `start` that simply died left a provisioning holder with no record, no supervisor and no reaper: `prova down` said `not running` while the containers kept arriving, and the operator's only remaining tool was `docker ps`",
 }, function(t)
   local root = t:tempdir("start") .. "/pkg"
-  hanging_package(root, "interrupted")
+  local name = own_name("interrupted")
+  hanging_package(root, name)
 
-  local proc = shell.spawn({ prova.bin, "start", "interrupted" }, { cwd = root })
+  local proc = shell.spawn({ prova.bin, "start", name }, { cwd = root })
   t:defer(function()
-    shell.run({ prova.bin, "down", "interrupted" }, { cwd = root, merge_stderr = true, timeout = "60s" })
-    shell.run("pkill -f 'prova up interrupte[d]' 2>/dev/null; true")
+    shell.run({ prova.bin, "down", name }, { cwd = root, merge_stderr = true, timeout = "60s" })
+    shell.run("pkill -f 'prova up " .. name:sub(1, -2) .. "[" .. name:sub(-1) .. "]' 2>/dev/null; true")
   end)
 
   t:expect(wait_until(function() return fs.exists(root .. "/created.txt") end, 60),
@@ -87,7 +97,7 @@ prova.test("Ctrl-C on `prova start` stops the holder instead of orphaning it", {
   t:expect(proc:output(), "…and says what it did about it"):contains("interrupted")
   t:expect(wait_until(function() return fs.exists(root .. "/released.txt") end, 60),
     "the holder ran its teardown, so what it created was released"):is_true()
-  t:expect(holder_alive("interrupted"), "no holder outlived the interrupted start"):is_false()
+  t:expect(holder_alive(name), "no holder outlived the interrupted start"):is_false()
 
   -- And nothing is left claiming to be up: a stale record is its own kind of leak, because the
   -- next `start` refuses on it.
@@ -101,15 +111,21 @@ prova.test("a second Ctrl-C stops the WAITING, never the holder mid-release", {
   proves = "the tempting reading of an impatient second interrupt is `kill it already`, and obeying that is how containers get stranded: the holder is at that moment RUNNING the teardown that releases them, so killing it is the one action guaranteed to leave the mess behind. Stepping back instead costs the user nothing — the release finishes on its own — and the line must name the pid and the log rather than `prova ps`/`prova down`, which have no record to find this early",
 }, function(t)
   local root = t:tempdir("second") .. "/pkg"
-  hanging_package(root, "lingering", 6)
+  local name = own_name("lingering")
+  hanging_package(root, name, 6)
 
-  local proc = shell.spawn({ prova.bin, "start", "lingering" }, { cwd = root })
-  t:defer(function() shell.run("pkill -f 'prova up lingerin[g]' 2>/dev/null; true") end)
+  local proc = shell.spawn({ prova.bin, "start", name }, { cwd = root })
+  t:defer(function()
+    shell.run("pkill -f 'prova up " .. name:sub(1, -2) .. "[" .. name:sub(-1) .. "]' 2>/dev/null; true")
+  end)
 
   t:expect(wait_until(function() return fs.exists(root .. "/created.txt") end, 60),
     "the factory created its resource"):is_true()
   shell.run("kill -INT " .. proc.pid)
-  shell.run("sleep 1")                       -- the holder is now inside its slow release
+  -- The second interrupt must land while the holder is RELEASING: wait for the release to say it
+  -- began, never a timed guess (a loaded host took longer than the 1 s this once slept).
+  t:expect(wait_until(function() return fs.exists(root .. "/releasing.txt") end, 60),
+    "the holder began its slow release"):is_true()
   shell.run("kill -INT " .. proc.pid)
 
   t:expect(proc:wait(), "the second interrupt ends the WAIT"):equals(130)
@@ -118,5 +134,5 @@ prova.test("a second Ctrl-C stops the WAITING, never the holder mid-release", {
   -- The proof that stepping back was right: nothing intervened, and the release completed anyway.
   t:expect(wait_until(function() return fs.exists(root .. "/released.txt") end, 60),
     "the holder finished releasing on its own"):is_true()
-  t:expect(holder_alive("lingering"), "…and then exited"):is_false()
+  t:expect(holder_alive(name), "…and then exited"):is_false()
 end)
