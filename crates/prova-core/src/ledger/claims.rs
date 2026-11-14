@@ -353,6 +353,29 @@ fn collect_file(
     Ok(())
 }
 
+/// An anchor written after prose on its line (`…its marker. <!-- claim: id -->`) is the author
+/// meaning an anchor, but it is not one: the line is prose. Said Malformed, never left invisible,
+/// so a `covers` naming it never reads as a bare DANGLING (substrate red e538fc9a, C's
+/// ASYNCIFICATION.md:433). A mention inside a code span (`` `<!-- claim: id -->` ``, as the docs
+/// that teach the grammar write it) is prose and stays so: only an anchor opened outside backticks
+/// counts.
+fn trailing_anchor(line: &str) -> Option<String> {
+    for kw in ["claim:", "backlog:"] {
+        let mut from = 0;
+        while let Some(at) = line[from..].find("<!--").map(|i| from + i) {
+            from = at + 4;
+            let outside_code = line[..at].matches('`').count().is_multiple_of(2);
+            if outside_code && line[from..].trim_start().starts_with(kw) {
+                return Some(format!(
+                    "`{kw}` anchor must start its line — put `<!--` on a line of its own, above the \
+                     prose it anchors (after other text, it is read as prose and never registers)"
+                ));
+            }
+        }
+    }
+    None
+}
+
 /// What one line is, read as an anchor.
 enum Anchor {
     /// No `claim:`/`backlog:` keyword — ordinary prose, and it must stay invisible.
@@ -372,7 +395,7 @@ enum Anchor {
 /// no slot (docs/design/lifecycle.md#anchor-records-when-it-was-captured).
 fn parse_anchor(line: &str) -> Anchor {
     let Some(rest) = line.trim().strip_prefix("<!--").map(str::trim_start) else {
-        return Anchor::Prose;
+        return trailing_anchor(line).map_or(Anchor::Prose, Anchor::Malformed);
     };
     let (kind, rest) = if let Some(rest) = rest.strip_prefix("claim:") {
         (Kind::Claim, rest)
@@ -819,6 +842,30 @@ mod tests {
         assert!(why.contains("must end its line"), "{why}");
         let Anchor::Malformed(why) = parse_anchor("<!-- claim: x") else { panic!("unclosed") };
         assert!(why.contains("not closed"), "{why}");
+    }
+
+    /// Substrate red e538fc9a: an anchor after prose on its line was read as prose, so the `covers`
+    /// naming it said DANGLING with no word of why. It is Malformed now, naming the fix; a mention
+    /// in a code span (how the grammar is taught) stays prose.
+    #[test]
+    fn an_anchor_after_prose_says_it_must_start_its_line() {
+        for line in [
+            "   newer take or clears its marker. <!-- claim: an-ack-lands-only-on-the-take-it-names -->",
+            "- an item <!-- backlog: later-thing recorded=2026-11-14 -->",
+            "a `quoted` word, then <!--claim: x -->",
+        ] {
+            let Anchor::Malformed(why) = parse_anchor(line) else {
+                panic!("an anchor after prose must be malformed: {line}");
+            };
+            assert!(why.contains("must start its line"), "{why}");
+        }
+        for line in [
+            "A `<!-- claim: id -->` anchor is a deliberate act",
+            "anchor it `<!-- backlog: id -->` instead.",
+            "an html comment <!-- not an anchor --> in prose",
+        ] {
+            assert!(matches!(parse_anchor(line), Anchor::Prose), "must stay prose: {line}");
+        }
     }
 
     /// A's m/9104 and m/9196: one bad anchor refused `prova owed` for a whole project for a day.
