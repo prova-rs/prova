@@ -29,10 +29,9 @@ reused instead of pretending it ran. Every phase is the same rule with a finer k
 `prova run <lane> --resume` executes only the leaves that did not pass in the previous run of the
 same lane over the same tree. Every other leaf is **reused**.
 
-- **Tree fingerprint.** The record gains `tree`: a digest of every file in the working tree that
-  is not ignored, covering path and bytes. jj lists them with `jj file list` (its snapshot counts a
-  new file), git with `git ls-files -z --cached --others --exclude-standard` (the same set: a file
-  not yet added is in, an ignored one is out). It is content, not a commit id: a `jj describe` does not change it,
+- **Tree fingerprint.** The record gains `tree`: a digest of every file the VCS tracks, covering
+  path and bytes. jj lists them with `jj file list`, git with `git ls-files -z`; ignored and
+  untracked files are out. It is content, not a commit id: a `jj describe` does not change it,
   and an edited file always does. With no VCS there is no fingerprint, and `--resume` refuses.
 - **Journal.** Each run appends one JSON line per settled leaf to `.prova/var/journal.jsonl`,
   after a header line carrying `run_id`, `tree`, `binary`, the spelled selection and the start
