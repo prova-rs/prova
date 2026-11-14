@@ -110,7 +110,10 @@ local GLOBAL_INPUTS = { "Cargo.lock", "Cargo.toml", "rust-toolchain", "rust-tool
 local function graph()
   local meta = run({ "cargo", "metadata", "--format-version", "1", "--locked", "--offline" })
   if meta.code ~= 0 then
-    return nil, "cargo metadata failed: " .. tail(meta.stderr or meta.stdout, 8)
+    -- cargo's own `error:` line first, so whoever keys on a failure's first line reads cargo's words.
+    local said = meta.stderr or meta.stdout or ""
+    local headline = said:match("[^\n]*error:[^\n]*") or said:match("[^\n]+") or "no output"
+    return nil, "cargo metadata failed: " .. headline .. "\n" .. tail(said, 8)
   end
   local m = json.decode(meta.stdout)
   local pkgs, local_ids = {}, {}
@@ -307,8 +310,8 @@ local function module_name(t, accounts)
   local name = accounts.by_dir[m.dir]
   if not name and accounts.off then
     -- The graph could not be read, so no directory is a member: say why, never blame the module.
-    error("prova.cargo: the workspace's members could not be read, so " .. m.dir .. "'s account is unknown: "
-      .. accounts.off, 3)
+    error("prova.cargo: " .. accounts.off .. "\n(so no workspace member could be read, and " .. m.dir
+      .. "'s account is unknown)", 3)
   end
   if not name then
     error("prova.cargo: " .. m.dir .. " is no workspace member's directory", 3)

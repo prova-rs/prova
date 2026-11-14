@@ -139,5 +139,7 @@ prova.test("a workspace cargo cannot read says cargo's error, never that a modul
   local r = run(ws)
   t:expect(r.code, "red:\n" .. r.stdout):never():equals(0)
   t:expect(r.stdout, "names cargo's failure"):contains("cargo metadata failed")
+  -- Its first line is cargo's own error, so a classifier keyed on the first line reads it.
+  t:expect(r.stdout, "cargo's error line first"):contains("prova.cargo: cargo metadata failed: error:")
   t:expect(r.stdout, "never the misleading member error"):never():contains("is no workspace member's directory")
 end)
