@@ -27,7 +27,9 @@ function M.duration(base)
 end
 
 local function probe(word, token)
-  return "'" .. word .. " " .. token:sub(1, -2) .. "[" .. token:sub(-1) .. "]'"
+  -- pgrep reads a regex: a token's `.` is escaped as `[.]`, so it matches only a dot (D m/11887).
+  local head = token:sub(1, -2):gsub("%.", "[.]")
+  return "'" .. word .. " " .. head .. "[" .. token:sub(-1) .. "]'"
 end
 
 --- Is a process whose command line carries `word token` (`sleep 77.221…`, `prova up raced-…`) alive?
