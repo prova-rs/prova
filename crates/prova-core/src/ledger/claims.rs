@@ -317,8 +317,22 @@ fn collect_file(
     // claim or a backlog item, so the duplicate check spans them. It is also what makes promotion a
     // safe in-place flip — the id is the identity, the keyword is only the state.
     let mut seen: BTreeMap<String, usize> = BTreeMap::new();
+    // Inside a fenced code block, a line is an example, never an anchor (D m/11855): a doc that
+    // teaches the anchor rule shows the wrong shape in a fence, and that must not turn a project red.
+    let mut fence: Option<(char, usize)> = None;
     for (index, line) in text.lines().enumerate() {
         let line_no = index + 1;
+        if let Some((ch, run, rest)) = fence_marker(line) {
+            match fence {
+                None => fence = Some((ch, run)),
+                Some((open, len)) if open == ch && run >= len && rest.trim().is_empty() => fence = None,
+                Some(_) => {}
+            }
+            continue;
+        }
+        if fence.is_some() {
+            continue;
+        }
         let (kind, id, props) = match parse_anchor(line) {
             Anchor::Prose => continue,
             Anchor::Malformed(reason) => {
@@ -351,6 +365,15 @@ fn collect_file(
         seen.insert(id, line_no);
     }
     Ok(())
+}
+
+/// A fence line (CommonMark's ``` or ~~~, three or more, after any indent): its character, its run, and
+/// what follows the run (an info string on an opening fence; nothing on a closing one).
+fn fence_marker(line: &str) -> Option<(char, usize, &str)> {
+    let body = line.trim_start();
+    let ch = body.chars().next().filter(|c| *c == '`' || *c == '~')?;
+    let run = body.chars().take_while(|c| *c == ch).count();
+    (run >= 3).then(|| (ch, run, &body[run..]))
 }
 
 /// An anchor written after prose on its line (`…its marker. <!-- claim: id -->`) is the author
@@ -866,6 +889,26 @@ mod tests {
         ] {
             assert!(matches!(parse_anchor(line), Anchor::Prose), "must stay prose: {line}");
         }
+    }
+
+    /// D m/11855: a fenced example is never an anchor, in either rule. A doc teaching the anchor
+    /// rule shows the wrong shape (`- item <!-- claim: x -->`) and a right one in a fence; neither
+    /// registers, neither is Malformed, and an anchor after the fence closes reads as ever. A longer
+    /// closing run closes; a ``` inside a ~~~ fence does not.
+    #[test]
+    fn a_fenced_example_is_never_an_anchor() {
+        let root = crate::engine::make_tempdir().unwrap();
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+        std::fs::write(
+            root.join("docs/guide.md"),
+            "# Guide\n\n```md\n- item <!-- claim: wrong-shape -->\n<!-- claim: shown-not-owed -->\n```\n\n\
+             ~~~\n```\n<!-- claim: still-fenced -->\n~~~~\n\n<!-- claim: real-one -->\nThe real claim.\n",
+        )
+        .unwrap();
+        let (claims, owed) = scan_reporting(&root, &["docs".to_string()]).unwrap();
+        let found: Vec<&str> = claims.iter().map(|c| c.address.as_str()).collect();
+        assert_eq!(found, ["docs/guide.md#real-one"], "only the anchor outside every fence registers");
+        assert!(owed.is_empty(), "a fenced wrong shape is not Malformed: {owed:?}");
     }
 
     /// A's m/9104 and m/9196: one bad anchor refused `prova owed` for a whole project for a day.
