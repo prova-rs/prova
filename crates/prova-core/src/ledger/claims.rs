@@ -319,13 +319,14 @@ fn collect_file(
     let mut seen: BTreeMap<String, usize> = BTreeMap::new();
     // Inside a fenced code block, a line is an example, never an anchor (D m/11855): a doc that
     // teaches the anchor rule shows the wrong shape in a fence, and that must not turn a project red.
-    let mut fence: Option<(char, usize)> = None;
+    // A fence still open at the end hides every anchor below it, so it is said, never silent (D m/11902).
+    let mut fence: Option<(char, usize, usize)> = None;
     for (index, line) in text.lines().enumerate() {
         let line_no = index + 1;
         if let Some((ch, run, rest)) = fence_marker(line) {
             match fence {
-                None => fence = Some((ch, run)),
-                Some((open, len)) if open == ch && run >= len && rest.trim().is_empty() => fence = None,
+                None => fence = Some((ch, run, line_no)),
+                Some((open, len, _)) if open == ch && run >= len && rest.trim().is_empty() => fence = None,
                 Some(_) => {}
             }
             continue;
@@ -364,16 +365,33 @@ fn collect_file(
         });
         seen.insert(id, line_no);
     }
+    if let Some((ch, _, opened)) = fence {
+        let mark: String = std::iter::repeat_n(ch, 3).collect();
+        problems.push(ClaimError::Malformed {
+            file: relative.clone(),
+            line: opened,
+            reason: format!(
+                "the {mark} fence opened at line {opened} never closes, so no anchor after it is read: \
+                 close it, or remove a stray {mark}"
+            ),
+        });
+    }
     Ok(())
 }
 
 /// A fence line (CommonMark's ``` or ~~~, three or more, after any indent): its character, its run, and
 /// what follows the run (an info string on an opening fence; nothing on a closing one).
 fn fence_marker(line: &str) -> Option<(char, usize, &str)> {
-    let body = line.trim_start();
+    let body = line.trim_start_matches(' ');
+    // Four or more spaces is indented code, never a fence.
+    if line.len() - body.len() >= 4 {
+        return None;
+    }
     let ch = body.chars().next().filter(|c| *c == '`' || *c == '~')?;
     let run = body.chars().take_while(|c| *c == ch).count();
-    (run >= 3).then(|| (ch, run, &body[run..]))
+    let rest = &body[run..];
+    // A backtick fence's info string holds no backtick (inline code like ```x``` is no fence).
+    (run >= 3 && !(ch == '`' && rest.contains('`'))).then_some((ch, run, rest))
 }
 
 /// An anchor written after prose on its line (`…its marker. <!-- claim: id -->`) is the author
@@ -909,6 +927,26 @@ mod tests {
         let found: Vec<&str> = claims.iter().map(|c| c.address.as_str()).collect();
         assert_eq!(found, ["docs/guide.md#real-one"], "only the anchor outside every fence registers");
         assert!(owed.is_empty(), "a fenced wrong shape is not Malformed: {owed:?}");
+    }
+
+    /// D m/11902: a fence that never closes hides every anchor below it, so it is said as Malformed at
+    /// the line that opened it, never a silent loss. Indented four spaces, or ```inline``` code, is no
+    /// fence at all, so the anchors around it read as ever.
+    #[test]
+    fn an_unclosed_fence_is_said_never_a_silent_loss() {
+        let root = crate::engine::make_tempdir().unwrap();
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+        std::fs::write(
+            root.join("docs/open.md"),
+            "<!-- claim: before -->\nRead.\n\n    ```\nindented code, no fence\n\nuse ```inline``` here\n\
+             <!-- claim: middle -->\nRead too.\n\n```\n<!-- claim: hidden -->\nnever closed\n",
+        )
+        .unwrap();
+        let (claims, owed) = scan_reporting(&root, &["docs".to_string()]).unwrap();
+        let found: Vec<&str> = claims.iter().map(|c| c.address.as_str()).collect();
+        assert_eq!(found, ["docs/open.md#before", "docs/open.md#middle"]);
+        let said = format!("{owed:?}");
+        assert!(owed.len() == 1 && said.contains("fence opened at line 11 never closes"), "{said}");
     }
 
     /// A's m/9104 and m/9196: one bad anchor refused `prova owed` for a whole project for a day.
