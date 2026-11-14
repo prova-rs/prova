@@ -305,6 +305,11 @@ local function module_name(t, accounts)
       .. "cargo.verify(t, { module = \"<package>\" })", 3)
   end
   local name = accounts.by_dir[m.dir]
+  if not name and accounts.off then
+    -- The graph could not be read, so no directory is a member: say why, never blame the module.
+    error("prova.cargo: the workspace's members could not be read, so " .. m.dir .. "'s account is unknown: "
+      .. accounts.off, 3)
+  end
   if not name then
     error("prova.cargo: " .. m.dir .. " is no workspace member's directory", 3)
   end

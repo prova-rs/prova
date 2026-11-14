@@ -122,3 +122,22 @@ prova.test("a build under a CARGO_TARGET_DIR elsewhere still finds nextest's jun
   t:expect(r.code, "green with the build elsewhere:\n" .. r.stdout):equals(0)
   t:expect(c, "every module conducted"):equals(3)
 end)
+
+--- A workspace cargo cannot read offline (Herald gates `--offline`) fails each proof with cargo's own
+--- words, never as "no workspace member's directory": a metadata failure leaves no members, and the
+--- error must name why (E m/11537: substrate d06baf50 went red on the misleading one, its cause, a
+--- dropped `[patch]`, only in the log's second line).
+prova.test("a workspace cargo cannot read says cargo's error, never that a module is no member", {
+  requires = { "cargo", "cargo-nextest", "git" },
+  covers = "docs/plans/module-proofs.md#2-the-adapter-answers-one-question",
+  timeout = "600s",
+}, function(t)
+  local ws = t:use(workspace)
+  -- A dependency the lock does not hold yet: `cargo metadata --locked` refuses the tree, while nextest
+  -- (which may update the lock) still builds and runs it, as in the gate.
+  fs.write(ws .. "/a/Cargo.toml", fs.read(ws .. "/a/Cargo.toml") .. 'd = { path = "../d" }\n')
+  local r = run(ws)
+  t:expect(r.code, "red:\n" .. r.stdout):never():equals(0)
+  t:expect(r.stdout, "names cargo's failure"):contains("cargo metadata failed")
+  t:expect(r.stdout, "never the misleading member error"):never():contains("is no workspace member's directory")
+end)
