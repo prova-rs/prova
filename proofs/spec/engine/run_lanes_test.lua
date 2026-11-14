@@ -166,15 +166,14 @@ prova.test("`prova run --list --json` names every lane for machinery", function(
 	local r = shell.run(prova.bin .. " run --list --json", { cwd = proj })
 	t:expect(r.code, r.stdout .. (r.stderr or "")):equals(0)
 	local listed = json.decode(r.stdout)
+	t:expect(listed.schema, "a versioned shape (rule 8)"):equals(1)
 	t:expect(listed.manifest, "names the manifest it read"):contains("prova.toml")
-	local lanes = listed.profiles
+	t:expect(type(listed.default), "the default run, apart from the lanes"):equals("table")
 	local by = {}
-	for _, l in ipairs(lanes) do by[l.name] = l end
-	t:expect(by["(default)"] and by["(default)"].default, "the default lane, marked"):equals(true)
+	for _, l in ipairs(listed.profiles) do by[l.name] = l end
 	t:expect(by.ut and by.ut.about, "a lane's line is its description"):equals("the fast unit lane")
-	t:expect(by.ut.default, "a named lane is not the default"):equals(false)
 	t:expect(by.bare ~= nil, "an empty lane is listed too"):equals(true)
-	t:expect(#lanes, "the default and the two declared lanes, nothing else"):equals(3)
+	t:expect(#listed.profiles, "the declared lanes only: every name is one `prova run` takes"):equals(2)
 end)
 
 --- No manifest is an answer, never an error whose words a reader must match (L m/11656).
@@ -185,4 +184,5 @@ prova.test("`prova run --list --json` with no manifest says so by value, exit 0"
 	local listed = json.decode(r.stdout)
 	t:expect(listed.manifest == nil or listed.manifest == json.null, "no manifest: " .. r.stdout):equals(true)
 	t:expect(#listed.profiles, "no profiles"):equals(0)
+	t:expect(listed.schema, "versioned even when empty"):equals(1)
 end)
