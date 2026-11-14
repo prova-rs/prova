@@ -13,7 +13,7 @@ pub(crate) fn run_subcommand(args: Vec<String>) -> ExitCode {
         Some("-h") | Some("--help") => {
             println!(
                 "usage: prova run [<lane>] [run options]\n\
-                 \x20      prova run --list\n\n\
+                 \x20      prova run --list [--json]\n\n\
                  A lane is a [profiles.<name>] table in prova.toml — a named way to run the\n\
                  suite (its own selection, guarantees, env). `prova run ut` is exactly\n\
                  `prova --profile ut`; everything after the lane composes as usual\n\
@@ -22,6 +22,36 @@ pub(crate) fn run_subcommand(args: Vec<String>) -> ExitCode {
             ExitCode::SUCCESS
         }
         Some("--list") => {
+            args.next();
+            let json = args.next().as_deref() == Some("--json");
+            // For machinery (Horai picks a lane by name, E m/11644, L m/11656): the manifest prova
+            // found, and every lane with its line and whether it is the default. No manifest is an
+            // answer, `{"manifest": null, "profiles": []}` and exit 0, never an error to read words from.
+            if json {
+                let home = match home::find(std::path::Path::new(".")) {
+                    Ok(Some(h)) => h,
+                    Ok(None) => {
+                        println!("{}", serde_json::json!({ "manifest": null, "profiles": [] }));
+                        return ExitCode::SUCCESS;
+                    }
+                    Err(e) => {
+                        eprintln!("prova: {e}");
+                        return ExitCode::from(2);
+                    }
+                };
+                let manifest = match read_manifest(&home) {
+                    Ok(m) => m,
+                    Err(code) => return code,
+                };
+                let mut lanes = vec![serde_json::json!({
+                    "name": "(default)", "about": "the [run] table — what bare `prova` runs", "default": true,
+                })];
+                for (name, p) in &manifest.profiles {
+                    lanes.push(serde_json::json!({ "name": name, "about": lane_line(p), "default": false }));
+                }
+                println!("{}", serde_json::json!({ "manifest": home.manifest.display().to_string(), "profiles": lanes }));
+                return ExitCode::SUCCESS;
+            }
             let home = match resolve_home(None) {
                 Ok(h) => h,
                 Err(code) => return code,
