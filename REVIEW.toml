@@ -1,0 +1,12 @@
+# Who may approve a train's exact head (repo/review-declared, E m/10346, v2.15 m/10350). Herald reads
+# this at the train's base. `reviewers`: any one suffices, and the steward is implied for another's train
+# (never their own); `required`: every one must approve as well.
+schema = 1
+steward = "E"
+
+# Prova is E's (runner, reuse, stress, ledger). D reads it as the kernels' and machines' steward (the
+# runner's scheduler and the conduct cache are machines), and L as the builder of Herald and Horai, the
+# two products that run every gate and sweep through it. A train E authors needs one of them.
+[[paths]]
+glob = "**"
+reviewers = ["D", "L"]
