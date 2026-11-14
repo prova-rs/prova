@@ -1,7 +1,8 @@
 --- `prova.infra(msg)` marks a failed node's cause as the environment's, by value: the JSON event says
 --- `cause = "infra"` and its line, so a gate tells an infra red from a real one without reading
 --- prova's words (E m/11669, L m/11668). Only that call sets it: a proof's own error() and a failed
---- assertion are never infra, and the node is `failed` either way.
+--- assertion are never infra, and the node is `failed` either way. A proof that pcalls prova.infra and
+--- re-raises the same value still says infra: it passes the cause on, deliberately (D m/11799).
 
 local sandbox = prova.fixture("infra-sandbox", Scope.File, function(ctx)
 	local proj = ctx:tempdir() .. "/pkg"
@@ -14,6 +15,10 @@ prova.test("a failed assertion", function(t) t:expect(1):equals(2) end)
 prova.test("a message that quotes infra", function(t) t:expect(1, "child said: [prova.infra] x"):equals(2) end)
 prova.test("an error that re-raises infra's words", function(t) error("infra: cargo metadata failed: error: offline") end)
 prova.test("a proof spoofing the old mark", function(t) error("[prova.infra] spoof") end)
+prova.test("a proof passing infra's own error on", function(t)
+	local ok, e = pcall(prova.infra, "toolchain gone: error: no rustc\nmore")
+	error(e, 0)
+end)
 ]])
 	return proj
 end)
@@ -31,6 +36,10 @@ prova.test("only prova.infra marks a failure's cause as infra, with its first li
 	t:expect(infra.outcome, "still failed"):equals("failed")
 	t:expect(infra.cause, "infra, by value"):equals("infra")
 	t:expect(infra.cause_line, "its first line"):equals("cargo metadata failed: error: offline")
+	-- Re-raising the SAME value passes the cause on, deliberately (D m/11799): still infra.
+	local passed = by["a proof passing infra's own error on"] or {}
+	t:expect(passed.cause, "re-raised by value, still infra"):equals("infra")
+	t:expect(passed.cause_line, "with its own first line"):equals("toolchain gone: error: no rustc")
 	-- Typed, never textual (D m/11771): a message that carries infra's words is still a plain red.
 	for _, name in ipairs({ "a proof's own error", "a failed assertion", "a message that quotes infra",
 		"an error that re-raises infra's words", "a proof spoofing the old mark" }) do

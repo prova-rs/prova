@@ -542,6 +542,16 @@ function prova.shared(resource) end
 ---@param body fun()
 function prova.describe(label, body) end
 
+---Fail this node for a cause in the environment, not the code under proof: a build tool that cannot
+---read the workspace, a toolchain that cannot run. The node is `failed` as ever, and its JSON event
+---also says `cause = "infra"` with `msg`'s first line as `cause_line`, so a gate can tell an infra red
+---from a real one by value. Herald gives no verdict for it and rides again. The cause is the error's
+---TYPE, never its text: a proof's own `error()` that quotes infra's words is a plain red. A proof that
+---catches this error with `pcall` and re-raises the SAME value (`error(e, 0)`) still says infra,
+---deliberately: it passes the cause on. Re-raising its text (`error(tostring(e))`) does not.
+---@param msg string
+function prova.infra(msg) end
+
 ---Await `millis` milliseconds without blocking the worker (cooperative async). A low-level timing
 ---primitive, mainly for tests and boot-then-probe waits; prefer `http.wait_for` for readiness polls.
 ---@param millis integer
