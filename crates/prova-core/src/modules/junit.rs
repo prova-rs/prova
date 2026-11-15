@@ -24,6 +24,9 @@ struct Case {
     name: String,
     outcome: &'static str,
     message: Option<String>,
+    /// The failure's `type` attribute (nextest's `test timeout` on a case it terminated): what kind of
+    /// failure, when the output holds no panic to name it.
+    kind: Option<String>,
     /// A failed case's captured text, every fragment in document order: a failure body (pytest)
     /// and nextest's `<system-out>`/`<system-err>`, where its empty `<failure/>` leaves the panic.
     /// Labelled once the case closes; its tail reaches the report ([`OUTPUT_TAIL`]).
@@ -65,6 +68,11 @@ fn tail(text: &str) -> String {
 /// With `place` (a bare header's `file:line:col:`), the panic AT that place wins when the output holds
 /// it: a spawned thread's panic may come first, and the header names the test's own (D m/12079).
 fn body_label(text: &str, place: Option<&str>) -> Option<String> {
+    panic_label(text, place).or_else(|| text.lines().map(str::trim).find(|l| !l.is_empty()).map(|l| capped(l.to_string())))
+}
+
+/// A Rust panic's label in `text` ([`body_label`]'s first choice), or `None` when it holds no panic.
+fn panic_label(text: &str, place: Option<&str>) -> Option<String> {
     let lines: Vec<&str> = text.lines().map(str::trim).collect();
     let at_place = place.and_then(|place| {
         lines.iter().position(|l| l.split_once("panicked at").is_some_and(|(_, p)| p.trim() == place))
@@ -77,12 +85,41 @@ fn body_label(text: &str, place: Option<&str>) -> Option<String> {
                 None => format!("panicked at {place}"),
             }
         }
-        None => lines.iter().find(|l| !l.is_empty())?.to_string(),
+        None => return None,
     };
-    Some(match label.char_indices().nth(LABEL_MAX) {
+    Some(capped(label))
+}
+
+/// `label`, cut at [`LABEL_MAX`] characters.
+fn capped(label: String) -> String {
+    match label.char_indices().nth(LABEL_MAX) {
         Some((cut, _)) => format!("{}…", &label[..cut]),
         None => label,
+    }
+}
+
+/// Whether a case's output names nothing of its failure: empty, or opening with only nextest's
+/// `running N test(s)` header, so its first line would be the label. A pytest body (`AssertionError: …`)
+/// names its failure and keeps its own first line.
+fn says_nothing(output: &str) -> bool {
+    output.lines().map(str::trim).find(|l| !l.is_empty()).is_none_or(|first| {
+        first.strip_prefix("running ").and_then(|r| r.split_once(' ')).is_some_and(|(n, rest)| {
+            n.bytes().all(|b| b.is_ascii_digit()) && matches!(rest, "test" | "tests")
+        })
     })
+}
+
+/// The label of a case whose failure has a `type` and no panic to name it: nextest's `test timeout` on a
+/// case it terminated says so with how long it ran, never the output's first line (`running 1 test`,
+/// substrate bridge_child_path_scope 2026-11-15, B m/13259: a 180 s hang read as a nameless failure).
+fn kind_label(kind: &str, time_ms: Option<u64>) -> String {
+    match time_ms {
+        Some(ms) if kind.contains("timeout") => {
+            format!("{kind}: terminated after {:.1} s, with no panic (a wait that never ended)", ms as f64 / 1000.0)
+        }
+        Some(ms) => format!("{kind} after {:.1} s", ms as f64 / 1000.0),
+        None => kind.to_owned(),
+    }
 }
 
 /// A `message` that is only a panic's header (`thread 't' panicked at a.rs:1:1:`) says where, never
@@ -101,7 +138,7 @@ fn is_bare_panic_header(message: &str) -> bool {
 /// green this vocabulary exists to refuse). The FIRST flaky message is kept: it is the failure to
 /// explain. `<rerunFailure>`/`<rerunError>` accompany a `<failure>` that stayed failed, so they change
 /// nothing. A `<failure>` always wins over a flaky child, in either order.
-fn apply_child(case: &mut Case, tag: &[u8], message: Option<String>) {
+fn apply_child(case: &mut Case, tag: &[u8], message: Option<String>, kind: Option<String>) {
     match tag {
         b"failure" | b"error" | b"skipped" => {
             case.outcome = match tag {
@@ -110,12 +147,35 @@ fn apply_child(case: &mut Case, tag: &[u8], message: Option<String>) {
                 _ => "skipped",
             };
             case.message = message;
+            case.kind = kind;
         }
         b"flakyFailure" | b"flakyError" if case.outcome == "passed" => {
             case.outcome = "flaky";
             case.message = message;
         }
         _ => {}
+    }
+}
+
+/// Label a failed case once it closes: a bare panic header, or no message, is read again from the
+/// output (a panic wins); a failure of a named kind whose output names nothing is named by its kind.
+fn label(case: &mut Case) {
+    if case.message.as_deref().is_none_or(is_bare_panic_header) {
+        let place = case
+            .message
+            .as_deref()
+            .and_then(|m| m.split_once("panicked at"))
+            .map(|(_, p)| p.trim().to_owned());
+        let kind = case.kind.as_deref().filter(|k| !k.is_empty());
+        case.message = match (panic_label(&case.output, place.as_deref()), kind) {
+            (Some(panic), _) => Some(panic),
+            // A failure of a named kind with no panic (a terminated case) is named by its kind, never
+            // by the output's first line.
+            (None, Some(kind)) if case.message.is_none() && says_nothing(&case.output) => {
+                Some(kind_label(kind, case.time_ms))
+            }
+            _ => body_label(&case.output, place.as_deref()).or(case.message.take()),
+        };
     }
 }
 
@@ -154,6 +214,7 @@ fn parse_document(xml: &str, file: &str, cases: &mut Vec<Case>) -> Result<(), St
             name: attr(e, "name").unwrap_or_default(),
             outcome: "passed",
             message: None,
+            kind: None,
             output: String::new(),
             time_ms,
             file: file.to_string(),
@@ -169,7 +230,7 @@ fn parse_document(xml: &str, file: &str, cases: &mut Vec<Case>) -> Result<(), St
                 b"testcase" => open = Some(start_case(&e, &suite_stack)),
                 tag => {
                     if let Some(case) = open.as_mut() {
-                        apply_child(case, tag, attr(&e, "message"));
+                        apply_child(case, tag, attr(&e, "message"), attr(&e, "type"));
                     }
                 }
             },
@@ -187,7 +248,7 @@ fn parse_document(xml: &str, file: &str, cases: &mut Vec<Case>) -> Result<(), St
                 }
                 tag => {
                     if let Some(case) = open.as_mut() {
-                        apply_child(case, tag, attr(&e, "message"));
+                        apply_child(case, tag, attr(&e, "message"), attr(&e, "type"));
                     }
                 }
             },
@@ -211,14 +272,7 @@ fn parse_document(xml: &str, file: &str, cases: &mut Vec<Case>) -> Result<(), St
                 }
                 b"testcase" => {
                     if let Some(mut case) = open.take() {
-                        if case.message.as_deref().is_none_or(is_bare_panic_header) {
-                            let place = case
-                                .message
-                                .as_deref()
-                                .and_then(|m| m.split_once("panicked at"))
-                                .map(|(_, p)| p.trim().to_owned());
-                            case.message = body_label(&case.output, place.as_deref()).or(case.message.take());
-                        }
+                        label(&mut case);
                         cases.push(case);
                     }
                 }
@@ -706,6 +760,36 @@ note: run with `RUST_BACKTRACE=1`</failure></testcase>
         let label = body_label(&long, None).unwrap();
         assert_eq!(label.chars().count(), LABEL_MAX + 1, "capped, with an ellipsis: {label}");
         assert!(label.ends_with('…'));
+    }
+
+    /// B m/13259 (substrate bridge_child_path_scope, 2026-11-15): nextest terminated a case that hung, and
+    /// wrote `<failure type="test timeout"/>` with no panic in its output. The label names the timeout and how
+    /// long it ran, never the output's first line (`running 1 test`). A panic, when there is one, still wins,
+    /// and a pytest body that names its failure keeps its own line.
+    #[test]
+    fn a_terminated_case_is_named_by_its_timeout_never_by_its_first_line() {
+        let xml = r#"<testsuites><testsuite name="cos-daemon::bridge_child_path_scope">
+          <testcase name="hung" classname="cos-daemon::bridge_child_path_scope" time="180.011"><failure type="test timeout"/>
+            <system-out>running 1 test
+test hung has been running for over 60 seconds</system-out>
+            <system-err>INFO cos_daemon::state: session created</system-err>
+          </testcase>
+          <testcase name="panicked" classname="c" time="181.0"><failure type="test timeout"/>
+            <system-out>running 1 test
+thread 'panicked' panicked at a.rs:3:4:
+the Ask never parked</system-out>
+          </testcase>
+          <testcase name="py" classname="p" time="0.2"><failure type="AssertionError">AssertionError: 1 != 2</failure></testcase>
+        </testsuite></testsuites>"#;
+        let mut cases = Vec::new();
+        parse_document(xml, "nextest.xml", &mut cases).unwrap();
+        assert_eq!(
+            cases[0].message.as_deref(),
+            Some("test timeout: terminated after 180.0 s, with no panic (a wait that never ended)")
+        );
+        assert_eq!(cases[1].message.as_deref(), Some("panicked at a.rs:3:4: the Ask never parked"));
+        assert_eq!(cases[2].message.as_deref(), Some("AssertionError: 1 != 2"));
+        assert!(says_nothing("running 12 tests\nok") && says_nothing("") && !says_nothing("running late"));
     }
 
     /// nextest's own shape: an empty `<failure/>`, the panic in `<system-out>` and its message in
