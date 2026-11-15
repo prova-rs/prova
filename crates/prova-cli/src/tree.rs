@@ -38,7 +38,7 @@ fn detect(start: &Path) -> Option<Vcs> {
 }
 
 /// The tracked paths, relative to the repository root, sorted.
-fn tracked(vcs: &Vcs) -> Result<(PathBuf, Vec<String>), String> {
+fn tracked(vcs: &Vcs, var: Option<&Path>) -> Result<(PathBuf, Vec<String>), String> {
     let (root, output, split) = match vcs {
         // `jj file list` snapshots the working copy first, which is what makes a new file count.
         Vcs::Jj(root) => (
@@ -80,6 +80,18 @@ fn tracked(vcs: &Vcs) -> Result<(PathBuf, Vec<String>), String> {
         .map(|p| String::from_utf8_lossy(p).into_owned())
         .filter(|p| !prova_writes(p))
         .collect();
+    // The RESOLVED state directory too: `PROVA_VAR_DIR` may put it inside the repository, where the
+    // default's name match never sees it. Compared canonically: a directory that does not exist
+    // holds no file to exclude.
+    if let Some(var) = var.and_then(|v| v.canonicalize().ok()) {
+        let base = root.canonicalize().unwrap_or_else(|_| root.clone());
+        if let Ok(inside) = var.strip_prefix(&base) {
+            let prefix = format!("{}/", inside.to_string_lossy());
+            if !inside.as_os_str().is_empty() {
+                paths.retain(|p| !p.starts_with(&prefix));
+            }
+        }
+    }
     paths.sort();
     Ok((root.clone(), paths))
 }
@@ -96,6 +108,11 @@ fn prova_writes(path: &str) -> bool {
 /// Digest the tracked tree containing `start`: `<vcs>:<24 hex>`. `Err` says why there is no
 /// fingerprint (no repository, or the VCS refused), in words a refusal can quote.
 pub fn fingerprint(start: &Path) -> Result<String, String> {
+    fingerprint_excluding(start, None)
+}
+
+/// [`fingerprint`], never counting what lies under `var` (this package's resolved state directory).
+fn fingerprint_excluding(start: &Path, var: Option<&Path>) -> Result<String, String> {
     let vcs = detect(start).ok_or_else(|| {
         format!(
             "{} is not inside a jj or git repository, so there is no tree to fingerprint",
@@ -106,15 +123,18 @@ pub fn fingerprint(start: &Path) -> Result<String, String> {
         Vcs::Jj(_) => "jj",
         Vcs::Git(_) => "git",
     };
-    let (root, paths) = tracked(&vcs)?;
+    let (root, paths) = tracked(&vcs, var)?;
     Ok(format!("{kind}:{}", digest(&root, &paths)))
 }
 
 /// The fingerprint of the tree containing `start` AND of every extra root (`[resume] roots`) —
 /// each root digested as its own repository's tracked tree, in the order given. Any root that
-/// cannot be fingerprinted fails the whole: a resume must never proceed on a partial key.
-pub fn fingerprint_with(start: &Path, roots: &[PathBuf]) -> Result<String, String> {
-    let mut parts = vec![fingerprint(start)?];
+/// cannot be fingerprinted fails the whole: a resume must never proceed on a partial key. The
+/// home's own state directory ([`crate::var::path`]) is never the tree, wherever it resolves.
+pub fn fingerprint_with(home: &crate::home::Home, roots: &[PathBuf]) -> Result<String, String> {
+    let start = home.dir.as_path();
+    let var = crate::var::path(home);
+    let mut parts = vec![fingerprint_excluding(start, Some(&var))?];
     for root in roots {
         let part = fingerprint(root).map_err(|why| format!("[resume] root {}: {why}", root.display()))?;
         parts.push(part);
@@ -206,6 +226,27 @@ mod tests {
         std::fs::create_dir_all(dir.join("pkg/.prova/var")).unwrap();
         std::fs::write(dir.join("pkg/.prova/var/last-run.json"), "{}").unwrap();
         assert_eq!(fingerprint(&dir).unwrap(), edited, "prova's own .luarc.json and var/ are not the tree");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The RESOLVED state directory is never the tree, even where the default's name match cannot
+    /// see it: `PROVA_VAR_DIR` put inside the repository (D's review of 5394e270). A directory of the
+    /// same name elsewhere still counts: only the resolved one is excluded.
+    #[test]
+    fn the_resolved_state_directory_is_never_the_tree_wherever_it_lives() {
+        let dir = tempdir("git-var");
+        let out = Command::new("git").args(["init", "-q"]).current_dir(&dir).output().expect("git starts");
+        assert!(out.status.success());
+        std::fs::write(dir.join("a.lua"), "one").unwrap();
+        let var = dir.join("cache/prova/pkg-0123");
+        std::fs::create_dir_all(&var).unwrap();
+        let base = fingerprint_excluding(&dir, Some(&var)).unwrap();
+        std::fs::write(var.join("last-run.json"), "{}").unwrap();
+        assert_eq!(fingerprint_excluding(&dir, Some(&var)).unwrap(), base, "the resolved var dir is not the tree");
+        assert_ne!(fingerprint(&dir).unwrap(), base, "without it named, the same file would move the digest");
+        std::fs::create_dir_all(dir.join("cache/prova/pkg-01234")).unwrap();
+        std::fs::write(dir.join("cache/prova/pkg-01234/x"), "a sibling with a longer name").unwrap();
+        assert_ne!(fingerprint_excluding(&dir, Some(&var)).unwrap(), base, "a prefix of the name is not the dir");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

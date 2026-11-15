@@ -510,7 +510,7 @@ mod unix {
         };
         let run_id = crate::journal::new_run_id();
         let roots: Vec<PathBuf> = manifest.resume.roots.iter().map(|r| home.dir.join(r)).collect();
-        let tree = crate::tree::fingerprint_with(&home.dir, &roots).ok();
+        let tree = crate::tree::fingerprint_with(&home, &roots).ok();
         let binary = crate::record::binary_fingerprint();
         let out_dir = crate::var::path(&home).join("stress").join(&run_id);
         let fail_dir = out_dir.join("fail");
