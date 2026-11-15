@@ -109,6 +109,11 @@ fn says_nothing(output: &str) -> bool {
     })
 }
 
+/// The first non-empty line of `output`, trimmed.
+fn first_line(output: &str) -> Option<&str> {
+    output.lines().map(str::trim).find(|l| !l.is_empty())
+}
+
 /// The label of a case whose failure has a `type` and no panic to name it: nextest's `test timeout` on a
 /// case it terminated says so with how long it ran, never the output's first line (`running 1 test`,
 /// substrate bridge_child_path_scope 2026-11-15, B m/13259: a 180 s hang read as a nameless failure).
@@ -171,6 +176,15 @@ fn label(case: &mut Case) {
             (Some(panic), _) => Some(panic),
             // A failure of a named kind with no panic (a terminated case) is named by its kind, never
             // by the output's first line.
+            // A terminated case is a timeout whatever it printed first (D m/13309): its kind leads, and the
+            // output's first line, when it says something, follows as context.
+            (None, Some(kind)) if case.message.is_none() && kind.contains("timeout") => {
+                let label = kind_label(kind, case.time_ms);
+                Some(match first_line(&case.output).filter(|_| !says_nothing(&case.output)) {
+                    Some(first) => capped(format!("{label}; it first printed: {first}")),
+                    None => label,
+                })
+            }
             (None, Some(kind)) if case.message.is_none() && says_nothing(&case.output) => {
                 Some(kind_label(kind, case.time_ms))
             }
@@ -789,6 +803,17 @@ the Ask never parked</system-out>
         );
         assert_eq!(cases[1].message.as_deref(), Some("panicked at a.rs:3:4: the Ask never parked"));
         assert_eq!(cases[2].message.as_deref(), Some("AssertionError: 1 != 2"));
+        // D m/13309: a hung case whose output opens with a log line is still named a timeout first.
+        let logged = r#"<testsuites><testsuite name="s">
+          <testcase name="hung" classname="s" time="180.0"><failure type="test timeout"/>
+            <system-out>INFO booted the daemon</system-out>
+          </testcase></testsuite></testsuites>"#;
+        let mut more = Vec::new();
+        parse_document(logged, "nextest.xml", &mut more).unwrap();
+        assert_eq!(
+            more[0].message.as_deref(),
+            Some("test timeout: terminated after 180.0 s, with no panic (a wait that never ended); it first printed: INFO booted the daemon")
+        );
         assert!(says_nothing("running 12 tests\nok") && says_nothing("") && !says_nothing("running late"));
     }
 
