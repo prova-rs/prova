@@ -79,6 +79,14 @@ fn body_label(text: &str) -> Option<String> {
     })
 }
 
+/// A `message` that is only a panic's header (`thread 't' panicked at a.rs:1:1:`) says where, never
+/// what: nextest takes the panic's first line, and since Rust 1.73 the panic's words are on the next.
+/// Such a message is read again from the output, which has them ([`body_label`]).
+fn is_bare_panic_header(message: &str) -> bool {
+    let line = message.trim();
+    line.contains("panicked at") && line.ends_with(':') && !line.contains('\n')
+}
+
 /// Apply one child element of an open `<testcase>` to it — the outcome vocabulary.
 ///
 /// `failure`/`error`/`skipped` set the outcome outright. nextest's (and surefire's) retry elements
@@ -197,8 +205,8 @@ fn parse_document(xml: &str, file: &str, cases: &mut Vec<Case>) -> Result<(), St
                 }
                 b"testcase" => {
                     if let Some(mut case) = open.take() {
-                        if case.message.is_none() {
-                            case.message = body_label(&case.output);
+                        if case.message.as_deref().is_none_or(is_bare_panic_header) {
+                            case.message = body_label(&case.output).or(case.message.take());
                         }
                         cases.push(case);
                     }
@@ -301,7 +309,9 @@ function junit.verify(t, opts)
     t:log("junit.verify: " .. #flaky .. " FLAKY deputed case(s):\n      " .. table.concat(flaky, "\n      "))
   end
   report.flaky_cases = flaky
-  t:expect(#red, "deputed failures:\n  " .. table.concat(red, "\n  ")):equals(0)
+  -- The count's "expected 0, got N" goes on a line of its own: after the last label it read as that
+  -- panic's message (substrate 9ce6f90f, E 2026-11-14).
+  t:expect(#red, "deputed failures:\n  " .. table.concat(red, "\n  ") .. "\nthe count of deputed failures"):equals(0)
   return report
 end
 "##;
@@ -711,6 +721,44 @@ thread 't' (8989) panicked at crates/prova-core/tests/common/mod.rs:49:5:</syste
         let long = (0..100).map(|i| i.to_string()).collect::<Vec<_>>().join("\n");
         assert_eq!(tail(&long).lines().count(), OUTPUT_TAIL);
         assert!(tail(&long).ends_with("99"));
+    }
+
+    /// nextest's `message` attribute is the panic's FIRST line, and since Rust 1.73 that line ends at
+    /// the location: the panic's own words are on the next line, in the output. A bare header like
+    /// that names no failure, so the label is read from the output, where the words are. Before,
+    /// the header was the label and the count's own "expected 0, got 1" read as the panic's message
+    /// (substrate 9ce6f90f: the panic said "TaskSystem.list RPC failed: Unauthenticated", E 2026-11-14).
+    #[test]
+    fn a_panic_header_for_a_message_is_labelled_by_the_words_after_it() {
+        let xml = r#"<testsuites><testsuite name="cos-daemon">
+          <testcase name="t" classname="cos-daemon"><failure message="thread 't' (598013239) panicked at crates/cos-daemon/src/session_teardown_tests.rs:238:25:" type="test failure with exit code 101"/>
+            <system-err>noise before
+thread 't' (598013239) panicked at crates/cos-daemon/src/session_teardown_tests.rs:238:25:
+TaskSystem.list RPC failed: status: Unauthenticated
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace</system-err>
+          </testcase>
+          <testcase name="said" classname="cos-daemon"><failure message="thread 'said' panicked at a.rs:1:1: its own words" type="x"/>
+            <system-err>thread 'said' panicked at a.rs:1:1:
+other words</system-err>
+          </testcase>
+          <testcase name="none" classname="cos-daemon"><failure message="thread 'none' panicked at a.rs:2:2:" type="x"/></testcase>
+        </testsuite></testsuites>"#;
+        let mut cases = Vec::new();
+        parse_document(xml, "nextest.xml", &mut cases).unwrap();
+        assert_eq!(
+            cases[0].message.as_deref(),
+            Some("panicked at crates/cos-daemon/src/session_teardown_tests.rs:238:25: TaskSystem.list RPC failed: status: Unauthenticated")
+        );
+        assert_eq!(
+            cases[1].message.as_deref(),
+            Some("thread 'said' panicked at a.rs:1:1: its own words"),
+            "a message that says something is kept as it is"
+        );
+        assert_eq!(
+            cases[2].message.as_deref(),
+            Some("thread 'none' panicked at a.rs:2:2:"),
+            "with no output to read, the header is still better than nothing"
+        );
     }
 
     /// A resumed deputy's account: the re-run case replaces its prior red, every other case is

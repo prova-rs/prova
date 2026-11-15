@@ -65,6 +65,9 @@ end)
   t:expect(r.code, "a red deputed case must fail the conducting proof"):never():equals(0)
   t:expect(r.stdout, "the failure names the deputed case"):contains("com.acme.OrderTest#rejects")
   t:expect(r.stdout, "with the deputy's own message"):contains("expected 400 & got 500")
+  -- The count is its own line: after the last case it read as that case's message (E 2026-11-14).
+  t:expect(r.stdout, "the count never trails a case's message"):never():contains("got 500: expected 0")
+  t:expect(r.stdout, "the count says what it counts"):contains("the count of deputed failures")
 end)
 
 prova.test("deputed cases are never nodes: one conducting proof, not N test-shaped impostors", {
