@@ -67,6 +67,13 @@ local function holder_alive(name)
   return strays.alive("prova up", name)
 end
 
+--- Whether the holder exits within `seconds`. `released.txt` is written INSIDE the holder's teardown,
+--- so it exists a moment before the holder exits: reading `holder_alive` the instant it appears raced
+--- the exit (red in a sweep of 4c22047, E 2026-11-15). The exit is the event, so wait on it, bounded.
+local function holder_exits(name, seconds)
+  return wait_until(function() return not holder_alive(name) end, seconds)
+end
+
 prova.test("Ctrl-C on `prova start` stops the holder instead of orphaning it", {
   requires = { "unix" },
   covers = "docs/design/agent-ergonomics.md#interrupt-leaves-nothing-behind",
@@ -91,7 +98,7 @@ prova.test("Ctrl-C on `prova start` stops the holder instead of orphaning it", {
   t:expect(proc:output(), "…and says what it did about it"):contains("interrupted")
   t:expect(wait_until(function() return fs.exists(root .. "/released.txt") end, 60),
     "the holder ran its teardown, so what it created was released"):is_true()
-  t:expect(holder_alive(name), "no holder outlived the interrupted start"):is_false()
+  t:expect(holder_exits(name, 30), "no holder outlived the interrupted start"):is_true()
 
   -- And nothing is left claiming to be up: a stale record is its own kind of leak, because the
   -- next `start` refuses on it.
@@ -128,5 +135,5 @@ prova.test("a second Ctrl-C stops the WAITING, never the holder mid-release", {
   -- The proof that stepping back was right: nothing intervened, and the release completed anyway.
   t:expect(wait_until(function() return fs.exists(root .. "/released.txt") end, 60),
     "the holder finished releasing on its own"):is_true()
-  t:expect(holder_alive(name), "…and then exited"):is_false()
+  t:expect(holder_exits(name, 30), "…and then exited"):is_true()
 end)
