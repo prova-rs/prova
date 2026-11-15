@@ -61,9 +61,15 @@ fn tail(text: &str) -> String {
 /// test`, so the first line would name nothing. The panic's location and the line after it (the
 /// assertion's own message) are the label. Anything else keeps the first non-empty line (pytest's
 /// `AssertionError: …`). Capped at [`LABEL_MAX`] characters.
-fn body_label(text: &str) -> Option<String> {
+///
+/// With `place` (a bare header's `file:line:col:`), the panic AT that place wins when the output holds
+/// it: a spawned thread's panic may come first, and the header names the test's own (D m/12079).
+fn body_label(text: &str, place: Option<&str>) -> Option<String> {
     let lines: Vec<&str> = text.lines().map(str::trim).collect();
-    let label = match lines.iter().position(|l| l.contains("panicked at")) {
+    let at_place = place.and_then(|place| {
+        lines.iter().position(|l| l.split_once("panicked at").is_some_and(|(_, p)| p.trim() == place))
+    });
+    let label = match at_place.or_else(|| lines.iter().position(|l| l.contains("panicked at"))) {
         Some(at) => {
             let place = lines[at].split_once("panicked at").map_or(lines[at], |(_, p)| p).trim();
             match lines[at + 1..].iter().find(|l| !l.is_empty()) {
@@ -206,7 +212,12 @@ fn parse_document(xml: &str, file: &str, cases: &mut Vec<Case>) -> Result<(), St
                 b"testcase" => {
                     if let Some(mut case) = open.take() {
                         if case.message.as_deref().is_none_or(is_bare_panic_header) {
-                            case.message = body_label(&case.output).or(case.message.take());
+                            let place = case
+                                .message
+                                .as_deref()
+                                .and_then(|m| m.split_once("panicked at"))
+                                .map(|(_, p)| p.trim().to_owned());
+                            case.message = body_label(&case.output, place.as_deref()).or(case.message.take());
                         }
                         cases.push(case);
                     }
@@ -692,7 +703,7 @@ note: run with `RUST_BACKTRACE=1`</failure></testcase>
             Some("panicked at crates/cos-daemon/tests/reaped_watch_path.rs:120:5: end_session reaps the settled child: 0199")
         );
         let long = format!("thread 't' panicked at a.rs:1:1:\n{}", "x".repeat(1000));
-        let label = body_label(&long).unwrap();
+        let label = body_label(&long, None).unwrap();
         assert_eq!(label.chars().count(), LABEL_MAX + 1, "capped, with an ellipsis: {label}");
         assert!(label.ends_with('…'));
     }
@@ -759,6 +770,23 @@ other words</system-err>
             Some("thread 'none' panicked at a.rs:2:2:"),
             "with no output to read, the header is still better than nothing"
         );
+    }
+
+    /// Two panics in one output (a spawned thread's before the test's own): the header names its
+    /// location, so the label is the panic AT that location, never merely the first (D m/12079).
+    #[test]
+    fn a_panic_header_is_matched_to_its_own_panic_in_the_output() {
+        let xml = r#"<testsuites><testsuite name="s">
+          <testcase name="t" classname="s"><failure message="thread 't' panicked at src/t.rs:9:5:" type="x"/>
+            <system-err>thread 'tokio-runtime-worker' panicked at src/spawned.rs:3:1:
+a spawned task's words
+thread 't' panicked at src/t.rs:9:5:
+the test's own words</system-err>
+          </testcase>
+        </testsuite></testsuites>"#;
+        let mut cases = Vec::new();
+        parse_document(xml, "nextest.xml", &mut cases).unwrap();
+        assert_eq!(cases[0].message.as_deref(), Some("panicked at src/t.rs:9:5: the test's own words"));
     }
 
     /// A resumed deputy's account: the re-run case replaces its prior red, every other case is
