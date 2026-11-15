@@ -134,7 +134,7 @@ pub(super) fn plan_journal(
         return Ok(None);
     };
     let roots: Vec<std::path::PathBuf> = resume_roots.iter().map(|r| h.dir.join(r)).collect();
-    let tree = match crate::tree::fingerprint_with(&h.dir, &roots) {
+    let tree = match crate::tree::fingerprint_with(h, &roots) {
         Ok(t) => t,
         Err(why) if cli.resume => return refuse(why),
         Err(_) => return Ok(None),
@@ -359,7 +359,7 @@ pub(super) fn settle(
     let tree = plan.and_then(|plan| {
         let after = home
             .as_ref()
-            .and_then(|h| crate::tree::fingerprint_with(&h.dir, &plan.roots).ok());
+            .and_then(|h| crate::tree::fingerprint_with(h, &plan.roots).ok());
         if after.as_deref() == Some(plan.header.tree.as_str()) {
             Some(plan.header.tree.clone())
         } else {
