@@ -240,3 +240,36 @@ prova.test("an overridden state root announces itself, so it is never an invisib
   t:expect(moved.stdout):contains("PROVA_VAR_DIR")
   t:expect(plain.stdout):never():contains("PROVA_VAR_DIR")   -- silent when unset: no new noise
 end)
+
+prova.test("`prova var-dir` names this package's state directory by value, where its run record lands",
+  { covers = "docs/design/ide-and-layout.md#var-dir-escape-hatch-rules" }, function(t)
+  -- A tool that cleans up after a run (Horai's sweeps share one PROVA_VAR_DIR root per host) must
+  -- remove exactly this package's dir, never a pattern that races another run, and never by
+  -- recomputing prova's key (a second copy of it; E m/12466). So prova says where, by value.
+  local root = t:use(sandbox)
+  local shared = root .. "/shared-root"
+
+  local plain = run_raw(root .. "/pkg", "var-dir")
+  t:expect(plain.code, plain.stderr):equals(0)
+  t:expect(plain.stdout:gsub("%s+$", ""), "the default: the package's own .prova/var")
+    :equals(shell.run("cd " .. root .. "/pkg && pwd -P").stdout:gsub("%s+$", "") .. "/.prova/var")
+
+  local named = run_raw(root .. "/pkg", "var-dir", shared)
+  t:expect(named.code, named.stderr):equals(0)
+  local dir = named.stdout:gsub("%s+$", "")
+  t:expect(dir:sub(1, #shared + 1), "under the override root"):equals(shared .. "/")
+  t:expect(named.stdout, "stdout is the path alone, the announcement stays on stderr")
+    :never():contains("PROVA_VAR_DIR")
+
+  -- The dir it names is where a run's state actually lands.
+  run(root .. "/pkg", nil, shared)
+  t:expect(fs.exists(dir .. "/last-failed.json"), "the run's record is in the named dir"):is_true()
+  -- And the other package's dir is a different one.
+  local other = run_raw(root .. "/other", "var-dir", shared).stdout:gsub("%s+$", "")
+  t:expect(other):never():equals(dir)
+
+  -- A relative override is refused here too, by the same rule as a run.
+  local refused = run_raw(root .. "/pkg", "var-dir", "some/relative/path")
+  t:expect(refused.code):never():equals(0)
+  t:expect(refused.stderr):contains("absolute")
+end)

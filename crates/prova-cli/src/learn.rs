@@ -181,6 +181,8 @@ impl Topic {
         ("down", Topic::Topologies),
         ("start", Topic::Topologies),
         ("ps", Topic::Topologies),
+        // Where the run record (and all of a package's state) lives, by value: the record's story.
+        ("var-dir", Topic::Record),
         ("broker", Topic::Topologies),
         // The spawnable-mock adapter: what it exists FOR is the doubles story.
         ("relay", Topic::Doubles),

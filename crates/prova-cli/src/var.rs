@@ -139,6 +139,46 @@ pub fn dir(home: &Home) -> std::io::Result<PathBuf> {
     Ok(d)
 }
 
+/// `prova var-dir [--manifest PATH]`: this package's state directory as [`path`] resolves it, printed
+/// alone on stdout, so a tool that cleans up after a run (Horai's sweeps share one `PROVA_VAR_DIR` root
+/// per host) removes exactly this package's dir by value: never a pattern that races another run, and
+/// never a second copy of [`path_key`] (E m/12466). A relative override is refused, as a run refuses it;
+/// an active one is announced on stderr, never mixed into the path.
+pub(crate) fn var_dir_subcommand(args: Vec<String>) -> std::process::ExitCode {
+    let mut manifest_path: Option<String> = None;
+    let mut it = args.into_iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "-h" | "--help" => {
+                println!("usage: prova var-dir [--manifest PATH]");
+                return std::process::ExitCode::SUCCESS;
+            }
+            "--manifest" => match it.next() {
+                Some(v) => manifest_path = Some(v),
+                None => {
+                    eprintln!("prova var-dir: --manifest needs a path");
+                    return std::process::ExitCode::from(2);
+                }
+            },
+            other => {
+                eprintln!("prova var-dir: unexpected argument {other:?}");
+                return std::process::ExitCode::from(2);
+            }
+        }
+    }
+    if let Err(why) = check_env() {
+        eprintln!("prova: {why}");
+        return std::process::ExitCode::from(2);
+    }
+    let home = match crate::cmd_topo::resolve_home(manifest_path.as_deref()) {
+        Ok(h) => h,
+        Err(code) => return code,
+    };
+    announce();
+    println!("{}", path(&home).display());
+    std::process::ExitCode::SUCCESS
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

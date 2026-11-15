@@ -268,6 +268,12 @@ const VERBS: &[Verb] = &[
         run: ps_subcommand,
     },
     Verb {
+        name: "var-dir",
+        help: "  prova var-dir [--manifest PATH]  this package's state directory, resolved (PROVA_VAR_DIR's\n\
+               \x20                           keyed subdir when set), printed alone: what a tool removes by value",
+        run: var::var_dir_subcommand,
+    },
+    Verb {
         name: "package",
         help: "  prova package lint <f>... check package files against the namespacing grammar",
         run: package_subcommand,
