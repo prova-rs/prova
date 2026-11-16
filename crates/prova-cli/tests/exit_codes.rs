@@ -158,12 +158,23 @@ fn a_resume_its_flags_contradict_is_a_config_error() {
     assert_eq!(code(&out), 78, "{}", said(&out));
 }
 
+/// E m/14356: a resume the journal can't lend is the caller's ask not fitting the state (78), said so, never a 2 a
+/// caller would pace and retry for a run that can never succeed.
 #[test]
-fn a_resume_with_nothing_journaled_is_the_runs_state_and_exits_2() {
+fn a_resume_with_nothing_journaled_is_the_callers_and_exits_78() {
     let tmp = Tmp::new("resume-state");
     package(&tmp.0, "[run]\nproofs = [\"tests\"]\n", PASSING);
+    // A repository, so the tree fingerprints and the refusal is the journal's, not the fingerprint's.
+    let git = |args: &[&str]| {
+        let ok = Command::new("git").current_dir(&tmp.0).args(args).output().expect("git").status.success();
+        assert!(ok, "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["-c", "user.email=p@example.com", "-c", "user.name=p", "commit", "-qm", "a package"]);
     let out = prova(&tmp.0, &["--resume"]);
-    assert_eq!(code(&out), 2, "{}", said(&out));
+    assert_eq!(code(&out), 78, "{}", said(&out));
+    assert!(said(&out).contains("nothing to resume") && said(&out).contains("run without --resume"), "{}", said(&out));
 }
 
 #[test]

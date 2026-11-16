@@ -95,11 +95,17 @@ fn refuse<T>(why: impl std::fmt::Display) -> Result<T, ExitCode> {
     Err(crate::exit::config())
 }
 
-/// A `--resume` refusal that is the run's state, not the caller's flags: the tree couldn't be read, or the journal
-/// lends no resume (nothing journaled, the tree or prova changed since) (2).
+/// A `--resume` refusal that is the runtime's: the tracked tree couldn't be read (2).
 fn refuse_state<T>(why: impl std::fmt::Display) -> Result<T, ExitCode> {
     eprintln!("prova: --resume: {why}");
     Err(crate::exit::host())
+}
+
+/// A `--resume` the journal can't lend (nothing journaled, the tree or prova changed since): the caller's ask not
+/// fitting the state, so 78, never a 2 a caller would pace and retry for a run that can never succeed (E m/14356).
+fn nothing_to_resume<T>(why: impl std::fmt::Display) -> Result<T, ExitCode> {
+    eprintln!("prova: --resume: nothing to resume ({why}); run without --resume");
+    Err(crate::exit::config())
 }
 
 /// Plan the journal every UNNARROWED run keeps and, under `--resume`, hand the engine the passes it
@@ -285,25 +291,25 @@ fn carried(
     binary: &str,
 ) -> Result<(BTreeMap<String, String>, String), ExitCode> {
     let Some(prior) = journal::load(home, key) else {
-        return refuse_state(format!(
+        return nothing_to_resume(format!(
             "no earlier run of this lane ({}) is journaled here — run it once without --resume",
             key.join(" ")
         ));
     };
     let who = format!("run {} (started {})", prior.header.run_id, prior.header.started_at);
     if prior.header.tree != tree {
-        return refuse_state(format!(
+        return nothing_to_resume(format!(
             "the tracked tree changed since {who} — a verdict is reused only over the identical \
              bytes. Run the lane, or --last-failed for an inner loop that attests nothing"
         ));
     }
     if prior.end == Some(None) {
-        return refuse_state(format!(
+        return nothing_to_resume(format!(
             "the tracked tree changed DURING {who}, so its verdicts belong to no single tree"
         ));
     }
     if prior.header.binary != binary {
-        return refuse_state(format!(
+        return nothing_to_resume(format!(
             "prova itself changed since {who} (binary {} → {binary}) — a verdict is reused only \
              from the same prova",
             prior.header.binary

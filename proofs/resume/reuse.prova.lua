@@ -70,7 +70,7 @@ prova.test("an input-declaring pass is carried across an unrelated edit, and onl
   -- An UNRELATED tracked file moves: the tree is no longer the one the passes were earned over.
   fs.write(sb.pkg .. "/src/b.txt", "edited\n")
   local resume = run(sb.pkg, "--resume")
-  t:expect(resume.code, "same-tree resume refuses a moved tree"):equals(2)
+  t:expect(resume.code, "same-tree resume refuses a moved tree"):equals(78)
 
   local r = run(sb.pkg, "--reuse")
   t:expect(r.code, "green once the flake passes:\n" .. r.stdout):equals(0)

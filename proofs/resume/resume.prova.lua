@@ -125,7 +125,7 @@ prova.test("an edited tracked file REFUSES the resume, naming why, and executes 
   fs.write(file, fs.read(file) .. "\n-- an edit\n")
 
   local r = run(sb.pkg, "--resume")
-  t:expect(r.code, "a refusal, not a run"):equals(2)
+  t:expect(r.code, "a refusal, not a run"):equals(78)
   t:expect(r.stdout, "names the cause"):contains("tracked tree changed")
   t:expect(r.stdout, "and teaches the alternatives"):contains("--last-failed")
   t:expect(count(sb, "one"), "nothing executed"):equals(1)
@@ -158,7 +158,7 @@ prova.test("an edit to a declared SIBLING root refuses the resume, naming the ch
 
   fs.write(sb.sib .. "/lib.txt", "v2\n")
   local r = run(sb.pkg, "--resume")
-  t:expect(r.code, "the sibling's bytes changed, so nothing may be carried"):equals(2)
+  t:expect(r.code, "the sibling's bytes changed, so nothing may be carried"):equals(78)
   t:expect(r.stdout, "names why"):contains("tracked tree changed")
 end)
 
@@ -167,7 +167,7 @@ prova.test("a narrowed resume, or one with nothing journaled, REFUSES", {
 }, function(t)
   local sb = t:use(sandbox)
   local none = run(sb.pkg, "--resume")
-  t:expect(none.code, "nothing to resume from"):equals(2)
+  t:expect(none.code, "nothing to resume from"):equals(78)
   t:expect(none.stdout):contains("no earlier run of this lane")
   t:expect(count(sb, "one"), "and nothing ran"):equals(0)
 
