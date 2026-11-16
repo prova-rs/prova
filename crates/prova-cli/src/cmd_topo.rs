@@ -123,6 +123,14 @@ pub(crate) fn up_subcommand(args: Vec<String>) -> ExitCode {
     let state_home = home.clone();
     let state_name = name.clone();
     let result = prova_core::up(&files, &name, &config, |endpoints, snapshot| {
+        // Log before act (E m/14575): the endpoint block reaches the log, flushed, BEFORE the
+        // record flips to ready. `start` returns on ready and names this log as the whole record,
+        // so a reader the instant it exits must find the block there; written after, `start` could
+        // return inside the gap.
+        print_endpoints(&state_name, endpoints);
+        println!("\n  holding — Ctrl-C to tear down");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        planted_ready_gap();
         // Flip to ready, now that endpoints and the rehydration payload are real.
         let record = runstate::Record {
             name: state_name.clone(),
@@ -141,8 +149,6 @@ pub(crate) fn up_subcommand(args: Vec<String>) -> ExitCode {
         if let Err(e) = runstate::write(&state_home, &record) {
             eprintln!("prova up: could not record run-state: {e}");
         }
-        print_endpoints(&state_name, endpoints);
-        println!("\n  holding — Ctrl-C to tear down");
     });
     // Clean teardown completed (or provisioning failed) — drop our record.
     runstate::remove(&home, &name);
@@ -596,6 +602,17 @@ pub(crate) fn resolve_home(manifest_path: Option<&str>) -> Result<Home, ExitCode
                 Err(crate::exit::config())
             }
         },
+    }
+}
+
+/// A debug build's planted pause between the holder's two ready steps, so a row can hold it there:
+/// `PROVA_TEST_READY_GAP_MS=<ms>` (E m/14575). A release build never pauses.
+fn planted_ready_gap() {
+    if !cfg!(debug_assertions) {
+        return;
+    }
+    if let Some(ms) = std::env::var("PROVA_TEST_READY_GAP_MS").ok().and_then(|v| v.parse::<u64>().ok()) {
+        std::thread::sleep(Duration::from_millis(ms.min(10_000)));
     }
 }
 

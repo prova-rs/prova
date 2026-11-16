@@ -107,3 +107,50 @@ fn start_ps_down_supervises_a_detached_topology() {
 
     std::fs::remove_dir_all(&root).ok();
 }
+
+/// E m/14575: `start` names the holder's log so a reader has the whole record once it exits. The
+/// holder writes its endpoint block to that log, flushed, before it signals ready, so `start` can
+/// never return ahead of it. The row holds the holder between its two ready steps
+/// (`PROVA_TEST_READY_GAP_MS`, a debug build's seam): written the other way round, `start` returns
+/// inside the gap and the log lacks the endpoints.
+#[test]
+fn start_returns_only_once_the_log_holds_the_endpoint_block() {
+    let root = std::env::temp_dir().join(format!("prova-topo-logfirst-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("fixture")).unwrap();
+    std::fs::write(
+        root.join("prova.toml"),
+        "[run]\nproofs = [\".\"]\n[luals]\nmanage = \"never\"\n\
+         [dependencies]\nfixture = { path = \"./fixture\" }\n\
+         [topologies]\nlogged = { package = \"fixture\", factory = \"logged\" }\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("fixture/prova.toml"), "[package]\nname = \"fixture\"\n").unwrap();
+    std::fs::write(
+        root.join("fixture/init.lua"),
+        "local M = {}\nfunction M.logged(ctx)\n  return { web = { url = \"http://127.0.0.1:18431\" } }\nend\nreturn M\n",
+    )
+    .unwrap();
+    /// Stops the holder and removes the tree, even when an assertion fails.
+    struct Down(std::path::PathBuf);
+    impl Drop for Down {
+        fn drop(&mut self) {
+            prova(&self.0, &["down", "logged"]);
+            std::fs::remove_dir_all(&self.0).ok();
+        }
+    }
+    let _down = Down(root.clone());
+
+    let out = Command::new(env!("CARGO_BIN_EXE_prova"))
+        .current_dir(&root)
+        .args(["start", "logged"])
+        .env("PROVA_TEST_READY_GAP_MS", "1500")
+        .output()
+        .expect("run prova");
+    assert!(out.status.success(), "start failed: {}", String::from_utf8_lossy(&out.stderr));
+    let log = std::fs::read_to_string(root.join(".prova/var/running/logged.log")).unwrap_or_default();
+    assert!(
+        log.contains("logged — up:") && log.contains("http://127.0.0.1:18431"),
+        "the log a reader follows after `start` exits holds the endpoint block: {log:?}"
+    );
+}
