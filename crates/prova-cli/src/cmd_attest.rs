@@ -380,7 +380,7 @@ pub(crate) fn resolve_for_obligations(
         Ok(l) => l,
         Err(e) => {
             eprintln!("prova: {e}");
-            return Err(ExitCode::from(crate::exit::EXIT_UNRULED));
+            return Err(crate::exit::host());
         }
     };
     let mut run =

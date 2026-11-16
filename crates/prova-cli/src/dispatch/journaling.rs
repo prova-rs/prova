@@ -89,10 +89,17 @@ fn journal_key(cli: &Cli, config: &prova_core::RunConfig) -> Vec<String> {
     key
 }
 
-/// A `--resume` refusal: said once, exit 2.
+/// A `--resume` refusal that is the caller's: flags that contradict it, or no package (78, E m/14323).
 fn refuse<T>(why: impl std::fmt::Display) -> Result<T, ExitCode> {
     eprintln!("prova: --resume: {why}");
-    Err(ExitCode::from(crate::exit::EXIT_UNRULED))
+    Err(crate::exit::config())
+}
+
+/// A `--resume` refusal that is the run's state, not the caller's flags: the tree couldn't be read, or the journal
+/// lends no resume (nothing journaled, the tree or prova changed since) (2).
+fn refuse_state<T>(why: impl std::fmt::Display) -> Result<T, ExitCode> {
+    eprintln!("prova: --resume: {why}");
+    Err(crate::exit::host())
 }
 
 /// Plan the journal every UNNARROWED run keeps and, under `--resume`, hand the engine the passes it
@@ -136,7 +143,7 @@ pub(super) fn plan_journal(
     let roots: Vec<std::path::PathBuf> = resume_roots.iter().map(|r| h.dir.join(r)).collect();
     let tree = match crate::tree::fingerprint_with(h, &roots) {
         Ok(t) => t,
-        Err(why) if cli.resume => return refuse(why),
+        Err(why) if cli.resume => return refuse_state(why),
         Err(_) => return Ok(None),
     };
     let key = journal_key(cli, config);
@@ -216,10 +223,10 @@ fn plan_conduct_cache(
     }));
 }
 
-/// A `--reuse` refusal: said once, exit 2.
+/// A `--reuse` refusal that is the caller's: flags that make a reused pass dishonest, or no package (78).
 fn refuse_reuse<T>(why: impl std::fmt::Display) -> Result<T, ExitCode> {
     eprintln!("prova: --reuse: {why}");
-    Err(ExitCode::from(crate::exit::EXIT_UNRULED))
+    Err(crate::exit::config())
 }
 
 /// Hand the engine the input-reuse store (`config.input_reuse`): on every run that can honestly FILE
@@ -260,7 +267,8 @@ fn plan_input_reuse(
     }
     let store = reuse_store(h);
     if cli.reuse && std::fs::create_dir_all(&store).is_err() {
-        return refuse_reuse(format!("the store {} cannot be created", store.display()));
+        eprintln!("prova: --reuse: the store {} cannot be created", store.display());
+        return Err(crate::exit::host());
     }
     *config = std::mem::take(config)
         .with_input_reuse(Some(prova_core::reuse::InputReuse { store, carry: cli.reuse }));
@@ -277,25 +285,25 @@ fn carried(
     binary: &str,
 ) -> Result<(BTreeMap<String, String>, String), ExitCode> {
     let Some(prior) = journal::load(home, key) else {
-        return refuse(format!(
+        return refuse_state(format!(
             "no earlier run of this lane ({}) is journaled here — run it once without --resume",
             key.join(" ")
         ));
     };
     let who = format!("run {} (started {})", prior.header.run_id, prior.header.started_at);
     if prior.header.tree != tree {
-        return refuse(format!(
+        return refuse_state(format!(
             "the tracked tree changed since {who} — a verdict is reused only over the identical \
              bytes. Run the lane, or --last-failed for an inner loop that attests nothing"
         ));
     }
     if prior.end == Some(None) {
-        return refuse(format!(
+        return refuse_state(format!(
             "the tracked tree changed DURING {who}, so its verdicts belong to no single tree"
         ));
     }
     if prior.header.binary != binary {
-        return refuse(format!(
+        return refuse_state(format!(
             "prova itself changed since {who} (binary {} → {binary}) — a verdict is reused only \
              from the same prova",
             prior.header.binary

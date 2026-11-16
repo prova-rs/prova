@@ -128,10 +128,10 @@ prova.test("--reuse refuses where carrying would be dishonest", {
   local sb = t:use(sandbox)
   run(sb.pkg)
   local banked = run(sb.pkg, "--reuse --update-baseline")
-  t:expect(banked.code, "a reused test took no measurement"):equals(2)
+  t:expect(banked.code, "a reused test took no measurement"):equals(78)
   t:expect(banked.stdout):contains("--reuse: --update-baseline")
   local falsify = run(sb.pkg, "--reuse --falsify")
-  t:expect(falsify.code, "a falsify pass is a killed mutant"):equals(2)
+  t:expect(falsify.code, "a falsify pass is a killed mutant"):equals(78)
   t:expect(count(sb, "keyed"), "and nothing ran"):equals(1)
 end)
 

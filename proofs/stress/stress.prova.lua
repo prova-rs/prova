@@ -209,14 +209,31 @@ echo "exit=$?"
   end
 end)
 
+prova.test("a stress refusal says whose it is: a --listing that isn't JSON is the caller's, a listing cargo can't make is the runtime's", {
+  requires = { "unix" },
+  covers = "docs/design/flakes.md#stress-mode",
+}, function(t)
+  local sb = sandbox(t, { "tests::ok" })
+  fs.write(sb.listing, "not json")
+  local bad = stress(sb, "")
+  t:expect(bad.code, "a --listing that doesn't read is the caller's (78): " .. bad.stdout):equals(78)
+  -- No --listing: stress runs `cargo nextest list` in a package with no Cargo.toml, and that fails at run time.
+  local r = shell.run(prova.bin .. " stress", {
+    cwd = sb.pkg,
+    env = { PROVA_VAR_DIR = "", STRESS_STATE = sb.state },
+    merge_stderr = true,
+    timeout = "120s",
+  })
+  t:expect(r.code, "a listing that couldn't be made is the runtime's (2): " .. r.stdout):equals(2)
+end)
+
 prova.test("a stress of nothing is refused, never green", {
   requires = { "unix" },
   covers = "docs/design/flakes.md#stress-mode",
 }, function(t)
   local sb = sandbox(t, { "tests::ok" })
   local r = stress(sb, "-k nomatch")
-  -- 2 until E rules cmd_stress's shared refusal (config and runtime both reach it); the --copies refusal is config.
-  t:expect(r.code, r.stdout):equals(2)
+  t:expect(r.code, "a selection that matched nothing is the change's: " .. r.stdout):equals(78)
   t:expect(r.stdout):contains("matched no case")
   local bad = stress(sb, "--copies 0")
   t:expect(bad.code):equals(78)

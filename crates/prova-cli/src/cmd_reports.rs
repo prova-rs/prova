@@ -264,7 +264,7 @@ fn choose(home: &Home) -> ExitCode {
         }
         Err(err) => {
             eprintln!("prova: reports: selection failed: {err}");
-            ExitCode::from(crate::exit::EXIT_UNRULED)
+            crate::exit::host()
         }
     }
 }
@@ -279,7 +279,7 @@ fn open_pick(name: &str, kind: &str, path: &str) -> ExitCode {
         Err(e) => {
             eprintln!("prova: could not open {path}: {e}");
             println!("{path}");
-            ExitCode::from(crate::exit::EXIT_UNRULED)
+            crate::exit::host()
         }
     }
 }

@@ -214,7 +214,7 @@ pub(crate) fn run(argv: Vec<String>) -> ExitCode {
     {
         let _ = a;
         eprintln!("prova stress: unix only — it needs process groups and signals");
-        crate::exit::unmet()
+        crate::exit::host()
     }
 }
 
@@ -371,12 +371,17 @@ mod unix {
         ok
     }
 
-    /// The package, its manifest, and the selected cases — or the refusal (exit 2) that says why
-    /// there is nothing to stress.
+    /// The package, its manifest, and the selected cases — or the refusal that says why there is nothing to stress:
+    /// the change's (78: no package, a bad selector, a selection that matched nothing), or the runtime's (2: the
+    /// listing itself failed) (E m/14323).
     fn prepare(a: &Args) -> Result<(crate::home::Home, crate::manifest::Manifest, Vec<Case>), ExitCode> {
         let refuse = |why: String| {
             eprintln!("prova stress: {why}");
-            ExitCode::from(crate::exit::EXIT_UNRULED)
+            crate::exit::config()
+        };
+        let failed = |why: String| {
+            eprintln!("prova stress: {why}");
+            crate::exit::host()
         };
         let cwd = std::env::current_dir().unwrap_or_default();
         let Ok(Some(home)) = crate::home::find(&cwd) else {
@@ -388,7 +393,9 @@ mod unix {
             .ok()
             .and_then(|t| crate::manifest::Manifest::parse(&t).ok())
             .unwrap_or_default();
-        let listed = listing(a, &home, manifest.stress.nextest.clone()).map_err(refuse)?;
+        // A --listing file is the caller's argument (78); running `cargo nextest list` is the runtime's (2).
+        let listed = listing(a, &home, manifest.stress.nextest.clone())
+            .map_err(|why| if a.listing.is_some() { refuse(why) } else { failed(why) })?;
         let cases = select(&listed, a).map_err(refuse)?;
         if cases.is_empty() {
             return Err(refuse("the selection matched no case — a stress of nothing is vacuous".into()));
@@ -516,7 +523,7 @@ mod unix {
         let fail_dir = out_dir.join("fail");
         if let Err(e) = crate::var::dir(&home).and_then(|_| std::fs::create_dir_all(&fail_dir)) {
             eprintln!("prova stress: cannot create {}: {e}", fail_dir.display());
-            return ExitCode::from(crate::exit::EXIT_UNRULED);
+            return crate::exit::host();
         }
         let tmp_root = short_temp_base().join(format!("ps{}", std::process::id()));
         let _ = std::fs::create_dir_all(&tmp_root);

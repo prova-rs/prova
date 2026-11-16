@@ -75,7 +75,7 @@ fn resolve_mcp_env(
         Ok(layout) => layout,
         Err(err) => {
             eprintln!("prova: cannot determine home directories: {err}");
-            return Err(ExitCode::from(crate::exit::EXIT_UNRULED));
+            return Err(crate::exit::host());
         }
     };
 
@@ -202,7 +202,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
         Ok(rt) => rt,
         Err(err) => {
             eprintln!("prova mcp: cannot start async runtime: {err}");
-            return ExitCode::from(crate::exit::EXIT_UNRULED);
+            return crate::exit::host();
         }
     };
 

@@ -273,7 +273,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
         Ok(l) => l,
         Err(err) => {
             eprintln!("prova init: cannot locate config directory: {err}");
-            return ExitCode::from(crate::exit::EXIT_UNRULED);
+            return crate::exit::host();
         }
     };
     let (key, entry) = match resolve_entry(&cli, &sys_layout) {
@@ -309,7 +309,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
         },
     ) {
         eprintln!("prova init: render failed: {err}");
-        return ExitCode::from(crate::exit::EXIT_UNRULED);
+        return crate::exit::host();
     }
 
     // IDE wiring, as a finishing step, over whatever manifest the archetype rendered. A render that
@@ -321,7 +321,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
                     crate::ide::wire(&home, crate::manifest::Manage::Always, &sys_layout)
                 {
                     eprintln!("prova init: IDE annotations: {err}");
-                    return ExitCode::from(crate::exit::EXIT_UNRULED);
+                    return crate::exit::host();
                 }
             }
             Ok(None) => {
@@ -331,7 +331,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
             }
             Err(err) => {
                 eprintln!("prova init: {err}");
-                return ExitCode::from(crate::exit::EXIT_UNRULED);
+                return crate::exit::config();
             }
         }
     }
@@ -385,7 +385,7 @@ fn select_key(catalog: &crate::catalog::Catalog) -> Result<String, ExitCode> {
         }
         Err(err) => {
             eprintln!("prova init: selection failed: {err}");
-            Err(ExitCode::from(crate::exit::EXIT_UNRULED))
+            Err(crate::exit::host())
         }
     }
 }

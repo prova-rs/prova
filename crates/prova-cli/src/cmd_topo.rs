@@ -153,7 +153,7 @@ pub(crate) fn up_subcommand(args: Vec<String>) -> ExitCode {
         }
         Err(err) => {
             eprintln!("prova up: {err}");
-            ExitCode::from(crate::exit::EXIT_UNRULED)
+            crate::exit::host()
         }
     }
 }
@@ -196,7 +196,7 @@ fn claim_the_name(verb: &str, home: &Home, name: &str) -> Result<(), ExitCode> {
                 "prova {verb}: topology {name:?} was claimed by another process while this one was \
                  starting — it is coming up there. `prova ps` to watch it, `prova down {name}` to stop it."
             );
-            Err(ExitCode::from(crate::exit::EXIT_UNRULED))
+            Err(crate::exit::host())
         }
         Err(e) => {
             eprintln!("prova {verb}: could not record run-state: {e}");
@@ -241,7 +241,7 @@ fn guard_double_provision(verb: &str, home: &Home, name: &str) -> Result<(), Exi
                  {why}\n  Inspect it, or delete it if you are sure nothing is held: rm {}",
                 runstate::path(home, name).display()
             );
-            return Err(ExitCode::from(crate::exit::EXIT_UNRULED));
+            return Err(crate::exit::host());
         }
     };
     if runstate::is_alive(rec.pid) {
@@ -258,7 +258,7 @@ fn guard_double_provision(verb: &str, home: &Home, name: &str) -> Result<(), Exi
                 runstate::log_path(home, name).display()
             ),
         }
-        return Err(ExitCode::from(crate::exit::EXIT_UNRULED));
+        return Err(crate::exit::host());
     }
     if rec.status == runstate::Status::Starting {
         eprintln!(
@@ -285,7 +285,7 @@ pub(crate) fn up_list(profile: Option<String>, manifest_path: Option<String>) ->
         Ok(names) => names,
         Err(err) => {
             eprintln!("prova up: {err}");
-            return ExitCode::from(crate::exit::EXIT_UNRULED);
+            return crate::exit::red();
         }
     };
     if names.is_empty() {
@@ -311,7 +311,7 @@ pub(crate) fn up_from_git(name: Option<&str>, url: &str, fixed: bool) -> ExitCod
         Ok(l) => l,
         Err(err) => {
             eprintln!("prova up: cannot determine home directories: {err}");
-            return ExitCode::from(crate::exit::EXIT_UNRULED);
+            return crate::exit::host();
         }
     };
     eprintln!("prova: fetching {url}…");
@@ -324,7 +324,7 @@ pub(crate) fn up_from_git(name: Option<&str>, url: &str, fixed: bool) -> ExitCod
         Ok(s) => s,
         Err(err) => {
             eprintln!("prova up: {err}");
-            return ExitCode::from(crate::exit::EXIT_UNRULED);
+            return crate::exit::host();
         }
     };
 
@@ -362,7 +362,7 @@ pub(crate) fn up_from_git(name: Option<&str>, url: &str, fixed: bool) -> ExitCod
             Ok(None) => {}
             Ok(Some(reason)) => {
                 eprintln!("prova up: cannot stand up topology {name:?}: it requires {reason}");
-                return crate::exit::unmet();
+                return crate::exit::host();
             }
             Err(err) => {
                 eprintln!("prova up: topology {name:?}: invalid requires {req:?}: {err}");
@@ -391,7 +391,7 @@ pub(crate) fn up_from_git(name: Option<&str>, url: &str, fixed: bool) -> ExitCod
         }
         Err(err) => {
             eprintln!("prova up: {err}");
-            ExitCode::from(crate::exit::EXIT_UNRULED)
+            crate::exit::host()
         }
     }
 }
@@ -471,7 +471,7 @@ pub(crate) fn build_topology_run(
 ) -> Result<TopologyRun, ExitCode> {
     let layout = XdgSystemLayout::new().map_err(|err| {
         eprintln!("prova: cannot determine home directories: {err}");
-        ExitCode::from(crate::exit::EXIT_UNRULED)
+        crate::exit::host()
     })?;
 
     // Locate the package (the manifest tells us where topologies + plugins live).
@@ -570,7 +570,7 @@ pub(crate) fn check_topology_requires(prep: &TopologyRun, name: &str) -> Result<
             Ok(None) => {}
             Ok(Some(reason)) => {
                 eprintln!("prova up: cannot stand up topology {name:?}: it requires {reason}");
-                return Err(crate::exit::unmet());
+                return Err(crate::exit::host());
             }
             Err(e) => {
                 eprintln!("prova up: topology {name:?}: invalid requires {req:?}: {e}");
@@ -874,14 +874,14 @@ pub(crate) fn start_subcommand(args: Vec<String>) -> ExitCode {
     }
     if let Err(e) = runstate::dir(&home) {
         eprintln!("prova start: cannot create run-state dir: {e}");
-        return ExitCode::from(crate::exit::EXIT_UNRULED);
+        return crate::exit::host();
     }
 
     let exe = match prova_core::current_exe() {
         Ok(p) => p,
         Err(e) => {
             eprintln!("prova start: cannot find the prova executable: {e}");
-            return ExitCode::from(crate::exit::EXIT_UNRULED);
+            return crate::exit::host();
         }
     };
     // Arm BEFORE the spawn: the window between spawning a holder and beginning to watch it is
@@ -904,13 +904,13 @@ pub(crate) fn start_subcommand(args: Vec<String>) -> ExitCode {
     }
     if let Err(e) = runstate::detach(&mut cmd, &log) {
         eprintln!("prova start: cannot open log {}: {e}", log.display());
-        return ExitCode::from(crate::exit::EXIT_UNRULED);
+        return crate::exit::host();
     }
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("prova start: cannot spawn `prova up`: {e}");
-            return ExitCode::from(crate::exit::EXIT_UNRULED);
+            return crate::exit::host();
         }
     };
 
@@ -1016,12 +1016,12 @@ fn await_registration(
                     }
                 }
                 runstate::remove(home, name);
-                return ExitCode::from(crate::exit::EXIT_UNRULED);
+                return crate::exit::host();
             }
             Ok(None) => {}
             Err(e) => {
                 eprintln!("prova start: lost track of the child process: {e}");
-                return ExitCode::from(crate::exit::EXIT_UNRULED);
+                return crate::exit::host();
             }
         }
         if Instant::now() >= deadline {
@@ -1033,7 +1033,7 @@ fn await_registration(
             );
             stop_holder(child, name, &mut relay);
             forget_if_gone(child, home, name);
-            return ExitCode::from(crate::exit::EXIT_UNRULED);
+            return crate::exit::host();
         }
         std::thread::sleep(Duration::from_millis(200));
     }
@@ -1067,7 +1067,7 @@ pub(crate) fn down_subcommand(args: Vec<String>) -> ExitCode {
                  | grep 'prova up {name}'`), then delete the record: rm {}",
                 runstate::path(&home, &name).display()
             );
-            return ExitCode::from(crate::exit::EXIT_UNRULED);
+            return crate::exit::host();
         }
     };
 
@@ -1090,7 +1090,7 @@ pub(crate) fn down_subcommand(args: Vec<String>) -> ExitCode {
             rec.pid
         );
         runstate::remove(&home, &name);
-        return ExitCode::from(crate::exit::EXIT_UNRULED);
+        return crate::exit::host();
     }
     runstate::remove(&home, &name);
     println!("torn down {name}.");

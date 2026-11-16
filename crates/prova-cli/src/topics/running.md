@@ -28,12 +28,10 @@ classes on one line ("switched off: ut (3) …"). Exact `--node` implies the thr
 | Code | Meaning |
 |---|---|
 | 0 | green (or green-with-skips) |
-| 1 | at least one failure — or a FLAKY test (`--flakes=warn` reports one without failing) |
-| 2 | a guarantee this host can't keep: a `must_run` capability unmet (broken environment ≠ skipped test). The host's fault: fix the host, or pace and retry |
-| 78 | prova's own usage or configuration error (sysexits `EX_CONFIG`): no `prova.toml` where one is needed, a manifest that doesn't read, an unknown profile, flag, topic or name, a malformed `must_run` expression, a selection that matched nothing. The change's (or the caller's) fault: nothing on the host fixes it |
-
-A few failures that are neither (an I/O error writing a report, a child that failed to start) still exit 2 until each is
-classified.
+| 1 | at least one failure, a proof file that can't load included — or a FLAKY test (`--flakes=warn` reports one without failing). The change's |
+| 2 | the host or the runtime, not the change: a `must_run` guarantee unmet (broken environment ≠ skipped test), an I/O or runtime failure (a report that can't be written, a child that won't start, a fetch that failed), or a `--resume` the journal can't lend. Pace and retry |
+| 70 | prova's own bug (sysexits `EX_SOFTWARE`): reported to prova's owner, never blamed on the change |
+| 78 | prova's own usage or configuration error (sysexits `EX_CONFIG`): no `prova.toml` where one is needed, a manifest that doesn't read, an unknown profile, flag, topic or name, a malformed `must_run` expression, a package source that names both `path` and `git`, a selection that matched nothing. The change's (or the caller's) fault: nothing on the host fixes it |
 
 ## Output for machines
 

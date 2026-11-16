@@ -99,7 +99,7 @@ fn parse_eval_args(args: Vec<String>) -> Result<EvalCli, ExitCode> {
                 let mut buf = String::new();
                 if let Err(e) = std::io::stdin().read_to_string(&mut buf) {
         eprintln!("prova eval: cannot read snippet from stdin: {e}");
-        return Err(ExitCode::from(crate::exit::EXIT_UNRULED));
+        return Err(crate::exit::host());
                 }
                 code = Some(buf);
             }
@@ -164,7 +164,7 @@ pub(crate) fn eval_subcommand(args: Vec<String>) -> ExitCode {
         Ok(layout) => layout,
         Err(err) => {
             eprintln!("prova: cannot determine home directories: {err}");
-            return ExitCode::from(crate::exit::EXIT_UNRULED);
+            return crate::exit::host();
         }
     };
 

@@ -503,7 +503,7 @@ pub(crate) fn layer_cli_packages(
         }
         Err(e) => {
             eprintln!("prova: {e}");
-            return Err(ExitCode::from(crate::exit::EXIT_UNRULED));
+            return Err(e.exit());
         }
     }
     Ok(())
@@ -541,7 +541,7 @@ fn resolve_manifest_packages(
     )
     .map_err(|e| {
         eprintln!("prova: {e}");
-        ExitCode::from(crate::exit::EXIT_UNRULED)
+        e.exit()
     })?;
 
     // Quietly reap plugin source trees unused past the retention window (throttled to ~daily). The
@@ -705,7 +705,7 @@ fn check_must_run(
             "prova: a guaranteed capability is a promise about this environment — an unmet one is a \
              broken environment, not a skipped test. Fix the environment, or drop it from `must_run`."
         );
-        return Err(crate::exit::unmet());
+        return Err(crate::exit::host());
     }
 
     Ok(())

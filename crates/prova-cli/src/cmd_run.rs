@@ -307,11 +307,11 @@ fn provision_runner(
                 "prova: [runner] build failed ({s}) — the declared runner could not be \
                  provisioned; fix the build, or invoke a prova without this manifest"
             );
-            Some(ExitCode::from(crate::exit::EXIT_UNRULED))
+            Some(crate::exit::host())
         }
         Err(e) => {
             eprintln!("prova: [runner] build could not start: {e}");
-            Some(ExitCode::from(crate::exit::EXIT_UNRULED))
+            Some(crate::exit::host())
         }
     }
 }
@@ -645,7 +645,7 @@ pub(crate) fn lock_subcommand(args: Vec<String>) -> ExitCode {
         Ok(f) => f,
         Err(e) => {
             eprintln!("prova: lock {token:?}: {e}");
-            return ExitCode::from(crate::exit::EXIT_UNRULED);
+            return crate::exit::host();
         }
     };
     let ran_from = std::time::Instant::now();
@@ -675,7 +675,7 @@ pub(crate) fn lock_subcommand(args: Vec<String>) -> ExitCode {
         }
         Err(e) => {
             eprintln!("prova: lock: cannot run {:?}: {e}", command[0]);
-            ExitCode::from(crate::exit::EXIT_UNRULED)
+            crate::exit::host()
         }
     }
 }

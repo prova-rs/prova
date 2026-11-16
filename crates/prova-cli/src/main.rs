@@ -475,7 +475,7 @@ fn main() -> ExitCode {
             eprintln!("prova: `prova {old}` is deprecated — use `prova {new}` (retires at 1.0)");
             let Some(verb) = VERBS.iter().find(|v| v.name == *new) else {
                 eprintln!("prova: internal: deprecated verb `{old}` maps to unknown `{new}`");
-                return ExitCode::from(crate::exit::EXIT_UNRULED);
+                return ExitCode::from(crate::exit::EXIT_INTERNAL);
             };
             raw.next();
             return (verb.run)(raw.collect());
@@ -945,7 +945,7 @@ fn skill_subcommand(args: Vec<String>) -> ExitCode {
     let path = dir.join("SKILL.md");
     if let Err(err) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, SKILL)) {
         eprintln!("prova: skill: could not write {}: {err}", path.display());
-        return ExitCode::from(crate::exit::EXIT_UNRULED);
+        return crate::exit::host();
     }
     println!("wrote {}", path.display());
     ExitCode::SUCCESS

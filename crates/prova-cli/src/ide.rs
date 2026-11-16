@@ -83,7 +83,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
         Ok(l) => l,
         Err(err) => {
             eprintln!("prova ide setup: cannot locate cache directory: {err}");
-            return ExitCode::from(crate::exit::EXIT_UNRULED);
+            return crate::exit::host();
         }
     };
 
@@ -91,7 +91,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("prova ide setup: {err}");
-            ExitCode::from(crate::exit::EXIT_UNRULED)
+            crate::exit::host()
         }
     }
 }

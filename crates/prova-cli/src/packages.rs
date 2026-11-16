@@ -126,6 +126,45 @@ struct PackageRequires {
 /// register its namespace. `base_dir` is the manifest's directory (local paths resolve relative to
 /// it); `sources` are the `[sources]` aliases; `prova_version` is the running version, checked
 /// against each plugin's `requires.prova`. Errors name the plugin that failed.
+/// Why a package didn't resolve, and whose fault that is (E m/14323): a fetch that failed is the host's or the
+/// network's (exit 2); anything else (a source naming both `path` and `git`, a manifest that doesn't read, a `prova`
+/// range this build doesn't meet, no entry) is the change's (exit 78).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackageError {
+    /// The fetch failed: the host's, not the change's.
+    pub host: bool,
+    pub msg: String,
+}
+
+impl PackageError {
+    fn host(msg: String) -> Self {
+        PackageError { host: true, msg }
+    }
+
+    /// The exit this error is: [`crate::exit::host`] for a failed fetch, else [`crate::exit::config`].
+    pub fn exit(&self) -> std::process::ExitCode {
+        if self.host { crate::exit::host() } else { crate::exit::config() }
+    }
+}
+
+impl From<String> for PackageError {
+    fn from(msg: String) -> Self {
+        PackageError { host: false, msg }
+    }
+}
+
+impl From<PackageError> for String {
+    fn from(e: PackageError) -> Self {
+        e.msg
+    }
+}
+
+impl std::fmt::Display for PackageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.msg)
+    }
+}
+
 pub fn resolve_packages(
     plugins: &BTreeMap<String, PackageSource>,
     base_dir: &Path,
@@ -133,7 +172,7 @@ pub fn resolve_packages(
     sources: &BTreeMap<String, String>,
     prova_version: &str,
     git_opts: &GitFetchOptions,
-) -> Result<ResolvedPackages, String> {
+) -> Result<ResolvedPackages, PackageError> {
     let mut resolved = ResolvedPackages::default();
     let mut leases: Vec<Lease> = Vec::new();
 
@@ -158,15 +197,18 @@ pub fn resolve_packages(
     while let Some((name, source, dir, via)) = queue.pop_front() {
         // Errors name the plugin that asked, not just the plugin that failed — a transitive
         // failure is otherwise unattributable from a consumer's manifest, which never mentions it.
-        let blame = |e: String| match &via {
-            Some(parent) => format!("package {name:?} (required by {parent:?}): {e}"),
-            None => format!("package {name:?}: {e}"),
+        let blame = |e: PackageError| PackageError {
+            host: e.host,
+            msg: match &via {
+                Some(parent) => format!("package {name:?} (required by {parent:?}): {}", e.msg),
+                None => format!("package {name:?}: {}", e.msg),
+            },
         };
 
         let detail = match &source {
             // A bare string is classified: a git URL or org/repo shorthand becomes a git source; a
             // path stays a path. (The table form is already explicit.)
-            PackageSource::Path(s) => classify_string_source(s, sources).map_err(blame)?,
+            PackageSource::Path(s) => classify_string_source(s, sources).map_err(|e| blame(e.into()))?,
             PackageSource::Detailed(d) => d.clone(),
         };
         let one =
@@ -499,15 +541,15 @@ fn resolve_one(
     layout: &dyn SystemLayout,
     prova_version: &str,
     git_opts: &GitFetchOptions,
-) -> Result<ResolvedOne, String> {
+) -> Result<ResolvedOne, PackageError> {
     let (root, lease) = match (&detail.path, &detail.git) {
-        (Some(_), Some(_)) => return Err("set either `path` or `git`, not both".into()),
+        (Some(_), Some(_)) => return Err(String::from("set either `path` or `git`, not both").into()),
         (Some(path), None) => (resolve_relative(base_dir, path), None),
         (None, Some(git)) => {
-            let (root, lease) = fetch_git(git, detail, layout, git_opts)?;
+            let (root, lease) = fetch_git(git, detail, layout, git_opts).map_err(PackageError::host)?;
             (root, Some(lease))
         }
-        (None, None) => return Err("needs a `path` or a `git` source".into()),
+        (None, None) => return Err(String::from("needs a `path` or a `git` source").into()),
     };
 
     // A directory source may carry a `prova.toml` with a `[plugin]` section. When the source is a direct file, its own
@@ -780,7 +822,8 @@ mod tests {
             &GitFetchOptions::default(),
         )
         .unwrap_err();
-        assert!(err.contains("nope"), "{err}");
+        assert!(err.msg.contains("nope"), "{err}");
+        assert!(!err.host, "a missing local package is the change's, never the host's");
     }
 
     #[test]

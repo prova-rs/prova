@@ -700,7 +700,7 @@ fn attach_held(
             eprintln!(
                 "prova: --topology {want:?}: no held topology by that name is running (see `prova ps`; hold one with `prova start {want}`)"
             );
-            return Err(ExitCode::from(crate::exit::EXIT_UNRULED));
+            return Err(crate::exit::host());
         }
     }
     config = config.with_attached_tracking(attached.clone());
@@ -816,7 +816,7 @@ fn backfill_listing(suites: &[prova_core::Suite], config: &prova_core::RunConfig
             Ok(nodes) => unbacked.extend(nodes.into_iter().filter(|n| !n.backed).map(|n| n.path)),
             Err(err) => {
                 eprintln!("prova: {}: {err}", suite.name);
-                return ExitCode::from(crate::exit::EXIT_UNRULED);
+                return crate::exit::red();
             }
         }
     }
@@ -853,7 +853,7 @@ fn nodes_listing(
             Ok(nodes) => nodes.iter().for_each(|n| println!("{}", n.path)),
             Err(err) => {
                 eprintln!("prova: {}: {err}", suite.name);
-                return ExitCode::from(crate::exit::EXIT_UNRULED);
+                return crate::exit::red();
             }
         }
     }
@@ -880,7 +880,7 @@ fn placement_handshake(manifest_broker: Option<&str>) -> Result<(), ExitCode> {
             }
             Err(e) => {
                 eprintln!("prova: {e} (configured via {source}; fix the address or start the broker — prova never silently falls back to local)");
-                return Err(ExitCode::from(crate::exit::EXIT_UNRULED));
+                return Err(crate::exit::host());
             }
         }
     }
@@ -889,7 +889,7 @@ fn placement_handshake(manifest_broker: Option<&str>) -> Result<(), ExitCode> {
         || std::env::var("PROVA_PLACEMENT_BROKER").is_ok_and(|v| !v.trim().is_empty())
     {
         eprintln!("prova: a placement broker is configured, but the placement transport is a unix socket — unavailable on this platform");
-        return Err(crate::exit::unmet());
+        return Err(crate::exit::host());
     }
     Ok(())
 }
@@ -955,7 +955,7 @@ fn build_reporter(
             )),
             Err(e) => {
                 eprintln!("prova: cannot open junit report file {path:?}: {e}");
-                return Err(ExitCode::from(crate::exit::EXIT_UNRULED));
+                return Err(crate::exit::host());
             }
         }
     }
@@ -1219,7 +1219,7 @@ fn resolve_run(cli: &mut Cli) -> Result<(XdgSystemLayout, Option<Home>, RunEnv),
         Ok(layout) => layout,
         Err(err) => {
             eprintln!("prova: cannot determine home directories: {err}");
-            return Err(ExitCode::from(crate::exit::EXIT_UNRULED));
+            return Err(crate::exit::host());
         }
     };
     let home = resolve_run_home(cli)?;
@@ -1388,7 +1388,7 @@ pub(crate) fn run(cli_args: Vec<String>) -> ExitCode {
         ),
         Err(err) => {
             eprintln!("prova: {err}");
-            ExitCode::from(crate::exit::EXIT_UNRULED)
+            crate::exit::host()
         }
     }
 }

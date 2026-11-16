@@ -173,6 +173,6 @@ prova.test("a narrowed resume, or one with nothing journaled, REFUSES", {
 
   run(sb.pkg)
   local narrowed = run(sb.pkg, "-k steady --resume")
-  t:expect(narrowed.code, "a resume carries a whole lane"):equals(2)
+  t:expect(narrowed.code, "a resume carries a whole lane"):equals(78)
   t:expect(narrowed.stdout):contains("narrow")
 end)

@@ -122,3 +122,54 @@ fn a_passing_proof_is_green_and_exits_0() {
     let out = prova(&tmp.0, &[]);
     assert_eq!(code(&out), 0, "{}", said(&out));
 }
+
+// E m/14323's rulings on the shared helpers: each split by cause, a row per side.
+
+#[test]
+fn a_package_source_that_names_both_path_and_git_is_a_config_error() {
+    let tmp = Tmp::new("dep-both");
+    package(
+        &tmp.0,
+        "[run]\nproofs = [\"tests\"]\n\n[dependencies]\nx = { path = \"a\", git = \"b\" }\n",
+        PASSING,
+    );
+    let out = prova(&tmp.0, &[]);
+    assert_eq!(code(&out), 78, "{}", said(&out));
+}
+
+#[test]
+fn a_package_fetch_that_fails_is_the_hosts_and_exits_2() {
+    let tmp = Tmp::new("dep-fetch");
+    let gone = tmp.0.join("no-such-repo");
+    package(
+        &tmp.0,
+        &format!("[run]\nproofs = [\"tests\"]\n\n[dependencies]\nx = {{ git = \"file://{}\" }}\n", gone.display()),
+        PASSING,
+    );
+    let out = prova(&tmp.0, &[]);
+    assert_eq!(code(&out), 2, "{}", said(&out));
+}
+
+#[test]
+fn a_resume_its_flags_contradict_is_a_config_error() {
+    let tmp = Tmp::new("resume-flags");
+    package(&tmp.0, "[run]\nproofs = [\"tests\"]\n", PASSING);
+    let out = prova(&tmp.0, &["--resume", "-k", "one"]);
+    assert_eq!(code(&out), 78, "{}", said(&out));
+}
+
+#[test]
+fn a_resume_with_nothing_journaled_is_the_runs_state_and_exits_2() {
+    let tmp = Tmp::new("resume-state");
+    package(&tmp.0, "[run]\nproofs = [\"tests\"]\n", PASSING);
+    let out = prova(&tmp.0, &["--resume"]);
+    assert_eq!(code(&out), 2, "{}", said(&out));
+}
+
+#[test]
+fn a_proof_file_that_cannot_load_is_red_and_exits_1() {
+    let tmp = Tmp::new("unloadable");
+    package(&tmp.0, "[run]\nproofs = [\"tests\"]\n", "prova.test(\"broken\", function(t)\n");
+    let out = prova(&tmp.0, &["--list"]);
+    assert_eq!(code(&out), 1, "{}", said(&out));
+}
