@@ -317,7 +317,7 @@ prova.test("state filters narrow the report to one state, and the exit follows w
   t:expect(watching.stdout):never():contains("upstream shipped")
   -- One state per report: the pair is mutually exclusive, a usage error.
   local both = shell.run(prova.bin .. " reminders --due --watching", { cwd = proj, merge_stderr = true })
-  t:expect(both.code):equals(2)
+  t:expect(both.code):equals(78)
   t:expect(both.stdout):contains("mutually exclusive")
   -- An empty narrowed report is a normal answer, stated honestly.
   local calm = mkpkg(t:use(scratch) .. "/calm", MANIFEST, [[

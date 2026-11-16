@@ -202,7 +202,7 @@ impl Cli {
                 Ok(d) => self.timeout_cap = Some(d),
                 Err(e) => {
                     eprintln!("prova: {e}");
-                    return Err(ExitCode::from(2));
+                    return Err(crate::exit::config());
                 }
             }
         } else if let Some(v) = value_flag(arg, args, &["--flakes"]) {
@@ -211,7 +211,7 @@ impl Cli {
                 "warn" => self.flakes_warn = true,
                 other => {
                     eprintln!("prova: unknown --flakes {other:?} (expected fail|warn)");
-                    return Err(ExitCode::from(2));
+                    return Err(crate::exit::config());
                 }
             }
         } else if let Some(v) = value_flag(arg, args, &["--jobs", "-j"]) {
@@ -219,7 +219,7 @@ impl Cli {
                 Ok(n) if n >= 1 => self.jobs = Some(n),
                 _ => {
                     eprintln!("prova: --jobs expects a positive integer, got {v:?}");
-                    return Err(ExitCode::from(2));
+                    return Err(crate::exit::config());
                 }
             }
         } else if let Some(v) = value_flag(arg, args, &["--profile", "-p"]) {
@@ -248,7 +248,7 @@ impl Cli {
                 .collect();
             if names.is_empty() {
                 eprintln!("prova: --update-baseline= expects metric name(s), e.g. --update-baseline=rust.coverage.unit");
-                return Err(ExitCode::from(2));
+                return Err(crate::exit::config());
             }
             self.update_baseline = Some(prova_core::baselines::BankSelection::Named(names));
         } else if let Some(sels) = arg.strip_prefix("--heed=") {
@@ -281,7 +281,7 @@ impl Cli {
                 "tap" => self.format = Some(Format::Tap),
                 other => {
                     eprintln!("prova: unknown format {other:?} (expected console|json|tap)");
-                    return Err(ExitCode::from(2));
+                    return Err(crate::exit::config());
                 }
             }
         // `--progress auto|always|never`: report what a long pause IS (pulling, waiting) on
@@ -292,7 +292,7 @@ impl Cli {
                 Ok(mode) => self.progress = Some(mode),
                 Err(e) => {
                     eprintln!("prova: {e}");
-                    return Err(ExitCode::from(2));
+                    return Err(crate::exit::config());
                 }
             }
         // `--color auto|always|never`: color the console output (auto = only on a terminal).
@@ -301,7 +301,7 @@ impl Cli {
                 Some(mode) => self.color = Some(mode),
                 None => {
                     eprintln!("prova: unknown --color {v:?} (expected auto|always|never)");
-                    return Err(ExitCode::from(2));
+                    return Err(crate::exit::config());
                 }
             }
         // `--junit PATH`: write a JUnit XML report to a file, alongside whatever --format prints.
@@ -313,7 +313,7 @@ impl Cli {
                 Some(mode) => self.gha = Some(mode),
                 None => {
                     eprintln!("prova: unknown --gha {v:?} (expected auto|on|off)");
-                    return Err(ExitCode::from(2));
+                    return Err(crate::exit::config());
                 }
             }
         // `--unreferenced ignore|warn|delete`: what to do with `.snap` files no test referenced.
@@ -324,7 +324,7 @@ impl Cli {
                     eprintln!(
                         "prova: unknown --unreferenced {other:?} (expected ignore|warn|delete)"
                     );
-                    return Err(ExitCode::from(2));
+                    return Err(crate::exit::config());
                 }
             }
         // `--config PATH`: override the companion config file (else `PROVA_CONFIG`, else the manifest
@@ -392,7 +392,7 @@ impl Cli {
             }
             other if other.starts_with('-') => {
                 eprintln!("prova: unknown flag {other}");
-                return Err(ExitCode::from(2));
+                return Err(crate::exit::config());
             }
             other => self.explicit_paths.push(other.to_string()),
         }
@@ -416,7 +416,7 @@ fn resolve_run_home(cli: &Cli) -> Result<Option<Home>, ExitCode> {
     };
     found.map_err(|e| {
         eprintln!("prova: {e}");
-        ExitCode::from(2)
+        crate::exit::config()
     })
 }
 
@@ -441,7 +441,7 @@ fn resolve_env(cli: &mut Cli, home: &Option<Home>, layout: &XdgSystemLayout) -> 
             eprintln!(
                 "usage: prova <file-or-dir>...   or   prova [--profile NAME]  (reads prova.toml)"
             );
-            return Err(ExitCode::from(2));
+            return Err(crate::exit::config());
         };
         let env = resolve_from_manifest(
             home,
@@ -536,7 +536,7 @@ fn resolve_progress(cli: &Cli, manifest: &ManifestRun) -> Result<progress::Mode,
                 Ok(m) => m,
                 Err(e) => {
                     eprintln!("prova: {e} (from PROVA_PROGRESS)");
-                    return Err(ExitCode::from(2));
+                    return Err(crate::exit::config());
                 }
             },
             _ => manifest.progress.unwrap_or(progress::Mode::Auto),
@@ -580,7 +580,7 @@ fn build_config(
             "prova: --promises and --proofs are mutually exclusive — a test is a promise or a proof, \
              not both"
         );
-        return Err(ExitCode::from(2));
+        return Err(crate::exit::config());
     }
     // `[isolation]`: every process this run's proofs spawn gets the run's own roots.
     prova_core::isolation::set(isolation(&env.env, &cli.switches));
@@ -655,7 +655,7 @@ fn attach_held(
     if cli.fresh {
         if cli.require_topology.is_some() {
             eprintln!("prova: --topology and --fresh contradict each other — pick one");
-            return Err(ExitCode::from(2));
+            return Err(crate::exit::config());
         }
         warn_fresh_over_a_holder(home);
         return Ok((config, attached));
@@ -700,7 +700,7 @@ fn attach_held(
             eprintln!(
                 "prova: --topology {want:?}: no held topology by that name is running (see `prova ps`; hold one with `prova start {want}`)"
             );
-            return Err(ExitCode::from(2));
+            return Err(ExitCode::from(crate::exit::EXIT_UNRULED));
         }
     }
     config = config.with_attached_tracking(attached.clone());
@@ -816,7 +816,7 @@ fn backfill_listing(suites: &[prova_core::Suite], config: &prova_core::RunConfig
             Ok(nodes) => unbacked.extend(nodes.into_iter().filter(|n| !n.backed).map(|n| n.path)),
             Err(err) => {
                 eprintln!("prova: {}: {err}", suite.name);
-                return ExitCode::from(2);
+                return ExitCode::from(crate::exit::EXIT_UNRULED);
             }
         }
     }
@@ -853,7 +853,7 @@ fn nodes_listing(
             Ok(nodes) => nodes.iter().for_each(|n| println!("{}", n.path)),
             Err(err) => {
                 eprintln!("prova: {}: {err}", suite.name);
-                return ExitCode::from(2);
+                return ExitCode::from(crate::exit::EXIT_UNRULED);
             }
         }
     }
@@ -880,7 +880,7 @@ fn placement_handshake(manifest_broker: Option<&str>) -> Result<(), ExitCode> {
             }
             Err(e) => {
                 eprintln!("prova: {e} (configured via {source}; fix the address or start the broker — prova never silently falls back to local)");
-                return Err(ExitCode::from(2));
+                return Err(ExitCode::from(crate::exit::EXIT_UNRULED));
             }
         }
     }
@@ -889,7 +889,7 @@ fn placement_handshake(manifest_broker: Option<&str>) -> Result<(), ExitCode> {
         || std::env::var("PROVA_PLACEMENT_BROKER").is_ok_and(|v| !v.trim().is_empty())
     {
         eprintln!("prova: a placement broker is configured, but the placement transport is a unix socket — unavailable on this platform");
-        return Err(ExitCode::from(2));
+        return Err(crate::exit::unmet());
     }
     Ok(())
 }
@@ -955,7 +955,7 @@ fn build_reporter(
             )),
             Err(e) => {
                 eprintln!("prova: cannot open junit report file {path:?}: {e}");
-                return Err(ExitCode::from(2));
+                return Err(ExitCode::from(crate::exit::EXIT_UNRULED));
             }
         }
     }
@@ -1146,7 +1146,7 @@ fn collect_run_suites(env: &RunEnv, from_manifest: bool) -> Result<Vec<prova_cor
         Ok(suites) => suites,
         Err(msg) => {
             eprintln!("prova: {msg}");
-            return Err(ExitCode::from(2));
+            return Err(crate::exit::config());
         }
     };
     if suites.is_empty() {
@@ -1154,7 +1154,7 @@ fn collect_run_suites(env: &RunEnv, from_manifest: bool) -> Result<Vec<prova_cor
         if let Some(hint) = stray_proof_hint(&env.base_dir, &env.paths) {
             eprintln!("prova: {hint}");
         }
-        return Err(ExitCode::from(2));
+        return Err(crate::exit::config());
     }
     Ok(suites)
 }
@@ -1219,7 +1219,7 @@ fn resolve_run(cli: &mut Cli) -> Result<(XdgSystemLayout, Option<Home>, RunEnv),
         Ok(layout) => layout,
         Err(err) => {
             eprintln!("prova: cannot determine home directories: {err}");
-            return Err(ExitCode::from(2));
+            return Err(ExitCode::from(crate::exit::EXIT_UNRULED));
         }
     };
     let home = resolve_run_home(cli)?;
@@ -1388,7 +1388,7 @@ pub(crate) fn run(cli_args: Vec<String>) -> ExitCode {
         ),
         Err(err) => {
             eprintln!("prova: {err}");
-            ExitCode::from(2)
+            ExitCode::from(crate::exit::EXIT_UNRULED)
         }
     }
 }

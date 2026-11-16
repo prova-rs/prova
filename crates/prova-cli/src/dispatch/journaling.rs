@@ -92,7 +92,7 @@ fn journal_key(cli: &Cli, config: &prova_core::RunConfig) -> Vec<String> {
 /// A `--resume` refusal: said once, exit 2.
 fn refuse<T>(why: impl std::fmt::Display) -> Result<T, ExitCode> {
     eprintln!("prova: --resume: {why}");
-    Err(ExitCode::from(2))
+    Err(ExitCode::from(crate::exit::EXIT_UNRULED))
 }
 
 /// Plan the journal every UNNARROWED run keeps and, under `--resume`, hand the engine the passes it
@@ -219,7 +219,7 @@ fn plan_conduct_cache(
 /// A `--reuse` refusal: said once, exit 2.
 fn refuse_reuse<T>(why: impl std::fmt::Display) -> Result<T, ExitCode> {
     eprintln!("prova: --reuse: {why}");
-    Err(ExitCode::from(2))
+    Err(ExitCode::from(crate::exit::EXIT_UNRULED))
 }
 
 /// Hand the engine the input-reuse store (`config.input_reuse`): on every run that can honestly FILE

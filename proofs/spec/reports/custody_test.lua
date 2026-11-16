@@ -224,6 +224,6 @@ prova.test("--choose and --kind are refused together, not silently reconciled", 
   local dir = package(t)
   run(dir)
   local both = run(dir, "reports", "coverage", "-c", "--kind", "json")
-  t:expect(both.code):equals(2)
+  t:expect(both.code):equals(78)
   t:expect(both.stdout):contains("drop --kind")
 end)

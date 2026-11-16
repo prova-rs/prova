@@ -144,7 +144,7 @@ prova.test("prova relay is a real verb: it pipes stdio to a socket, and refuses 
 }, function(t)
   -- Driven through prova.bin: this is a verb of the binary UNDER TEST, not of the conductor.
   local usage = shell.run({ prova.bin, "relay" }, { merge_stderr = true })
-  t:expect(usage.code, "no destination is a usage error, not a default"):equals(2)
+  t:expect(usage.code, "no destination is a usage error, not a default"):equals(78)
   t:expect(usage.stdout):contains("--to")
 
   -- It carries bytes and nothing else: point one at a socket.mock and the turns arrive framed,

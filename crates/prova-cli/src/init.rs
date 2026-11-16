@@ -120,20 +120,20 @@ fn parse_args(args: Vec<String>) -> Result<InitCli, ExitCode> {
             "--answer" | "-a" => {
                 let Some(pair) = it.next() else {
                     eprintln!("prova init: --answer expects key=value");
-                    return Err(ExitCode::from(2));
+                    return Err(crate::exit::config());
                 };
                 match pair.split_once('=') {
                     Some((k, v)) => cli.answers.push((k.to_string(), v.to_string())),
                     None => {
                         eprintln!("prova init: --answer expects key=value, got {pair:?}");
-                        return Err(ExitCode::from(2));
+                        return Err(crate::exit::config());
                     }
                 }
             }
             "--switch" | "-s" => {
                 let Some(name) = it.next() else {
                     eprintln!("prova init: --switch expects a name");
-                    return Err(ExitCode::from(2));
+                    return Err(crate::exit::config());
                 };
                 cli.switches.push(name);
             }
@@ -156,12 +156,12 @@ fn parse_args(args: Vec<String>) -> Result<InitCli, ExitCode> {
             }
             other if other.starts_with('-') => {
                 eprintln!("prova init: unknown option {other:?}");
-                return Err(ExitCode::from(2));
+                return Err(crate::exit::config());
             }
             other => {
                 if let Some(prior) = &cli.key {
                     eprintln!("prova init: expected one catalog key, got {prior:?} and {other:?}");
-                    return Err(ExitCode::from(2));
+                    return Err(crate::exit::config());
                 }
                 cli.key = Some(other.to_string());
             }
@@ -218,7 +218,7 @@ fn resolve_entry(
         Ok(c) => c,
         Err(err) => {
             eprintln!("prova init: {err}");
-            return Err(ExitCode::from(2));
+            return Err(crate::exit::config());
         }
     };
     if cli.list {
@@ -237,7 +237,7 @@ fn resolve_entry(
                 eprintln!("prova init: {w}");
             }
             eprintln!("prova init: {err}");
-            return Err(ExitCode::from(2));
+            return Err(crate::exit::config());
         }
     };
     for w in &warnings {
@@ -254,7 +254,7 @@ fn resolve_entry(
         ] {
             if Path::new(".").join(existing).is_file() {
                 eprintln!("prova init: already initialized ({existing} exists)");
-                return Err(ExitCode::from(2));
+                return Err(crate::exit::config());
             }
         }
     }
@@ -273,7 +273,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
         Ok(l) => l,
         Err(err) => {
             eprintln!("prova init: cannot locate config directory: {err}");
-            return ExitCode::from(2);
+            return ExitCode::from(crate::exit::EXIT_UNRULED);
         }
     };
     let (key, entry) = match resolve_entry(&cli, &sys_layout) {
@@ -309,7 +309,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
         },
     ) {
         eprintln!("prova init: render failed: {err}");
-        return ExitCode::from(2);
+        return ExitCode::from(crate::exit::EXIT_UNRULED);
     }
 
     // IDE wiring, as a finishing step, over whatever manifest the archetype rendered. A render that
@@ -321,7 +321,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
                     crate::ide::wire(&home, crate::manifest::Manage::Always, &sys_layout)
                 {
                     eprintln!("prova init: IDE annotations: {err}");
-                    return ExitCode::from(2);
+                    return ExitCode::from(crate::exit::EXIT_UNRULED);
                 }
             }
             Ok(None) => {
@@ -331,7 +331,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
             }
             Err(err) => {
                 eprintln!("prova init: {err}");
-                return ExitCode::from(2);
+                return ExitCode::from(crate::exit::EXIT_UNRULED);
             }
         }
     }
@@ -355,7 +355,7 @@ fn select_key(catalog: &crate::catalog::Catalog) -> Result<String, ExitCode> {
             "prova init: no archetype given, and stdin is not a terminal to choose from — pass a \
              key (see `prova init --list`), or run in an interactive terminal"
         );
-        return Err(ExitCode::from(2));
+        return Err(crate::exit::config());
     }
 
     let choices: Vec<Choice> = catalog
@@ -385,7 +385,7 @@ fn select_key(catalog: &crate::catalog::Catalog) -> Result<String, ExitCode> {
         }
         Err(err) => {
             eprintln!("prova init: selection failed: {err}");
-            Err(ExitCode::from(2))
+            Err(ExitCode::from(crate::exit::EXIT_UNRULED))
         }
     }
 }

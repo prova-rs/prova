@@ -43,6 +43,7 @@ mod progress;
 mod relay;
 mod journal;
 /// The flake ledger's detection half: a pass after a failure on the same tree is FLAKY.
+mod exit;
 mod flakes;
 mod record;
 mod report;
@@ -433,7 +434,7 @@ fn read_manifest(home: &home::Home) -> Result<Manifest, ExitCode> {
         .and_then(|text| Manifest::parse(&text))
         .map_err(|e| {
             eprintln!("prova: {e}");
-            ExitCode::from(2)
+            crate::exit::config()
         })
 }
 
@@ -444,7 +445,7 @@ fn main() -> ExitCode {
     // so relocated state can never be an invisible machine difference.
     if let Err(diagnostic) = var::check_env() {
         eprintln!("prova: {diagnostic}");
-        return ExitCode::from(2);
+        return crate::exit::config();
     }
     var::announce();
 
@@ -474,18 +475,18 @@ fn main() -> ExitCode {
             eprintln!("prova: `prova {old}` is deprecated — use `prova {new}` (retires at 1.0)");
             let Some(verb) = VERBS.iter().find(|v| v.name == *new) else {
                 eprintln!("prova: internal: deprecated verb `{old}` maps to unknown `{new}`");
-                return ExitCode::from(2);
+                return ExitCode::from(crate::exit::EXIT_UNRULED);
             };
             raw.next();
             return (verb.run)(raw.collect());
         }
         if let Some((old, replacement)) = RETIRED_VERBS.iter().find(|(old, _)| old == first) {
             eprintln!("prova: `prova {old}` was retired — use `{replacement}` (a state is a flag on its lane now)");
-            return ExitCode::from(2);
+            return crate::exit::config();
         }
         if let Some((name, teach)) = MCP_SPELLINGS.iter().find(|(name, _)| name == first) {
             eprintln!("prova: `{name}` is not a CLI verb — {teach}");
-            return ExitCode::from(2);
+            return crate::exit::config();
         }
     }
     run(std::env::args().skip(1).collect())
@@ -930,7 +931,7 @@ fn skill_subcommand(args: Vec<String>) -> ExitCode {
     let install = args.iter().any(|a| a == "--install");
     if let Some(bad) = args.iter().find(|a| *a != "--install") {
         eprintln!("prova: skill: unknown argument {bad:?} (expected --install or nothing)");
-        return ExitCode::from(2);
+        return crate::exit::config();
     }
     if !install {
         print!("{SKILL}");
@@ -944,7 +945,7 @@ fn skill_subcommand(args: Vec<String>) -> ExitCode {
     let path = dir.join("SKILL.md");
     if let Err(err) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, SKILL)) {
         eprintln!("prova: skill: could not write {}: {err}", path.display());
-        return ExitCode::from(2);
+        return ExitCode::from(crate::exit::EXIT_UNRULED);
     }
     println!("wrote {}", path.display());
     ExitCode::SUCCESS

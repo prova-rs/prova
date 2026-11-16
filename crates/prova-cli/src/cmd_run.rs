@@ -42,7 +42,7 @@ pub(crate) fn run_subcommand(args: Vec<String>) -> ExitCode {
                     }
                     Err(e) => {
                         eprintln!("prova: {e}");
-                        return ExitCode::from(2);
+                        return crate::exit::config();
                     }
                 };
                 let manifest = match read_manifest(&home) {
@@ -307,11 +307,11 @@ fn provision_runner(
                 "prova: [runner] build failed ({s}) — the declared runner could not be \
                  provisioned; fix the build, or invoke a prova without this manifest"
             );
-            Some(ExitCode::from(2))
+            Some(ExitCode::from(crate::exit::EXIT_UNRULED))
         }
         Err(e) => {
             eprintln!("prova: [runner] build could not start: {e}");
-            Some(ExitCode::from(2))
+            Some(ExitCode::from(crate::exit::EXIT_UNRULED))
         }
     }
 }
@@ -330,7 +330,7 @@ pub(crate) fn declared_subject(home: &Home) -> Option<Result<crate::manifest::Ru
             "prova: [runner] declares no readable `bin` — the subject cannot be resolved; fix \
              the manifest ([runner] bin = \"<home-relative path>\")"
         );
-        return Some(Err(ExitCode::from(2)));
+        return Some(Err(crate::exit::config()));
     };
     Some(Ok(crate::manifest::RunnerSection {
         build: table.get("build").and_then(|v| v.as_str()).map(String::from),
@@ -461,7 +461,7 @@ pub(crate) fn locks_subcommand(args: Vec<String>) -> ExitCode {
             "--all" => all = true,
             other => {
                 eprintln!("prova: locks: unknown option {other:?} (see --help)");
-                return ExitCode::from(2);
+                return crate::exit::config();
             }
         }
     }
@@ -475,7 +475,7 @@ pub(crate) fn locks_subcommand(args: Vec<String>) -> ExitCode {
                 "prova: no prova.toml found walking up — package locks need a package \
                  (use --machine for the box-wide tokens)"
             );
-            return ExitCode::from(2);
+            return crate::exit::config();
         }
         if project_dir.is_some() {
             scopes.push(("package", false));
@@ -550,7 +550,7 @@ fn parse_lock_args(args: Vec<String>) -> Result<Option<LockRequest>, ExitCode> {
             "usage: prova lock <token> [--reads] [--machine] [--wait-timeout <dur>] \
              -- <command> [args…]"
         );
-        Err(ExitCode::from(2))
+        Err(crate::exit::config())
     };
     let mut token: Option<String> = None;
     let mut shared = false;
@@ -583,7 +583,7 @@ fn parse_lock_args(args: Vec<String>) -> Result<Option<LockRequest>, ExitCode> {
                 Some(Ok(bound)) => policy.bound = bound,
                 Some(Err(e)) => {
                     eprintln!("prova: lock: --wait-timeout {e}");
-                    return Err(ExitCode::from(2));
+                    return Err(crate::exit::config());
                 }
                 None => return usage(),
             },
@@ -619,7 +619,7 @@ pub(crate) fn lock_subcommand(args: Vec<String>) -> ExitCode {
             "prova: no prova.toml found walking up — a package lock needs a package \
              (use --machine for a box-wide token, or run inside a package)"
         );
-        return ExitCode::from(2);
+        return crate::exit::config();
     }
     let project_dir = home.as_ref().map(|h| h.dir.as_path());
     // Try without blocking first, purely so a wait is SAID — then block for real. The first line
@@ -645,7 +645,7 @@ pub(crate) fn lock_subcommand(args: Vec<String>) -> ExitCode {
         Ok(f) => f,
         Err(e) => {
             eprintln!("prova: lock {token:?}: {e}");
-            return ExitCode::from(2);
+            return ExitCode::from(crate::exit::EXIT_UNRULED);
         }
     };
     let ran_from = std::time::Instant::now();
@@ -675,7 +675,7 @@ pub(crate) fn lock_subcommand(args: Vec<String>) -> ExitCode {
         }
         Err(e) => {
             eprintln!("prova: lock: cannot run {:?}: {e}", command[0]);
-            ExitCode::from(2)
+            ExitCode::from(crate::exit::EXIT_UNRULED)
         }
     }
 }

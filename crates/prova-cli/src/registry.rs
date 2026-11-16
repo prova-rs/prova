@@ -628,7 +628,7 @@ fn dispatch_words(words: &[String], entries: &[Entry], multi: bool) -> ExitCode 
         Some("info") => match words.get(1) {
             None => {
                 eprintln!("prova: packages: info needs a name\n{USAGE}");
-                ExitCode::from(2)
+                crate::exit::config()
             }
             Some(name) => {
                 let hits: Vec<&Entry> = entries.iter().filter(|e| &e.name == name).collect();
@@ -649,7 +649,7 @@ fn dispatch_words(words: &[String], entries: &[Entry], multi: bool) -> ExitCode 
         Some("add") => match words.get(1) {
             None => {
                 eprintln!("prova: packages: add needs a name\n{USAGE}");
-                ExitCode::from(2)
+                crate::exit::config()
             }
             Some(spec) => match add(spec, entries) {
                 Ok(msg) => {
@@ -689,7 +689,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
             }
             _ if a.starts_with('-') => {
                 eprintln!("prova: packages: unknown flag {a}\n{USAGE}");
-                return ExitCode::from(2);
+                return crate::exit::config();
             }
             _ => words.push(a),
         }

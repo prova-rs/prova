@@ -104,7 +104,7 @@ names only that — no advertisement table, and no dotted path in the consumer's
     .. 'function M.gpu() return true end\n'    -- top level, NOT under `capabilities`
     .. 'return M\n')
   local r = shell.run(prova_bin, { cwd = dir, merge_stderr = true })
-  t:expect(r.code, "a capability whose factory is not in the namespace is a config error"):equals(2)
+  t:expect(r.code, "a capability whose factory is not in the namespace is a config error"):equals(78)
   t:expect(r.stdout .. r.stderr, "the error names the capability"):contains("gpu")
 end)
 
@@ -271,7 +271,7 @@ prova.test("a malformed `pattern` is a config error, not a version that never pa
   local r = shell.run(prova_bin, { cwd = dir, merge_stderr = true })
   -- A typo'd regex that silently never matched would read as "cannot confirm" and skip forever,
   -- which reads as green — the vacuous green this whole contract exists to remove.
-  t:expect(r.code):equals(2)
+  t:expect(r.code):equals(78)
   t:expect(r.stdout .. r.stderr):contains("regex")
 end)
 
@@ -283,12 +283,12 @@ prova.test("an entry with no selector, or two, is refused", {
   covers = "docs/design/capabilities.md#exactly-one-selector",
 }, function(t)
   local none = shell.run(prova_bin, { cwd = project('x = { retries = 2 }'), merge_stderr = true })
-  t:expect(none.code):equals(2)
+  t:expect(none.code):equals(78)
   t:expect(none.stdout .. none.stderr):contains("selector")
 
   local two = shell.run(prova_bin,
     { cwd = project('x = { command = "sh", intrinsic = "docker" }'), merge_stderr = true })
-  t:expect(two.code, "two selectors is an author who is unsure, not a precedence question"):equals(2)
+  t:expect(two.code, "two selectors is an author who is unsure, not a precedence question"):equals(78)
   t:expect(two.stdout .. two.stderr):contains("selector")
 end)
 
@@ -307,7 +307,7 @@ prova.test("an unknown `intrinsic` is refused, naming the real ones", function(t
     { cwd = project('x = { intrinsic = "dokcer" }'), merge_stderr = true })
   -- A typo that resolved to "absent" would skip every gated test forever while reading as a
   -- deliberate declaration.
-  t:expect(r.code):equals(2)
+  t:expect(r.code):equals(78)
   t:expect(r.stdout .. r.stderr, "the error lists the built-ins"):contains("docker")
 end)
 
@@ -466,7 +466,7 @@ prova.test("an unknown \"*\" policy is refused, not defaulted", function(t)
   local r = shell.run(prova_bin, { cwd = project('"*" = "strict"'), merge_stderr = true })
   -- Reading `"strict"` as `probe` would hand back the permissive behavior under a key that says
   -- otherwise — the exact failure a closed vocabulary exists to prevent.
-  t:expect(r.code):equals(2)
+  t:expect(r.code):equals(78)
   t:expect(r.stdout .. r.stderr):contains("fall-through policy")
 end)
 
@@ -509,7 +509,7 @@ prova.test("a broken prova.lua is an ERROR, not a silent skip", function(t)
   local dir = project(nil)
   fs.write(dir .. "/prova.lua", 'this is not lua((((\n')
   local r = shell.run(prova_bin, { cwd = dir })
-  t:expect(r.code, "a broken companion is a config error"):equals(2)
+  t:expect(r.code, "a broken companion is a config error"):equals(78)
   t:expect(r.stderr .. r.stdout):contains("prova.lua")
 end)
 
@@ -520,7 +520,7 @@ manifest may override a built-in because a reader can see it there; a Lua file n
   local dir = project(nil)
   fs.write(dir .. "/prova.lua", 'runtime.capability("docker", function() return true end)\n')
   local r = shell.run(prova_bin, { cwd = dir })
-  t:expect(r.code):equals(2)
+  t:expect(r.code):equals(78)
   t:expect(r.stderr .. r.stdout):contains("docker")
 end)
 
@@ -608,7 +608,7 @@ prova.test("there is deliberately no env-var selector", {
 rebuild the thing that was torn down. `[capabilities]` denies unknown keys, so the door stays shut.",
 }, function(t)
   local r = shell.run(prova_bin, { cwd = project('ci = { env = "CI" }'), merge_stderr = true })
-  t:expect(r.code, "an `env` selector is an unknown key, not a quiet no-op"):equals(2)
+  t:expect(r.code, "an `env` selector is an unknown key, not a quiet no-op"):equals(78)
   t:expect(r.stdout .. r.stderr, "and the refusal names it"):contains("env")
 end)
 

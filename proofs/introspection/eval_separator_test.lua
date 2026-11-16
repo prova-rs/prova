@@ -34,7 +34,7 @@ prova.test("without the separator, the refusal teaches the separator", {
   proves = "`unknown flag --` is true and useless: the author is holding valid Lua and is told about flags, so they read their script. A real flag is one word — whitespace means this is source, and that is enough to tell the two apart and say the right thing",
 }, function(t)
   local r = eval({ COMMENTED })
-  t:expect(r.code, "it is still refused rather than guessed at"):equals(2)
+  t:expect(r.code, "it is still refused rather than guessed at"):equals(78)
   t:expect(r.stdout, "the diagnosis names Lua, not a flag"):contains("Lua")
   t:expect(r.stdout, "…and names the separator that fixes it"):contains("--")
   t:expect(r.stdout, "…and the stdin alternative"):contains("stdin")
@@ -45,7 +45,7 @@ prova.test("a genuine unknown flag is still reported as a flag", {
   proves = "the negative control that keeps the heuristic honest: if `--bogus` started reporting itself as Lua, the new message would be worse than the one it replaced — a typo'd flag would send the author looking for a snippet they never wrote",
 }, function(t)
   local r = eval({ "--bogus" })
-  t:expect(r.code, "an unknown flag is refused"):equals(2)
+  t:expect(r.code, "an unknown flag is refused"):equals(78)
   t:expect(r.stdout, "…and named as a flag"):contains("unknown flag")
   t:expect(r.stdout, "…not diagnosed as source"):never():contains("looks like Lua")
 end)

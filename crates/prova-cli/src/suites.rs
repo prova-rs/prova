@@ -482,7 +482,7 @@ pub(crate) fn layer_cli_packages(
             }
             _ => {
                 eprintln!("prova: -P expects name=source, got {entry:?}");
-                return Err(ExitCode::from(2));
+                return Err(crate::exit::config());
             }
         }
     }
@@ -503,7 +503,7 @@ pub(crate) fn layer_cli_packages(
         }
         Err(e) => {
             eprintln!("prova: {e}");
-            return Err(ExitCode::from(2));
+            return Err(ExitCode::from(crate::exit::EXIT_UNRULED));
         }
     }
     Ok(())
@@ -526,7 +526,7 @@ fn resolve_manifest_packages(
         offline,
         interval: resolved.updates.interval_duration().map_err(|e| {
             eprintln!("prova: {e}");
-            ExitCode::from(2)
+            crate::exit::config()
         })?,
     };
 
@@ -541,7 +541,7 @@ fn resolve_manifest_packages(
     )
     .map_err(|e| {
         eprintln!("prova: {e}");
-        ExitCode::from(2)
+        ExitCode::from(crate::exit::EXIT_UNRULED)
     })?;
 
     // Quietly reap plugin source trees unused past the retention window (throttled to ~daily). The
@@ -579,7 +579,7 @@ fn resolve_manifest_packages(
                              package cannot shadow a bundled global; rename it",
                             root.display()
                         );
-                        return Err(ExitCode::from(2));
+                        return Err(crate::exit::config());
                     }
                 }
             }
@@ -630,7 +630,7 @@ fn resolve_capabilities(
             // the run would be green. That is the vacuous green, one level out from the suite.
             Err(e) => {
                 eprintln!("prova: {e}");
-                return Err(ExitCode::from(2));
+                return Err(crate::exit::config());
             }
         }
     } else {
@@ -644,7 +644,7 @@ fn resolve_capabilities(
     )
     .map_err(|e| {
         eprintln!("prova: {e}");
-        ExitCode::from(2)
+        crate::exit::config()
     })?;
     for reg in &resolved.capabilities.registrations {
         if capabilities.registered_names().any(|n| n == &reg.name) {
@@ -675,6 +675,7 @@ fn check_must_run(
     // means.
     let where_ = profile.unwrap_or("run");
     let mut unmet: Vec<String> = Vec::new();
+    let mut broken = false;
     for cap in &resolved.must_run {
         match capabilities.expr_status(cap) {
             // Satisfied.
@@ -686,18 +687,25 @@ fn check_must_run(
             )),
             // The declaration itself is broken — a config error, not an environment one: a
             // malformed expression, or a name this package's closed vocabulary never declared.
-            Err(e) => unmet.push(format!("prova: profile {where_:?}: {e}")),
+            Err(e) => {
+                broken = true;
+                unmet.push(format!("prova: profile {where_:?}: {e}"));
+            }
         }
     }
     if !unmet.is_empty() {
         for line in &unmet {
             eprintln!("{line}");
         }
+        // A broken declaration is the change's, whatever this host has: it wins over an unmet guarantee.
+        if broken {
+            return Err(crate::exit::config());
+        }
         eprintln!(
             "prova: a guaranteed capability is a promise about this environment — an unmet one is a \
              broken environment, not a skipped test. Fix the environment, or drop it from `must_run`."
         );
-        return Err(ExitCode::from(2));
+        return Err(crate::exit::unmet());
     }
 
     Ok(())
@@ -720,7 +728,7 @@ fn parse_output_modes(
                 eprintln!(
                     "prova: unknown format {other:?} in manifest (expected console|json|tap)"
                 );
-                return Err(ExitCode::from(2));
+                return Err(crate::exit::config());
             }
         },
     };
@@ -730,7 +738,7 @@ fn parse_output_modes(
             Some(mode) => Some(mode),
             None => {
                 eprintln!("prova: unknown color {s:?} in manifest (expected auto|always|never)");
-                return Err(ExitCode::from(2));
+                return Err(crate::exit::config());
             }
         },
     };
@@ -740,7 +748,7 @@ fn parse_output_modes(
             Ok(mode) => Some(mode),
             Err(e) => {
                 eprintln!("prova: {e} (in manifest)");
-                return Err(ExitCode::from(2));
+                return Err(crate::exit::config());
             }
         },
     };
@@ -750,7 +758,7 @@ fn parse_output_modes(
             Some(mode) => Some(mode),
             None => {
                 eprintln!("prova: unknown github {s:?} in manifest (expected auto|on|off)");
-                return Err(ExitCode::from(2));
+                return Err(crate::exit::config());
             }
         },
     };
@@ -784,12 +792,12 @@ pub(crate) fn resolve_from_manifest(
 
     let text = std::fs::read_to_string(path).map_err(|_| {
         eprintln!("prova: cannot read manifest {}", path.display());
-        ExitCode::from(2)
+        crate::exit::config()
     })?;
 
     let manifest = Manifest::parse(&text).map_err(|e| {
         eprintln!("prova: {e}");
-        ExitCode::from(2)
+        crate::exit::config()
     })?;
     let mut resolved = manifest.resolve(profile.as_deref()).map_err(|e| {
         eprintln!("prova: {e}");
@@ -803,19 +811,19 @@ pub(crate) fn resolve_from_manifest(
                 );
             }
         }
-        ExitCode::from(2)
+        crate::exit::config()
     })?;
     if require_proofs && resolved.proofs.is_empty() && resolved.suites.is_empty() {
         eprintln!(
             "prova: manifest {} defines no proofs or suites to run",
             path.display()
         );
-        return Err(ExitCode::from(2));
+        return Err(crate::exit::config());
     }
 
     let manage = resolved.luals.manage().map_err(|e| {
         eprintln!("prova: {e}");
-        ExitCode::from(2)
+        crate::exit::config()
     })?;
 
     // Apply the run environment before tests execute.
@@ -828,17 +836,17 @@ pub(crate) fn resolve_from_manifest(
     // run record (gap 01a103f0).
     let mut overrides = crate::dep_override::from_env(std::env::vars()).map_err(|e| {
         eprintln!("prova: {e}");
-        ExitCode::from(2)
+        crate::exit::config()
     })?;
     for entry in dep_overrides {
         overrides.push(crate::dep_override::parse(entry, "--dep").map_err(|e| {
             eprintln!("prova: {e}");
-            ExitCode::from(2)
+            crate::exit::config()
         })?);
     }
     let applied = crate::dep_override::apply(&mut resolved.dependencies, &overrides).map_err(|e| {
         eprintln!("prova: {e}");
-        ExitCode::from(2)
+        crate::exit::config()
     })?;
     for a in &applied {
         eprintln!("prova: dependency override, this run only: {}", a.line());

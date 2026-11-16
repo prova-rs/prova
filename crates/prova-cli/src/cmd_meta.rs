@@ -10,7 +10,7 @@ pub(crate) fn package_subcommand(args: Vec<String>) -> ExitCode {
             let files: Vec<String> = args.collect();
             if files.is_empty() {
                 eprintln!("usage: prova package lint <file>...");
-                return ExitCode::from(2);
+                return crate::exit::config();
             }
             let mut ok = true;
             for file in &files {
@@ -66,11 +66,11 @@ pub(crate) fn package_subcommand(args: Vec<String>) -> ExitCode {
         }
         Some(other) => {
             eprintln!("prova: unknown package subcommand {other:?} (expected: lint)");
-            ExitCode::from(2)
+            crate::exit::config()
         }
         None => {
             eprintln!("usage: prova package lint <file>...");
-            ExitCode::from(2)
+            crate::exit::config()
         }
     }
 }
@@ -179,7 +179,7 @@ pub(crate) fn capabilities_subcommand(args: Vec<String>) -> ExitCode {
              expression with a constraint as one argument (\"dotnet >= 9\")",
             positional.len()
         );
-        return ExitCode::from(2);
+        return crate::exit::config();
     }
     if let Some(name) = positional.first() {
         // The name, not the expression: `capabilities "dotnet >= 9"` explains `dotnet` and reports
@@ -295,11 +295,11 @@ pub(crate) fn introspect_subcommand(args: Vec<String>) -> ExitCode {
         }
         if arg.starts_with('-') {
             eprintln!("prova: introspect: unexpected flag {arg:?}\nusage: prova introspect [<filter>]");
-            return ExitCode::from(2);
+            return crate::exit::config();
         }
         if filter.is_some() {
             eprintln!("prova: introspect: one filter at a time\nusage: prova introspect [<filter>]");
-            return ExitCode::from(2);
+            return crate::exit::config();
         }
         filter = Some(arg);
     }
@@ -349,7 +349,7 @@ mod tests {
     /// any probe or filesystem work — and help/no-match forms exit 0.
     #[test]
     fn meta_verbs_refuse_malformed_arguments_with_usage() {
-        let usage = code(ExitCode::from(2));
+        let usage = code(crate::exit::config());
         assert_eq!(code(package_subcommand(argv(&[]))), usage, "package with no subcommand");
         assert_eq!(code(package_subcommand(argv(&["lint"]))), usage, "lint with no files");
         assert_eq!(code(package_subcommand(argv(&["publish"]))), usage, "unknown subcommand");

@@ -36,12 +36,12 @@ fn topology_flags(
             }
             other if other.starts_with('-') => {
                 eprintln!("prova {verb}: unknown flag {other}");
-                return Err(ExitCode::from(2));
+                return Err(crate::exit::config());
             }
             other if positionals.len() < max_positionals => positionals.push(other.to_string()),
             other => {
                 eprintln!("prova {verb}: unexpected argument {other:?}");
-                return Err(ExitCode::from(2));
+                return Err(crate::exit::config());
             }
         }
     }
@@ -83,7 +83,7 @@ pub(crate) fn up_subcommand(args: Vec<String>) -> ExitCode {
         [a, b] if packages::is_git_source(b) => (Some(a.clone()), Some(b.clone())),
         [a, b] => {
             eprintln!("prova up: expected `<topology> <url>`, but {b:?} is not a git source (and {a:?} was already given)");
-            return ExitCode::from(2);
+            return crate::exit::config();
         }
         _ => unreachable!("capped at 2 positionals"),
     };
@@ -153,7 +153,7 @@ pub(crate) fn up_subcommand(args: Vec<String>) -> ExitCode {
         }
         Err(err) => {
             eprintln!("prova up: {err}");
-            ExitCode::from(2)
+            ExitCode::from(crate::exit::EXIT_UNRULED)
         }
     }
 }
@@ -196,7 +196,7 @@ fn claim_the_name(verb: &str, home: &Home, name: &str) -> Result<(), ExitCode> {
                 "prova {verb}: topology {name:?} was claimed by another process while this one was \
                  starting — it is coming up there. `prova ps` to watch it, `prova down {name}` to stop it."
             );
-            Err(ExitCode::from(2))
+            Err(ExitCode::from(crate::exit::EXIT_UNRULED))
         }
         Err(e) => {
             eprintln!("prova {verb}: could not record run-state: {e}");
@@ -241,7 +241,7 @@ fn guard_double_provision(verb: &str, home: &Home, name: &str) -> Result<(), Exi
                  {why}\n  Inspect it, or delete it if you are sure nothing is held: rm {}",
                 runstate::path(home, name).display()
             );
-            return Err(ExitCode::from(2));
+            return Err(ExitCode::from(crate::exit::EXIT_UNRULED));
         }
     };
     if runstate::is_alive(rec.pid) {
@@ -258,7 +258,7 @@ fn guard_double_provision(verb: &str, home: &Home, name: &str) -> Result<(), Exi
                 runstate::log_path(home, name).display()
             ),
         }
-        return Err(ExitCode::from(2));
+        return Err(ExitCode::from(crate::exit::EXIT_UNRULED));
     }
     if rec.status == runstate::Status::Starting {
         eprintln!(
@@ -285,14 +285,14 @@ pub(crate) fn up_list(profile: Option<String>, manifest_path: Option<String>) ->
         Ok(names) => names,
         Err(err) => {
             eprintln!("prova up: {err}");
-            return ExitCode::from(2);
+            return ExitCode::from(crate::exit::EXIT_UNRULED);
         }
     };
     if names.is_empty() {
         eprintln!(
             "prova up: no topologies defined — declare one with prova.topology(name, fn) in a suite"
         );
-        return ExitCode::from(2);
+        return crate::exit::config();
     }
     println!("topologies ({}):", names.len());
     for name in &names {
@@ -311,7 +311,7 @@ pub(crate) fn up_from_git(name: Option<&str>, url: &str, fixed: bool) -> ExitCod
         Ok(l) => l,
         Err(err) => {
             eprintln!("prova up: cannot determine home directories: {err}");
-            return ExitCode::from(2);
+            return ExitCode::from(crate::exit::EXIT_UNRULED);
         }
     };
     eprintln!("prova: fetching {url}…");
@@ -324,7 +324,7 @@ pub(crate) fn up_from_git(name: Option<&str>, url: &str, fixed: bool) -> ExitCod
         Ok(s) => s,
         Err(err) => {
             eprintln!("prova up: {err}");
-            return ExitCode::from(2);
+            return ExitCode::from(crate::exit::EXIT_UNRULED);
         }
     };
 
@@ -334,7 +334,7 @@ pub(crate) fn up_from_git(name: Option<&str>, url: &str, fixed: bool) -> ExitCod
             eprintln!(
                 "prova up: {url} advertises no topologies (no [[package.topologies]] in its prova.toml)"
             );
-            return ExitCode::from(2);
+            return crate::exit::config();
         }
         println!("topologies advertised by {url} ({}):", src.advertised.len());
         for t in &src.advertised {
@@ -351,7 +351,7 @@ pub(crate) fn up_from_git(name: Option<&str>, url: &str, fixed: bool) -> ExitCod
             "prova up: {url} advertises no topology {name:?} (has: {})",
             names.join(", ")
         );
-        return ExitCode::from(2);
+        return crate::exit::config();
     };
 
     // Environment gate — built-in capabilities only (a remote `up` has no local companion to register
@@ -362,11 +362,11 @@ pub(crate) fn up_from_git(name: Option<&str>, url: &str, fixed: bool) -> ExitCod
             Ok(None) => {}
             Ok(Some(reason)) => {
                 eprintln!("prova up: cannot stand up topology {name:?}: it requires {reason}");
-                return ExitCode::from(2);
+                return crate::exit::unmet();
             }
             Err(err) => {
                 eprintln!("prova up: topology {name:?}: invalid requires {req:?}: {err}");
-                return ExitCode::from(2);
+                return crate::exit::config();
             }
         }
     }
@@ -391,7 +391,7 @@ pub(crate) fn up_from_git(name: Option<&str>, url: &str, fixed: bool) -> ExitCod
         }
         Err(err) => {
             eprintln!("prova up: {err}");
-            ExitCode::from(2)
+            ExitCode::from(crate::exit::EXIT_UNRULED)
         }
     }
 }
@@ -471,7 +471,7 @@ pub(crate) fn build_topology_run(
 ) -> Result<TopologyRun, ExitCode> {
     let layout = XdgSystemLayout::new().map_err(|err| {
         eprintln!("prova: cannot determine home directories: {err}");
-        ExitCode::from(2)
+        ExitCode::from(crate::exit::EXIT_UNRULED)
     })?;
 
     // Locate the package (the manifest tells us where topologies + plugins live).
@@ -506,7 +506,7 @@ pub(crate) fn build_topology_run(
                 "prova {verb}: no topologies registered — add a [topologies] entry to prova.toml"
             ),
         }
-        return Err(ExitCode::from(2));
+        return Err(crate::exit::config());
     }
     if let Some(n) = name {
         if !run.topologies.contains_key(n) {
@@ -515,7 +515,7 @@ pub(crate) fn build_topology_run(
                 "prova {verb}: no topology {n:?} in [topologies] (registered: {})",
                 known.join(", ")
             );
-            return Err(ExitCode::from(2));
+            return Err(crate::exit::config());
         }
     }
 
@@ -538,7 +538,7 @@ pub(crate) fn build_topology_run(
             Ok(r) => r,
             Err(e) => {
                 eprintln!("prova {verb}: {e}");
-                return Err(ExitCode::from(2));
+                return Err(crate::exit::config());
             }
         };
         let options = topology_options_to_lua(&decl.options);
@@ -570,11 +570,11 @@ pub(crate) fn check_topology_requires(prep: &TopologyRun, name: &str) -> Result<
             Ok(None) => {}
             Ok(Some(reason)) => {
                 eprintln!("prova up: cannot stand up topology {name:?}: it requires {reason}");
-                return Err(ExitCode::from(2));
+                return Err(crate::exit::unmet());
             }
             Err(e) => {
                 eprintln!("prova up: topology {name:?}: invalid requires {req:?}: {e}");
-                return Err(ExitCode::from(2));
+                return Err(crate::exit::config());
             }
         }
     }
@@ -589,11 +589,11 @@ pub(crate) fn resolve_home(manifest_path: Option<&str>) -> Result<Home, ExitCode
             Ok(Some(h)) => Ok(h),
             Ok(None) => {
                 eprintln!("prova: no prova.toml found in this directory or any parent");
-                Err(ExitCode::from(2))
+                Err(crate::exit::config())
             }
             Err(e) => {
                 eprintln!("prova: {e}");
-                Err(ExitCode::from(2))
+                Err(crate::exit::config())
             }
         },
     }
@@ -623,7 +623,7 @@ fn extract_timeout(args: Vec<String>) -> Result<(Vec<String>, Option<Duration>),
                 Some(d) => timeout = Some(d),
                 None => {
                     eprintln!("prova start: --timeout wants a duration like \"15m\", got {v:?}");
-                    return Err(ExitCode::from(2));
+                    return Err(crate::exit::config());
                 }
             },
             None => rest.push(arg),
@@ -874,14 +874,14 @@ pub(crate) fn start_subcommand(args: Vec<String>) -> ExitCode {
     }
     if let Err(e) = runstate::dir(&home) {
         eprintln!("prova start: cannot create run-state dir: {e}");
-        return ExitCode::from(2);
+        return ExitCode::from(crate::exit::EXIT_UNRULED);
     }
 
     let exe = match prova_core::current_exe() {
         Ok(p) => p,
         Err(e) => {
             eprintln!("prova start: cannot find the prova executable: {e}");
-            return ExitCode::from(2);
+            return ExitCode::from(crate::exit::EXIT_UNRULED);
         }
     };
     // Arm BEFORE the spawn: the window between spawning a holder and beginning to watch it is
@@ -904,13 +904,13 @@ pub(crate) fn start_subcommand(args: Vec<String>) -> ExitCode {
     }
     if let Err(e) = runstate::detach(&mut cmd, &log) {
         eprintln!("prova start: cannot open log {}: {e}", log.display());
-        return ExitCode::from(2);
+        return ExitCode::from(crate::exit::EXIT_UNRULED);
     }
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("prova start: cannot spawn `prova up`: {e}");
-            return ExitCode::from(2);
+            return ExitCode::from(crate::exit::EXIT_UNRULED);
         }
     };
 
@@ -1016,12 +1016,12 @@ fn await_registration(
                     }
                 }
                 runstate::remove(home, name);
-                return ExitCode::from(2);
+                return ExitCode::from(crate::exit::EXIT_UNRULED);
             }
             Ok(None) => {}
             Err(e) => {
                 eprintln!("prova start: lost track of the child process: {e}");
-                return ExitCode::from(2);
+                return ExitCode::from(crate::exit::EXIT_UNRULED);
             }
         }
         if Instant::now() >= deadline {
@@ -1033,7 +1033,7 @@ fn await_registration(
             );
             stop_holder(child, name, &mut relay);
             forget_if_gone(child, home, name);
-            return ExitCode::from(2);
+            return ExitCode::from(crate::exit::EXIT_UNRULED);
         }
         std::thread::sleep(Duration::from_millis(200));
     }
@@ -1067,7 +1067,7 @@ pub(crate) fn down_subcommand(args: Vec<String>) -> ExitCode {
                  | grep 'prova up {name}'`), then delete the record: rm {}",
                 runstate::path(&home, &name).display()
             );
-            return ExitCode::from(2);
+            return ExitCode::from(crate::exit::EXIT_UNRULED);
         }
     };
 
@@ -1090,7 +1090,7 @@ pub(crate) fn down_subcommand(args: Vec<String>) -> ExitCode {
             rec.pid
         );
         runstate::remove(&home, &name);
-        return ExitCode::from(2);
+        return ExitCode::from(crate::exit::EXIT_UNRULED);
     }
     runstate::remove(&home, &name);
     println!("torn down {name}.");
@@ -1115,7 +1115,7 @@ pub(crate) fn ps_subcommand(args: Vec<String>) -> ExitCode {
             }
             other => {
                 eprintln!("prova ps: unexpected argument {other:?}");
-                return ExitCode::from(2);
+                return crate::exit::config();
             }
         }
     }
@@ -1183,7 +1183,7 @@ pub(crate) fn parse_topology_args(
         Some(n) => Ok((n, manifest_path, profile, fixed)),
         None => {
             eprintln!("usage: prova {verb} <topology>");
-            Err(ExitCode::from(2))
+            Err(crate::exit::config())
         }
     }
 }
@@ -1246,14 +1246,14 @@ pub(crate) fn intern_run_wide_topologies(
             Ok(manifest::TopologyScope::Run) => {}
             Err(e) => {
                 eprintln!("prova: {e}");
-                return Err(ExitCode::from(2));
+                return Err(crate::exit::config());
             }
         }
         let resolved = match packages::resolve_topology(alias, decl, &env.env.dependencies) {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("prova: {e}");
-                return Err(ExitCode::from(2));
+                return Err(crate::exit::config());
             }
         };
         holder = holder.with_topology_registration(

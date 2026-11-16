@@ -58,7 +58,7 @@ pub(crate) fn run(args: Vec<String>) -> ExitCode {
         Ok(c) => c,
         Err(e) => {
             eprintln!("prova relay: {e}\nusage: prova relay --to unix:///path/to.sock");
-            return ExitCode::from(2);
+            return crate::exit::config();
         }
     };
     {

@@ -86,7 +86,7 @@ prova.test("uses it", function(t) t:use(env) t:expect(1):equals(1) end)
 ]])
 
   local r = run(root, "up hidden")
-  t:expect(r.code):equals(2)
+  t:expect(r.code):equals(78)
   t:expect(r.stdout, "names the missing topology"):contains('no topology "hidden"')
   t:expect(r.stdout, "prints the entry to add"):contains("[topologies]")
   t:expect(r.stdout):never():contains("no topologies defined")

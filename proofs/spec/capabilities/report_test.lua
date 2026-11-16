@@ -98,7 +98,7 @@ prova.test("capabilities takes at most one name", {
   proves = "a constraint must be quoted as ONE argument (`capabilities \"dotnet >= 9\"`); two positionals is a shell-quoting mistake worth naming rather than silently reading the first",
 }, function(t)
   local r = shell.run({ prova.bin, "capabilities", "one", "two" }, { merge_stderr = true })
-  t:expect(r.code):equals(2)
+  t:expect(r.code):equals(78)
   t:expect(r.stdout .. r.stderr):contains("at most one")
   -- An unknown name is not an error: it is a legitimate question with the answer "nothing declares
   -- this, and it is not on PATH".

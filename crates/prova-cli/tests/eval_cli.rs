@@ -103,7 +103,7 @@ fn a_raising_snippet_exits_one_with_the_error_on_stderr() {
 fn no_snippet_is_a_usage_error() {
     let dir = scratch("usage");
     let out = eval_in(&dir, &[]);
-    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(out.status.code(), Some(78));
     std::fs::remove_dir_all(&dir).ok();
 }
 

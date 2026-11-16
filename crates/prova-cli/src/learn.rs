@@ -1035,7 +1035,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
             }
             other => {
                 eprintln!("prova learn: unexpected argument {other:?}\nusage: prova learn [<topic>]");
-                return ExitCode::from(2);
+                return crate::exit::config();
             }
         }
     }
@@ -1048,7 +1048,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
         }
         Err(message) => {
             eprintln!("prova learn: {message}");
-            ExitCode::from(2)
+            crate::exit::config()
         }
     }
 }

@@ -83,7 +83,7 @@ fn parse_eval_args(args: Vec<String>) -> Result<EvalCli, ExitCode> {
                 "console" => {}
                 other => {
         eprintln!("prova eval: unknown format {other:?} (expected console|json)");
-        return Err(ExitCode::from(2));
+        return Err(crate::exit::config());
                 }
             }
             continue;
@@ -99,7 +99,7 @@ fn parse_eval_args(args: Vec<String>) -> Result<EvalCli, ExitCode> {
                 let mut buf = String::new();
                 if let Err(e) = std::io::stdin().read_to_string(&mut buf) {
         eprintln!("prova eval: cannot read snippet from stdin: {e}");
-        return Err(ExitCode::from(2));
+        return Err(ExitCode::from(crate::exit::EXIT_UNRULED));
                 }
                 code = Some(buf);
             }
@@ -110,7 +110,7 @@ fn parse_eval_args(args: Vec<String>) -> Result<EvalCli, ExitCode> {
                 Some(snippet) => code = Some(snippet),
                 None => {
         eprintln!("prova eval: `--` with no snippet after it");
-        return Err(ExitCode::from(2));
+        return Err(crate::exit::config());
                 }
             },
             // A leading `--` on something that is plainly CODE, not a flag. This is the whole
@@ -126,16 +126,16 @@ fn parse_eval_args(args: Vec<String>) -> Result<EvalCli, ExitCode> {
          separator (`prova eval -- '<code>'`), read it from stdin (`-`), or put a \
          statement on the first line."
                 );
-                return Err(ExitCode::from(2));
+                return Err(crate::exit::config());
             }
             other if other.starts_with('-') && other.len() > 1 => {
                 eprintln!("prova eval: unknown flag {other}");
-                return Err(ExitCode::from(2));
+                return Err(crate::exit::config());
             }
             other if code.is_none() => code = Some(other.to_string()),
             other => {
                 eprintln!("prova eval: unexpected argument {other:?} (expected one snippet)");
-                return Err(ExitCode::from(2));
+                return Err(crate::exit::config());
             }
         }
     }
@@ -144,11 +144,11 @@ fn parse_eval_args(args: Vec<String>) -> Result<EvalCli, ExitCode> {
         eprintln!(
             "usage: prova eval '<lua code>'   (or `prova eval -` to read the snippet from stdin)"
         );
-        return Err(ExitCode::from(2));
+        return Err(crate::exit::config());
     };
     if code.trim().is_empty() {
         eprintln!("prova eval: the snippet is empty");
-        return Err(ExitCode::from(2));
+        return Err(crate::exit::config());
     }
     Ok(EvalCli { code, profile, manifest_path, packages, force_json })
 }
@@ -164,7 +164,7 @@ pub(crate) fn eval_subcommand(args: Vec<String>) -> ExitCode {
         Ok(layout) => layout,
         Err(err) => {
             eprintln!("prova: cannot determine home directories: {err}");
-            return ExitCode::from(2);
+            return ExitCode::from(crate::exit::EXIT_UNRULED);
         }
     };
 
@@ -177,7 +177,7 @@ pub(crate) fn eval_subcommand(args: Vec<String>) -> ExitCode {
             Ok(h) => h,
             Err(e) => {
                 eprintln!("prova: {e}");
-                return ExitCode::from(2);
+                return crate::exit::config();
             }
         }
     };
@@ -300,16 +300,16 @@ mod separator_tests {
     /// holding valid Lua — who then audits their script instead of the argument boundary.
     #[test]
     fn a_commented_snippet_without_the_separator_is_refused_as_source() {
-        assert_eq!(refused(&["-- a note\nreturn 1"]), Some(ExitCode::from(2)), "refused, not guessed at");
+        assert_eq!(refused(&["-- a note\nreturn 1"]), Some(crate::exit::config()), "refused, not guessed at");
     }
 
     /// The control that keeps the heuristic from becoming a worse error than the one it replaced:
     /// a real typo'd flag is one word, and must still read as a flag.
     #[test]
     fn a_genuine_unknown_flag_is_still_a_flag() {
-        assert_eq!(refused(&["--bogus"]), Some(ExitCode::from(2)));
+        assert_eq!(refused(&["--bogus"]), Some(crate::exit::config()));
         // …and a lone `--` with nothing behind it is a usage error, not an empty snippet.
-        assert_eq!(refused(&["--"]), Some(ExitCode::from(2)));
+        assert_eq!(refused(&["--"]), Some(crate::exit::config()));
     }
 
     /// The paths that already worked must keep working — a parser fix earns its keep only if it
@@ -326,8 +326,8 @@ mod separator_tests {
         // A trailing comment never needed the separator; only the leading position bites.
         assert!(parse(&["return 1\n-- trailing"]).is_ok());
         // Two snippets is a usage error, not a silent last-one-wins.
-        assert_eq!(refused(&["return 1", "return 2"]), Some(ExitCode::from(2)));
+        assert_eq!(refused(&["return 1", "return 2"]), Some(crate::exit::config()));
         // An empty snippet is refused rather than run as a no-op.
-        assert_eq!(refused(&["   "]), Some(ExitCode::from(2)));
+        assert_eq!(refused(&["   "]), Some(crate::exit::config()));
     }
 }

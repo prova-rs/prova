@@ -22,9 +22,9 @@ end)
 
 prova.test("introspect is a report of at most one filter, no flags", function(t)
   t:expect(shell.run(prova.bin .. " introspect a b", { merge_stderr = true }).code,
-    "one filter at a time"):equals(2)
+    "one filter at a time"):equals(78)
   t:expect(shell.run(prova.bin .. " introspect --nope", { merge_stderr = true }).code,
-    "no flags"):equals(2)
+    "no flags"):equals(78)
 end)
 
 prova.test("the binary teaches introspect and advertises it — CLI↔MCP parity for API discovery", {

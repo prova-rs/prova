@@ -44,7 +44,7 @@ pub(crate) fn reminders_subcommand(args: Vec<String>) -> ExitCode {
             Ok(false) => rest.push(arg),
             Err(e) => {
                 eprintln!("prova: reminders: {e}");
-                return ExitCode::from(2);
+                return crate::exit::config();
             }
         }
     }
@@ -178,7 +178,7 @@ pub(crate) fn attest_subcommand(args: Vec<String>) -> ExitCode {
             }
             other => {
                 eprintln!("prova: attest: unexpected argument {other:?}\nusage: prova attest [<doc.md#claim-id>]");
-                return ExitCode::from(2);
+                return crate::exit::config();
             }
         }
     }
@@ -286,7 +286,7 @@ fn attest_deputed(home: &home::Home, address: &str, rest: &str) -> ExitCode {
         Some(pair) => pair,
         None => {
             eprintln!("prova: a deputed address is junit:<suite>#<case>, got {address:?}");
-            return ExitCode::from(2);
+            return crate::exit::config();
         }
     };
     let Some(recorded) = record::load(home) else {
@@ -360,7 +360,7 @@ fn resolve_claim_address(
             for m in matches {
                 println!("    {}", m.address);
             }
-            Err(ExitCode::from(2))
+            Err(crate::exit::config())
         }
     }
 }
@@ -380,7 +380,7 @@ pub(crate) fn resolve_for_obligations(
         Ok(l) => l,
         Err(e) => {
             eprintln!("prova: {e}");
-            return Err(ExitCode::from(2));
+            return Err(ExitCode::from(crate::exit::EXIT_UNRULED));
         }
     };
     let mut run =
@@ -700,7 +700,7 @@ pub(crate) fn evidence_subcommand(args: Vec<String>) -> ExitCode {
                 "console" => {}
                 other => {
                     eprintln!("prova evidence: unknown format {other:?} (expected console|json)");
-                    return ExitCode::from(2);
+                    return crate::exit::config();
                 }
             }
             continue;
@@ -717,7 +717,7 @@ pub(crate) fn evidence_subcommand(args: Vec<String>) -> ExitCode {
             }
             other => {
                 eprintln!("prova: evidence: unexpected argument {other:?}\nusage: prova evidence [--format json]");
-                return ExitCode::from(2);
+                return crate::exit::config();
             }
         }
     }
@@ -823,8 +823,8 @@ mod tests {
         let code = |c: ExitCode| format!("{c:?}");
         let argv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert_eq!(code(attest_subcommand(argv(&["--help"]))), code(ExitCode::SUCCESS));
-        assert_eq!(code(attest_subcommand(argv(&["--bogus"]))), code(ExitCode::from(2)));
-        assert_eq!(code(attest_subcommand(argv(&["one", "two"]))), code(ExitCode::from(2)));
+        assert_eq!(code(attest_subcommand(argv(&["--bogus"]))), code(crate::exit::config()));
+        assert_eq!(code(attest_subcommand(argv(&["one", "two"]))), code(crate::exit::config()));
     }
 
     /// A minimal package in a tempdir: a manifest with a docs spec source, one anchored claim
@@ -942,7 +942,7 @@ end)
         store(record::Executed::Passed, false);
         assert_eq!(code(attest_subcommand(argv(&["junit:SuiteA#case_1"]))), code(ExitCode::SUCCESS));
         assert_eq!(code(attest_subcommand(argv(&["junit:SuiteA#ghost"]))), code(ExitCode::FAILURE));
-        assert_eq!(code(attest_subcommand(argv(&["junit:no-hash"]))), code(ExitCode::from(2)));
+        assert_eq!(code(attest_subcommand(argv(&["junit:no-hash"]))), code(crate::exit::config()));
 
         // A bare id carried by two anchors is ambiguous — exit 2, candidates listed.
         std::fs::write(
@@ -950,7 +950,7 @@ end)
             "<!-- claim: never-preempt -->\nA second anchor with the same id.\n",
         )
         .unwrap();
-        assert_eq!(code(attest_subcommand(argv(&["never-preempt"]))), code(ExitCode::from(2)));
+        assert_eq!(code(attest_subcommand(argv(&["never-preempt"]))), code(crate::exit::config()));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

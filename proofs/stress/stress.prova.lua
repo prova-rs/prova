@@ -215,8 +215,9 @@ prova.test("a stress of nothing is refused, never green", {
 }, function(t)
   local sb = sandbox(t, { "tests::ok" })
   local r = stress(sb, "-k nomatch")
+  -- 2 until E rules cmd_stress's shared refusal (config and runtime both reach it); the --copies refusal is config.
   t:expect(r.code, r.stdout):equals(2)
   t:expect(r.stdout):contains("matched no case")
   local bad = stress(sb, "--copies 0")
-  t:expect(bad.code):equals(2)
+  t:expect(bad.code):equals(78)
 end)

@@ -172,7 +172,7 @@ prova.test("a sharing scope prova cannot honor is refused, never dropped",
   local count = root .. "/count.txt"
 
   local out = run(root, "", { PROVA_PROOF_COUNT = count })
-  t:expect(out.code, "refused, not run at file scope"):equals(2)
+  t:expect(out.code, "refused, not run at file scope"):equals(78)
   t:expect(out.stdout, "names the key and both honorable values"):contains("scope")
   t:expect(out.stdout):contains('"run"')
   t:expect(fs.exists(count), "nothing was provisioned"):equals(false)

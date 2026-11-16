@@ -95,7 +95,7 @@ pub(super) fn conclude_run(
             eprintln!(
                 "prova: --topology {want:?}: the suite never declared it (prova.topology({want:?}, …)) — nothing ran against the held instance"
             );
-            return ExitCode::from(2);
+            return crate::exit::config();
         }
     }
 
@@ -117,7 +117,7 @@ pub(super) fn conclude_run(
     let ran = summary.passed + summary.failed + summary.skipped + summary.promised + summary.flaky;
     if ran == 0 && !config.selection.is_empty() && !cli.allow_empty {
         report_empty_selection(&config.selection, summary.deselected);
-        return ExitCode::from(2);
+        return crate::exit::config();
     }
 
     if let Some(not_now) = not_now() {

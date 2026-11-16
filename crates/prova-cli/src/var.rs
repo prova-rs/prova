@@ -157,18 +157,18 @@ pub(crate) fn var_dir_subcommand(args: Vec<String>) -> std::process::ExitCode {
                 Some(v) => manifest_path = Some(v),
                 None => {
                     eprintln!("prova var-dir: --manifest needs a path");
-                    return std::process::ExitCode::from(2);
+                    return crate::exit::config();
                 }
             },
             other => {
                 eprintln!("prova var-dir: unexpected argument {other:?}");
-                return std::process::ExitCode::from(2);
+                return crate::exit::config();
             }
         }
     }
     if let Err(why) = check_env() {
         eprintln!("prova: {why}");
-        return std::process::ExitCode::from(2);
+        return crate::exit::config();
     }
     let home = match crate::cmd_topo::resolve_home(manifest_path.as_deref()) {
         Ok(h) => h,

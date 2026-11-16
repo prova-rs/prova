@@ -306,7 +306,7 @@ is a --flag on its lane now, not its own verb, and muscle memory meets a redirec
 }, function(t)
   local proj = project(t, TWO_STATES)
   local r = shell.run(prova.bin .. " backlog", { cwd = proj, merge_stderr = true })
-  t:expect(r.code, "backlog no longer dispatches"):equals(2)
+  t:expect(r.code, "backlog no longer dispatches"):equals(78)
   t:expect(r.stdout, "it names its successor"):contains("prova specs --backlog")
 end)
 
@@ -343,15 +343,15 @@ prova.test("settled", function(t) t:expect(1):equals(1) end)
   -- The contradictory pair is a taught refusal in each lane's own vocabulary — all three lanes,
   -- one derivation.
   local specs = shell.run(prova.bin .. " specs --claims --backlog", { cwd = proj, merge_stderr = true })
-  t:expect(specs.code):equals(2)
+  t:expect(specs.code):equals(78)
   t:expect(specs.stdout):contains("mutually exclusive")
 
   local reminders = shell.run(prova.bin .. " reminders --due --watching", { cwd = proj, merge_stderr = true })
-  t:expect(reminders.code):equals(2)
+  t:expect(reminders.code):equals(78)
   t:expect(reminders.stdout):contains("mutually exclusive")
 
   local tests = shell.run(prova.bin .. " tests --promises --proofs", { cwd = proj, merge_stderr = true })
-  t:expect(tests.code):equals(2)
+  t:expect(tests.code):equals(78)
   t:expect(tests.stdout):contains("mutually exclusive")
 
   -- The spelling family is derived, so the singular reads wherever the plural does.

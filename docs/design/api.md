@@ -120,7 +120,8 @@ Lua predicate from a package, or a built-in named out loud. Unavailable ⇒ the 
 reason shown, never fails** — which also means a typo'd name silently skips unless the package
 closes its vocabulary with `[capabilities] "*" = "error"`, which turns an undeclared name red. A
 profile's `must_run = [...]` is the other half — **policy about the environment**: same expressions,
-but unmet ⇒ the run FAILS (exit 2) before anything executes. See
+but unmet ⇒ the run FAILS (exit 2, the host's) before anything executes; a malformed expression is the change's
+(exit 78, `EX_CONFIG`). See
 [`capabilities.md`](capabilities.md).
 
 ## Modules (built-ins) and packages

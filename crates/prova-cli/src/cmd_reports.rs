@@ -97,7 +97,7 @@ pub(crate) fn reports_subcommand(args: Vec<String>) -> ExitCode {
                 Some(k) => kind = Some(k),
                 None => {
                     eprintln!("prova: reports: --kind needs a value (json, html, xml, …)");
-                    return ExitCode::from(2);
+                    return crate::exit::config();
                 }
             },
             other if other.starts_with("--kind=") => {
@@ -105,7 +105,7 @@ pub(crate) fn reports_subcommand(args: Vec<String>) -> ExitCode {
             }
             other if other.starts_with('-') => {
                 eprintln!("prova: reports: unknown flag {other:?} (see --help)");
-                return ExitCode::from(2);
+                return crate::exit::config();
             }
             other => name = Some(other.to_string()),
         }
@@ -115,22 +115,22 @@ pub(crate) fn reports_subcommand(args: Vec<String>) -> ExitCode {
         Ok(Some(h)) => h,
         Ok(None) => {
             eprintln!("prova: no prova.toml found — reports belong to a package (`prova init`)");
-            return ExitCode::from(2);
+            return crate::exit::config();
         }
         Err(e) => {
             eprintln!("prova: {e}");
-            return ExitCode::from(2);
+            return crate::exit::config();
         }
     };
     // `--kind` addresses a form, so it needs to know WHICH report — otherwise the answer is
     // ambiguous the moment a second report exists.
     if kind.is_some() && name.is_none() {
         eprintln!("prova: reports: --kind addresses a form of ONE report — name it (`prova reports <name> --kind …`)");
-        return ExitCode::from(2);
+        return crate::exit::config();
     }
     if pick && kind.is_some() {
         eprintln!("prova: reports: --choose picks a form for you — drop --kind, or drop --choose");
-        return ExitCode::from(2);
+        return crate::exit::config();
     }
     match (name, pick) {
         // `--choose` with a name: the reader already knows which report they want, so skip the menu
@@ -156,14 +156,14 @@ fn open_named(home: &Home, name: &str) -> ExitCode {
     let Some(report) = reports.iter().find(|r| r.name == name) else {
         let known: Vec<&str> = reports.iter().map(|r| r.name.as_str()).collect();
         eprintln!("prova: no report named {name:?} — the last run published: {}", known.join(", "));
-        return ExitCode::from(2);
+        return crate::exit::config();
     };
     let Some((kind, path)) = human_form(report) else {
         eprintln!(
             "prova: report {name:?} has no form a person would open (looked for: {}) —              address a machine form with `prova reports {name} --kind <kind>`",
             HUMAN_KINDS.join(", ")
         );
-        return ExitCode::from(2);
+        return crate::exit::config();
     };
     if !std::io::stdout().is_terminal() {
         eprintln!("prova: reports --choose: stdout is not a terminal — printing the path instead");
@@ -264,7 +264,7 @@ fn choose(home: &Home) -> ExitCode {
         }
         Err(err) => {
             eprintln!("prova: reports: selection failed: {err}");
-            ExitCode::from(2)
+            ExitCode::from(crate::exit::EXIT_UNRULED)
         }
     }
 }
@@ -279,7 +279,7 @@ fn open_pick(name: &str, kind: &str, path: &str) -> ExitCode {
         Err(e) => {
             eprintln!("prova: could not open {path}: {e}");
             println!("{path}");
-            ExitCode::from(2)
+            ExitCode::from(crate::exit::EXIT_UNRULED)
         }
     }
 }
@@ -330,7 +330,7 @@ fn one(home: &Home, name: &str, kind: Option<&str>) -> ExitCode {
                 format!(" — the last run published: {}", known.join(", "))
             }
         );
-        return ExitCode::from(2);
+        return crate::exit::config();
     };
 
     // `--kind`: the path alone, so it composes into `open $(…)`. Everything else goes to stderr so
@@ -347,7 +347,7 @@ fn one(home: &Home, name: &str, kind: Option<&str>) -> ExitCode {
                     "prova: report {name:?} has no {kind:?} form — it comes in: {}",
                     kinds.join(", ")
                 );
-                return ExitCode::from(2);
+                return crate::exit::config();
             }
         }
     }

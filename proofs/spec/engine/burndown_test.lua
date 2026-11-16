@@ -96,7 +96,7 @@ all) meets a redirect, not the run path's cryptic 'no such file' — and never t
     { "falsify", "prova tests falsify" },
   }) do
     local r = shell.run(prova.bin .. " " .. pair[1], { cwd = proj, merge_stderr = true })
-    t:expect(r.code, pair[1] .. " no longer dispatches"):equals(2)
+    t:expect(r.code, pair[1] .. " no longer dispatches"):equals(78)
     t:expect(r.stdout, pair[1] .. " names its successor"):contains(pair[2])
   end
 end)

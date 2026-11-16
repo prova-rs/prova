@@ -222,12 +222,12 @@ prova.test("a malformed constraint is an ERROR, not a silent skip", function(t)
   -- and read as green — the exact vacuous green the contract exists to remove. A bad *expression* is
   -- a config error, distinct from an unmet *constraint* (a skip) and from an absent tool.
   --
-  -- Again the phrasing carries the weight: exit 2 alone is a false green, since an unparsed garbage
+  -- Again the phrasing carries the weight: the exit code alone is a false green, since an unparsed garbage
   -- string is simply an unknown capability.
   local dir = project('\n[profiles.ci]\nmust_run = ["git >>>> 1.0"]\n')
   local r = shell.run(prova_bin .. " --profile ci", { cwd = dir })
   local out = r.stderr .. r.stdout
-  t:expect(r.code, "a malformed capability expression is a config error"):equals(2)
+  t:expect(r.code, "a malformed capability expression is a config error (78), not the host's (2)"):equals(78)
   t:expect(out, "says the EXPRESSION is bad, not that the tool is missing"):contains("invalid capability")
   t:expect(out):contains("git >>>> 1.0")
 end)

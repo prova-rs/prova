@@ -37,7 +37,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
         }
         Some(other) => {
             eprintln!("prova ide: unknown subcommand {other:?} (expected: setup)");
-            return ExitCode::from(2);
+            return crate::exit::config();
         }
     }
 
@@ -50,7 +50,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
                     Ok(m) => manage = m,
                     Err(e) => {
                         eprintln!("prova ide setup: {e}");
-                        return ExitCode::from(2);
+                        return crate::exit::config();
                     }
                 }
             }
@@ -60,7 +60,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
             }
             other => {
                 eprintln!("prova ide setup: unknown option {other:?}");
-                return ExitCode::from(2);
+                return crate::exit::config();
             }
         }
     }
@@ -71,11 +71,11 @@ pub fn run(args: Vec<String>) -> ExitCode {
             eprintln!(
                 "prova ide setup: no prova.toml found in this directory or any parent — run `prova init` first"
             );
-            return ExitCode::from(2);
+            return crate::exit::config();
         }
         Err(e) => {
             eprintln!("prova ide setup: {e}");
-            return ExitCode::from(2);
+            return crate::exit::config();
         }
     };
 
@@ -83,7 +83,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
         Ok(l) => l,
         Err(err) => {
             eprintln!("prova ide setup: cannot locate cache directory: {err}");
-            return ExitCode::from(2);
+            return ExitCode::from(crate::exit::EXIT_UNRULED);
         }
     };
 
@@ -91,7 +91,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("prova ide setup: {err}");
-            ExitCode::from(2)
+            ExitCode::from(crate::exit::EXIT_UNRULED)
         }
     }
 }

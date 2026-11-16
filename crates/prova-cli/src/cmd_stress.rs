@@ -60,7 +60,7 @@ fn parse(argv: Vec<String>) -> Result<Args, ExitCode> {
     };
     let bad = |why: String| -> ExitCode {
         eprintln!("prova stress: {why}\n\n{USAGE}");
-        ExitCode::from(2)
+        crate::exit::config()
     };
     let mut it = argv.into_iter();
     while let Some(arg) = it.next() {
@@ -214,7 +214,7 @@ pub(crate) fn run(argv: Vec<String>) -> ExitCode {
     {
         let _ = a;
         eprintln!("prova stress: unix only — it needs process groups and signals");
-        ExitCode::from(2)
+        crate::exit::unmet()
     }
 }
 
@@ -376,7 +376,7 @@ mod unix {
     fn prepare(a: &Args) -> Result<(crate::home::Home, crate::manifest::Manifest, Vec<Case>), ExitCode> {
         let refuse = |why: String| {
             eprintln!("prova stress: {why}");
-            ExitCode::from(2)
+            ExitCode::from(crate::exit::EXIT_UNRULED)
         };
         let cwd = std::env::current_dir().unwrap_or_default();
         let Ok(Some(home)) = crate::home::find(&cwd) else {
@@ -516,7 +516,7 @@ mod unix {
         let fail_dir = out_dir.join("fail");
         if let Err(e) = crate::var::dir(&home).and_then(|_| std::fs::create_dir_all(&fail_dir)) {
             eprintln!("prova stress: cannot create {}: {e}", fail_dir.display());
-            return ExitCode::from(2);
+            return ExitCode::from(crate::exit::EXIT_UNRULED);
         }
         let tmp_root = short_temp_base().join(format!("ps{}", std::process::id()));
         let _ = std::fs::create_dir_all(&tmp_root);

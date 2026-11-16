@@ -126,7 +126,7 @@ prova.test("--fresh ignores the holder and provisions",
   t:expect(fs.exists(root .. "/.prova/var/running/orders.json"), "holder untouched"):equals(true)
 
   local contradiction = run(root, "--fresh --topology orders")
-  t:expect(contradiction.code, "--fresh with --topology is refused"):equals(2)
+  t:expect(contradiction.code, "--fresh with --topology is refused"):equals(78)
 end)
 
 prova.test("--topology requires the attachment or fails loudly",

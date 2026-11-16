@@ -117,7 +117,7 @@ prova.test("--flakes=warn reports a flake without failing — and the verdict is
   t:expect(r.stdout):contains("--flakes=warn")
   t:expect(record(sb.pkg).verdict, "warn changes the exit, never the verdict"):equals("flaky")
   local bad = run(sb.pkg, "--flakes=maybe")
-  t:expect(bad.code, "an unknown mode is refused"):equals(2)
+  t:expect(bad.code, "an unknown mode is refused"):equals(78)
 end)
 
 prova.test("a pass on a DIFFERENT tree is no flake: the code changed, so did the question", {

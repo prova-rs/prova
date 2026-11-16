@@ -127,7 +127,7 @@ prova.test("a package that resolves to no proofs is exit 2, not zero-of-zero gre
   fs.remove_all(dir .. "/proofs")
 
   local r = run(dir)
-  t:expect(r.code):equals(2)
+  t:expect(r.code):equals(78)
   t:expect(r.stdout, "says what it looked for"):contains("no declaration files found")
   t:expect(r.stdout, "teaches the preferred spelling"):contains(".prova.lua")
 end)
@@ -136,7 +136,7 @@ prova.test("a --profile name that doesn't exist is refused by name",
   { covers = "docs/design/manifest.md#empty-resolution-is-an-error" }, function(t)
   local dir = t:use(package_with)('[run]\nproofs = ["proofs"]\n')
   local r = run(dir, "--profile nope")
-  t:expect(r.code):equals(2)
+  t:expect(r.code):equals(78)
   t:expect(r.stdout):contains("no such profile")
   t:expect(r.stdout, "names the missing profile"):contains("nope")
 end)
@@ -146,7 +146,7 @@ prova.test("a selection that matches nothing is exit 2 — and --allow-empty is 
   local dir = t:use(package_with)('[run]\nproofs = ["proofs"]\n')
 
   local r = run(dir, "-k zzz_matches_nothing")
-  t:expect(r.code, "usually a typo, so it fails"):equals(2)
+  t:expect(r.code, "usually a typo, so it fails"):equals(78)
   t:expect(r.stdout, "points at the opt-out"):contains("--allow-empty")
 
   local allowed = run(dir, "--allow-empty -k zzz_matches_nothing")

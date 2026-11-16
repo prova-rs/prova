@@ -5,7 +5,7 @@
 ---   * `prova learn` lists the topic catalog: `topic  one-line hook` rows, exit 0
 ---   * `prova learn <topic>` prints that topic, exit 0
 ---   * aliases resolve (`mocks` → `doubles`) — an intuitive name never bounces off our taxonomy
----   * an unknown topic is a usage error: exit 2, and the listing is shown so the next call works
+---   * an unknown topic is a usage error: exit 78 (EX_CONFIG), and the listing is shown so the next call works
 ---   * topics with dynamic slots render THIS project's facts when run inside one, and degrade to
 ---     an imperative pointer (`prova init`) when there is no manifest
 ---
@@ -50,7 +50,7 @@ prova.group("prova learn", function(g)
 
   g:test("an unknown topic is a usage error that shows the catalog", function(t)
     local r = learn("definitely-not-a-topic")
-    t:expect(r.code):equals(2)
+    t:expect(r.code):equals(78)
     t:expect(r.stderr):contains("definitely-not-a-topic")
     -- The listing rides along so the agent's NEXT call is right.
     t:expect(r.stderr):contains("pdd")
@@ -148,13 +148,13 @@ prova.group("project-provided context (manifest `context`)", function(g)
 
   g:test("reading a declared-but-missing doc is an error naming the path", function(t)
     local r = learn("ctx:gone", { cwd = project })
-    t:expect(r.code):equals(2)
+    t:expect(r.code):equals(78)
     t:expect(r.stderr):contains("docs/gone.md")
   end)
 
   g:test("outside a package, ctx topics don't exist", function(t)
     local r = learn("ctx:conventions", { cwd = fs.tempdir() })
-    t:expect(r.code):equals(2)
+    t:expect(r.code):equals(78)
   end)
 end)
 

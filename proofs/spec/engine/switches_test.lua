@@ -81,7 +81,7 @@ prova.test("exact --node implies the throw; a fuzzy selector never does", {
   -- Fuzzy: the class stays held back, and a selection left empty by it is LOUD, not green.
   fs.remove_all(proj .. "/heavy.ran")
   local fuzzy = shell.run(prova.bin .. " -k expensive", { cwd = proj, merge_stderr = true })
-  t:expect(fuzzy.code, "an unthrown class cannot be reached by keyword"):equals(2)
+  t:expect(fuzzy.code, "an unthrown class cannot be reached by keyword"):equals(78)
   t:expect(fs.exists(proj .. "/heavy.ran")):is_false()
   -- Thrown AND selected composes: authorization is not selection.
   local both = shell.run(prova.bin .. " -s heavy -k expensive", { cwd = proj, merge_stderr = true })

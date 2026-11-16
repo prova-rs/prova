@@ -190,10 +190,10 @@ prova.test("every MCP tool name, typed at the CLI, dispatches or teaches — nev
 
   -- The two divergent spellings teach their CLI twin by name, and refuse rather than dispatch.
   local cap = shell.run(prova.bin .. " capture", { cwd = root, merge_stderr = true })
-  t:expect(cap.code, "a teaching redirect refuses"):equals(2)
+  t:expect(cap.code, "a teaching redirect refuses"):equals(78)
   t:expect(cap.stdout, "capture teaches its lane driver"):contains("specs capture")
   local st = shell.run(prova.bin .. " status", { cwd = root, merge_stderr = true })
-  t:expect(st.code):equals(2)
+  t:expect(st.code):equals(78)
   t:expect(st.stdout, "status teaches the detached-topology view"):contains("prova ps")
 end)
 

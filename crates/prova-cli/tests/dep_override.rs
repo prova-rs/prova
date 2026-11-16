@@ -139,6 +139,6 @@ fn an_undeclared_name_is_refused_with_the_declared_ones_and_the_fix() {
     write_project(&project, &remote);
     let out = run_prova(&project, &home, &["--dep", "nope=v2"], &[]);
     let err = String::from_utf8_lossy(&out.stderr);
-    assert_eq!(out.status.code(), Some(2), "{err}");
+    assert_eq!(out.status.code(), Some(78), "{err}");
     assert!(err.contains("no direct dependency named \"nope\"") && err.contains("[greet]"), "{err}");
 }

@@ -33,7 +33,7 @@ prova.test("a malformed duration is refused: the --timeout flag", {
   local r = shell.run({ prova.bin, "--timeout", "30 seconds", "--allow-empty", "-k", "nothing-matches-this" },
     { merge_stderr = true, timeout = "60s" })
 
-  t:expect(r.code, "the flag REFUSES, not drops:\n" .. r.stdout):equals(2)
+  t:expect(r.code, "the flag REFUSES, not drops:\n" .. r.stdout):equals(78)
   t:expect(r.stdout, "and teaches the grammar"):contains("is not a duration")
   t:expect(r.stdout):contains("250ms")
 end)

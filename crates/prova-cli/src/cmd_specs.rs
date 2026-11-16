@@ -269,19 +269,19 @@ pub(crate) fn capture_subcommand(args: Vec<String>) -> ExitCode {
                 Some(v) => file = Some(v),
                 None => {
                     eprintln!("prova: specs capture: --file needs a value\n{USAGE}");
-                    return ExitCode::from(2);
+                    return crate::exit::config();
                 }
             },
             other if other.starts_with('-') => {
                 eprintln!("prova: specs capture: unexpected flag {other:?}\n{USAGE}");
-                return ExitCode::from(2);
+                return crate::exit::config();
             }
             _ => positional.push(arg),
         }
     }
     let (Some(file), [id, prose]) = (file, positional.as_slice()) else {
         eprintln!("prova: specs capture: expected <id>, \"<prose>\" and --file <doc>\n{USAGE}");
-        return ExitCode::from(2);
+        return crate::exit::config();
     };
 
     let home = match resolve_home(None) {
@@ -327,7 +327,7 @@ pub(crate) fn capture_subcommand(args: Vec<String>) -> ExitCode {
 pub(crate) fn promote_claim(id: Option<String>) -> ExitCode {
     let Some(id) = id else {
         eprintln!("prova: promote <id> — which backlog item?\nusage: prova specs promote <doc.md#id | id>");
-        return ExitCode::from(2);
+        return crate::exit::config();
     };
     let home = match resolve_home(None) {
         Ok(h) => h,
@@ -364,7 +364,7 @@ pub(crate) fn promote_claim(id: Option<String>) -> ExitCode {
                 eprintln!("    {}", m.address);
             }
             eprintln!("  name the full address to disambiguate");
-            return ExitCode::from(2);
+            return crate::exit::config();
         }
     };
     if target.kind == claims::Kind::Claim {
@@ -424,7 +424,7 @@ fn parse_specs_args(args: &[String]) -> Result<(Option<claims::Kind>, bool), Exi
             Ok(false) => {}
             Err(e) => {
                 eprintln!("prova: specs: {e}");
-                return Err(ExitCode::from(2));
+                return Err(crate::exit::config());
             }
         }
         match arg.as_str() {
@@ -447,7 +447,7 @@ fn parse_specs_args(args: &[String]) -> Result<(Option<claims::Kind>, bool), Exi
             "--undated" => undated_only = true,
             other => {
                 eprintln!("prova: specs: unexpected argument {other:?}\nusage: prova specs [--claims | --backlog] [--undated]");
-                return Err(ExitCode::from(2));
+                return Err(crate::exit::config());
             }
         }
     }
@@ -640,7 +640,7 @@ mod tests {
         }
 
         // Promotion refusals: no id is usage, an unknown id is a failure naming it.
-        assert_eq!(code(promote_claim(None)), code(ExitCode::from(2)));
+        assert_eq!(code(promote_claim(None)), code(crate::exit::config()));
         assert_eq!(code(promote_claim(Some("ghost".into()))), code(ExitCode::FAILURE));
 
         // The one state-write: backlog → claim is a keyword flip in place, id and prose intact.
