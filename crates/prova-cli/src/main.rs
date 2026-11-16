@@ -816,6 +816,8 @@ struct FailureRecorder {
     inner: Box<dyn Reporter>,
     failed: Vec<String>,
     executed: std::collections::BTreeMap<String, record::Executed>,
+    /// Each failed or flaky leaf's own words, keyed as `executed` is (E m/14546).
+    failures: std::collections::BTreeMap<String, prova_core::ledger::Failure>,
     skipped: Vec<record::Skipped>,
     /// The run journal (docs/plans/resume.md): every settled leaf, on disk the moment it settles.
     /// `None` for a narrowed run, or one with no tree to key it on.
@@ -840,6 +842,8 @@ impl Reporter for FailureRecorder {
             outcome,
             message,
             file,
+            line,
+            infra,
             ..
         } = event
         {
@@ -855,6 +859,9 @@ impl Reporter for FailureRecorder {
             match outcome {
                 prova_core::Outcome::Failed => {
                     row.first_failure = flakes::first_line(*message);
+                    let cause = infra.map(|_| prova_core::ledger::CAUSE_INFRA);
+                    let words = prova_core::ledger::Failure::new(message.unwrap_or("failed"), *line, cause);
+                    self.failures.insert(key.clone(), words);
                     self.failed.push(path.to_string());
                     self.executed.insert(key, record::Executed::Failed);
                 }
@@ -862,6 +869,9 @@ impl Reporter for FailureRecorder {
                     Some((failed_run, first)) => {
                         row.outcome = "flaky".into();
                         row.from = Some(failed_run);
+                        // The flake history keeps the earlier failure's first line, and no more.
+                        let words = first.as_deref().unwrap_or("failed in an earlier run on this tree");
+                        self.failures.insert(key.clone(), prova_core::ledger::Failure::new(words, *line, None));
                         row.first_failure = first;
                         self.executed.insert(key, record::Executed::Flaky);
                     }

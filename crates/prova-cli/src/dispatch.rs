@@ -979,6 +979,7 @@ fn build_reporter(
         inner: Box::new(MultiReporter::new(sinks)),
         failed: Vec::new(),
         executed: std::collections::BTreeMap::new(),
+        failures: std::collections::BTreeMap::new(),
         skipped: Vec::new(),
         // Opened by `run` once the journal is planned (it needs the tree and the resume set).
         journal: None,
@@ -1087,6 +1088,7 @@ fn store_run_record(
             },
             flakes,
             executed: settled.executed,
+            failures: std::mem::take(&mut reporter.failures),
             skipped: std::mem::take(&mut reporter.skipped),
             deselected: summary.deselected_paths.clone(),
             reminders: reminders.clone(),

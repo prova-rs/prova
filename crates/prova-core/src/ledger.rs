@@ -42,6 +42,57 @@ pub struct Skipped {
     pub reason: String,
 }
 
+/// A red leaf's own words — kept in the record so a red can be read once the console is gone
+/// (E m/14546: Herald and Horai read the record, never the scrollback).
+///
+/// Written for each `Executed::Failed` leaf (its failure here) and each `Executed::Flaky` leaf (the
+/// first line of the failure it passed after, the only words the flake history keeps).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Failure {
+    /// The failure text as reported, capped at [`FAILURE_MESSAGE_AT_MOST`] bytes with the TAIL kept
+    /// (the assertion and traceback end there). A cut message begins with [`FAILURE_CUT_MARK`] and
+    /// `cut` says how many bytes went.
+    pub message: String,
+    /// Bytes dropped from the head of `message`; absent when nothing was cut.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cut: Option<u64>,
+    /// 1-based line of the leaf's declaration, when the run had a file behind it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+    /// The typed cause, when the failure carries one: [`CAUSE_INFRA`] for a `prova.infra(msg)`
+    /// failure (the environment's, typed by the error, never inferred from text). A string, not an
+    /// enum: a cause a later prova adds must read as itself in an older reader, never fail the parse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cause: Option<String>,
+}
+
+/// `Failure::cause` for a `prova.infra(msg)` failure; the JSON reporter's `cause` spells it the same.
+pub const CAUSE_INFRA: &str = "infra";
+
+/// The most bytes of one failure's message the record keeps.
+pub const FAILURE_MESSAGE_AT_MOST: usize = 4096;
+
+/// What a cut message begins with.
+pub const FAILURE_CUT_MARK: &str = "… ";
+
+impl Failure {
+    /// One failure, its message capped at [`FAILURE_MESSAGE_AT_MOST`] bytes, the tail kept and the cut
+    /// said (on a char boundary, so the kept text is still the leaf's own UTF-8).
+    pub fn new(message: &str, line: Option<u32>, cause: Option<&str>) -> Failure {
+        let keep = FAILURE_MESSAGE_AT_MOST - FAILURE_CUT_MARK.len();
+        let (message, cut) = if message.len() <= FAILURE_MESSAGE_AT_MOST {
+            (message.to_string(), None)
+        } else {
+            let mut from = message.len() - keep;
+            while !message.is_char_boundary(from) {
+                from += 1;
+            }
+            (format!("{FAILURE_CUT_MARK}{}", &message[from..]), Some(from as u64))
+        };
+        Failure { message, cut, line, cause: cause.map(str::to_string) }
+    }
+}
+
 /// Run totals. Mirrors `prova_core::Summary`, minus the parts that are not durable facts.
 /// Every field is defaulted on read: a record written before a count existed (schema 1 predates
 /// `promised`) must LOAD — the same stale-record tolerance as `Executed`'s `spec` alias, and
@@ -265,6 +316,10 @@ pub struct Record {
     pub summary: Counts,
     /// Every leaf that ran, and what became of it.
     pub executed: BTreeMap<String, Executed>,
+    /// For each `failed` or `flaky` leaf in `executed`, its own words (keyed alike). Defaulted, so an
+    /// older record without it loads, and an older reader skips it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub failures: BTreeMap<String, Failure>,
     /// Named, not summed — the whole point of the record.
     pub skipped: Vec<Skipped>,
     /// Named, not summed. Deselection and skipping have different causes and one consequence.
@@ -479,6 +534,39 @@ mod tests {
         assert!(rec.measurements.is_empty());
     }
 
+    /// E m/14546: `failures` is additive. A record written before it loads with none, and one that
+    /// has none writes none, so an older reader meets nothing new on a green run.
+    #[test]
+    fn a_record_from_before_failures_loads_and_an_empty_map_is_not_written() {
+        let old = r#"{
+            "schema": 5, "version": "0.30.0", "binary": "x", "selection": [],
+            "duration_ms": 5, "summary": { "failed": 1 },
+            "executed": { "f › red": "failed" }, "skipped": [], "deselected": []
+        }"#;
+        let rec: Record = serde_json::from_str(old).unwrap();
+        assert!(rec.failures.is_empty());
+        assert!(!serde_json::to_string(&rec).unwrap().contains("failures"));
+    }
+
+    /// The cap keeps the tail on a char boundary, says the cut, and leaves a short message whole.
+    #[test]
+    fn a_failure_message_is_capped_from_the_head_on_a_char_boundary() {
+        let short = Failure::new("boom", Some(3), Some(CAUSE_INFRA));
+        assert_eq!((short.message.as_str(), short.cut, short.line), ("boom", None, Some(3)));
+        assert_eq!(short.cause.as_deref(), Some(CAUSE_INFRA));
+
+        for pad in 0..4 {
+            let long = format!("{}{}tail", "x".repeat(pad), "é".repeat(FAILURE_MESSAGE_AT_MOST));
+            let cut = Failure::new(&long, None, None);
+            assert!(cut.message.len() <= FAILURE_MESSAGE_AT_MOST, "{}", cut.message.len());
+            assert!(cut.message.starts_with(FAILURE_CUT_MARK) && cut.message.ends_with("tail"));
+            let kept = cut.message.len() - FAILURE_CUT_MARK.len();
+            assert_eq!(cut.cut, Some((long.len() - kept) as u64), "the cut counts what went");
+        }
+        let exact = "y".repeat(FAILURE_MESSAGE_AT_MOST);
+        assert_eq!(Failure::new(&exact, None, None).cut, None, "at the cap is whole");
+    }
+
     fn record_with(executed: &[(&str, Executed)], skipped: &[(&str, &str)], desel: &[&str]) -> Record {
         Record {
             schema: 1,
@@ -492,6 +580,7 @@ mod tests {
             duration_ms: 0,
             summary: Counts::default(),
             executed: executed.iter().map(|(p, o)| (p.to_string(), *o)).collect(),
+            failures: BTreeMap::new(),
             skipped: skipped
                 .iter()
                 .map(|(p, r)| Skipped { path: p.to_string(), reason: r.to_string() })

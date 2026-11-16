@@ -272,6 +272,7 @@ mod tests {
                 ..Counts::default()
             },
             executed: BTreeMap::from([("f › t".to_string(), Executed::Passed)]),
+            failures: BTreeMap::new(),
             skipped: vec![],
             deselected: vec!["f › other".into()],
             measurements: vec![],

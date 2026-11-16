@@ -25,6 +25,17 @@ passed on the same tree and prova is `"flaky"` in `executed`, never `"passed"`, 
 Every flake event is also appended to `.prova/var/flakes.jsonl`, which no run ever truncates
 (docs/design/flakes.md).
 
+And each red leaf's own words, in **failures**, keyed as `executed` is, so a red can be read once
+the console is gone:
+
+```json
+"failures": { "one › one is two": { "message": "expected 2, got 1", "line": 4 } }
+```
+
+A `failed` leaf keeps its failure here; a `flaky` one keeps the first line of the failure it passed
+after. `cause` is `"infra"` when the leaf failed through `prova.infra(msg)`. A message past 4 KiB keeps
+its tail, begins with `… `, and `cut` counts the bytes that went. A green run writes no `failures`.
+
 ## attest — the question `owed` cannot answer
 
 `prova owed` is static: it reconciles anchors against `covers` bindings and reports that an
@@ -58,6 +69,7 @@ prova:
 
 ```bash
 jq '.summary, (.skipped[] | .path)' .prova/var/last-run.json
+jq -r '.failures | to_entries[] | "\(.key): \(.value.message)"' .prova/var/last-run.json
 ```
 
 ## What it is not

@@ -883,6 +883,7 @@ end)
                 duration_ms: 1,
                 summary: record::Counts::default(),
                 executed: std::collections::BTreeMap::new(),
+                failures: std::collections::BTreeMap::new(),
                 skipped: vec![],
                 deselected: vec![],
                 measurements: vec![],
