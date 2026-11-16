@@ -163,6 +163,61 @@ mod tests {
         assert!(heavy("run", &["ut".into()]) && !heavy("run", &["--list".into()]));
     }
 
+    /// A re-take right after a release, within a short bound, never one try (anemnez-layout LAYOUT.md §3.3, E
+    /// m/14323): an flock belongs to the open file description, and a child another thread has caught mid-
+    /// `posix_spawn` holds a copy of every fd until its exec closes the CLOEXEC ones, so a slot just dropped may still
+    /// be held for that moment. `take` itself waits; only a re-take that looks once can be refused.
+    fn retake(dir: &Path, who: &str) -> Option<File> {
+        for _ in 0..50 {
+            if let Some(file) = try_take(dir, who).unwrap() {
+                return Some(file);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        None
+    }
+
+    /// The race, named: beside a thread spawning `/usr/bin/true` in a tight loop, a dropped slot re-taken
+    /// within the bound is never refused, 1,000 times over. One try was refused about 1 in 50 (anemnez-layout's
+    /// row, 11 to 22 of 1,000).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_slot_dropped_beside_a_spawning_thread_is_re_taken_within_a_short_bound() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let dir = std::env::temp_dir().join(format!("prova-slots-spawn-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("slots"), "1").unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let spawner = {
+            let stop = Arc::clone(&stop);
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    if let Ok(mut child) = std::process::Command::new("/usr/bin/true").spawn() {
+                        let _ = child.wait();
+                    }
+                }
+            })
+        };
+        // Stops the spawner when the row ends, a failing one too.
+        struct Stop(Arc<AtomicBool>);
+        impl Drop for Stop {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+        let _stop = Stop(Arc::clone(&stop));
+        let mut held = try_take(&dir, "first").unwrap().expect("a free slot");
+        for _ in 0..1_000 {
+            drop(held);
+            held = retake(&dir, "again").expect("a dropped slot re-taken within the bound");
+        }
+        stop.store(true, Ordering::Relaxed);
+        spawner.join().unwrap();
+        drop(held);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn a_machine_has_n_slots_and_a_dropped_one_is_free_again() {
         let dir = std::env::temp_dir().join(format!("prova-slots-{}", std::process::id()));
@@ -176,7 +231,7 @@ mod tests {
         );
         drop(a);
         assert!(
-            try_take(&dir, "c").unwrap().is_some(),
+            retake(&dir, "c").is_some(),
             "a's slot is free once a lets go"
         );
         drop(b);
