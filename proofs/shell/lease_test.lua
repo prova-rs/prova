@@ -81,10 +81,16 @@ prova.test("an interrupted prova takes its conducts with it — Ctrl-C stays who
 
   t:expect(wait_until(function() return alive(token) end, 15), "the conduct is running"):is_true()
   shell.run("kill -INT " .. inner.pid)
-  local swept = wait_until(function() return not alive(token) end, 5)
+  -- The lease's promise is "the conduct dies WITH prova", so the bound starts at prova's own exit, read by
+  -- value, never at the SIGINT: prova handles SIGINT gracefully, and on a loaded host that stop can outlast a
+  -- fixed bound from the signal (a full run on the Studio took 7.6 s, 2026-11-16, while alone it ends in
+  -- 0.3 s). Its exit is bounded on its own, so an interrupt prova never answers is a named red, never a hang.
+  local exited = wait_until(function() return not inner:running() end, 60)
+  local swept = exited and wait_until(function() return not alive(token) end, 3)
   reap_stray(token)
-  inner:wait()
-  t:expect(swept, "the conduct died with the interrupted prova"):is_true()
+  if not exited then inner:stop() end
+  t:expect(exited, "the interrupted prova exited within 60 s of its SIGINT"):is_true()
+  t:expect(swept, "the conduct died with the interrupted prova, within 3 s of its exit"):is_true()
 end)
 
 prova.test("`prova start` provisions hold no lease: the topology outlives the invocation", {
