@@ -37,3 +37,35 @@ pub(crate) fn host() -> ExitCode {
 pub(crate) fn red() -> ExitCode {
     ExitCode::from(EXIT_RED)
 }
+
+/// An uncaught panic in `main` is prova's own bug (E m/14379, m/14392): Rust's default hook prints it as ever, and
+/// `main`'s body runs under `catch_unwind`, so one that unwinds out of it exits [`EXIT_INTERNAL`] (70) rather than
+/// Rust's 101, which no caller reads. A panic someone joins or catches on purpose (a topology holder's thread in MCP,
+/// archetect's render thread, a Rust callback mlua turns into a Lua error) stays theirs: nothing here preempts it.
+pub(crate) fn panics_in_main_are_internal(body: fn() -> ExitCode) -> ExitCode {
+    match std::panic::catch_unwind(body) {
+        Ok(code) => code,
+        Err(_) => {
+            eprintln!("prova: internal error (a panic, prova's own bug): exit {EXIT_INTERNAL}; report it to prova's owner");
+            ExitCode::from(EXIT_INTERNAL)
+        }
+    }
+}
+
+/// A debug build's planted panics, so a proof plants them through the real binary: `PROVA_TEST_PANIC=main` panics in
+/// `main`'s body; `=joined` panics on a thread `main` joins and says so, as a caught panic's site does.
+pub(crate) fn planted_panic() {
+    if !cfg!(debug_assertions) {
+        return;
+    }
+    match std::env::var("PROVA_TEST_PANIC").as_deref() {
+        Ok("main") => panic!("a planted panic in main (PROVA_TEST_PANIC)"),
+        Ok("joined") => {
+            let joined = std::thread::spawn(|| panic!("a planted panic on a joined thread (PROVA_TEST_PANIC)")).join();
+            if joined.is_err() {
+                eprintln!("prova: the planted thread panicked; its site says so and goes on");
+            }
+        }
+        _ => {}
+    }
+}

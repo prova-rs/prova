@@ -184,3 +184,34 @@ fn a_proof_file_that_cannot_load_is_red_and_exits_1() {
     let out = prova(&tmp.0, &["--list"]);
     assert_eq!(code(&out), 1, "{}", said(&out));
 }
+
+fn planted(tag: &str, which: &str) -> std::process::Output {
+    let tmp = Tmp::new(tag);
+    Command::new(env!("CARGO_BIN_EXE_prova"))
+        .current_dir(&tmp.0)
+        .arg("--version")
+        .env("PROVA_TEST_PANIC", which)
+        .env("XDG_CACHE_HOME", tmp.0.join(".x/cache"))
+        .output()
+        .expect("run prova")
+}
+
+/// E m/14379: a panic that unwinds out of main is prova's own bug: printed as before, said so, and exit 70
+/// (EX_SOFTWARE), never Rust's 101.
+#[test]
+fn an_uncaught_panic_in_main_is_provas_own_and_exits_70_with_its_message() {
+    let out = planted("panic-main", "main");
+    assert_eq!(code(&out), 70, "{}", said(&out));
+    assert!(said(&out).contains("a planted panic in main"), "the panic is printed as before: {}", said(&out));
+    assert!(said(&out).contains("prova's own bug"), "{}", said(&out));
+}
+
+/// E m/14392: a panic someone joins on purpose stays theirs (archetect's render thread, a topology holder in MCP):
+/// its site says so and prova goes on, never 70.
+#[test]
+fn a_panic_on_a_joined_thread_stays_its_sites_and_is_never_70() {
+    let out = planted("panic-joined", "joined");
+    assert_eq!(code(&out), 0, "{}", said(&out));
+    assert!(said(&out).contains("its site says so and goes on"), "{}", said(&out));
+    assert!(!said(&out).contains("prova's own bug"), "{}", said(&out));
+}

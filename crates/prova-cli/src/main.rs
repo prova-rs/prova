@@ -439,6 +439,11 @@ fn read_manifest(home: &home::Home) -> Result<Manifest, ExitCode> {
 }
 
 fn main() -> ExitCode {
+    crate::exit::panics_in_main_are_internal(main_body)
+}
+
+fn main_body() -> ExitCode {
+    crate::exit::planted_panic();
     // The state-root escape hatch is validated for EVERY invocation, before any dispatch — a
     // misconfigured `PROVA_VAR_DIR` must fail identically whether or not this particular command
     // would have recorded anything (see `var`). An active override then announces itself on stderr,
