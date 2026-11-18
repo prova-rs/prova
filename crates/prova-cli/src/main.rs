@@ -121,7 +121,8 @@ const VERBS: &[Verb] = &[
     Verb {
         name: "run",
         help: "  prova run [<lane>]        run the suite through a named lane ([profiles.<lane>]) — sugar\n\
-               \x20                           for `--profile`; `prova run --list` lists this package's lanes",
+               \x20                           for `--profile`; `prova run --list` lists this package's lanes;\n\
+               \x20                           `prova run show <run-id> --format json` prints one run's record",
         run: run_subcommand,
     },
     Verb {
@@ -273,6 +274,12 @@ const VERBS: &[Verb] = &[
         help: "  prova var-dir [--manifest PATH]  this package's state directory, resolved (PROVA_VAR_DIR's\n\
                \x20                           keyed subdir when set), printed alone: what a tool removes by value",
         run: var::var_dir_subcommand,
+    },
+    Verb {
+        name: "tree",
+        help: "  prova tree --rev <rev>    the tree fingerprint a run at <rev> records, read from that revision\n\
+               \x20                           through git, never the worktree (what `run show` names a run's tree by)",
+        run: tree::tree_subcommand,
     },
     Verb {
         name: "package",

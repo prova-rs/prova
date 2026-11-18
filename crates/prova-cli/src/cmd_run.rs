@@ -13,13 +13,19 @@ pub(crate) fn run_subcommand(args: Vec<String>) -> ExitCode {
         Some("-h") | Some("--help") => {
             println!(
                 "usage: prova run [<lane>] [run options]\n\
-                 \x20      prova run --list [--json]\n\n\
+                 \x20      prova run --list [--json]\n\
+                 \x20      prova run show <run-id> --format json\n\n\
                  A lane is a [profiles.<name>] table in prova.toml — a named way to run the\n\
                  suite (its own selection, guarantees, env). `prova run ut` is exactly\n\
                  `prova --profile ut`; everything after the lane composes as usual\n\
                  (`prova run ut -k orders`). With no lane, same as bare `prova`."
             );
             ExitCode::SUCCESS
+        }
+        // One run's record by its id (E m/18306): `show` is the verb, never a lane named show.
+        Some("show") => {
+            args.next();
+            crate::record::show_subcommand(args.collect())
         }
         Some("--list") => {
             args.next();

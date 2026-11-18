@@ -226,6 +226,177 @@ fn keep(runs: &Path, run_id: &str, text: &str) {
     }
 }
 
+/// The most bytes `run show` reads of one record: a record is a run's account, never a log, so one this
+/// large is not a record and is refused by name rather than read whole.
+pub const SHOW_BYTES: u64 = 16 * 1024 * 1024;
+
+/// The shape `run show --format json` prints. A reader refuses a higher one by name, and skips a key it
+/// doesn't know (rule 8): keys are added within schema 1, never renamed or retyped.
+pub const SHOW_SCHEMA: u32 = 1;
+
+/// Whether `id` is a prova run id, `run-<ms>-<pid>`: never a path, so `run show` reads one record and
+/// nothing else.
+pub fn is_run_id(id: &str) -> bool {
+    let Some(rest) = id.strip_prefix("run-") else {
+        return false;
+    };
+    let mut parts = rest.split('-');
+    let digits =
+        |p: Option<&str>| p.is_some_and(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+    digits(parts.next()) && digits(parts.next()) && parts.next().is_none()
+}
+
+/// Where `id`'s record is, under `var` (this package's resolved state directory): kept by id when the
+/// run wasn't green, else `last-run.json` while it is still that run's. `None` when neither holds it.
+pub fn find_run(var: &Path, id: &str) -> Option<PathBuf> {
+    let kept = var.join(KEPT_RUNS).join(format!("{id}.json"));
+    if kept.is_file() {
+        return Some(kept);
+    }
+    let last = var.join(LAST_RUN);
+    let text = read_bounded(&last).ok()?;
+    let run_id = serde_json::from_str::<serde_json::Value>(&text)
+        .ok()?
+        .get("run_id")?
+        .as_str()?
+        .to_owned();
+    (run_id == id).then_some(last)
+}
+
+/// `path` read whole, refused past [`SHOW_BYTES`].
+fn read_bounded(path: &Path) -> Result<String, String> {
+    use std::io::Read;
+    let file =
+        std::fs::File::open(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let mut text = String::new();
+    file.take(SHOW_BYTES + 1)
+        .read_to_string(&mut text)
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    if text.len() as u64 > SHOW_BYTES {
+        return Err(format!(
+            "{} is larger than {SHOW_BYTES} bytes, so it isn't read as a record",
+            path.display()
+        ));
+    }
+    Ok(text)
+}
+
+/// A record as `run show` prints it: its id, verdict, the tree it ran on (prova's fingerprint, the one
+/// `prova tree --rev` prints) and every row, its own and those deputed to a verifier, each with its
+/// outcome. `commit` is null: a record names the bytes it ran on, never a commit id.
+pub fn shown(record: &Record, read: &Path) -> serde_json::Value {
+    let mut rows: Vec<serde_json::Value> = record
+        .executed
+        .iter()
+        .map(|(name, outcome)| {
+            let failure = record.failures.get(name);
+            serde_json::json!({
+                "name": name,
+                "outcome": serde_json::to_value(outcome).unwrap_or(serde_json::Value::Null),
+                "file": null,
+                "line": failure.and_then(|f| f.line),
+                "message": failure.map(|f| f.message.as_str()),
+                "verifier": null,
+            })
+        })
+        .collect();
+    rows.extend(record.deputed.iter().map(|d| {
+        serde_json::json!({
+            "name": d.name,
+            "outcome": d.outcome,
+            "file": d.file,
+            "line": null,
+            "message": d.message,
+            "verifier": d.verifier,
+            "suite": d.suite,
+        })
+    }));
+    serde_json::json!({
+        "schema": SHOW_SCHEMA,
+        "id": record.run_id,
+        "verdict": record.verdict,
+        "tree": record.tree,
+        "commit": null,
+        "prova": record.version,
+        "record": prova_core::emit_path(read),
+        "summary": record.summary,
+        "rows": rows,
+    })
+}
+
+/// `prova run show <run-id> --format json [--manifest PATH]`: one run's record, read from this package's
+/// state directory as prova resolves it (`PROVA_VAR_DIR` too, E m/18306), printed in [`shown`]'s shape. A
+/// run prova doesn't hold is refused naming the id and the directory read, with nothing on stdout.
+pub(crate) fn show_subcommand(args: Vec<String>) -> std::process::ExitCode {
+    let (mut id, mut format, mut manifest_path) = (None, None, None);
+    let mut it = args.into_iter();
+    while let Some(arg) = it.next() {
+        let slot = match arg.as_str() {
+            "-h" | "--help" => {
+                println!("usage: prova run show <run-id> --format json [--manifest PATH]");
+                return std::process::ExitCode::SUCCESS;
+            }
+            "--format" => &mut format,
+            "--manifest" => &mut manifest_path,
+            other if id.is_none() && !other.starts_with('-') => {
+                id = Some(other.to_owned());
+                continue;
+            }
+            other => {
+                eprintln!("prova run show: unexpected argument {other:?}");
+                return crate::exit::config();
+            }
+        };
+        match it.next() {
+            Some(v) => *slot = Some(v),
+            None => {
+                eprintln!("prova run show: {arg} needs a value");
+                return crate::exit::config();
+            }
+        }
+    }
+    let Some(id) = id else {
+        eprintln!("prova run show: name the run, `prova run show <run-id> --format json`");
+        return crate::exit::config();
+    };
+    if format.as_deref().is_some_and(|f| f != "json") {
+        eprintln!("prova run show: --format json is the one format");
+        return crate::exit::config();
+    }
+    if !is_run_id(&id) {
+        eprintln!("prova run show: {id:?} isn't a prova run id (run-<ms>-<pid>)");
+        return crate::exit::config();
+    }
+    if let Err(why) = var::check_env() {
+        eprintln!("prova: {why}");
+        return crate::exit::config();
+    }
+    let home = match crate::cmd_topo::resolve_home(manifest_path.as_deref()) {
+        Ok(h) => h,
+        Err(code) => return code,
+    };
+    let dir = var::path(&home);
+    let Some(path) = find_run(&dir, &id) else {
+        eprintln!(
+            "prova run show: no run {id} in {}",
+            prova_core::emit_path(&dir)
+        );
+        return crate::exit::config();
+    };
+    let record = match read_bounded(&path).and_then(|text| {
+        serde_json::from_str::<Record>(&text)
+            .map_err(|e| format!("cannot parse {}: {e}", path.display()))
+    }) {
+        Ok(r) => r,
+        Err(why) => {
+            eprintln!("prova run show: {why}");
+            return crate::exit::config();
+        }
+    };
+    println!("{}", shown(&record, &path));
+    std::process::ExitCode::SUCCESS
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -426,5 +597,69 @@ mod tests {
         )
         .is_some());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `run show` finds a red run kept by id, and a green one while `last-run.json` is still its own.
+    #[test]
+    fn show_finds_a_kept_run_and_the_last_green_one_by_id() {
+        let dir = tempdir("show-find");
+        let home = home_in(&dir);
+        let mut red = minimal_record();
+        red.run_id = "run-100-1".into();
+        red.verdict = "red".into();
+        store(&Some(home.clone()), &red, None);
+        let mut green = minimal_record();
+        green.run_id = "run-200-1".into();
+        green.verdict = "green".into();
+        store(&Some(home.clone()), &green, None);
+        let var = var::path(&home);
+        assert_eq!(
+            find_run(&var, "run-100-1"),
+            Some(var.join(KEPT_RUNS).join("run-100-1.json"))
+        );
+        assert_eq!(find_run(&var, "run-200-1"), Some(var.join(LAST_RUN)));
+        assert_eq!(find_run(&var, "run-300-1"), None);
+        assert!(
+            is_run_id("run-100-1")
+                && !is_run_id("run-1")
+                && !is_run_id("../run-1-1")
+                && !is_run_id("run-1-1-1")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The shape carries every row with its outcome, own and deputed, and the tree, under schema 1.
+    #[test]
+    fn show_carries_the_rows_and_the_tree_under_its_schema() {
+        let mut r = minimal_record();
+        r.run_id = "run-100-1".into();
+        r.tree = Some("git:abc".into());
+        r.executed.insert("w › red".into(), Executed::Failed);
+        r.deputed.push(DeputedRow {
+            verifier: "junit".into(),
+            suite: "s".into(),
+            name: "mod::case".into(),
+            outcome: "failed".into(),
+            message: None,
+            time_ms: None,
+            file: "target/junit.xml".into(),
+            reused_from: None,
+            flaky_from: None,
+        });
+        let v = shown(&r, Path::new("/v/runs/run-100-1.json"));
+        assert_eq!(v["schema"], 1);
+        assert_eq!(
+            (v["id"].as_str(), v["tree"].as_str()),
+            (Some("run-100-1"), Some("git:abc"))
+        );
+        let rows = v["rows"].as_array().unwrap();
+        let outcome = |n: &str| {
+            rows.iter()
+                .find(|r| r["name"] == n)
+                .map(|r| r["outcome"].clone())
+        };
+        assert_eq!(outcome("w › red"), Some(serde_json::json!("failed")));
+        assert_eq!(outcome("mod::case"), Some(serde_json::json!("failed")));
+        assert!(v["commit"].is_null());
     }
 }
