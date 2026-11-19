@@ -325,6 +325,10 @@ pub struct RunConfig {
     /// the minimum is the point — the flag exists to rescue a run whose declared bounds are
     /// themselves the problem, and a cap that lost to a generous declaration could not do that.
     pub timeout_cap: Option<std::time::Duration>,
+    /// A suite's Lua `print` writes to stderr (E, 2026-11-19): set when stdout is a machine report (`--format json`
+    /// or `tap`), one record per line, where a printed line is a corrupt record. Off for the console, where a
+    /// suite's print interleaves with its PASS lines in order, as readers of the console expect.
+    pub print_to_stderr: bool,
     /// The thrown opt-in switches (`-s`, `[run]`/profile `switches` — union across all doors). A
     /// leaf carrying a `switch` not in this set is held back from the run, deselected-not-skipped
     /// (docs/design/manifest.md#switches-not-env-capabilities).
@@ -429,6 +433,7 @@ impl Default for RunConfig {
             run_id: None,
             resumed_from: None,
             timeout_cap: None,
+            print_to_stderr: false,
             switches: std::collections::BTreeSet::new(),
             conducts: ConductRegistry::default(),
             progress: std::sync::Arc::new(crate::progress::NullProgress),
@@ -442,21 +447,6 @@ impl Default for RunConfig {
             attached_registry: None,
             interned: None,
         }
-    }
-}
-
-impl std::fmt::Debug for RunConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RunConfig")
-            .field("concurrency", &self.concurrency)
-            .field("selection", &self.selection)
-            .field("ports", &self.ports)
-            .field("update_snapshots", &self.update_snapshots)
-            .field("modules", &self.modules.len())
-            .field("package_roots", &self.package_roots)
-            .field("named_packages", &self.named_packages)
-            .field("package_namespaces", &self.package_namespaces)
-            .finish()
     }
 }
 
@@ -579,6 +569,11 @@ impl RunConfig {
     /// Cap every unit's wall clock for this run, overriding what each declares.
     pub fn with_timeout_cap(mut self, cap: Option<std::time::Duration>) -> Self {
         self.timeout_cap = cap;
+        self
+    }
+
+    pub fn with_print_to_stderr(mut self, on: bool) -> Self {
+        self.print_to_stderr = on;
         self
     }
 
@@ -749,6 +744,7 @@ impl RunConfig {
     }
 }
 
+mod config_debug;
 mod fixtures;
 pub(crate) use fixtures::*;
 

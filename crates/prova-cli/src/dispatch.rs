@@ -596,6 +596,8 @@ fn build_config(
     .with_proofs_only(cli.proofs_only)
     .with_falsify(cli.falsify)
     .with_timeout_cap(cli.timeout_cap)
+    // A machine report owns stdout, one record per line: a suite's print goes to stderr (E, 2026-11-19).
+    .with_print_to_stderr(!matches!(env.env.format, Format::Console))
     // Thrown switches: the manifest's ([run] ∪ profile) ∪ the CLI's `-s` — all doors union
     // (docs/design/manifest.md#switches-not-env-capabilities).
     .with_switches(env.env.switches.iter().cloned().chain(cli.switches.iter().cloned()))

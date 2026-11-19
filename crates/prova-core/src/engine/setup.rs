@@ -872,10 +872,36 @@ fn install_injection(lua: &Lua, config: &RunConfig) -> mlua::Result<()> {
     Ok(())
 }
 
+/// Under a machine report (`RunConfig::print_to_stderr`), a suite's `print` writes to stderr, as Lua's own does to stdout: its arguments through `tostring`, joined by tabs,
+/// then a newline (E, 2026-11-19). stdout is the report's alone. Under `--format json` it is one JSON event per line,
+/// and a suite's print there (substrate's "workspace conduct: …") made a strict reader refuse the whole verdict.
+fn install_print_to_stderr(lua: &Lua) -> mlua::Result<()> {
+    let print = lua.create_function(|lua, args: mlua::MultiValue| {
+        let tostring: mlua::Function = lua.globals().get("tostring")?;
+        let mut line = String::new();
+        for (i, v) in args.into_iter().enumerate() {
+            if i > 0 {
+                line.push('\t');
+            }
+            line.push_str(&tostring.call::<mlua::String>(v)?.to_string_lossy());
+        }
+        line.push('\n');
+        use std::io::Write as _;
+        let mut err = std::io::stderr().lock();
+        drop(err.write_all(line.as_bytes()));
+        drop(err.flush());
+        Ok(())
+    })?;
+    lua.globals().set("print", print)
+}
+
 pub(super) fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, SharedCollector)> {
     let col: SharedCollector = Rc::new(RefCell::new(Collector::new(root_name)));
     let lua = Lua::new();
     install_os_env(&lua)?;
+    if config.print_to_stderr {
+        install_print_to_stderr(&lua)?;
+    }
 
     let prova = lua.create_table()?;
     install_registration(&lua, &prova, &col)?;
