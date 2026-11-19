@@ -40,42 +40,29 @@ fn detect(start: &Path) -> Option<Vcs> {
 
 /// The tracked paths, relative to the repository root, sorted.
 fn tracked(vcs: &Vcs, var: Option<&Path>) -> Result<(PathBuf, Vec<String>), String> {
-    let (root, output, split) = match vcs {
+    let (root, mut cmd, split) = match vcs {
         // `jj file list` snapshots the working copy first, which is what makes a new file count.
-        Vcs::Jj(root) => (
-            root,
-            Command::new("jj")
-                .args(["file", "list", "--color", "never"])
-                .current_dir(root)
-                .output(),
-            b'\n',
-        ),
-        Vcs::Git(root) => (
-            root,
-            // Tracked, and untracked but not ignored: the same files jj's snapshot counts.
-            Command::new("git")
-                .args(["ls-files", "-z", "--cached", "--others", "--exclude-standard"])
-                .current_dir(root)
-                .output(),
-            b'\0',
-        ),
+        Vcs::Jj(root) => {
+            let mut c = Command::new("jj");
+            c.args(["file", "list", "--color", "never"]);
+            (root, c, b'\n')
+        }
+        // Tracked, and untracked but not ignored: the same files jj's snapshot counts.
+        Vcs::Git(root) => {
+            let mut c = Command::new("git");
+            c.args(["ls-files", "-z", "--cached", "--others", "--exclude-standard"]);
+            (root, c, b'\0')
+        }
     };
     let tool = match vcs {
         Vcs::Jj(_) => "jj file list",
         Vcs::Git(_) => "git ls-files --cached --others --exclude-standard",
     };
-    let out = output.map_err(|e| format!("{tool} could not start in {}: {e}", root.display()))?;
-    if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr);
-        return Err(format!(
-            "{tool} failed in {} ({}): {}",
-            root.display(),
-            out.status,
-            err.lines().next().unwrap_or("")
-        ));
-    }
-    let paths: Vec<String> = out
-        .stdout
+    // Bounded like a revision's reads (rule 4): a hung jj or git is named, never a run that never starts.
+    cmd.current_dir(root);
+    let stdout = bounded_output(&mut cmd, None, VCS_PATIENCE)
+        .map_err(|why| format!("{tool} in {}: {why}", root.display()))?;
+    let paths: Vec<String> = stdout
         .split(|b| *b == split)
         .filter(|p| !p.is_empty())
         .map(|p| String::from_utf8_lossy(p).into_owned())
@@ -148,9 +135,9 @@ pub fn fingerprint_with(home: &crate::home::Home, roots: &[PathBuf]) -> Result<S
     Ok(parts.join("+"))
 }
 
-/// How long one git command reading a revision may take before the read is given up, named: a rev's
-/// listing and its blobs come from the local object store, so a minute is a hung git, never a slow one.
-pub const REV_PATIENCE: Duration = Duration::from_secs(60);
+/// How long one jj or git command reading the tree may take before the read is given up, named: a
+/// listing and its blobs come from the local store, so a minute is a hung tool, never a slow one.
+pub const VCS_PATIENCE: Duration = Duration::from_secs(60);
 
 /// The fingerprint a run at `rev` records for `home` (E m/18479): the same digest as [`fingerprint_with`]
 /// over a clean checkout of `rev`, read from that revision's tracked files through git (`ls-tree`, then
@@ -272,7 +259,7 @@ pub(crate) fn tree_subcommand(args: Vec<String>) -> std::process::ExitCode {
         Ok(m) => m,
         Err(code) => return code,
     };
-    match fingerprint_rev(&home, &manifest.resume.roots, &rev, REV_PATIENCE) {
+    match fingerprint_rev(&home, &manifest.resume.roots, &rev, VCS_PATIENCE) {
         Ok(tree) => {
             println!("{tree}");
             std::process::ExitCode::SUCCESS
@@ -595,14 +582,14 @@ mod tests {
         let dir = committed("rev-clean");
         let worktree = fingerprint(&dir).unwrap();
         assert_eq!(
-            rev_fingerprint(&dir, "HEAD", None, REV_PATIENCE).unwrap(),
+            rev_fingerprint(&dir, "HEAD", None, VCS_PATIENCE).unwrap(),
             worktree
         );
         std::fs::write(dir.join("a.lua"), "edited").unwrap();
         std::fs::write(dir.join("untracked.lua"), "new").unwrap();
         assert_ne!(fingerprint(&dir).unwrap(), worktree, "the worktree moved");
         assert_eq!(
-            rev_fingerprint(&dir, "HEAD", None, REV_PATIENCE).unwrap(),
+            rev_fingerprint(&dir, "HEAD", None, VCS_PATIENCE).unwrap(),
             worktree,
             "the revision didn't"
         );
@@ -614,7 +601,7 @@ mod tests {
     #[test]
     fn a_revision_never_counts_what_prova_writes() {
         let dir = committed("rev-var");
-        let base = rev_fingerprint(&dir, "HEAD", None, REV_PATIENCE).unwrap();
+        let base = rev_fingerprint(&dir, "HEAD", None, VCS_PATIENCE).unwrap();
         let var = dir.join("state");
         std::fs::create_dir_all(dir.join(".prova/var")).unwrap();
         std::fs::create_dir_all(&var).unwrap();
@@ -650,11 +637,11 @@ mod tests {
             .unwrap();
         assert!(out.status.success());
         assert_eq!(
-            rev_fingerprint(&dir, "HEAD", Some(&var), REV_PATIENCE).unwrap(),
+            rev_fingerprint(&dir, "HEAD", Some(&var), VCS_PATIENCE).unwrap(),
             base
         );
         assert_ne!(
-            rev_fingerprint(&dir, "HEAD", None, REV_PATIENCE).unwrap(),
+            rev_fingerprint(&dir, "HEAD", None, VCS_PATIENCE).unwrap(),
             base,
             "unnamed, the dir counts"
         );
@@ -664,9 +651,9 @@ mod tests {
     #[test]
     fn a_revision_git_lacks_or_an_option_is_refused_by_name() {
         let dir = committed("rev-refused");
-        let err = rev_fingerprint(&dir, "no-such-rev", None, REV_PATIENCE).unwrap_err();
+        let err = rev_fingerprint(&dir, "no-such-rev", None, VCS_PATIENCE).unwrap_err();
         assert!(err.contains("no-such-rev"), "{err}");
-        let err = rev_fingerprint(&dir, "--output=x", None, REV_PATIENCE).unwrap_err();
+        let err = rev_fingerprint(&dir, "--output=x", None, VCS_PATIENCE).unwrap_err();
         assert!(err.contains("isn't a revision"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
