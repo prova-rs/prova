@@ -892,7 +892,12 @@ fn install_print_to_stderr(lua: &Lua) -> mlua::Result<()> {
         drop(err.flush());
         Ok(())
     })?;
-    lua.globals().set("print", print)
+    lua.globals().set("print", print)?;
+    // The rest of Lua's ways to stdout (D m/19352): io.write, io.stdout and the default output all go to stderr, so a
+    // suite's own bytes can never land in the report. A child a suite spawns never inherits stdout (shell pipes it).
+    lua.load("io.output(io.stderr); io.stdout = io.stderr; io.write = function(...) return io.stderr:write(...) end")
+        .set_name("=prova:stdout-to-stderr")
+        .exec()
 }
 
 pub(super) fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, SharedCollector)> {

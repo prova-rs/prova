@@ -8,6 +8,8 @@ local sandbox = prova.fixture("print-stderr-sandbox", Scope.Test, function(ctx)
   fs.write(pkg .. "/prova.toml", '[run]\nproofs = ["proofs"]\n')
   fs.write(pkg .. "/proofs/chatty_test.lua", [[
 print("chatter at load", 1, true)
+io.write("written at load\n")
+io.stdout:write("stdout handle at load\n")
 prova.test("a test that prints", function(t)
   print("chatter inside a test")
   t:expect(1):equals(1)
@@ -26,6 +28,8 @@ prova.test("with --format json every stdout line is JSON, and a suite's print re
   end
   t:expect(r.stderr):contains("chatter at load\t1\ttrue")
   t:expect(r.stderr):contains("chatter inside a test")
+  t:expect(r.stderr):contains("written at load")
+  t:expect(r.stderr):contains("stdout handle at load")
 end)
 
 prova.test("on the console a suite's print stays on stdout, in order with its PASS lines", function(t)
