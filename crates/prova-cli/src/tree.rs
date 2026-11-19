@@ -144,6 +144,12 @@ pub const VCS_PATIENCE: Duration = Duration::from_secs(60);
 /// `cat-file --batch`), never the working copy, so an edit in progress never moves it. A package with
 /// `[resume] roots` is refused by name: its runs digest those repositories too, which no one revision of
 /// this one names. Each git call is bounded by `patience`.
+///
+/// One known difference from a run (D m/18842): a tracked symlink whose target is absolute or leaves the
+/// repository digests as unreadable here, while a run in a checkout reads through it to whatever it
+/// points at. So a revision with such a link never equals a run's tree. The org's tracked links all
+/// stay inside their repositories (anemnez-service's and substrate's, read 2026-11-19), and a reader
+/// comparing the two treats a mismatch there as unequal, never as a forged run.
 pub fn fingerprint_rev(
     home: &crate::home::Home,
     roots: &[String],
