@@ -895,9 +895,20 @@ fn install_print_to_stderr(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set("print", print)?;
     // The rest of Lua's ways to stdout (D m/19352): io.write, io.stdout and the default output all go to stderr, so a
     // suite's own bytes can never land in the report. A child a suite spawns never inherits stdout (shell pipes it).
-    lua.load("io.output(io.stderr); io.stdout = io.stderr; io.write = function(...) return io.stderr:write(...) end")
-        .set_name("=prova:stdout-to-stderr")
-        .exec()
+    // A child that would inherit stdout is refused by name (D m/19762): os.execute, and io.popen in a write mode
+    // (its "r" mode pipes the child's stdout to the suite, so it stays).
+    lua.load(
+        r#"io.output(io.stderr); io.stdout = io.stderr; io.write = function(...) return io.stderr:write(...) end
+local refuse = "under --format json or tap a child would write into the report: use prova's shell module (shell.run)"
+os.execute = function() error("os.execute: " .. refuse, 2) end
+local popen = io.popen
+io.popen = function(cmd, mode)
+  if mode ~= nil and not tostring(mode):find("^r") then error("io.popen in mode " .. tostring(mode) .. ": " .. refuse, 2) end
+  return popen(cmd, mode)
+end"#,
+    )
+    .set_name("=prova:stdout-to-stderr")
+    .exec()
 }
 
 pub(super) fn build_lua(root_name: String, config: &RunConfig) -> mlua::Result<(Lua, SharedCollector)> {

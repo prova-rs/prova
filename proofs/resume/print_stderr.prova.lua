@@ -32,6 +32,23 @@ prova.test("with --format json every stdout line is JSON, and a suite's print re
   t:expect(r.stderr):contains("stdout handle at load")
 end)
 
+prova.test("with --format json a suite's os.execute and io.popen(_, \"w\") are refused by name, never writing into the report", function(t)
+  local pkg = t:tempdir() .. "/pkg"
+  fs.mkdir(pkg .. "/proofs")
+  fs.write(pkg .. "/prova.toml", '[run]\nproofs = ["proofs"]\n')
+  fs.write(pkg .. "/proofs/child_test.lua", [[
+prova.test("execute", function(t) os.execute("echo from-execute") end)
+prova.test("popen w", function(t) io.popen("cat", "w"):write("from-popen\n") end)
+prova.test("popen r still reads", function(t) t:expect(io.popen("echo hi", "r"):read("l")):equals("hi") end)
+]])
+  local r = shell.run(prova.bin .. " --format json", { cwd = pkg, env = { PROVA_VAR_DIR = "" } })
+  for line in r.stdout:gmatch("[^\n]+") do
+    t:expect(pcall(json.decode, line), "a stdout line that isn't JSON: " .. line):is_true()
+  end
+  t:expect(r.stdout):contains("use prova's shell module")
+  t:expect(r.stdout:find("from-execute", 1, true)):is_nil()
+end)
+
 prova.test("on the console a suite's print stays on stdout, in order with its PASS lines", function(t)
   local sb = t:use(sandbox)
   local r = shell.run(prova.bin, { cwd = sb.pkg, env = { PROVA_VAR_DIR = "" } })
