@@ -904,6 +904,7 @@ end)
                     file: "junit.xml".into(),
                     reused_from: None,
                     flaky_from: None,
+                    output: None,
                 }],
             };
             let path = "ledger_test › covers the claim".to_string();

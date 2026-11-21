@@ -53,6 +53,23 @@ const LABEL_MAX: usize = 400;
 /// the tail is the evidence, so a red read off CI says why without the junit file at hand.
 const OUTPUT_TAIL: usize = 40;
 
+/// The most of a failed case's output tail the run record keeps: a record crosses hosts inside one
+/// swarm value (Herald's worker report), so a case's evidence is bounded where it is kept (E m/21943).
+pub const OUTPUT_MAX_BYTES: usize = 4096;
+
+/// `text`'s last [`OUTPUT_MAX_BYTES`], cut forward to a character's edge and said so when cut: the
+/// end of the output is where the failure is.
+fn bounded_tail(text: &str) -> String {
+    if text.len() <= OUTPUT_MAX_BYTES {
+        return text.to_string();
+    }
+    let mut start = text.len() - OUTPUT_MAX_BYTES;
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("(the first {start} bytes cut) {}", &text[start..])
+}
+
 /// The last [`OUTPUT_TAIL`] lines of `text`.
 fn tail(text: &str) -> String {
     let lines: Vec<&str> = text.trim_end().lines().collect();
@@ -442,6 +459,7 @@ pub(crate) fn make(lua: &Lua, deputed: Option<DeputedRegistry>) -> mlua::Result<
                     file: c.get::<Option<String>>("file")?.unwrap_or_default(),
                     reused_from: c.get("reused_from")?,
                     flaky_from: c.get("flaky_from")?,
+                    output: c.get::<Option<String>>("output")?.map(|o| bounded_tail(&o)),
                 });
             }
             let n = rows.len();
@@ -815,6 +833,19 @@ the Ask never parked</system-out>
             Some("test timeout: terminated after 180.0 s, with no panic (a wait that never ended); it first printed: INFO booted the daemon")
         );
         assert!(says_nothing("running 12 tests\nok") && says_nothing("") && !says_nothing("running late"));
+    }
+
+    /// E m/21943: the run record keeps a failed case's output tail bounded, so a record that crosses
+    /// hosts in one swarm value carries its evidence. The end is kept, cut on a character's edge, and
+    /// the cut is said.
+    #[test]
+    fn a_failed_cases_output_is_kept_bounded_at_its_end_and_the_cut_said() {
+        assert_eq!(bounded_tail("short"), "short", "what fits is kept whole");
+        let long = format!("{}the panic", "é".repeat(OUTPUT_MAX_BYTES));
+        let kept = bounded_tail(&long);
+        assert!(kept.ends_with("the panic"), "the end is where the failure is");
+        assert!(kept.starts_with("(the first "), "the cut is said");
+        assert!(kept.len() <= OUTPUT_MAX_BYTES + 48, "bounded: {}", kept.len());
     }
 
     /// nextest's own shape: an empty `<failure/>`, the panic in `<system-out>` and its message in

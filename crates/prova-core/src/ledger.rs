@@ -169,6 +169,10 @@ pub struct DeputedRow {
     /// For a `"flaky"` case: the run whose failure it passed after (`prova.flaky_from`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flaky_from: Option<String>,
+    /// A failed case's output tail, bounded (`DeputedCase::output`): what a reader of this record
+    /// alone, on another host, reads a red by. Additive: an older record has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
 }
 
 /// Which deputed case a flake is, when it is one (`FlakeEvent::deputed`).

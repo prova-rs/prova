@@ -228,6 +228,7 @@ mod tests {
             file: "j.xml".into(),
             reused_from: None,
             flaky_from: flaky_from.map(str::to_string),
+            output: None,
         }
     }
 

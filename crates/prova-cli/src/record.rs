@@ -93,6 +93,7 @@ pub fn deputed_rows(cases: &[prova_core::DeputedCase]) -> Vec<DeputedRow> {
             file: c.file.clone(),
             reused_from: c.reused_from.clone(),
             flaky_from: c.flaky_from.clone(),
+            output: c.output.clone(),
         })
         .collect()
 }
@@ -508,10 +509,36 @@ mod tests {
             file: "target/junit.xml".into(),
             reused_from: None,
             flaky_from: None,
+            output: None,
         }]);
         assert_eq!(deputed[0].verifier, "junit");
         assert_eq!(deputed[0].outcome, "failed");
         assert_eq!(deputed[0].time_ms, Some(12));
+        assert_eq!(deputed[0].output, None, "a case with no output keeps none");
+        let mut red = prova_core::DeputedCase {
+            verifier: "junit".into(),
+            suite: "s".into(),
+            name: "red".into(),
+            outcome: "failed".into(),
+            message: Some("boom".into()),
+            time_ms: None,
+            file: "j.xml".into(),
+            reused_from: None,
+            flaky_from: None,
+            output: Some("thread 'red' panicked: the node stopped".into()),
+        };
+        let row = deputed_rows(std::slice::from_ref(&red)).remove(0);
+        let json = serde_json::to_value(&row).unwrap();
+        assert_eq!(
+            json["output"], "thread 'red' panicked: the node stopped",
+            "E m/21943: the record carries it"
+        );
+        red.output = None;
+        let json = serde_json::to_value(deputed_rows(&[red]).remove(0)).unwrap();
+        assert!(
+            json.get("output").is_none(),
+            "an older reader's shape when there is none"
+        );
 
         let measured = measurement_rows(&[prova_core::Measurement {
             name: "rust.coverage.unit".into(),
@@ -645,6 +672,7 @@ mod tests {
             file: "target/junit.xml".into(),
             reused_from: None,
             flaky_from: None,
+            output: None,
         });
         let v = shown(&r, Path::new("/v/runs/run-100-1.json"));
         assert_eq!(v["schema"], 1);

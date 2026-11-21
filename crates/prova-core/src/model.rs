@@ -244,6 +244,10 @@ pub struct DeputedCase {
     /// For outcome `"flaky"`: the run whose failure this case passed after — `prova.flaky_from`,
     /// which `junit.merge` writes. `None` for a deputy's own retry (nextest's `<flakyFailure>`).
     pub flaky_from: Option<String>,
+    /// A failed case's captured output, its tail (the junit module's last lines, at most its
+    /// `OUTPUT_MAX_BYTES`): the evidence a red is read by without the artifact file at hand, as when
+    /// the run was on another host (E m/21943). `None` for a pass.
+    pub output: Option<String>,
 }
 
 /// Where a run's ingested deputed cases accumulate — shared across workers, drained by the caller
