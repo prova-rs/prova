@@ -22,16 +22,11 @@ fn run(file: &str, concurrency: usize) -> (prova_core::Summary, Vec<String>) {
     // readers, held the second out while the first sat in its barrier, and the barrier timed out
     // at 20 s under the full suite (E, 2026-11-21; green alone). What's under test is how ONE run
     // schedules its own holders, so the lock scope is the run's.
-    let project = std::env::temp_dir().join(format!(
-        "prova-resources-{}-{}",
-        std::process::id(),
-        file.trim_end_matches(".lua")
-    ));
-    std::fs::create_dir_all(&project).expect("the run's own project");
+    let project = Scratch::new(&format!("prova-resources-{}", file.trim_end_matches(".lua")));
 
     let events: Arc<Mutex<Vec<String>>> = Arc::default();
     let sink = Arc::clone(&events);
-    let config = RunConfig::new(concurrency).with_project(&project).with_module(move |lua| {
+    let config = RunConfig::new(concurrency).with_project(&project.0).with_module(move |lua| {
         let sink = Arc::clone(&sink);
         let record = lua.create_function(move |_, event: String| {
             sink.lock().expect("event log").push(event);
@@ -44,8 +39,24 @@ fn run(file: &str, concurrency: usize) -> (prova_core::Summary, Vec<String>) {
     let mut reporter = NullReporter;
     let summary = run_path_with(&path, &mut reporter, &config).expect("run");
     let events = events.lock().expect("event log").clone();
-    drop(std::fs::remove_dir_all(&project));
     (summary, events)
+}
+
+/// A directory of this process's own, removed when dropped, a panic included (L m/22011).
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new(name: &str) -> Scratch {
+        let dir = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        Scratch(dir)
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        drop(std::fs::remove_dir_all(&self.0));
+    }
 }
 
 /// The positions of `enter <name>` and `exit <name>` in the log: the span over which that test held
@@ -67,7 +78,14 @@ fn interval(events: &[String], name: &str) -> (usize, usize) {
 #[test]
 fn a_runs_tokens_are_its_projects_and_a_machine_hold_never_reaches_them() {
     use std::os::fd::AsRawFd;
+    // The machine-wide directory moved to one of this row's own (scratch::BASE_ENV), so the hold
+    // below is a stand-in for another process's and never the host's shared state (L m/22011).
+    // nextest runs each row in its own process, so the variable is this row's alone.
+    let machine = Scratch::new("prova-resources-machine");
+    // SAFETY: set before any thread of this process reads the environment.
+    unsafe { std::env::set_var(prova_core::scratch::BASE_ENV, &machine.0) };
     let path = prova_core::locks::lock_path("db", false, None).expect("db's machine-wide lock file");
+    assert!(path.starts_with(&machine.0), "the stand-in machine directory: {}", path.display());
     std::fs::create_dir_all(path.parent().expect("its directory")).expect("the lock directory");
     let held = std::fs::OpenOptions::new()
         .create(true)
