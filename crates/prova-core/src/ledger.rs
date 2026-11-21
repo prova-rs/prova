@@ -187,11 +187,14 @@ pub const DEPUTED_OUTPUT_BUDGET: usize = 32 * 1024;
 pub fn bound_deputed_output(rows: &mut [DeputedRow]) -> u64 {
     let mut spent = 0usize;
     let mut unkept = 0u64;
+    let mut full = false;
     for row in rows.iter_mut() {
         let Some(out) = &row.output else { continue };
-        if spent + out.len() <= DEPUTED_OUTPUT_BUDGET {
+        // The first N in order, never a later one that happens to fit (L m/22013).
+        if !full && spent + out.len() <= DEPUTED_OUTPUT_BUDGET {
             spent += out.len();
         } else {
+            full = true;
             row.output = None;
             unkept += 1;
         }
@@ -751,5 +754,10 @@ mod tests {
         assert!(kept <= DEPUTED_OUTPUT_BUDGET, "bounded: {kept}");
         assert_eq!(unkept, 300 - (DEPUTED_OUTPUT_BUDGET / 4096) as u64, "the rest counted");
         assert!(rows[0].output.is_some() && rows[299].output.is_none(), "the first keep theirs");
+        // A small tail after the budget is passed is still not kept: the first N, in order.
+        let mut rows: Vec<DeputedRow> = (0..10).map(row).collect();
+        rows[9].output = Some("small".into());
+        assert_eq!(bound_deputed_output(&mut rows), 2, "8 fit; the 9th and the small 10th are dropped");
+        assert!(rows[9].output.is_none(), "never a later one that happens to fit");
     }
 }
