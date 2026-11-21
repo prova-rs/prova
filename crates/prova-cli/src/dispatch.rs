@@ -1057,6 +1057,9 @@ fn store_run_record(
         reporter.flakes.events.clone()
     };
     crate::flakes::append_ledger(home.as_ref(), &flakes);
+    // The record's output is bounded as a whole, not only per case (D m/21985).
+    let mut deputed = record::deputed_rows(&drain(&accounts.deputed));
+    let deputed_output_unkept = prova_core::ledger::bound_deputed_output(&mut deputed);
     record::store(
         home,
         &record::Record {
@@ -1094,8 +1097,9 @@ fn store_run_record(
             skipped: std::mem::take(&mut reporter.skipped),
             deselected: summary.deselected_paths.clone(),
             reminders: reminders.clone(),
-            deputed: record::deputed_rows(&drain(&accounts.deputed)),
+            deputed,
             deputed_narrowed: !config.selection.is_empty(),
+            deputed_output_unkept,
             measurements: record::measurement_rows(measurements),
             reports: record::report_rows(&drain(&accounts.reports)),
             attached: accounts

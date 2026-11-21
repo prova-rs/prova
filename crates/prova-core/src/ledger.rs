@@ -170,9 +170,37 @@ pub struct DeputedRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flaky_from: Option<String>,
     /// A failed case's output tail, bounded (`DeputedCase::output`): what a reader of this record
-    /// alone, on another host, reads a red by. Additive: an older record has none.
+    /// alone, on another host, reads a red by. Additive: an older record has none. It CROSSES
+    /// HOSTS (Herald's worker report carries it), so a row's output must print no secret: a value
+    /// is never printed (Ladon's rule), and what a test prints is now read beyond its host.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
+}
+
+/// The most output, summed over every deputed row's `output`, that one record keeps (D m/21985):
+/// a record crosses hosts inside one swarm value, and the store caps a value at 64 KiB, so the
+/// evidence is bounded where it is kept. Room is left for the record's other fields.
+pub const DEPUTED_OUTPUT_BUDGET: usize = 32 * 1024;
+
+/// Keep `rows`' output tails, in order, until [`DEPUTED_OUTPUT_BUDGET`] is spent; the rest lose
+/// theirs. Returns how many lost one, for `Record::deputed_output_unkept`.
+pub fn bound_deputed_output(rows: &mut [DeputedRow]) -> u64 {
+    let mut spent = 0usize;
+    let mut unkept = 0u64;
+    for row in rows.iter_mut() {
+        let Some(out) = &row.output else { continue };
+        if spent + out.len() <= DEPUTED_OUTPUT_BUDGET {
+            spent += out.len();
+        } else {
+            row.output = None;
+            unkept += 1;
+        }
+    }
+    unkept
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// Which deputed case a flake is, when it is one (`FlakeEvent::deputed`).
@@ -362,6 +390,12 @@ pub struct Record {
     /// evidence surface it; the unnarrowed CI run records false here.
     #[serde(default)]
     pub deputed_narrowed: bool,
+    /// How many failed deputed cases' output tails were NOT kept, past [`DEPUTED_OUTPUT_BUDGET`]:
+    /// the record crosses hosts in one swarm value, so its output is bounded as a whole, the first
+    /// failed cases in record order keeping theirs (D m/21985). Their junit artifact has them.
+    /// Defaulted, and skipped when 0, so older records and readers are unchanged.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub deputed_output_unkept: u64,
     /// `"green"` | `"flaky"` | `"red"` (see [`verdict`]). Empty in a record from before it existed.
     #[serde(default)]
     pub verdict: String,
@@ -593,6 +627,7 @@ mod tests {
             reminders: Vec::new(),
             deputed: Vec::new(),
             deputed_narrowed: false,
+            deputed_output_unkept: 0,
             verdict: String::new(),
             flakes: Vec::new(),
             measurements: Vec::new(),
@@ -692,5 +727,29 @@ mod tests {
         assert_eq!(lines.iter().map(|e| e.test.as_str()).collect::<Vec<_>>(), ["a", "b"]);
         assert!(text.contains("\"deputed\":null"), "a leaf flake says so: {text}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// D m/21985: a record's output is bounded as a whole. Past the budget, the first failed cases
+    /// in record order keep their tails and the rest keep none, counted for the record.
+    #[test]
+    fn a_records_output_is_bounded_as_a_whole_and_the_unkept_are_counted() {
+        let row = |n: usize| DeputedRow {
+            verifier: "junit".into(),
+            suite: "s".into(),
+            name: format!("case_{n}"),
+            outcome: "failed".into(),
+            message: None,
+            time_ms: None,
+            file: "j.xml".into(),
+            reused_from: None,
+            flaky_from: None,
+            output: Some("x".repeat(4096)),
+        };
+        let mut rows: Vec<DeputedRow> = (0..300).map(row).collect();
+        let unkept = bound_deputed_output(&mut rows);
+        let kept: usize = rows.iter().filter_map(|r| r.output.as_ref()).map(String::len).sum();
+        assert!(kept <= DEPUTED_OUTPUT_BUDGET, "bounded: {kept}");
+        assert_eq!(unkept, 300 - (DEPUTED_OUTPUT_BUDGET / 4096) as u64, "the rest counted");
+        assert!(rows[0].output.is_some() && rows[299].output.is_none(), "the first keep theirs");
     }
 }

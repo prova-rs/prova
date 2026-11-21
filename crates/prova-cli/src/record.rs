@@ -454,6 +454,7 @@ mod tests {
             reminders: vec![],
             deputed: vec![],
             deputed_narrowed: false,
+            deputed_output_unkept: 0,
             verdict: "green".into(),
             flakes: vec![],
         }
