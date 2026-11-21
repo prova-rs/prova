@@ -15,9 +15,23 @@ use prova_core::{run_path_with, NullReporter, RunConfig};
 fn run(file: &str, concurrency: usize) -> (prova_core::Summary, Vec<String>) {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("testdata/{file}"));
 
+    // Each run is its own project, so its tokens lock under that project's `.prova/var/locks` and
+    // nowhere else. Without one, a bare run's tokens are MACHINE-wide (locks::lock_dir), so these
+    // files' "db" and port 8080 contended with each other's processes and with any prova on the
+    // host: resource_remode's exclusive "db" writer, queued between this file's two shared
+    // readers, held the second out while the first sat in its barrier, and the barrier timed out
+    // at 20 s under the full suite (E, 2026-11-21; green alone). What's under test is how ONE run
+    // schedules its own holders, so the lock scope is the run's.
+    let project = std::env::temp_dir().join(format!(
+        "prova-resources-{}-{}",
+        std::process::id(),
+        file.trim_end_matches(".lua")
+    ));
+    std::fs::create_dir_all(&project).expect("the run's own project");
+
     let events: Arc<Mutex<Vec<String>>> = Arc::default();
     let sink = Arc::clone(&events);
-    let config = RunConfig::new(concurrency).with_module(move |lua| {
+    let config = RunConfig::new(concurrency).with_project(&project).with_module(move |lua| {
         let sink = Arc::clone(&sink);
         let record = lua.create_function(move |_, event: String| {
             sink.lock().expect("event log").push(event);
@@ -30,6 +44,7 @@ fn run(file: &str, concurrency: usize) -> (prova_core::Summary, Vec<String>) {
     let mut reporter = NullReporter;
     let summary = run_path_with(&path, &mut reporter, &config).expect("run");
     let events = events.lock().expect("event log").clone();
+    drop(std::fs::remove_dir_all(&project));
     (summary, events)
 }
 
@@ -43,6 +58,29 @@ fn interval(events: &[String], name: &str) -> (usize, usize) {
             .unwrap_or_else(|| panic!("{event:?} missing from event log {events:?}"))
     };
     (find(format!("enter {name}")), find(format!("exit {name}")))
+}
+
+/// A run's tokens are its own project's: an exclusive hold on `db` in the MACHINE-wide lock
+/// directory, as another process's bare run would take it, doesn't hold this run's shared readers
+/// out, so their rendezvous completes. Red when the harness runs without a project (the 20 s
+/// barrier timeout the full suite hit).
+#[test]
+fn a_runs_tokens_are_its_projects_and_a_machine_hold_never_reaches_them() {
+    use std::os::fd::AsRawFd;
+    let path = prova_core::locks::lock_path("db", false, None).expect("db's machine-wide lock file");
+    std::fs::create_dir_all(path.parent().expect("its directory")).expect("the lock directory");
+    let held = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .expect("the lock file");
+    // SAFETY: flock on an open descriptor we own; the hold ends when `held` drops.
+    assert_eq!(unsafe { libc::flock(held.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0, "held");
+    let (summary, events) = run("resource_retired_words.lua", 8);
+    drop(held);
+    assert_eq!(summary.passed, 4, "the readers met though another process held db: {events:?}");
+    assert_overlap(&events, "ra", "rb", true);
 }
 
 /// Two exclusive holders of the same token must serialize even with concurrency headroom: the
