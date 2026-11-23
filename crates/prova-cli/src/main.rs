@@ -481,6 +481,8 @@ fn main_body() -> ExitCode {
             // Heavy work waits for one of the machine's slots, when it has them (`machine_slot`).
             let _slot = machine_slot::heavy(verb.name, &args)
                 .then(|| machine_slot::take(&format!("prova {} {}", verb.name, args.join(" "))));
+            // Heavy work builds: its cargo build dir is held from the volume's sweep for the run (build_lease).
+            let _lease = machine_slot::heavy(verb.name, &args).then(build_lease::hold);
             return (verb.run)(args);
         }
         if let Some((old, new)) = DEPRECATED_VERBS.iter().find(|(old, _)| old == first) {
@@ -501,9 +503,12 @@ fn main_body() -> ExitCode {
             return crate::exit::config();
         }
     }
+    // The run path builds too (its black-box proofs drive the workspace's artifacts): hold the build dir's lease.
+    let _lease = build_lease::hold();
     run(std::env::args().skip(1).collect())
 }
 
+mod build_lease;
 mod machine_slot;
 
 mod cmd_meta;
