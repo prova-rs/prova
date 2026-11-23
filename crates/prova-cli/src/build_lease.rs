@@ -131,4 +131,30 @@ mod tests {
         );
         drop(std::fs::remove_dir_all(&dir));
     }
+
+    /// D m/28476: a child the run spawns and that outlives it never keeps the dir unsweepable. std opens the lease
+    /// O_CLOEXEC, so an exec'd child holds no copy of it: once the run lets go the sweep can take the dir while the
+    /// child still runs.
+    #[test]
+    fn a_child_that_outlives_the_run_does_not_hold_its_lease() {
+        let dir = std::env::temp_dir().join(format!("prova-build-lease-child-{}", std::process::id()));
+        let lease = hold_at(&dir).unwrap_or_else(|e| panic!("{e}"));
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .unwrap_or_else(|e| panic!("{e}"));
+        drop(lease);
+        let freed = (0..50).any(|_| {
+            sweep_takes(&dir) || {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                false
+            }
+        });
+        let still_running = child.try_wait().ok().flatten().is_none();
+        drop(child.kill());
+        drop(child.wait());
+        drop(std::fs::remove_dir_all(&dir));
+        assert!(still_running, "the child outlived the run's lease");
+        assert!(freed, "the sweep takes the dir while the run's child still runs");
+    }
 }
