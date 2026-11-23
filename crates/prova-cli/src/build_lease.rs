@@ -16,6 +16,15 @@ use std::path::{Path, PathBuf};
 /// The lease file the sweep holds a cargo build dir by (anemnez-ecosystem `space::strategy::LEASE`).
 pub(crate) const LEASE: &str = ".space-lease";
 
+/// How long a run waits for the sweep to let go of a dir it is deleting, before it goes on unprotected and says so.
+const SWEEP_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// How long `cargo metadata` may take to name the build dir before the run goes on without the lease.
+const METADATA_WITHIN: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// How often a bounded wait looks again.
+const POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// A held lease, released when dropped or when the process ends.
 pub(crate) struct Held {
     _file: Option<File>,
@@ -40,6 +49,11 @@ pub(crate) fn hold() -> Held {
 
 /// Take a shared flock on `<dir>/.space-lease`, waiting while the sweep holds it (it's deleting this dir now).
 pub(crate) fn hold_at(dir: &Path) -> std::io::Result<File> {
+    hold_within(dir, SWEEP_WAIT)
+}
+
+/// [`hold_at`] with its bound handed in, so a row can prove the wait ends.
+fn hold_within(dir: &Path, wait: std::time::Duration) -> std::io::Result<File> {
     std::fs::create_dir_all(dir)?;
     let file = std::fs::OpenOptions::new()
         .create(true)
@@ -47,18 +61,28 @@ pub(crate) fn hold_at(dir: &Path) -> std::io::Result<File> {
         .write(true)
         .open(dir.join(LEASE))?;
     match file.try_lock_shared() {
-        Ok(()) => {}
-        Err(std::fs::TryLockError::WouldBlock) => {
-            eprintln!(
-                "prova: the build volume's sweep holds {} now; waiting for it",
-                dir.display()
-            );
-            file.lock_shared()?;
-        }
+        Ok(()) => return Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => {}
         Err(std::fs::TryLockError::Error(e)) => return Err(e),
     }
-    Ok(file)
+    // Rule 4: the wait is bounded. A sweep deletes one dir in seconds; past SWEEP_WAIT the run goes on unprotected,
+    // said, never waits for good.
+    eprintln!("prova: the build volume's sweep holds {} now; waiting for it", dir.display());
+    let started = std::time::Instant::now();
+    while started.elapsed() < wait {
+        std::thread::sleep(POLL);
+        match file.try_lock_shared() {
+            Ok(()) => return Ok(file),
+            Err(std::fs::TryLockError::WouldBlock) => {}
+            Err(std::fs::TryLockError::Error(e)) => return Err(e),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        format!("the sweep still held it after {}ms", wait.as_millis()),
+    ))
 }
+
 
 /// The cargo build dir of the project at the current directory: `build_directory`, else `target_directory`, as cargo
 /// itself says. None outside a cargo project or when cargo can't answer.
@@ -67,22 +91,40 @@ fn build_dir() -> Option<PathBuf> {
     if !here.ancestors().any(|d| d.join("Cargo.toml").is_file()) {
         return None;
     }
-    let out = std::process::Command::new("cargo")
-        .args([
-            "metadata",
-            "--format-version",
-            "1",
-            "--no-deps",
-            "--offline",
-        ])
+    // Rule 4: cargo is bounded too. A hung cargo must never hold a run before its first proof.
+    let mut child = std::process::Command::new("cargo")
+        .args(["metadata", "--format-version", "1", "--no-deps", "--offline"])
         .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
-        .output()
+        .spawn()
         .ok()?;
-    if !out.status.success() {
-        return None;
+    // Read stdout as it comes, on its own thread: a workspace's metadata can pass a pipe's buffer, and a cargo
+    // blocked writing it would never exit, which the bound would misread as a hang.
+    let mut pipe = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut out = Vec::new();
+        std::io::Read::read_to_end(&mut pipe, &mut out).map(|_| out)
+    });
+    let started = std::time::Instant::now();
+    loop {
+        match child.try_wait().ok()? {
+            Some(status) if status.success() => break,
+            Some(_) => return None,
+            None if started.elapsed() >= METADATA_WITHIN => {
+                eprintln!(
+                    "prova: cargo metadata didn't answer in {}s; the build dir's lease is not held",
+                    METADATA_WITHIN.as_secs()
+                );
+                drop(child.kill());
+                drop(child.wait());
+                return None;
+            }
+            None => std::thread::sleep(POLL),
+        }
     }
-    let meta: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    let stdout = reader.join().ok()?.ok()?;
+    let meta: serde_json::Value = serde_json::from_slice(&stdout).ok()?;
     let pick = |k: &str| {
         meta.get(k)
             .and_then(serde_json::Value::as_str)
@@ -156,5 +198,24 @@ mod tests {
         drop(std::fs::remove_dir_all(&dir));
         assert!(still_running, "the child outlived the run's lease");
         assert!(freed, "the sweep takes the dir while the run's child still runs");
+    }
+
+    /// L m/28480, rule 4: while the sweep holds the lease, a run's wait for it ends at its bound with TimedOut, said,
+    /// and never waits for good.
+    #[test]
+    fn a_runs_wait_for_the_sweep_ends_at_its_bound() {
+        let dir = std::env::temp_dir().join(format!("prova-build-lease-bound-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("{e}"));
+        let sweep = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(dir.join(LEASE))
+            .unwrap_or_else(|e| panic!("{e}"));
+        sweep.lock().unwrap_or_else(|e| panic!("{e}"));
+        let got = hold_within(&dir, std::time::Duration::from_millis(300));
+        drop(sweep);
+        drop(std::fs::remove_dir_all(&dir));
+        assert_eq!(got.err().map(|e| e.kind()), Some(std::io::ErrorKind::TimedOut), "ended at its bound");
     }
 }
