@@ -48,7 +48,7 @@ Reported, never fatal — with one exception.
 - **DANGLING** — a `covers` naming no anchor. Two situations produce this identical state: prose
 not written yet, and prose deleted once the proof captured the contract. Both are unfinished work. For
 the second, retire the claim's context into `proves` — deleting a design doc should be lossless, exactly
-the way a spec's reason graduates.
+the way a promise's reason graduates.
 - **UNPROVEN** — an anchored claim nothing covers. The intake half.
 - **STALE** — a *pinned* claim whose text changed (below).
 - **Duplicate id in one file** — an **error**. Unlike the rest this is a defect: an ambiguous
