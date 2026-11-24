@@ -38,8 +38,19 @@ local roots = {
   archetect = archetect,
   suite = suite,
   Double = require("prova.double"),
-  workspace = require("prova.workspace"),
 }
+
+-- The bundled `require` modules are named in help() by their real path (`prova.workspace.create`,
+-- `prova.cargo.verify`), since that is what a proof requires. Their entries resolve through require.
+local bundled = { "prova.workspace", "prova.cargo", "prova.double" }
+local function bundled_root(name)
+  for _, m in ipairs(bundled) do
+    if name:sub(1, #m + 1) == m .. "." then
+      local ok, mod = pcall(require, m)
+      return ok and mod or nil, name:sub(#m + 2)
+    end
+  end
+end
 
 -- `runtime.*` exists only in the `prova.lua` companion; in a test state it is a deliberate
 -- error-stub (indexing raises with guidance). Raising IS the registered behavior — treat it as
@@ -58,8 +69,12 @@ prova.test("every dotted function help() advertises exists and is callable",
   local missing = {}
   for _, e in ipairs(entries) do
     local root_name, rest = e.name:match("^([%w_]+)%.([%w_%.]+)$")
-    if is_function_entry(e) and root_name and not e.name:find(":") then
-      if companion_only[root_name] then
+    local module, module_rest = bundled_root(e.name)
+    if module ~= nil then root_name, rest = nil, module_rest end
+    if is_function_entry(e) and (root_name or module) and not e.name:find(":") then
+      if module ~= nil then
+        if type(module[rest]) ~= "function" then missing[#missing + 1] = e.name end
+      elseif companion_only[root_name] then
         -- documented, and its guard-rail registration is asserted separately below
       else
         -- Core roots are globals; a PLUGIN's entries (its library/ stub rides the same rail)
@@ -125,7 +140,8 @@ prova.test("every function the core globals carry is in help()",
     json = json, yaml = yaml, toml = toml, csv = csv,
     base64 = base64, hash = hash, uuid = uuid, url = url,
     socket = socket, terminal = terminal, websocket = websocket,
-    workspace = require("prova.workspace"),
+    ["prova.workspace"] = require("prova.workspace"),
+    ["prova.cargo"] = require("prova.cargo"),
   }
   local undocumented = {}
   for surface_name, surface in pairs(surfaces) do
@@ -188,7 +204,7 @@ end)
 prova.test("help() filters and answers the shapes that once cost probes", function(t)
   -- Pin the original agent-ergonomics round-trips forever.
   for _, name in ipairs({ "shell.run", "shell.spawn", "prova.ShellResult", "Context:tempdir",
-                          "workspace.create" }) do
+                          "prova.workspace.create" }) do
     local hits = prova.help(name)
     local found = false
     for _, e in ipairs(hits) do
