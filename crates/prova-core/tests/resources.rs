@@ -59,6 +59,26 @@ impl Drop for Scratch {
     }
 }
 
+/// Every row in this file takes this for its whole body. One row points the machine-wide lock
+/// directory at its own scratch through a process-wide variable; nextest gives each row its own
+/// process, but `cargo test` (the release gate) runs rows as threads of one, where that row's
+/// variable and exclusive hold reached its siblings' runs and their readers stopped meeting.
+static SERIAL: Mutex<()> = Mutex::new(());
+
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Unsets the machine-directory override when the row that set it ends, a panic included.
+struct Unset(&'static str);
+
+impl Drop for Unset {
+    fn drop(&mut self) {
+        // SAFETY: every row holds SERIAL, so no other row of this process reads the environment now.
+        unsafe { std::env::remove_var(self.0) };
+    }
+}
+
 /// The positions of `enter <name>` and `exit <name>` in the log: the span over which that test held
 /// the resource.
 fn interval(events: &[String], name: &str) -> (usize, usize) {
@@ -77,13 +97,16 @@ fn interval(events: &[String], name: &str) -> (usize, usize) {
 /// barrier timeout the full suite hit).
 #[test]
 fn a_runs_tokens_are_its_projects_and_a_machine_hold_never_reaches_them() {
+    let _serial = serial();
     use std::os::fd::AsRawFd;
     // The machine-wide directory moved to one of this row's own (scratch::BASE_ENV), so the hold
     // below is a stand-in for another process's and never the host's shared state (L m/22011).
-    // nextest runs each row in its own process, so the variable is this row's alone.
+    // SERIAL keeps every other row of this process out while the variable is set, and `_unset`
+    // clears it before the lock is released (declared after `_serial`, so it drops first).
     let machine = Scratch::new("prova-resources-machine");
-    // SAFETY: set before any thread of this process reads the environment.
+    // SAFETY: every row holds SERIAL, so no other thread of this process reads the environment now.
     unsafe { std::env::set_var(prova_core::scratch::BASE_ENV, &machine.0) };
+    let _unset = Unset(prova_core::scratch::BASE_ENV);
     let path = prova_core::locks::lock_path("db", false, None).expect("db's machine-wide lock file");
     assert!(path.starts_with(&machine.0), "the stand-in machine directory: {}", path.display());
     std::fs::create_dir_all(path.parent().expect("its directory")).expect("the lock directory");
@@ -105,6 +128,7 @@ fn a_runs_tokens_are_its_projects_and_a_machine_hold_never_reaches_them() {
 /// writer↔writer conflict forces them one-at-a-time, so their spans are disjoint.
 #[test]
 fn exclusive_resource_serializes_under_concurrency() {
+    let _serial = serial();
     let (summary, events) = run("resource_exclusive.lua", 8);
     assert_eq!(summary.passed, 2, "both pass");
 
@@ -120,6 +144,7 @@ fn exclusive_resource_serializes_under_concurrency() {
 /// other is still inside, so their spans interleave.
 #[test]
 fn shared_resource_runs_concurrently() {
+    let _serial = serial();
     let (summary, events) = run("resource_shared.lua", 8);
     assert_eq!(summary.passed, 2, "both pass");
 
@@ -152,6 +177,7 @@ fn assert_overlap(events: &[String], a: &str, b: &str, overlapping: bool) {
 /// port serialize. And `prova.writes` on a bare name serializes like the bare string it wraps.
 #[test]
 fn modes_are_independent_of_how_the_token_was_made() {
+    let _serial = serial();
     let (summary, events) = run("resource_remode.lua", 8);
     assert_eq!(summary.passed, 4, "all four pass");
 
@@ -165,6 +191,7 @@ fn modes_are_independent_of_how_the_token_was_made() {
 /// written before the rename must keep running — that promise is what this pins.
 #[test]
 fn retired_resource_words_keep_their_semantics() {
+    let _serial = serial();
     let (summary, events) = run("resource_retired_words.lua", 8);
     assert_eq!(summary.passed, 4, "all four pass");
 

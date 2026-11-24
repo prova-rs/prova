@@ -113,9 +113,20 @@ jobs:
       - name: Enable Rust Dependency Caching
         uses: Swatinem/rust-cache@v2
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      # The unit tests run the way Build and Prepare Release run them: `prova run ut`, which deputes
+      # to nextest, one process per test. Plain `cargo test` runs a crate's tests as threads of one
+      # process, where rows that set process-wide state (PROVA_SCRATCH_DIR, flocks) reach their
+      # siblings; v0.30.13's first tag went red here on two such rows that every other gate passes.
       - name: Test (release gate)
         shell: bash
-        run: cargo test
+        run: |
+          cargo build -p prova-cli
+          ./target/debug/prova run ut
 
       # The other half of the gate. v0.12.0 shipped a manifest-parsing change whose only
       # black-box coverage lived here, and `cargo test` alone would have published it unproven —
