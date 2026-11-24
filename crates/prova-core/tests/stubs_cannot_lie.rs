@@ -181,3 +181,46 @@ fn a_doctored_surface_is_named() {
     let (_, _, stale) = disagreements(&live, &stubbed, &[("prova.fs.write", "no reason")]);
     assert_eq!(stale, vec!["prova.fs.write"], "a waiver over an agreeing name is stale");
 }
+
+/// Every closed option table takes its accepted set from the stubs (`crate::stub_opts`, generated
+/// by build.rs from `library/*.lua`), never from a hand-written list. A hand list is a second
+/// source, and a second source is how `TestOpts` came to teach `spec` and `retries` while the
+/// runtime refused both. This census keeps a new gate from quietly starting one.
+#[test]
+fn no_option_gate_keeps_a_hand_written_list() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut offenders = Vec::new();
+    let mut stack = vec![src.clone()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("src/ reads") {
+            let path = entry.expect("an entry").path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            // opts.rs is the gate itself; its own tests exercise it with literal sets.
+            if path.extension().is_none_or(|e| e != "rs") || path.ends_with("opts.rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("a source file reads");
+            let lines: Vec<&str> = text.lines().collect();
+            for (i, line) in lines.iter().enumerate() {
+                let window = lines[i..lines.len().min(i + 3)].join(" ");
+                let hand_const = line.contains("OPTS: &[&str] = &[");
+                let hand_call = (line.contains("reject_unknown") && window.contains("&[\""))
+                    || line.contains("accepted: &[\"");
+                if hand_const || hand_call {
+                    let rel = path.strip_prefix(&src).unwrap_or(&path).display().to_string();
+                    offenders.push(format!("{rel}:{}: {}", i + 1, line.trim()));
+                }
+            }
+        }
+    }
+    offenders.sort();
+    assert!(
+        offenders.is_empty(),
+        "an option gate keeps its own list — declare the options as a `---@class prova.<Name>` in \
+         library/*.lua and use `crate::stub_opts::<NAME>` (build.rs generates it):\n  {}",
+        offenders.join("\n  ")
+    );
+}

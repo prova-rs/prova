@@ -161,7 +161,7 @@ pub(super) fn split_opts_body(
     match (a, b) {
         (Value::Function(f), Value::Nil) => Ok((UnitOpts::default(), f, None)),
         (Value::Table(t), Value::Function(f)) => {
-            reject_unknown_opts(&t, UNIT_OPTS, &format!("prova.{kind}(\"{unit}\")"))?;
+            reject_unknown_opts(&t, &UNIT_OPTS, &format!("prova.{kind}(\"{unit}\")"))?;
             let falsifier = parse_falsified_by(&t.get::<Value>("falsified_by")?)?;
             Ok((parse_opts(&t)?, f, falsifier))
         }
@@ -171,25 +171,23 @@ pub(super) fn split_opts_body(
     }
 }
 
-/// Every option a unit's `opts` table may carry — closed by construction. `resources` is the
-/// deprecated spelling of `locks`: accepted (it warns in `parse_opts`) but deliberately not
-/// advertised, so the message never teaches a spelling on its way out.
-pub(super) const UNIT_OPTS: &[&str] = &[
-    "covers",
-    "depends_on",
-    "falsified_by",
-    "idle_timeout",
-    "inputs",
-    "locks",
-    "promises",
-    "proves",
-    "requires",
-    "resources",
-    "serial",
-    "switch",
-    "tags",
-    "timeout",
-];
+/// Every option a unit's `opts` table may carry — closed by construction, and generated: the union
+/// of the stub classes `prova.TestOpts`, `prova.FlowOpts` and `prova.GroupOpts` (build.rs), so the
+/// options an editor completes are exactly the options this gate accepts. Which KIND may carry
+/// which (`promises` on a group, `falsified_by` on a flow) is refused later, with its own teaching.
+/// `resources` is the deprecated spelling of `locks`: accepted (it warns in `parse_opts`) but
+/// deliberately not advertised, so the message never teaches a spelling on its way out.
+pub(super) static UNIT_OPTS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
+    let mut all: Vec<&'static str> = [
+        crate::stub_opts::TEST_OPTS,
+        crate::stub_opts::FLOW_OPTS,
+        crate::stub_opts::GROUP_OPTS,
+    ]
+    .concat();
+    all.sort_unstable();
+    all.dedup();
+    all
+});
 
 /// Spellings prova USED to accept, and where the behavior went. A removed key's own name is the
 /// least useful thing to say about it: the author asked for a behavior, and needs its successor.

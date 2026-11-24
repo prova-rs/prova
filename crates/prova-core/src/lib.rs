@@ -10,6 +10,13 @@ pub mod baselines;
 pub mod conduct_cache;
 mod engine;
 pub mod help;
+pub mod stub_classes;
+/// The accepted-option sets the runtime enforces, generated from the stub classes (`build.rs`,
+/// src/stub_classes.rs): one list for the editor and the runtime.
+pub(crate) mod stub_opts {
+    #![allow(dead_code)]
+    include!(concat!(env!("OUT_DIR"), "/stub_opts.rs"));
+}
 pub mod layout;
 pub mod model;
 mod modules;

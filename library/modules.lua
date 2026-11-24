@@ -121,6 +121,13 @@ function ShellResult:ok() end
 ---@field check? boolean      # non-zero exit raises, carrying the tail of BOTH stdout and stderr
 ---@field merge_stderr? boolean  # fold stderr into stdout (the portable replacement for `2>&1`); stderr is then empty
 ---@field stdin? string          # feed the program's stdin (the portable replacement for `printf x | cmd`)
+---@field sample? prova.ShellSample  # capture a CPU profile of a matching child once it has run this long (diagnosing a slow conduct)
+
+--- `shell.run`'s `sample`: every key required, none other taken.
+---@class prova.ShellSample
+---@field after string         # how long into the run to sample, e.g. "60s"
+---@field matching string      # a substring of the command line to sample
+---@field into string          # the directory the sample is written to
 
 --- A long-running process from `shell.spawn`. Prefer `ctx:defer(function() proc:stop() end)` so it
 --- is stopped during teardown; `stop`/`wait` are async.
@@ -785,6 +792,7 @@ function grpc.mock(ctx, opts) end
 ---@field cassette? string   # the recording file, needed by record/replay/auto
 ---@field mode? string       # "passthrough" (default) | "record" | "replay" | "auto"
 ---@field redact? string[]   # literal strings scrubbed from the cassette at record time
+---@field network? boolean|string  # a `.network` host-gateway vantage for a containerized SUT; see http.mock
 
 --- Interpose on a real gRPC dependency (docs/design/mocks-proxies-drivers.md). Record captures the
 --- upstream's schema (learned by reflection) AND each unary call into a cassette, so a replay proxy
@@ -1259,7 +1267,7 @@ function SocketConn:send(data) end
 --- that arrive first. Skipped turns are counted in the timeout message, so "nothing arrived" and
 --- "nothing matched" read differently.
 ---@param n_or_opts? integer|{ timeout?: string, where?: prova.Where }
----@param opts? { timeout?: string, where?: prova.Where }
+---@param opts? prova.RecvOpts
 ---@return any                # a string, or the decoded turn under `codec = "json"`
 function SocketConn:recv(n_or_opts, opts) end
 --- Close the connection (also what `ctx:manage` calls at scope end).
@@ -1326,23 +1334,46 @@ function SocketProxy:close() end
 
 ---@class prova.socket
 socket = {}
+---@class prova.SocketListenOpts
+---@field addr? string
+---@field framing? prova.SocketFraming
+---@field codec? prova.Codec
+
 --- Listen (originate, server side): bind `tcp://host:port` (`:0` = ephemeral, resolved into
 --- `.addr`) or `unix:///path`, accept raw or framed connections. Torn down with the scope.
 ---@param ctx any
----@param opts { addr?: string, framing?: prova.SocketFraming, codec?: prova.Codec }
+---@param opts prova.SocketListenOpts
 ---@return prova.SocketListener
 function socket.listen(ctx, opts) end
+---@class prova.SocketConnectOpts
+---@field addr string
+---@field framing? prova.SocketFraming
+---@field codec? prova.Codec
+
 --- Connect (originate): dial a `tcp://`/`unix://` address. Async. Closed with the scope.
 ---@param ctx any
----@param opts { addr: string, framing?: prova.SocketFraming, codec?: prova.Codec }
+---@param opts prova.SocketConnectOpts
 ---@return prova.SocketConn
 function socket.connect(ctx, opts) end
+---@class prova.SocketMockOpts
+---@field addr? string
+---@field framing prova.SocketFraming
+---@field codec? prova.Codec
+
 --- Terminate: a mock that answers framed turns synthetically. Framing is REQUIRED — matching
 --- needs turns; raw exchanges are scripted with `socket.listen`/`accept` instead.
 ---@param ctx any
----@param opts { addr?: string, framing: prova.SocketFraming, codec?: prova.Codec }
+---@param opts prova.SocketMockOpts
 ---@return prova.SocketMock
 function socket.mock(ctx, opts) end
+---@class prova.SocketProxyOpts
+---@field upstream? string
+---@field addr? string
+---@field framing? prova.SocketFraming
+---@field cassette? string
+---@field mode? string
+---@field redact? string[]
+
 --- Interpose: the universal wiretap. Put it in front of ANY tcp/unix dependency for transcripts
 --- and fault injection (latency/drop/corrupt/throttle/after) with zero protocol knowledge.
 ---
@@ -1351,7 +1382,7 @@ function socket.mock(ctx, opts) end
 --- `auto` records when the file is absent and replays when present. A replay miss severs the
 --- connection loud. Cassettes require `framing` (a raw byte stream has no turn to key on).
 ---@param ctx any
----@param opts { upstream?: string, addr?: string, framing?: prova.SocketFraming, cassette?: string, mode?: string, redact?: string[] }
+---@param opts prova.SocketProxyOpts
 ---@return prova.SocketProxy
 function socket.proxy(ctx, opts) end
 
@@ -1372,13 +1403,13 @@ function Session:send(data) end
 --- Read the next turn — or with `where`, the next turn that MATCHES, skipping (but still
 --- transcribing) the ones that do not. Bounded: 10s by default, loud on timeout or EOF, and the
 --- failure carries the stderr tail plus the child's state.
----@param opts? { timeout?: string, where?: prova.Where }
+---@param opts? prova.RecvOpts
 ---@return any                 # a string, or the decoded turn under `codec = "json"`
 function Session:recv(opts) end
 --- Observe-until-match: block until the stream shows `pattern` (a plain substring). The unframed
 --- sibling of `recv{ where }` — use it to wait for a readiness line before the first request.
 ---@param pattern string
----@param opts? { timeout?: string }
+---@param opts? prova.ExpectOpts
 function Session:expect(pattern, opts) end
 --- The bounded stderr tail (last 64KB, oldest dropped). NEVER part of the frame stream: a server
 --- logging to stderr is normal, and folding it into stdout would feed log lines to the decoder.
@@ -1400,6 +1431,22 @@ function Session:stop() end
 
 ---@class prova.stdio
 stdio = {}
+--- Options for reading one turn from a stream session (stdio, socket, websocket).
+---@class prova.RecvOpts
+---@field timeout? string
+---@field where? prova.Where   # read on until the turn that MATCHES (structural subset match)
+
+--- Options for `expect` on a stdio session.
+---@class prova.ExpectOpts
+---@field timeout? string
+
+---@class prova.StdioSpawnOpts
+---@field cmd string|string[]
+---@field framing? prova.SocketFraming
+---@field codec? prova.Codec
+---@field cwd? string
+---@field env? table<string,string|number|boolean>
+
 --- Drive (originate): spawn a program with its stdin, stdout and stderr piped, and converse.
 --- Takes a shell string or an argv table, exactly like `shell.run` — there is no `args` option,
 --- because the arguments are part of the command.
@@ -1408,7 +1455,7 @@ stdio = {}
 --- stdio speaks; `"content_length"` is the LSP/DAP envelope) and `codec = "json"` decodes them, so
 --- `recv{ where = { id = 3 } }` picks the reply out of an interleaved stream.
 ---@param ctx any
----@param opts { cmd: string|string[], framing?: prova.SocketFraming, codec?: prova.Codec, cwd?: string, env?: table<string,string|number|boolean> }
+---@param opts prova.StdioSpawnOpts
 ---@return prova.Session
 function stdio.spawn(ctx, opts) end
 
@@ -1455,6 +1502,11 @@ function StdioProxy:stop() end
 --- Alias for `:stop()` — the proxy grammar's teardown verb.
 function StdioProxy:close() end
 
+---@class prova.StdioMockOpts
+---@field as string
+---@field framing prova.SocketFraming
+---@field codec? prova.Codec
+
 --- Terminate: shadow a command NAME on PATH with a framed responder the SUT SPAWNS.
 ---
 --- This is `socket.mock` reached by spawn instead of dial — the shim on PATH is two lines
@@ -1462,9 +1514,17 @@ function StdioProxy:close() end
 --- stay in-process. That is what lets `:on` take a SHAPE; a shim that was itself the matcher could
 --- only ever match bytes.
 ---@param ctx any
----@param opts { as: string, framing: prova.SocketFraming, codec?: prova.Codec }
+---@param opts prova.StdioMockOpts
 ---@return prova.StdioMock
 function stdio.mock(ctx, opts) end
+---@class prova.StdioProxyOpts
+---@field as string
+---@field upstream? string|string[]
+---@field framing prova.SocketFraming
+---@field cassette? string
+---@field mode? string
+---@field redact? string[]
+
 --- Interpose: shadow a command NAME, spawn the REAL server behind it, and pair every request with
 --- its response — the turn-by-turn session wiretap `shell.proxy` cannot be (its turn is one whole
 --- invocation, so a conversation collapses into a single blob).
@@ -1475,7 +1535,7 @@ function stdio.mock(ctx, opts) end
 --- loud. The recording is byte-turn shaped — the same format `socket.proxy` writes, and portable
 --- between them.
 ---@param ctx any
----@param opts { as: string, upstream?: string|string[], framing: prova.SocketFraming, cassette?: string, mode?: string, redact?: string[] }
+---@param opts prova.StdioProxyOpts
 ---@return prova.StdioProxy
 function stdio.proxy(ctx, opts) end
 
@@ -1570,15 +1630,25 @@ function TerminalMock:stop() end
 
 ---@class prova.terminal
 terminal = {}
+---@class prova.TerminalSpawnOpts
+---@field cmd string[]
+---@field cols? integer
+---@field rows? integer
+---@field cwd? string
+---@field env? table<string,string>
+
 --- Spawn a program on a real pty (openpty/ConPTY behind one API) and drive it interactively.
 ---@param ctx any
----@param opts { cmd: string[], cols?: integer, rows?: integer, cwd?: string, env?: table<string,string> }
+---@param opts prova.TerminalSpawnOpts
 ---@return prova.Term
 function terminal.spawn(ctx, opts) end
+---@class prova.TerminalMockOpts
+---@field as string
+
 --- Shadow an interactive CLI on PATH with a scripted responder — the SUT shells out to `ssh`
 --- (or an installer), and you script the other side.
 ---@param ctx any
----@param opts { as: string }
+---@param opts prova.TerminalMockOpts
 ---@return prova.TerminalMock
 function terminal.mock(ctx, opts) end
 
@@ -1592,6 +1662,12 @@ function TerminalProxy:stop() end
 --- Alias for `:stop()` — the proxy grammar's teardown verb.
 function TerminalProxy:close() end
 
+---@class prova.TerminalProxyOpts
+---@field as string
+---@field upstream? string
+---@field cassette? string
+---@field mode? string
+
 --- Interpose on an interactive CLI the SUT shells out to (the last cell in the transport matrix):
 --- shadow a command NAME on PATH, forward to the REAL program on the pty the SUT already allocated,
 --- and record the session — or replay a recorded one with no real program. The terminal cassette is
@@ -1599,7 +1675,7 @@ function TerminalProxy:close() end
 --- session recorded once (a ConPTY session on Windows) replays deterministically on every platform.
 --- Modes: passthrough (default) | record | replay | auto.
 ---@param ctx any
----@param opts { as: string, upstream?: string, cassette?: string, mode?: string }
+---@param opts prova.TerminalProxyOpts
 ---@return prova.TerminalProxy
 function terminal.proxy(ctx, opts) end
 
@@ -1614,7 +1690,7 @@ local WsConn = {}
 function WsConn:send(data) end
 --- Receive the next message turn (async, timeout'd — default 10s; loud on close). `where` reads
 --- on until a turn matches, exactly as on a socket.
----@param opts? { timeout?: string, where?: prova.Where }
+---@param opts? prova.RecvOpts
 ---@return any
 function WsConn:recv(opts) end
 --- Close the connection (the ws close handshake).
@@ -1646,17 +1722,25 @@ function WsMock:stop() end
 
 ---@class prova.websocket
 websocket = {}
+---@class prova.WebsocketConnectOpts
+---@field url string
+---@field codec? prova.Codec
+---@field insecure? boolean
+---@field ca_cert? string
+
 --- Connect (originate): dial a `ws://` or `wss://` url. Async. Closed with the scope.
 ---
 --- `insecure`/`ca_cert` mean exactly what they mean on `http` — one policy, one spelling
 --- (architecture.md#tls-everywhere).
 ---@param ctx any
----@param opts { url: string, codec?: prova.Codec, insecure?: boolean, ca_cert?: string }
+---@param opts prova.WebsocketConnectOpts
 ---@return prova.WsConn
 function websocket.connect(ctx, opts) end
+---@class prova.WebsocketMockOpts
+
 --- Terminate (and push): a real ws server in this process, stubbed and asserted on.
 ---@param ctx any
----@param opts? table
+---@param opts? prova.WebsocketMockOpts
 ---@return prova.WsMock
 function websocket.mock(ctx, opts) end
 
@@ -1689,6 +1773,13 @@ function ShellShim:stop() end
 --- Alias for `:stop()` — the proxy grammar's teardown verb.
 function ShellShim:close() end
 
+---@class prova.ShellProxyOpts
+---@field as string
+---@field upstream? string
+---@field cassette? string
+---@field mode? string
+---@field redact? string[]
+
 --- Shadow a command NAME on PATH and interpose on every invocation the SUT makes: pass through
 --- to `upstream` and journal (spy), stub selected argv prefixes (stubs always win), or — with no
 --- upstream — terminate synthetically, where an unstubbed call fails LOUD (exit 127). Shadow the
@@ -1699,7 +1790,7 @@ function ShellShim:close() end
 --- answers from the recording with no upstream and no real binary, `auto` records-then-replays.
 --- A replay miss exits non-zero and is journaled as a miss.
 ---@param ctx any
----@param opts { as: string, upstream?: string, cassette?: string, mode?: string, redact?: string[] }
+---@param opts prova.ShellProxyOpts
 ---@return prova.ShellShim
 function shell.proxy(ctx, opts) end
 
@@ -1717,6 +1808,11 @@ function WsProxy:drop() end
 --- Stop the proxy (what `ctx:manage` calls).
 function WsProxy:stop() end
 
+---@class prova.WebsocketProxyOpts
+---@field upstream string
+---@field insecure? boolean
+---@field ca_cert? string
+
 --- Interpose on a real ws dependency: forward message turns, record a direction-tagged transcript,
 --- and apply the fault vocabulary (the last cell in the transport matrix).
 ---
@@ -1724,7 +1820,7 @@ function WsProxy:stop() end
 --- listens plaintext on loopback: a proxy exists to be read, and terminating TLS on the side your
 --- proof connects to would mean generating a certificate for a hop that never leaves the machine.
 ---@param ctx any
----@param opts { upstream: string, insecure?: boolean, ca_cert?: string }
+---@param opts prova.WebsocketProxyOpts
 ---@return prova.WsProxy
 function websocket.proxy(ctx, opts) end
 

@@ -21,10 +21,10 @@ fn err(msg: impl Into<String>) -> mlua::Error {
 /// This namespace was the one that still accepted anything, which mattered little while `timeout`
 /// was the only key. It stops being harmless with TLS in the table: a misspelled `insecure` would
 /// be dropped, and the resulting handshake failure names the server rather than the typo.
-const CLIENT_OPTS: &[&str] = &["ca_cert", "insecure", "timeout", "tls"];
+const CLIENT_OPTS: &[&str] = crate::stub_opts::GRPC_CLIENT_OPTS;
 
 /// Every option `grpc.wait_for` honors — `client`'s set plus the poll interval.
-const WAIT_OPTS: &[&str] = &["ca_cert", "every", "insecure", "timeout", "tls"];
+const WAIT_OPTS: &[&str] = crate::stub_opts::GRPC_WAIT_OPTS;
 
 pub(crate) fn make(lua: &Lua) -> mlua::Result<Table> {
     let grpc = lua.create_table()?;

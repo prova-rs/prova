@@ -283,6 +283,9 @@ impl UserData for TermUd {
 fn spawn_fn(lua: &Lua) -> mlua::Result<Function> {
     lua.create_function(|lua, (ctx, opts): (Value, Table)| {
         super::runtime_only("terminal.spawn")?;
+        // Closed like every other option table: an option prova cannot honor is refused, never
+        // dropped (opts.rs). This one used to read its keys by lookup and drop the rest.
+        crate::opts::reject_unknown(&opts, crate::stub_opts::TERMINAL_SPAWN_OPTS, "terminal.spawn")?;
         let cmd: Vec<String> = opts
             .get::<Option<Vec<String>>>("cmd")?
             .filter(|v| !v.is_empty())
@@ -407,7 +410,7 @@ impl UserData for MockCliUd {
 
 /// Every option `terminal.mock` honors — closed by construction
 /// (docs/design/agent-ergonomics.md#module-opts-silently-ignored).
-const MOCK_OPTS: &[&str] = &["as"];
+const MOCK_OPTS: &[&str] = crate::stub_opts::TERMINAL_MOCK_OPTS;
 
 fn mock_fn(lua: &Lua) -> mlua::Result<Function> {
     lua.create_function(|lua, (ctx, opts): (Value, Table)| {
@@ -558,7 +561,7 @@ fn term_proxy_stop(this: &TermProxyUd) -> mlua::Result<()> {
 
 /// Every option `terminal.proxy` honors — closed by construction
 /// (docs/design/agent-ergonomics.md#module-opts-silently-ignored).
-const PROXY_OPTS: &[&str] = &["as", "cassette", "mode", "upstream"];
+const PROXY_OPTS: &[&str] = crate::stub_opts::TERMINAL_PROXY_OPTS;
 
 fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
     lua.create_function(|lua, (ctx, opts): (Value, Table)| {

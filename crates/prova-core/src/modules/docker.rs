@@ -289,36 +289,16 @@ fn default_build_tag(context: &str) -> String {
 /// (docs/design/agent-ergonomics.md#module-opts-silently-ignored). This is the surface the
 /// backlog item was found on: `docker.build{ first_byte = … }` against a prova built without the
 /// option parsed clean and proved nothing about the bound it named.
-const BUILD_OPTS: &[&str] = &[
-    "buildargs",
-    "context",
-    "dockerfile",
-    "first_byte",
-    "nocache",
-    "pull",
-    "secrets",
-    "tag",
-    "target",
-];
+const BUILD_OPTS: &[&str] = crate::stub_opts::DOCKER_BUILD_OPTS;
 
 /// Every option `docker.run` honors.
-const RUN_OPTS: &[&str] = &[
-    "alias",
-    "command",
-    "env",
-    "extra_hosts",
-    "files",
-    "image",
-    "network",
-    "ports",
-    "wait",
-];
+const RUN_OPTS: &[&str] = crate::stub_opts::DOCKER_RUN_OPTS;
 
 /// Every key `docker.run`'s nested `wait` table honors. Gated separately because a typo *inside*
 /// `wait` is the more dangerous of the two: `wait = { prot = 5432 }` is a readiness contract that
 /// waits for nothing, so the container is handed over unready and the failure lands somewhere else
 /// entirely.
-const WAIT_OPTS: &[&str] = &["cmd", "every", "log", "port", "timeout"];
+const WAIT_OPTS: &[&str] = crate::stub_opts::DOCKER_WAIT;
 
 impl BuildSpec {
     fn from_table(t: &Table) -> mlua::Result<Self> {

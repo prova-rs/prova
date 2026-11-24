@@ -260,22 +260,12 @@ fn method_fn(lua: &Lua, method: reqwest::Method) -> mlua::Result<Function> {
 /// especially quiet: `http.post(url, { jsno = payload })` sends an empty body to a live endpoint
 /// and reports whatever it says back, so the proof fails somewhere far from the typo — or worse,
 /// passes.
-const REQUEST_OPTS: &[&str] = &[
-    "body",
-    "ca_cert",
-    "content_type",
-    "form",
-    "headers",
-    "insecure",
-    "json",
-    "redirects",
-    "timeout",
-];
+const REQUEST_OPTS: &[&str] = crate::stub_opts::HTTP_OPTS;
 
 /// The three ways to say "the body". They are mutually exclusive by construction: silently
 /// preferring one (as an `if json … else if body` chain does) means the request sent is not the
 /// request written, and the author debugs the endpoint instead of the call.
-const BODY_OPTS: &[&str] = &["json", "form", "body"];
+const BODY_KEYS: &[&str] = &["json", "form", "body"];
 
 /// Every option the polling verbs (`http.wait_for`, `client:wait_for`) honor.
 ///
@@ -285,7 +275,7 @@ const BODY_OPTS: &[&str] = &["json", "form", "body"];
 /// module exists to remove (docs/design/agent-ergonomics.md#http-wait-for-cannot-authenticate).
 /// `client:wait_for` always carried the CLIENT's defaults, so the two verbs disagreed about
 /// whether polling could authenticate at all.
-const WAIT_OPTS: &[&str] = &["ca_cert", "every", "headers", "insecure", "status", "timeout"];
+const WAIT_OPTS: &[&str] = crate::stub_opts::WAIT_OPTS;
 
 /// Build an owned request spec from `opts`, layered over optional defaults (a client's base
 /// headers/timeout). Per-call `headers` override defaults by name; the body (exactly one of
@@ -311,7 +301,7 @@ fn build_prepared(
             }
         }
         let mut given: Vec<&str> = Vec::new();
-        for key in BODY_OPTS {
+        for key in BODY_KEYS {
             if !matches!(opts.get::<Value>(*key)?, Value::Nil) {
                 given.push(key);
             }

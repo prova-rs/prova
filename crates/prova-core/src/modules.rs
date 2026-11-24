@@ -77,13 +77,14 @@ type ClientOpts = (String, Vec<(String, String)>, Option<std::time::Duration>);
 /// `headers`, optional `timeout`. `who` names the verb in the teaching error.
 #[cfg(any(feature = "http", feature = "graphql"))]
 pub(super) fn client_opts(opts: &Table, who: &str, url_key: &str) -> mlua::Result<ClientOpts> {
-    // The URL key differs per constructor, so the closed set is built rather than declared. The
-    // TLS keys are spliced in from one place (`tls::TLS_OPTS`) rather than spelled here, so a
-    // constructor cannot end up accepting an option the policy parser does not read — or reading
-    // one the closed set still rejects, which is the same bug from the other side.
-    let mut accepted = vec![url_key, "headers", "timeout"];
-    accepted.extend_from_slice(tls::TLS_OPTS);
-    crate::opts::reject_unknown(opts, &accepted, who)?;
+    // The accepted set is the stub class itself (build.rs), so the editor and this gate are one
+    // list; a TLS key missing from either class is caught by `tls_keys_reach_every_client`.
+    let accepted = if url_key == "base_url" {
+        crate::stub_opts::HTTP_CLIENT_OPTS
+    } else {
+        crate::stub_opts::GRAPHQL_CLIENT_OPTS
+    };
+    crate::opts::reject_unknown(opts, accepted, who)?;
     let url = opts
         .get::<Option<String>>(url_key)?
         .ok_or_else(|| mlua::Error::RuntimeError(format!("{who} requires a `{url_key}`")))?;

@@ -22,13 +22,12 @@ use mlua::Table;
 #[cfg(feature = "tls")]
 use std::sync::Arc;
 
-/// The TLS keys every client constructor and per-call options table accepts.
-///
-/// Exported so each caller can splice them into its own closed option set
-/// (docs/design/agent-ergonomics.md#module-opts-silently-ignored) — the alternative, a separate
-/// nested `tls = { … }` table, would make the common case (`insecure = true`) two levels deep for
-/// no gain in clarity.
-pub(crate) const TLS_OPTS: &[&str] = &["ca_cert", "insecure"];
+/// The TLS keys every client constructor and per-call options table accepts — flat, not a nested
+/// `tls = { … }` table, which would make the common case (`insecure = true`) two levels deep for
+/// no gain in clarity. Each constructor's accepted set is its stub class (build.rs), so this list
+/// is held against those classes rather than spliced into them (`tls_keys_reach_every_client`).
+#[cfg(test)]
+const TLS_KEYS: &[&str] = &["ca_cert", "insecure"];
 
 /// What the author asked for, resolved from Lua and independent of transport.
 ///
@@ -541,5 +540,29 @@ mod tests {
             format!("{verified:?}").len() != format!("{insecure:?}").len(),
             "insecure must not build the same config as verified"
         );
+    }
+}
+
+#[cfg(test)]
+mod tls_keys {
+    use super::TLS_KEYS;
+
+    /// The TLS policy is read from these keys at every network constructor, and each one's accepted
+    /// set is its stub class (build.rs). A class that drops a TLS key would make the policy
+    /// unreachable there, which is the bug the shared list exists to prevent.
+    #[test]
+    fn tls_keys_reach_every_client() {
+        for (class, accepted) in [
+            ("prova.HttpClientOpts", crate::stub_opts::HTTP_CLIENT_OPTS),
+            ("prova.GraphqlClientOpts", crate::stub_opts::GRAPHQL_CLIENT_OPTS),
+            ("prova.HttpOpts", crate::stub_opts::HTTP_OPTS),
+            ("prova.WaitOpts", crate::stub_opts::WAIT_OPTS),
+            ("prova.GrpcClientOpts", crate::stub_opts::GRPC_CLIENT_OPTS),
+            ("prova.GrpcWaitOpts", crate::stub_opts::GRPC_WAIT_OPTS),
+        ] {
+            for key in TLS_KEYS {
+                assert!(accepted.contains(key), "{class} must document `{key}`");
+            }
+        }
     }
 }

@@ -228,7 +228,7 @@ struct RecvArgs {
 /// Every option `recv` honors. Closed like every other opts surface: `recv{ wehre = … }` reading
 /// as "the next turn, unfiltered" is the silent-drop disease at its most expensive, because the
 /// wrong turn still arrives and the proof still asserts on it.
-const RECV_OPTS: &[&str] = &["timeout", "where"];
+const RECV_OPTS: &[&str] = crate::stub_opts::RECV_OPTS;
 
 fn recv_args(
     framing: &Framing,
@@ -343,7 +343,7 @@ impl UserData for Conn {
 }
 
 /// Every option `socket.connect` honors.
-const CONNECT_OPTS: &[&str] = &["addr", "codec", "framing"];
+const CONNECT_OPTS: &[&str] = crate::stub_opts::SOCKET_CONNECT_OPTS;
 
 fn connect_fn(lua: &Lua) -> mlua::Result<Function> {
     lua.create_async_function(|lua, (ctx, opts): (Value, Option<Table>)| async move {
@@ -573,15 +573,15 @@ super::wiretap::impl_shutdown!(MockUd);
 /// stdio mock IS this mock reached by spawn, both got it in one change. It was deliberately absent
 /// until the behavior existed: accepting an option before it is honored is the silent drop this
 /// gate exists to refuse.
-const MOCK_OPTS: &[&str] = &["addr", "codec", "framing"];
+const MOCK_OPTS: &[&str] = crate::stub_opts::SOCKET_MOCK_OPTS;
 
 /// Every option `socket.listen` honors — the raw acceptor, not the mock.
-const LISTEN_OPTS: &[&str] = &["addr", "codec", "framing"];
+const LISTEN_OPTS: &[&str] = crate::stub_opts::SOCKET_LISTEN_OPTS;
 
 /// Every option `socket.proxy` honors. `upstream`/`framing`/`mode`/`cassette` are read through
 /// `proxy_config`, so the closed set spans both readers — a gate that only knew this function's
 /// own `get` calls would refuse four options that work.
-const PROXY_OPTS: &[&str] = &["addr", "cassette", "framing", "mode", "redact", "upstream"];
+const PROXY_OPTS: &[&str] = crate::stub_opts::SOCKET_PROXY_OPTS;
 
 fn mock_fn(lua: &Lua) -> mlua::Result<Function> {
     lua.create_function(|lua, (ctx, opts): (Value, Option<Table>)| {

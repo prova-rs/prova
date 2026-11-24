@@ -303,7 +303,7 @@ fn install_utilities(lua: &Lua, prova: &Table) -> mlua::Result<()> {
         "barrier",
         lua.create_async_function(|_, (token, parties, opts): (String, u64, Option<Table>)| async move {
             if let Some(o) = &opts {
-                crate::opts::reject_unknown(o, &["timeout"], "prova.barrier")?;
+                crate::opts::reject_unknown(o, crate::stub_opts::BARRIER_OPTS, "prova.barrier")?;
             }
             let timeout = opts
                 .as_ref()
@@ -730,7 +730,7 @@ fn install_suite_config(lua: &Lua, col: &SharedCollector) -> mlua::Result<()> {
                 // here the only remaining keys are the accepted three or a mistake.
                 super::collect::reject_unknown_opts(
                     &opts,
-                    &["name", "requires", "switch"],
+                    crate::stub_opts::SUITE_CONFIG,
                     "suite.config",
                 )?;
                 Ok(())
@@ -765,13 +765,13 @@ fn parse_identity(
             )))
         }
     };
-    crate::engine::collect::reject_unknown_opts(table, &["identity"], &format!("fixture {name:?}"))?;
+    crate::engine::collect::reject_unknown_opts(table, crate::stub_opts::FIXTURE_OPTS, &format!("fixture {name:?}"))?;
     let Some(spec) = table.get::<Option<mlua::Table>>("identity")? else {
         return Ok(None);
     };
     crate::engine::collect::reject_unknown_opts(
         &spec,
-        &["command", "inputs"],
+        crate::stub_opts::CONDUCT_IDENTITY,
         &format!("fixture {name:?} identity"),
     )?;
     if scope != ScopeKind::Run {

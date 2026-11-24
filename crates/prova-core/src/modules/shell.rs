@@ -366,24 +366,14 @@ struct RunOpts {
 
 /// Every option `shell.run` honors — closed by construction
 /// (docs/design/agent-ergonomics.md#module-opts-silently-ignored).
-const RUN_OPTS: &[&str] = &[
-    "check",
-    "cwd",
-    "env",
-    "first_byte",
-    "idle_timeout",
-    "merge_stderr",
-    "sample",
-    "stdin",
-    "timeout",
-];
+const RUN_OPTS: &[&str] = crate::stub_opts::SHELL_OPTS;
 
 /// Every option `shell.spawn` honors. Deliberately NOT `RUN_OPTS`: a spawned process is a handle
 /// the caller supervises, so `timeout`/`check`/`stdin` have nothing to act on here. They were
 /// silently dropped before this gate — which is the worst possible answer to
 /// `shell.spawn(cmd, { timeout = "30s" })`, since the author is asking for a bound and getting
 /// none.
-const SPAWN_OPTS: &[&str] = &["cwd", "env"];
+const SPAWN_OPTS: &[&str] = crate::stub_opts::SPAWN_OPTS;
 
 /// `args` is the option every other process API in the world takes, and prova takes none — the
 /// arguments belong in the command itself, as an argv table. Field evidence, 2026-08-14:
@@ -463,7 +453,7 @@ fn opt_sample(opts: &Option<Table>) -> mlua::Result<Option<sampler::SampleOpts>>
         return Ok(None);
     };
     let sample = Some(t.clone());
-    crate::opts::Closed { accepted: &["after", "into", "matching"], hidden: &[], teachings: &[], example: None }
+    crate::opts::Closed { accepted: crate::stub_opts::SHELL_SAMPLE, hidden: &[], teachings: &[], example: None }
         .check(&t, "shell.run sample")?;
     let need = |key: &str| -> mlua::Result<String> {
         opt_string(&sample, key)?.ok_or_else(|| {

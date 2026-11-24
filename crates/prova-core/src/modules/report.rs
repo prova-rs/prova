@@ -117,7 +117,7 @@ pub(crate) fn make(
     report.set(
         "publish",
         lua.create_function(move |_, opts: Table| {
-            crate::opts::reject_unknown(&opts, &["name", "summary", "forms", "explains"], "report.publish")?;
+            crate::opts::reject_unknown(&opts, crate::stub_opts::REPORT_OPTS, "report.publish")?;
             let name: String = opts.get("name")?;
             let summary: String = opts.get("summary")?;
             if name.trim().is_empty() {

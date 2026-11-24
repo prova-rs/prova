@@ -163,8 +163,8 @@ async fn scan_raw<S: AsyncRead + Unpin>(
 }
 
 /// Every option `recv` and `expect` honor.
-const READ_OPTS: &[&str] = &["timeout", "where"];
-const EXPECT_OPTS: &[&str] = &["timeout"];
+const READ_OPTS: &[&str] = crate::stub_opts::RECV_OPTS;
+const EXPECT_OPTS: &[&str] = crate::stub_opts::EXPECT_OPTS;
 
 fn read_args(this: &Session, opts: &Option<Table>) -> mlua::Result<(Duration, Selector)> {
     let Some(t) = opts else {
@@ -413,7 +413,7 @@ impl super::wiretap::ProxyTranscript for Session {
 /// Every option `stdio.spawn` honors — closed by construction. `cmd` carries the arguments (there
 /// is no `args`, for the reason `shell.spawn` has none: a dropped `args` still STARTS the process,
 /// leaving a proof that drives a different program than it reads).
-const SPAWN_OPTS: &[&str] = &["cmd", "codec", "cwd", "env", "framing"];
+const SPAWN_OPTS: &[&str] = crate::stub_opts::STDIO_SPAWN_OPTS;
 
 fn spawn_fn(lua: &Lua) -> mlua::Result<Function> {
     lua.create_function(|lua, (ctx, opts): (Value, Option<Table>)| {
@@ -648,7 +648,7 @@ impl UserData for StdioMockUd {
 }
 
 /// Every option `stdio.mock` honors.
-const MOCK_OPTS: &[&str] = &["as", "codec", "framing"];
+const MOCK_OPTS: &[&str] = crate::stub_opts::STDIO_MOCK_OPTS;
 
 fn mock_fn(lua: &Lua) -> mlua::Result<Function> {
     lua.create_function(|lua, (ctx, opts): (Value, Option<Table>)| {
@@ -795,7 +795,7 @@ fn stop_proxy(this: &StdioProxyUd) -> mlua::Result<()> {
 }
 
 /// Every option `stdio.proxy` honors.
-const PROXY_OPTS: &[&str] = &["as", "cassette", "framing", "mode", "redact", "upstream"];
+const PROXY_OPTS: &[&str] = crate::stub_opts::STDIO_PROXY_OPTS;
 
 fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
     lua.create_function(|lua, (ctx, opts): (Value, Option<Table>)| {

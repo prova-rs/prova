@@ -57,7 +57,7 @@ struct ClientUd {
 /// Every option `websocket.connect`'s `recv` honors — the same closed set, and the same two
 /// reasons for closing it, as `socket`'s (`recv{ wehre = … }` returns the WRONG turn rather than
 /// none).
-const RECV_OPTS: &[&str] = &["timeout", "where"];
+const RECV_OPTS: &[&str] = crate::stub_opts::RECV_OPTS;
 
 impl UserData for ClientUd {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
@@ -139,7 +139,7 @@ impl UserData for ClientUd {
 }
 
 /// Every option `websocket.connect` honors.
-const CONNECT_OPTS: &[&str] = &["ca_cert", "codec", "insecure", "url"];
+const CONNECT_OPTS: &[&str] = crate::stub_opts::WEBSOCKET_CONNECT_OPTS;
 
 /// Refuse a URL that is neither `ws://` nor `wss://`, and refuse `wss://` in a build without TLS.
 ///
@@ -315,14 +315,14 @@ super::wiretap::impl_shutdown!(MockUd);
 /// `websocket.mock` honors NO options — the constructor reads none at all, so every key an author
 /// passed was dropped whole (docs/design/agent-ergonomics.md#module-opts-silently-ignored). An
 /// empty accepted set says that out loud instead of accepting a table and ignoring it.
-const MOCK_OPTS: &[&str] = &[];
+const MOCK_OPTS: &[&str] = crate::stub_opts::WEBSOCKET_MOCK_OPTS;
 
 /// Every option `websocket.proxy` honors.
 ///
 /// The TLS keys apply to the UPSTREAM leg. The tap itself always listens plaintext on loopback:
 /// a proxy exists to be read, and terminating TLS on the side a proof connects to would mean
 /// generating a certificate for a hop that never leaves the machine.
-const PROXY_OPTS: &[&str] = &["ca_cert", "insecure", "upstream"];
+const PROXY_OPTS: &[&str] = crate::stub_opts::WEBSOCKET_PROXY_OPTS;
 
 fn mock_fn(lua: &Lua) -> mlua::Result<Function> {
     lua.create_function(|lua, (ctx, opts): (Value, Option<Table>)| {

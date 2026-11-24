@@ -186,11 +186,17 @@ function Matcher:matches_snapshot(opts) end
 -- Registration API
 ------------------------------------------------------------------------------------------
 
---- Reserved for future fixture options. Scope is a `Scope` value, not an option.
---- (Parametrized fixtures were considered and deliberately dropped — parametrization stays explicit:
---- `test_each` for data-driven tests, separate suites for divergent variants, profiles for env.)
+--- A fixture's options. Scope is a `Scope` value, not an option. (Parametrized fixtures were
+--- considered and deliberately dropped — parametrization stays explicit: `test_each` for
+--- data-driven tests, separate suites for divergent variants, profiles for env.)
 ---@class prova.FixtureOpts
----@field autouse? boolean               # run even when no test names it
+---@field identity? prova.ConductIdentity  # `Scope.Run` only: two fixtures with the same identity are ONE conduct
+
+--- What a run-scoped conduct IS, so two differently-named fixtures asking the same question share
+--- one execution: the command it runs and the files its answer depends on (`fs.digest` keys it).
+---@class prova.ConductIdentity
+---@field command string                 # the conduct's command line — the question it answers
+---@field inputs string[]                # package-relative paths or globs whose contents change the answer
 
 --- An opaque, typed resource reference from `prova.writes`/`prova.reads`/`prova.port`.
 --- Prefer these constructors over magic-format strings like `"port:8080"` — the prefix in a
@@ -233,30 +239,34 @@ function Matcher:matches_snapshot(opts) end
 --- group's independent strategy.
 ---@class prova.Group
 
---- Options shared by any schedulable unit (test/flow/group).
+--- Options shared by any schedulable unit (test/flow/group). These classes ARE the accepted set:
+--- build.rs generates the runtime's closed option table from them, so a field missing here is an
+--- option the runtime refuses.
 ---@class prova.UnitOpts
 ---@field tags? string[]                 # selection tags (select with `--tags a,b`; `!tag` excludes), free-form
 ---@field requires? prova.Capability[]   # skip (not fail) if a capability is unavailable
 ---@field depends_on? prova.Unit[]       # skip this unit if any upstream failed/was skipped
----@field resources? prova.Resource[]    # resources this unit needs (concurrency gating)
----@field serial? boolean                # never run concurrently with anything (process-wide exclusive)
+---@field locks? prova.ResourceRef[]     # locks held while running: `prova.writes`/`prova.reads`/`prova.port` — bound across every prova instance (`prova learn locks`)
+---@field resources? prova.ResourceRef[] # DEPRECATED spelling of `locks`: still honored, with a warning; retires at 1.0
+---@field serial? boolean                # never run concurrently with anything else in THIS run (a rule binding other instances is a lock)
+---@field switch? string                 # an opt-in class: off unless a lane's `switches` or `-s` throws it
+---@field timeout? string                # e.g. "30s" — the WALL-CLOCK bound (enforced per test and per flow step)
 
 ---@class prova.TestOpts : prova.UnitOpts
----@field timeout? string                # e.g. "30s" — the WALL-CLOCK bound: prices the whole test
+---@field promises? string               # a proof authored AHEAD of its implementation; the value is the mandatory reason. Red reports PROMISED (CI green); green FAILS until it graduates to `proves` in the same commit (`prova learn promises`)
+---@field proves? string                 # the kept promise's context — runtime-inert; a non-empty string; never together with `promises`
+---@field covers? string                 # the prose claim this proof discharges: "docs/design.md#claim-id", optionally pinned "@<hash>" (`prova learn claims`)
+---@field falsified_by? fun(t: prova.TestContext)  # a mutation the body must catch; applied only by `prova tests falsify`, which inverts the verdict (`prova learn falsify`)
+---@field inputs? string[]               # package-relative paths or globs; `--reuse` carries a prior pass forward while they are byte-identical
 ---@field idle_timeout? string           # e.g. "60s" — the LIVENESS bound, spelled as `shell.run` spells it: fail only when a window passes with no sign of life (no assertion lands), never merely because the work is slow. Bounds death, never work — so it can be generous where a wall clock has to be a guess. Progress at test scope is ASSERTIONS (prova captures no test output), so a body doing real work without asserting looks wedged from here: that is why it is opt-in. Defaults ON under `prova falsify`, where a mutant that stops answering is the expected failure (`prova learn falsify`).
----@field retries? integer
----@field spec? string                   # a proof authored AHEAD of its implementation (value = the mandatory reason/ticket — context from day one). Open spec (red body) reports as its own outcome, CI green; once the body passes, the run fails until the flag graduates — converted to `proves` (preferred) or removed, in the same commit as the implementation. Test/flow-level only. See `prova learn specs`.
----@field proves? string                 # graduated context: the why behind a FINISHED proof, living in the test itself (usually a spec's reason carried over; retrofitting onto existing tests is welcome). Runtime-inert; non-empty string; never together with `spec`. See `prova learn specs`.
 
 ---@class prova.FlowOpts : prova.UnitOpts
----@field timeout? string                # whole-flow timeout
----@field spec? string                   # a proof authored AHEAD of its implementation — see prova.TestOpts.spec / `prova learn specs`
----@field proves? string                 # graduated context behind a finished proof — see prova.TestOpts.proves / `prova learn specs`
+---@field promises? string               # an open flow — see prova.TestOpts.promises
+---@field proves? string                 # a kept flow's context — see prova.TestOpts.proves
 
---- A group is the *independent* strategy: children are isolated, unordered, parallelizable.
+--- A group is the *independent* strategy: children are isolated, unordered, parallelizable. It
+--- carries only the shared options; `promises`/`proves` are refused on a group (flag each test).
 ---@class prova.GroupOpts : prova.UnitOpts
----@field order? "any"|"declared"        # default "any" — do not rely on order; use `flow` if you need it
----@field parallel? boolean              # default true — set false to serialize the group's children
 
 --- The flow builder: the *sequence* strategy. Declares ordered steps that share the flow's
 --- scope; later steps are skipped once an earlier one fails. Shared mutable state lives here
@@ -457,6 +467,7 @@ Scope = {}
 ---@class prova.SuiteConfig
 ---@field name? string          # display name for the suite (default: the directory name)
 ---@field requires? string[]    # capabilities gating the whole suite — unmet → every file skips
+---@field switch? string        # an opt-in class for every file in the suite: off unless thrown
 
 --- Configure the current suite — call in a `suite.lua` file (a directory's `suite.lua` groups its
 --- `*_test.lua` into one suite that shares a Lua state, so `Scope.Suite` fixtures are built once and
@@ -557,6 +568,9 @@ function prova.infra(msg) end
 ---@param millis integer
 function prova.sleep(millis) end
 
+---@class prova.BarrierOpts
+---@field timeout? string  # how long to wait for every party (default "30s"); reaching it FAILS the test
+
 ---Wait until `parties` participants have arrived at `token`, then release them together.
 ---
 ---The concurrency assertion: reaching the far side IS the proof the participants were in flight at
@@ -569,7 +583,7 @@ function prova.sleep(millis) end
 ---proof, not as a general coordination tool.
 ---@param token string
 ---@param parties integer
----@param opts? { timeout?: string }
+---@param opts? prova.BarrierOpts
 ---@return integer position  # 1-based arrival order
 function prova.barrier(token, parties, opts) end
 

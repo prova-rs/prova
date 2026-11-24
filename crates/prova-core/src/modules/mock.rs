@@ -317,19 +317,12 @@ pub(crate) fn mock_fn(lua: &Lua) -> mlua::Result<Function> {
 /// `spawn_local` the accept loop onto the engine's `LocalSet`.
 /// Every option `http.mock` honors — closed by construction
 /// (docs/design/agent-ergonomics.md#module-opts-silently-ignored).
-const MOCK_OPTS: &[&str] = &[
-    "allow_handler_errors",
-    "network",
-    "passthrough",
-    "record",
-    "redact",
-    "replay",
-];
+const MOCK_OPTS: &[&str] = crate::stub_opts::MOCK_OPTS;
 
 /// Every option `http.proxy` honors. `mode` is the dial the rest hang off, so a typo there is the
 /// costly one: an unrecognized mode is already refused by name, but a dropped `cassette` would
 /// have left a recording proxy quietly recording nowhere.
-const PROXY_OPTS: &[&str] = &["cassette", "mode", "redact", "upstream"];
+const PROXY_OPTS: &[&str] = crate::stub_opts::HTTP_PROXY_OPTS;
 
 fn start(lua: &Lua, opts: Option<&Table>) -> mlua::Result<MockServer> {
     let mut init = MockState::default();

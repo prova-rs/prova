@@ -73,7 +73,7 @@ pub(super) fn parse(opts: &Table) -> mlua::Result<Vec<FileEntry>> {
         };
         crate::opts::reject_unknown(
             &spec,
-            &["dir", "file", "mode", "text"],
+            crate::stub_opts::DOCKER_FILE,
             &format!("docker.run `files[{path:?}]`"),
         )?;
 

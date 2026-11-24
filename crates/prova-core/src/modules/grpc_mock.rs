@@ -188,10 +188,10 @@ pub(crate) fn mock_fn(lua: &Lua) -> mlua::Result<Function> {
 /// with the compiler's own diagnostic, not a mystery `Unimplemented` at the first call.
 /// Every option `grpc.mock` honors — closed by construction
 /// (docs/design/agent-ergonomics.md#module-opts-silently-ignored).
-const MOCK_OPTS: &[&str] = &["allow_handler_errors", "includes", "network", "proto"];
+const MOCK_OPTS: &[&str] = crate::stub_opts::GRPC_MOCK_OPTS;
 
 /// Every option `grpc.proxy` honors.
-const PROXY_OPTS: &[&str] = &["cassette", "mode", "network", "redact", "upstream"];
+const PROXY_OPTS: &[&str] = crate::stub_opts::GRPC_PROXY_OPTS;
 
 fn start(lua: &Lua, opts: &Table) -> mlua::Result<GrpcMock> {
     crate::opts::reject_unknown(opts, MOCK_OPTS, "grpc.mock")?;

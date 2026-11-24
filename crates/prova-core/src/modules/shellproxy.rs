@@ -314,7 +314,7 @@ fn flush_cassette(state: &Rc<RefCell<ShimState>>) -> mlua::Result<()> {
 
 /// Every option `shell.proxy` honors — closed by construction
 /// (docs/design/agent-ergonomics.md#module-opts-silently-ignored).
-const PROXY_OPTS: &[&str] = &["as", "cassette", "mode", "redact", "upstream"];
+const PROXY_OPTS: &[&str] = crate::stub_opts::SHELL_PROXY_OPTS;
 
 pub(crate) fn proxy_fn(lua: &Lua) -> mlua::Result<Function> {
     lua.create_function(|lua, (ctx, opts): (Value, Table)| {
