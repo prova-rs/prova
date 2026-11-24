@@ -215,3 +215,18 @@ fn a_panic_on_a_joined_thread_stays_its_sites_and_is_never_70() {
     assert!(said(&out).contains("its site says so and goes on"), "{}", said(&out));
     assert!(!said(&out).contains("prova's own bug"), "{}", said(&out));
 }
+
+/// G/K m/31048: a run that records no tree says so and why, never silently. Themis reads a red run's tree, and an
+/// absent one is otherwise unexplained. Outside any repository the fingerprint fails; a narrowed run keeps no journal.
+#[test]
+fn a_run_that_records_no_tree_says_why() {
+    let tmp = Tmp::new("no-tree");
+    package(&tmp.0, "[run]\nproofs = [\"tests\"]\n", PASSING);
+    let out = prova(&tmp.0, &[]);
+    assert_eq!(code(&out), 0, "{}", said(&out));
+    let fingerprint = "prova: this run records no tree: its tree couldn't be fingerprinted";
+    assert!(said(&out).contains(fingerprint), "{}", said(&out));
+    let narrowed = prova(&tmp.0, &["-k", "one"]);
+    let narrow = "prova: this run records no tree: a narrowed run";
+    assert!(said(&narrowed).contains(narrow), "{}", said(&narrowed));
+}

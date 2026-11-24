@@ -132,6 +132,7 @@ pub(super) fn plan_journal(
                  them, or use --last-failed for an inner loop that attests nothing",
             );
         }
+        untreed("a narrowed run (-k, --tags, --node, paths and the like) keeps no journal");
         return Ok(None);
     }
     if cli.resume && cli.update_baseline.is_some() {
@@ -150,7 +151,10 @@ pub(super) fn plan_journal(
     let tree = match crate::tree::fingerprint_with(h, &roots) {
         Ok(t) => t,
         Err(why) if cli.resume => return refuse_state(why),
-        Err(_) => return Ok(None),
+        Err(why) => {
+            untreed(&format!("its tree couldn't be fingerprinted: {why}"));
+            return Ok(None);
+        }
     };
     let key = journal_key(cli, config);
     let binary = record::binary_fingerprint();
@@ -443,4 +447,10 @@ fn file_input_passes(
             ir.store.display()
         );
     }
+}
+
+/// Said once on stderr when a run will record no tree, with why: a reader of the run (Themis's red
+/// run, a resume) finds no tree, and the run's own output names the reason, never a silent drop.
+fn untreed(why: &str) {
+    eprintln!("prova: this run records no tree: {why}");
 }
