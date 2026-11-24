@@ -23,6 +23,7 @@ pub const CORE_STUBS: &[(&str, &str)] = &[
     // both sinks — `prova.help()` and the IDE — like any core global.
     ("double.lua", include_str!("../../../library/double.lua")),
     ("workspace.lua", include_str!("../../../library/workspace.lua")),
+    ("cargo.lua", include_str!("../../../library/cargo.lua")),
 ];
 
 /// One documented thing: a function, a method, or a class (a value shape).
@@ -99,6 +100,14 @@ fn flush_class(class: &mut Option<OpenClass>, out: &mut Vec<HelpEntry>) {
 }
 
 pub fn parse_stub(src: &str) -> Vec<HelpEntry> {
+    parse_stub_with(src, false)
+}
+
+/// `parse_stub`, optionally keeping `---@deprecated` entries. The agent-facing surface never keeps
+/// them (it must not teach a retiring name); the stub-agreement check does, because a deprecated
+/// name the runtime still serves IS stubbed — an editor strikes it through rather than flagging it
+/// undefined.
+pub fn parse_stub_with(src: &str, keep_deprecated: bool) -> Vec<HelpEntry> {
     let mut out = Vec::new();
     let mut prose: Vec<String> = Vec::new();
     let mut params: Vec<(String, String)> = Vec::new();
@@ -109,6 +118,12 @@ pub fn parse_stub(src: &str) -> Vec<HelpEntry> {
     // — so a rename can land without either breaking suites or teaching the old word to newcomers.
     let mut deprecated = false;
     let mut class: Option<OpenClass> = None;
+    // A module the stubs declare as `---@class prova.str` + `local str = {}` is NOT a global: the
+    // runtime serves it as `prova.str` (ambient only when `[globals] inject` asks). Its functions
+    // are named by that real path, so introspect never teaches `str.trim` where only
+    // `prova.str.trim` works.
+    let mut last_class: Option<String> = None;
+    let mut canonical_locals: Vec<String> = Vec::new();
 
     for line in src.lines() {
         let t = line.trim();
@@ -120,6 +135,7 @@ pub fn parse_stub(src: &str) -> Vec<HelpEntry> {
         if let Some(rest) = t.strip_prefix("---@class ") {
             flush_class(&mut class, &mut out);
             let name = rest.split_whitespace().next().unwrap_or("").to_string();
+            last_class = Some(name.clone());
             class = Some((name, collapse(&prose), Vec::new(), deprecated));
             prose.clear();
             deprecated = false;
@@ -161,7 +177,12 @@ pub fn parse_stub(src: &str) -> Vec<HelpEntry> {
         if let Some(rest) = t.strip_prefix("function ") {
             flush_class(&mut class, &mut out);
             if let Some((name, _)) = rest.split_once('(') {
-                let name = name.trim().to_string();
+                let name = match name.trim().split_once('.') {
+                    Some((owner, f)) if canonical_locals.iter().any(|l| l == owner) => {
+                        format!("prova.{owner}.{f}")
+                    }
+                    _ => name.trim().to_string(),
+                };
                 let args = params
                     .iter()
                     .map(|(n, ty)| format!("{n}: {ty}"))
@@ -171,7 +192,7 @@ pub fn parse_stub(src: &str) -> Vec<HelpEntry> {
                     Some(r) => format!("({args}) -> {r}"),
                     None => format!("({args})"),
                 };
-                if !name.is_empty() && !deprecated {
+                if !name.is_empty() && (keep_deprecated || !deprecated) {
                     out.push(HelpEntry {
                         name,
                         signature: sig,
@@ -184,6 +205,15 @@ pub fn parse_stub(src: &str) -> Vec<HelpEntry> {
             ret = None;
             deprecated = false;
             continue;
+        }
+        if let Some(local) = t.strip_prefix("local ").and_then(|r| r.strip_suffix(" = {}")) {
+            let local = local.trim();
+            // Lowercase only: a module is `prova.str`; `prova.Double` is a class (a value shape).
+            if local.starts_with(|c: char| c.is_ascii_lowercase())
+                && last_class.as_deref() == Some(&format!("prova.{local}"))
+            {
+                canonical_locals.push(local.to_string());
+            }
         }
         // Any other line ends an open block (e.g. `local ShellResult = {}` after a class).
         if !t.is_empty() {

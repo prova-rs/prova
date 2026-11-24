@@ -587,6 +587,11 @@ function docker.build(opts) end
 ---@param opts? prova.DockerNetworkOpts
 ---@return prova.Network
 function docker.network(opts) end
+--- What the container runtime got wrong that prova papered over: recoveries are silent, and a
+--- silent recovery is indistinguishable from nothing having gone wrong. Process-wide and
+--- monotonic, so read it before and after and take the delta (a soak comparing runtimes).
+---@return { port_bind_recoveries: integer, port_bind_failures: integer }
+function docker.diagnostics() end
 
 ------------------------------------------------------------------------------------------
 -- sqlite (an embedded database via sqlx — the only bundled resource client; needs no docker)
@@ -864,6 +869,7 @@ function json.array(t) end
 ---@field failed integer
 ---@field errors integer
 ---@field skipped integer
+---@field flaky integer      # cases that failed and passed on the same tree
 ---@field files { path: string, mtime: integer }[]
 ---@field cases prova.JunitCase[]
 
@@ -902,6 +908,143 @@ function junit.ingest(report) end
 ---@param opts prova.JunitVerifyOpts
 ---@return prova.JunitReport
 function junit.verify(t, opts) end
+--- A deputy's full account after a resumed run re-ran only its failures: every case of `prior`
+--- the rerun did not re-run is carried forward and MARKED with the run it came from; a re-run
+--- case replaces its prior verdict. A re-run pass over a prior red is `flaky`, never a pass.
+--- Writes the merged XML to `opts.out` and returns that path.
+---@param prior string        # the earlier account's junit path
+---@param rerun? string       # the rerun's junit path (nil: nothing was re-run)
+---@param opts { reused_from: string, out: string }  # the run `prior` came from; where to write
+---@return string             # `opts.out`
+function junit.merge(prior, rerun, opts) end
+--- The part of one account whose suites are named: a suite `s` takes `s` itself and every
+--- `s::…` (nextest names a binary `<package>::<binary>`), so one batched conduct splits into
+--- per-module accounts. Every case keeps its verdict and origin. Writes to `opts.out`.
+---@param path string
+---@param opts { suites: string[], out: string }
+---@return integer            # cases written, so an empty selection is visible
+function junit.select(path, opts) end
+--- Disjoint accounts made one: the slices of one partitioned conduct (`nextest --partition`).
+--- A case in two of them is REFUSED — slices never overlap, so a duplicate is a broken
+--- partition, never a re-run (that is `merge`). Writes to `opts.out`.
+---@param paths string[]
+---@param opts { out: string }
+---@return string             # `opts.out`
+function junit.union(paths, opts) end
+
+------------------------------------------------------------------------------------------
+-- sarif — the findings-ingestion seam (docs/design/verifiers.md): SARIF is to static-analysis
+-- findings what JUnit is to test results, so one tolerant parser adopts any linter's verdict.
+------------------------------------------------------------------------------------------
+
+---@class prova.SarifFinding
+---@field tool string
+---@field rule string
+---@field level "error"|"warning"|"note"|"none"  # a result with no level reads as "warning"
+---@field message string
+---@field uri string          # the first physical location
+---@field line? integer
+---@field file string         # the SARIF artifact it was read from — the provenance
+
+---@class prova.SarifReport
+---@field total integer
+---@field errors integer
+---@field warnings integer
+---@field notes integer
+---@field files { path: string, mtime: integer }[]
+---@field cases prova.SarifFinding[]
+
+---@class prova.SarifVerifyOpts
+---@field results string      # REQUIRED: where the linter writes its SARIF (a path or glob)
+---@field run? string         # the linter's command, run tolerantly, with freshness enforced
+---@field cwd? string         # working directory for `run` and base for a relative `results`
+---@field level? "error"|"warning"|"note"  # the threshold; findings at or above it count (default "error")
+---@field max? integer        # findings tolerated at or above `level` (default 0)
+
+---@class prova.sarif
+sarif = {}
+--- Parse SARIF files (a path or glob) into a report without recording anything.
+---@param pattern string
+---@param opts? { cwd?: string }
+---@return prova.SarifReport
+function sarif.load(pattern, opts) end
+--- File a loaded report's findings into the run's deputed account (a no-op outside a run).
+---@param report prova.SarifReport
+function sarif.ingest(report) end
+--- Conduct a linter and adopt its verdict: run it tolerantly, load and ingest its FRESH SARIF,
+--- and fail when more than `max` findings sit at or above `level`. Unlike junit, zero findings
+--- is a clean pass.
+--- ```lua
+--- sarif.verify(t, { run = "npx eslint . -f @microsoft/eslint-formatter-sarif -o e.sarif",
+---                   results = "e.sarif", level = "warning" })
+--- ```
+---@param t prova.TestContext
+---@param opts prova.SarifVerifyOpts
+---@return prova.SarifReport
+function sarif.verify(t, opts) end
+
+------------------------------------------------------------------------------------------
+-- measure — the measurements seam: a scalar becomes a verdict only when a ratchet compares it
+-- with the committed baseline in .prova/baselines/<set>.json.
+------------------------------------------------------------------------------------------
+
+---@class prova.MeasureOpts
+---@field set? string         # the baseline file, .prova/baselines/<set>.json (default "default")
+---@field direction? "lower_is_better"|"higher_is_better"  # default "lower_is_better"
+
+---@class prova.measure
+measure = {}
+--- File `value` into the run's measurements without asserting (a no-op outside a run).
+---@param name string
+---@param value number
+---@param opts? prova.MeasureOpts
+---@return number             # the value, so it composes inline
+function measure.record(name, value, opts) end
+--- Record `value` and assert it against the committed baseline: red on a regression past the
+--- floor (and its `tolerance`), on a missing baseline, on a reached `goal`, and on a missed
+--- `deadline`. Only `prova --update-baseline` moves a baseline, and only tighter.
+---@param t prova.TestContext
+---@param name string
+---@param value number
+---@param opts? prova.MeasureOpts
+function measure.ratchet(t, name, value, opts) end
+
+------------------------------------------------------------------------------------------
+-- date — calendar helpers for reminder conditions. Dates are "YYYY-MM-DD" (optionally
+-- " HH:MM:SS") or unix seconds; every function takes either. Local time.
+------------------------------------------------------------------------------------------
+
+---@class prova.date
+date = {}
+--- The current time, unix seconds.
+---@return integer
+function date.now() end
+--- Unix seconds for a date string.
+---@param s string
+---@return integer
+function date.parse(s) end
+--- `os.date` formatting, "%Y-%m-%d" by default.
+---@param ts? integer
+---@param fmt? string
+---@return string
+function date.format(ts, fmt) end
+--- Whole days from `a` to `b`, floored.
+---@param a string|integer
+---@param b string|integer
+---@return integer
+function date.diff_days(a, b) end
+--- Whole days from `v` until now, floored.
+---@param v string|integer
+---@return integer
+function date.days_since(v) end
+--- Whole days from now until `v`, floored.
+---@param v string|integer
+---@return integer
+function date.days_until(v) end
+--- True once `v` is in the past.
+---@param v string|integer
+---@return boolean
+function date.past(v) end
 
 ---@class prova.ReportOpts
 ---@field name string        # REQUIRED: the address — `prova reports <name>`, stable across runs
