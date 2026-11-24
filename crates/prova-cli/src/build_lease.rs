@@ -32,8 +32,15 @@ pub(crate) struct Held {
 
 /// Hold the build dir's lease for this run, if the run is in a cargo project. Never fails the run.
 pub(crate) fn hold() -> Held {
-    let Some(dir) = build_dir() else {
-        return Held { _file: None };
+    let dir = match build_dir() {
+        Ok(Some(dir)) => dir,
+        Ok(None) => return Held { _file: None },
+        Err(why) => {
+            // Said, never silent (E m/33453): a run with no lease reads to the sweep as an idle dir, so a gate whose
+            // binaries vanish mid-run must be able to tell this from the sweep ignoring a held lease.
+            eprintln!("prova: the build dir's lease is not held: {why}; the sweep may reclaim it mid-run");
+            return Held { _file: None };
+        }
     };
     match hold_at(&dir) {
         Ok(file) => Held { _file: Some(file) },
@@ -85,11 +92,11 @@ fn hold_within(dir: &Path, wait: std::time::Duration) -> std::io::Result<File> {
 
 
 /// The cargo build dir of the project at the current directory: `build_directory`, else `target_directory`, as cargo
-/// itself says. None outside a cargo project or when cargo can't answer.
-fn build_dir() -> Option<PathBuf> {
-    let here = std::env::current_dir().ok()?;
+/// itself says. `Ok(None)` outside a cargo project; an error, naming why, when cargo can't answer.
+fn build_dir() -> Result<Option<PathBuf>, String> {
+    let here = std::env::current_dir().map_err(|e| format!("no current directory: {e}"))?;
     if !here.ancestors().any(|d| d.join("Cargo.toml").is_file()) {
-        return None;
+        return Ok(None);
     }
     // Rule 4: cargo is bounded too. A hung cargo must never hold a run before its first proof.
     let mut child = std::process::Command::new("cargo")
@@ -98,39 +105,42 @@ fn build_dir() -> Option<PathBuf> {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .ok()?;
+        .map_err(|e| format!("cargo metadata didn't start: {e}"))?;
     // Read stdout as it comes, on its own thread: a workspace's metadata can pass a pipe's buffer, and a cargo
     // blocked writing it would never exit, which the bound would misread as a hang.
-    let mut pipe = child.stdout.take()?;
+    let mut pipe = child.stdout.take().ok_or("cargo metadata gave no stdout")?;
     let reader = std::thread::spawn(move || {
         let mut out = Vec::new();
         std::io::Read::read_to_end(&mut pipe, &mut out).map(|_| out)
     });
     let started = std::time::Instant::now();
     loop {
-        match child.try_wait().ok()? {
+        match child.try_wait().map_err(|e| format!("cargo metadata: {e}"))? {
             Some(status) if status.success() => break,
-            Some(_) => return None,
+            Some(status) => return Err(format!("cargo metadata --offline exited {status}")),
             None if started.elapsed() >= METADATA_WITHIN => {
-                eprintln!(
-                    "prova: cargo metadata didn't answer in {}s; the build dir's lease is not held",
-                    METADATA_WITHIN.as_secs()
-                );
                 drop(child.kill());
                 drop(child.wait());
-                return None;
+                return Err(format!("cargo metadata didn't answer in {}s", METADATA_WITHIN.as_secs()));
             }
             None => std::thread::sleep(POLL),
         }
     }
-    let stdout = reader.join().ok()?.ok()?;
-    let meta: serde_json::Value = serde_json::from_slice(&stdout).ok()?;
+    let stdout = reader
+        .join()
+        .map_err(|_| "cargo metadata's reader panicked".to_owned())?
+        .map_err(|e| format!("cargo metadata's output: {e}"))?;
+    let meta: serde_json::Value =
+        serde_json::from_slice(&stdout).map_err(|e| format!("cargo metadata's JSON: {e}"))?;
     let pick = |k: &str| {
         meta.get(k)
             .and_then(serde_json::Value::as_str)
             .map(PathBuf::from)
     };
-    pick("build_directory").or_else(|| pick("target_directory"))
+    pick("build_directory")
+        .or_else(|| pick("target_directory"))
+        .map(Some)
+        .ok_or_else(|| "cargo metadata named neither build_directory nor target_directory".to_owned())
 }
 
 #[cfg(test)]
@@ -146,6 +156,28 @@ mod tests {
             .open(dir.join(LEASE))
             .unwrap_or_else(|e| panic!("{e}"));
         file.try_lock().is_ok()
+    }
+
+    /// E m/33453: a cargo project whose metadata can't be read gives its reason, never a silent None, so a run with
+    /// no lease says so (Herald's gate at 091bc3e lost its test binaries to the sweep, and nothing said whether the
+    /// lease was ever held). Outside a cargo project there is nothing to hold, and nothing is said. nextest runs each
+    /// test in its own process, so the directory change is this row's alone.
+    #[test]
+    fn a_build_dir_cargo_cant_name_is_said_never_silent() {
+        let dir = std::env::temp_dir().join(format!("prova-build-lease-said-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("{e}"));
+        std::fs::write(dir.join("Cargo.toml"), "this is not a manifest [[[").unwrap_or_else(|e| panic!("{e}"));
+        std::env::set_current_dir(&dir).unwrap_or_else(|e| panic!("{e}"));
+        let why = build_dir().expect_err("a manifest cargo refuses names why");
+        assert!(why.contains("cargo metadata"), "{why}");
+        let outside = std::env::temp_dir().join(format!("prova-build-lease-none-{}", std::process::id()));
+        std::fs::create_dir_all(&outside).unwrap_or_else(|e| panic!("{e}"));
+        std::env::set_current_dir(&outside).unwrap_or_else(|e| panic!("{e}"));
+        if !outside.ancestors().any(|d| d.join("Cargo.toml").is_file()) {
+            assert_eq!(build_dir(), Ok(None), "no cargo project: nothing to hold, nothing said");
+        }
+        drop(std::fs::remove_dir_all(&dir));
+        drop(std::fs::remove_dir_all(&outside));
     }
 
     /// E m/28458: while a run holds its build dir's lease the sweep can't take it, two runs share it, and once both
