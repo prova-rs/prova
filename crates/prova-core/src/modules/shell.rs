@@ -1024,7 +1024,9 @@ impl CommandSpec {
     }
 }
 
-/// nextest's switch for spawning each test through itself; prova sets it to `0` on a `cargo nextest run`.
+/// nextest's switch for spawning each test through itself; prova sets it to `0` on a `cargo nextest run`. It is a
+/// fleet-wide change to every gate's conduct, and its off switch is the host's own: `NEXTEST_DOUBLE_SPAWN=1` in the
+/// environment prova runs in leaves nextest as it was (D m/34237), as does a proof's `env` overlay.
 pub const NEXTEST_DOUBLE_SPAWN: &str = "NEXTEST_DOUBLE_SPAWN";
 
 /// Set to `0` to run every cargo build without horai.
