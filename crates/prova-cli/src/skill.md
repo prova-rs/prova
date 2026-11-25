@@ -112,6 +112,7 @@ Everything below is the crash course; depth is one call away, computed for THIS 
 | The open promises (proofs ahead of implementation) | `prova tests --promises` · `prova learn promises` |
 | Whether the proofs can actually fail (vacuous-proof hunt) | `prova tests falsify` · `prova learn falsify` |
 | Where the project stands — the whole account | `prova evidence` · `prova learn evidence` |
+| Keeping a project warning-free: lanes, ratchets, the Rust retrofit, an org standards package | `prova run --list` · `prova learn quality` |
 | Everything this package owes, from every origin | `prova owed` · `prova learn claims` |
 | Whether a claim's proof actually RAN (not just "0 failed") | `prova attest <doc.md#id>` · `prova learn record` |
 | A package for a technology you need to prove | `prova packages <term>` (search registries) → `prova packages add <name>` |

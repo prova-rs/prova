@@ -60,5 +60,5 @@ sweeps every still-leased conduct group and exits. It is spawned once per run th
 holds nothing else, and idles at zero cost. `prova start` provisions are deliberately
 unleased — outliving the invocation is that verb's purpose (`prova down` reaps those).
 
-See also: `prova learn reports` (the artifact a conduct keeps) · `prova learn locks` · `prova learn running` (selection
+See also: `prova learn quality` (lanes, ratchets, standards) · `prova learn reports` (the artifact a conduct keeps) · `prova learn locks` · `prova learn running` (selection
 pushdown) · `prova learn record` (proving it actually ran)
