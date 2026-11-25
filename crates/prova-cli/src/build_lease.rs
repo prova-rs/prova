@@ -93,6 +93,8 @@ fn hold_within(dir: &Path, wait: std::time::Duration) -> std::io::Result<File> {
                 // Rule 4: the wait is bounded. A sweep deletes one dir in seconds; past SWEEP_WAIT the run goes on
                 // unprotected, said, never waits for good.
                 eprintln!("prova: the build volume's sweep holds {} now; waiting for it", dir.display());
+                #[cfg(test)]
+                tests::waiting_now();
             }
             Err(std::fs::TryLockError::WouldBlock) => {}
             Err(std::fs::TryLockError::Error(e)) => return Err(e),
@@ -265,9 +267,20 @@ mod tests {
         assert!(freed, "the sweep takes the dir while the run's child still runs");
     }
 
+    /// A row's seam, by value (D m/34459): the waiting run says it's waiting here, so a row moves the dir only once the
+    /// run is in its wait, never after a sleep that hopes it is.
+    static WAITING: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>> = std::sync::Mutex::new(None);
+
+    pub(super) fn waiting_now() {
+        if let Some(tx) = WAITING.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref() {
+            let _ = tx.send(());
+        }
+    }
+
     /// L m/34435: the sweep holds the lease exclusively, renames the dir into its trash, and lets go. A run that was
     /// waiting ends holding the lease at the PATH, the dir cargo recreates, never the trashed file, so the sweep's next
-    /// take of that dir is refused. Red with the old wait, whose lock landed on the trashed inode.
+    /// take of that dir is refused. The dir moves once the run says it's waiting (by value). Red with the old wait,
+    /// whose lock landed on the trashed inode.
     #[test]
     fn a_run_waiting_while_the_sweep_moves_the_dir_holds_the_new_lease() {
         let root = std::env::temp_dir().join(format!("prova-build-lease-moved-{}", std::process::id()));
@@ -281,12 +294,15 @@ mod tests {
             .open(dir.join(LEASE))
             .unwrap_or_else(|e| panic!("{e}"));
         sweep.lock().unwrap_or_else(|e| panic!("{e}"));
+        let (tx, rx) = std::sync::mpsc::channel();
+        *WAITING.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tx);
         let waiter = {
             let dir = dir.clone();
             std::thread::spawn(move || hold_within(&dir, std::time::Duration::from_secs(20)))
         };
-        // The run is waiting on the held lease: the sweep moves the dir away while it holds it, then lets go.
-        std::thread::sleep(POLL * 4);
+        // The run is in its wait on the held lease (it said so): the sweep moves the dir away while it holds it, then
+        // lets go.
+        rx.recv_timeout(std::time::Duration::from_secs(20)).unwrap_or_else(|e| panic!("the run never waited: {e}"));
         std::fs::rename(&dir, &trash).unwrap_or_else(|e| panic!("{e}"));
         drop(sweep);
         let held = waiter.join().unwrap_or_else(|_| panic!("the waiter panicked")).unwrap_or_else(|e| panic!("{e}"));
@@ -296,6 +312,33 @@ mod tests {
         drop(std::fs::remove_dir_all(&root));
         assert!(on_path, "the run holds the lease at the path, never the trashed file");
         assert!(!swept_again, "the sweep's next take of the recreated dir is refused");
+    }
+
+    /// The other half of L m/34435: a lease file the sweep renamed between a round's open and its lock is no longer the
+    /// path's, so a lock granted on it is never counted. (A run already waiting reopens each round and never holds the
+    /// old file; this is the one window the check closes.) Red if the check compared only the path.
+    #[test]
+    fn a_lease_file_renamed_away_is_not_the_paths() {
+        let root = std::env::temp_dir().join(format!("prova-build-lease-renamed-{}", std::process::id()));
+        let (dir, trash) = (root.join("unit"), root.join("trash"));
+        drop(std::fs::remove_dir_all(&root));
+        std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("{e}"));
+        let opened = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(dir.join(LEASE))
+            .unwrap_or_else(|e| panic!("{e}"));
+        let before = is_the_path(&opened, &dir.join(LEASE));
+        std::fs::rename(&dir, &trash).unwrap_or_else(|e| panic!("{e}"));
+        let gone = is_the_path(&opened, &dir.join(LEASE));
+        std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("{e}"));
+        std::fs::write(dir.join(LEASE), b"").unwrap_or_else(|e| panic!("{e}"));
+        let recreated = is_the_path(&opened, &dir.join(LEASE));
+        drop(opened);
+        drop(std::fs::remove_dir_all(&root));
+        assert!(before, "the file opened at the path is the path's");
+        assert!(!gone && !recreated, "renamed away, it's no longer the path's, nor once the path is recreated");
     }
 
     /// L m/28480, rule 4: while the sweep holds the lease, a run's wait for it ends at its bound with TimedOut, said,
