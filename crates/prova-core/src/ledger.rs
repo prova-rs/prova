@@ -85,20 +85,6 @@ pub struct Infra {
     pub kind: Option<String>,
 }
 
-/// The build dir whose `.space-lease` this process holds for its run, set once when the lease is taken: one fact per
-/// run, read into the record and the JSON stream's `run_finished` (L m/34449).
-static BUILD_DIR: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-
-/// Record the build dir this run holds the lease of. Only the first call counts: a run holds one.
-pub fn set_build_dir(dir: &std::path::Path) {
-    let _ = BUILD_DIR.set(dir.display().to_string());
-}
-
-/// The build dir this run holds the lease of, when it holds one.
-#[must_use]
-pub fn build_dir() -> Option<String> {
-    BUILD_DIR.get().cloned()
-}
 
 /// The most bytes of one failure's message the record keeps.
 pub const FAILURE_MESSAGE_AT_MOST: usize = 4096;

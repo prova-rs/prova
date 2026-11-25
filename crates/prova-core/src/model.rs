@@ -388,6 +388,9 @@ pub struct Summary {
     /// The flake events behind `flaky`, for the recap and the record.
     pub flakes: Vec<crate::ledger::FlakeEvent>,
     pub duration: Duration,
+    /// The build dir whose `.space-lease` this run held, when it held one: the run's own fact (D m/34505), set by
+    /// the run that took the lease, never a process-wide value another run in the same process could leave behind.
+    pub build_dir: Option<String>,
 }
 
 impl Summary {
@@ -626,7 +629,7 @@ pub fn event_to_json(event: &Event) -> serde_json::Value {
         Event::RunFinished { summary } => json!({
             "type": "run_finished",
             // The build dir whose lease the run held (L m/34449): a gate tells two runs' build dirs apart by it.
-            "build_dir": crate::ledger::build_dir(),
+            "build_dir": summary.build_dir,
             "passed": summary.passed,
             "failed": summary.failed,
             "skipped": summary.skipped,
@@ -1069,6 +1072,7 @@ mod tests {
             flaky: 0,
             flakes: Vec::new(),
             duration: Duration::from_millis(6),
+            build_dir: None,
         };
         reporter.event(&Event::RunFinished { summary: &summary });
     }

@@ -28,34 +28,46 @@ const POLL: std::time::Duration = std::time::Duration::from_millis(100);
 /// A held lease, released when dropped or when the process ends.
 pub(crate) struct Held {
     _file: Option<File>,
+    dir: Option<PathBuf>,
+}
+
+impl Held {
+    /// The build dir whose lease this holds, when it holds one: the run's own (D m/34505).
+    pub(crate) fn dir(&self) -> Option<String> {
+        self._file.as_ref().and(self.dir.as_ref()).map(|d| d.display().to_string())
+    }
 }
 
 /// Hold the build dir's lease for this run, if the run is in a cargo project. Never fails the run.
 pub(crate) fn hold() -> Held {
     let dir = match build_dir() {
         Ok(Some(dir)) => dir,
-        Ok(None) => return Held { _file: None },
+        Ok(None) => return Held { _file: None, dir: None },
         Err(why) => {
             // Said, never silent (E m/33453): a run with no lease reads to the sweep as an idle dir, so a gate whose
             // binaries vanish mid-run must be able to tell this from the sweep ignoring a held lease.
             eprintln!("prova: the build dir's lease is not held: {why}; the sweep may reclaim it mid-run");
-            return Held { _file: None };
+            return Held { _file: None, dir: None };
         }
     };
+    held_at(dir)
+}
+
+/// [`hold`] once the build dir is known: the lease of `dir`, held for this run alone, and naming `dir` only when held.
+fn held_at(dir: PathBuf) -> Held {
     match hold_at(&dir) {
         Ok(file) => {
             // Said once, with the path (L m/33465): the sweep honours a held lease, so a gate that loses its binaries
             // mid-run reads here whether this run held the dir the sweep deleted, by value.
             eprintln!("prova: holding the build dir's lease at {}", dir.join(LEASE).display());
-            prova_core::ledger::set_build_dir(&dir);
-            Held { _file: Some(file) }
+            Held { _file: Some(file), dir: Some(dir) }
         }
         Err(e) => {
             eprintln!(
                 "prova: the build dir's lease ({}) could not be held: {e}; the sweep may reclaim it mid-run",
                 dir.display()
             );
-            Held { _file: None }
+            Held { _file: None, dir: None }
         }
     }
 }
@@ -340,6 +352,35 @@ mod tests {
         drop(std::fs::remove_dir_all(&root));
         assert!(before, "the file opened at the path is the path's");
         assert!(!gone && !recreated, "renamed away, it's no longer the path's, nor once the path is recreated");
+    }
+
+    /// D m/34505: a run's build dir is its own lease's, never a process-wide value. Two runs in one process (the host
+    /// service runs in its caller's), on two dirs, each name their own; a lease the sweep keeps names none.
+    #[test]
+    fn two_runs_in_one_process_each_name_their_own_build_dir() {
+        let root = std::env::temp_dir().join(format!("prova-build-lease-two-{}", std::process::id()));
+        drop(std::fs::remove_dir_all(&root));
+        let (one, two) = (root.join("one"), root.join("two"));
+        let first = held_at(one.clone());
+        let second = held_at(two.clone());
+        let (named_one, named_two) = (first.dir(), second.dir());
+        drop((first, second));
+        let blocked = root.join("held-by-the-sweep");
+        std::fs::create_dir_all(&blocked).unwrap_or_else(|e| panic!("{e}"));
+        let sweep = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(blocked.join(LEASE))
+            .unwrap_or_else(|e| panic!("{e}"));
+        sweep.lock().unwrap_or_else(|e| panic!("{e}"));
+        let refused = Held { _file: hold_within(&blocked, std::time::Duration::from_millis(200)).ok(), dir: Some(blocked) };
+        let named_none = refused.dir();
+        drop((refused, sweep));
+        drop(std::fs::remove_dir_all(&root));
+        assert_eq!(named_one, Some(one.display().to_string()), "the first run names its own");
+        assert_eq!(named_two, Some(two.display().to_string()), "the second names its own, never the first's");
+        assert_eq!(named_none, None, "a lease not held names no dir");
     }
 
     /// L m/28480, rule 4: while the sweep holds the lease, a run's wait for it ends at its bound with TimedOut, said,

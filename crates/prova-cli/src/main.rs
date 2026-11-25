@@ -482,7 +482,8 @@ fn main_body() -> ExitCode {
             let _slot = machine_slot::heavy(verb.name, &args)
                 .then(|| machine_slot::take(&format!("prova {} {}", verb.name, args.join(" "))));
             // Heavy work builds: its cargo build dir is held from the volume's sweep for the run (build_lease).
-            let _lease = machine_slot::heavy(verb.name, &args).then(build_lease::hold);
+            // `prova run` takes its own in dispatch::run, so the run's record names the lease it held (D m/34505).
+            let _lease = (verb.name != "run" && machine_slot::heavy(verb.name, &args)).then(build_lease::hold);
             return (verb.run)(args);
         }
         if let Some((old, new)) = DEPRECATED_VERBS.iter().find(|(old, _)| old == first) {
@@ -503,8 +504,8 @@ fn main_body() -> ExitCode {
             return crate::exit::config();
         }
     }
-    // The run path builds too (its black-box proofs drive the workspace's artifacts): hold the build dir's lease.
-    let _lease = build_lease::hold();
+    // The run path builds too (its black-box proofs drive the workspace's artifacts): dispatch::run holds the build
+    // dir's lease for the run, and its record names it.
     run(std::env::args().skip(1).collect())
 }
 
@@ -836,6 +837,8 @@ struct FailureRecorder {
     journal: Option<journal::Writer>,
     /// The flake check (crate::flakes): what earlier runs on this tree failed, and the flakes found.
     flakes: flakes::Watch,
+    /// The build dir whose lease this run holds (D m/34505): the run's own, handed to its summary and its record.
+    pub(crate) build_dir: Option<String>,
 }
 
 impl Reporter for FailureRecorder {
@@ -846,6 +849,7 @@ impl Reporter for FailureRecorder {
             self.flakes.settle_deputed();
             let mut summary = (*summary).clone();
             self.flakes.apply(&mut summary);
+            summary.build_dir.clone_from(&self.build_dir);
             self.inner.event(&prova_core::Event::RunFinished { summary: &summary });
             return;
         }

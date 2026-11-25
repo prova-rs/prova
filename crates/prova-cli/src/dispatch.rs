@@ -987,6 +987,7 @@ fn build_reporter(
         journal: None,
         // Replaced by `run` once the journal is planned: the history is that plan's.
         flakes: crate::flakes::Watch::inert(),
+        build_dir: None,
     })
 }
 
@@ -1100,7 +1101,7 @@ fn store_run_record(
             deputed,
             deputed_narrowed: !config.selection.is_empty(),
             deputed_output_unkept,
-            build_dir: prova_core::ledger::build_dir(),
+            build_dir: reporter.build_dir.clone(),
             measurements: record::measurement_rows(measurements),
             reports: record::report_rows(&drain(&accounts.reports)),
             attached: accounts
@@ -1276,6 +1277,9 @@ fn answer_query(
 }
 
 pub(crate) fn run(cli_args: Vec<String>) -> ExitCode {
+    // The run holds its build dir's lease from the volume's sweep for its whole life, and names it in its record and
+    // its run_finished (D m/34505): the lease is this run's, never a process-wide value.
+    let lease = crate::build_lease::hold();
     let mut cli = match parse_cli(cli_args) {
         Ok(cli) => cli,
         Err(code) => return code,
@@ -1369,6 +1373,7 @@ pub(crate) fn run(cli_args: Vec<String>) -> ExitCode {
     };
 
     let mut reporter = reporter;
+    reporter.build_dir = lease.dir();
     reporter.journal = open_journal(journal_plan.as_ref(), &home);
     reporter.flakes = journaling::flake_watch(journal_plan.as_ref(), cli.resume, &accounts.deputed);
     let outcome = run_suites(&suites, &mut reporter, &config);
