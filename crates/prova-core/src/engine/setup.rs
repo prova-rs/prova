@@ -274,11 +274,17 @@ fn install_utilities(lua: &Lua, prova: &Table) -> mlua::Result<()> {
     // build tool that cannot read the workspace, a toolchain that cannot run). The node is `failed` as
     // ever; its JSON event also says `cause = "infra"` and the line, BY VALUE, so a gate never reads
     // prova's words to tell an infra red from a real one (E m/11669, L m/11668). Only this call sets
-    // it: a proof's own error() or a failed assertion is never infra.
+    // it: a proof's own error() or a failed assertion is never infra. `opts.kind` names the infra's kind by value
+    // (`"never-ran"`, junit.verify's cases its deputy could not execute; L m/34449), so a gate tells kinds apart
+    // without reading the line.
     prova.set(
         "infra",
-        lua.create_function(|_, msg: String| -> mlua::Result<()> {
-            Err(mlua::Error::external(InfraCause(msg)))
+        lua.create_function(|_, (msg, opts): (String, Option<mlua::Table>)| -> mlua::Result<()> {
+            let kind = match &opts {
+                Some(o) => o.get::<Option<String>>("kind")?,
+                None => None,
+            };
+            Err(mlua::Error::external(InfraCause(msg, kind)))
         })?,
     )?;
     prova.set(
@@ -1337,7 +1343,7 @@ impl UserData for FlowBuilder {
 /// `prova.infra(msg)`'s error: its TYPE is the cause, so a message that merely quotes "infra" (a child
 /// prova's output, a re-raised error's text) is never read as one (D m/11771).
 #[derive(Debug)]
-pub(crate) struct InfraCause(pub(crate) String);
+pub(crate) struct InfraCause(pub(crate) String, pub(crate) Option<String>);
 
 impl std::fmt::Display for InfraCause {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1348,12 +1354,13 @@ impl std::fmt::Display for InfraCause {
 impl std::error::Error for InfraCause {}
 
 /// The infra cause's first line, when `err` is (or was raised through Lua as) `prova.infra`'s error:
-/// found by its type down the error's own chain, never in its text.
-pub(crate) fn infra_cause(err: &mlua::Error) -> Option<String> {
+/// found by its type down the error's own chain, never in its text, with its kind when it named one.
+pub(crate) fn infra_cause(err: &mlua::Error) -> Option<crate::ledger::Infra> {
     match err {
-        mlua::Error::ExternalError(e) => {
-            e.downcast_ref::<InfraCause>().map(|c| c.0.lines().next().unwrap_or_default().trim().to_owned())
-        }
+        mlua::Error::ExternalError(e) => e.downcast_ref::<InfraCause>().map(|c| crate::ledger::Infra {
+            line: c.0.lines().next().unwrap_or_default().trim().to_owned(),
+            kind: c.1.clone(),
+        }),
         mlua::Error::CallbackError { cause, .. } => infra_cause(cause),
         mlua::Error::WithContext { cause, .. } => infra_cause(cause),
         _ => None,

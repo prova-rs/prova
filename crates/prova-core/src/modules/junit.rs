@@ -424,7 +424,7 @@ function junit.verify(t, opts)
     local said = #infra .. " deputed case(s) never ran (the deputy could not execute them):\n  "
       .. table.concat(infra, "\n  ", 1, math.min(#infra, 20)) .. (#infra > 20 and ("\n  and " .. (#infra - 20) .. " more") or "")
     if #red == 0 then
-      prova.infra("junit.verify: " .. said)
+      prova.infra("junit.verify: " .. said, { kind = "never-ran" })
     end
     t:log("junit.verify: " .. said)
   end

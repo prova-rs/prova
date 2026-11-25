@@ -64,10 +64,41 @@ pub struct Failure {
     /// enum: a cause a later prova adds must read as itself in an older reader, never fail the parse.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cause: Option<String>,
+    /// An infra failure's named kind, when `prova.infra(msg, { kind = … })` gave one: [`INFRA_NEVER_RAN`] for deputed
+    /// cases their deputy could not execute. Absent for every other failure, and in an older record (readers first).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub infra_kind: Option<String>,
 }
 
 /// `Failure::cause` for a `prova.infra(msg)` failure; the JSON reporter's `cause` spells it the same.
 pub const CAUSE_INFRA: &str = "infra";
+
+/// `Failure::infra_kind` for deputed cases that never ran: their deputy could not execute them (nextest's `execution
+/// failure`). A gate reads it with the run's [`Record::build_dir`] to tell a head whose binaries don't execute from
+/// a build dir taken under the run (L m/34449).
+pub const INFRA_NEVER_RAN: &str = "never-ran";
+
+/// A `prova.infra` cause as it travels from the body to the reporters: its first line and, when given, its kind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Infra {
+    pub line: String,
+    pub kind: Option<String>,
+}
+
+/// The build dir whose `.space-lease` this process holds for its run, set once when the lease is taken: one fact per
+/// run, read into the record and the JSON stream's `run_finished` (L m/34449).
+static BUILD_DIR: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Record the build dir this run holds the lease of. Only the first call counts: a run holds one.
+pub fn set_build_dir(dir: &std::path::Path) {
+    let _ = BUILD_DIR.set(dir.display().to_string());
+}
+
+/// The build dir this run holds the lease of, when it holds one.
+#[must_use]
+pub fn build_dir() -> Option<String> {
+    BUILD_DIR.get().cloned()
+}
 
 /// The most bytes of one failure's message the record keeps.
 pub const FAILURE_MESSAGE_AT_MOST: usize = 4096;
@@ -89,7 +120,7 @@ impl Failure {
             }
             (format!("{FAILURE_CUT_MARK}{}", &message[from..]), Some(from as u64))
         };
-        Failure { message, cut, line, cause: cause.map(str::to_string) }
+        Failure { message, cut, line, cause: cause.map(str::to_string), infra_kind: None }
     }
 }
 
@@ -407,6 +438,10 @@ pub struct Record {
     /// Every flake this run recorded, in the ledger's own shape.
     #[serde(default)]
     pub flakes: Vec<FlakeEvent>,
+    /// The build dir whose `.space-lease` the run held (its cargo build_directory), when it held one: a gate tells two
+    /// runs' build dirs apart by it (L m/34449). Absent in an older record, and when no lease was held.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_dir: Option<String>,
 }
 
 pub mod claims;
@@ -633,6 +668,7 @@ mod tests {
             deputed: Vec::new(),
             deputed_narrowed: false,
             deputed_output_unkept: 0,
+            build_dir: None,
             verdict: String::new(),
             flakes: Vec::new(),
             measurements: Vec::new(),

@@ -893,6 +893,7 @@ end)
                 reminders: vec![],
                 deputed_narrowed: false,
                 deputed_output_unkept: 0,
+                build_dir: None,
                 verdict: String::new(),
                 flakes: Vec::new(),
                 deputed: vec![record::DeputedRow {

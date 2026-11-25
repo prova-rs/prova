@@ -29,7 +29,7 @@ pub(super) struct NodeResult {
     pub(super) promises: Option<String>,
     /// The infra cause's line when the body ended on `prova.infra(msg)`'s typed error, read from the
     /// error's type, never from its text (D m/11771). `None` for every other outcome.
-    pub(super) cause: Option<String>,
+    pub(super) cause: Option<crate::ledger::Infra>,
 }
 
 /// The spec outcome inversion, applied to a promises-flagged leaf's results after it ran
@@ -124,7 +124,7 @@ fn invert_for_falsify(
 
 /// The body's infra cause: its own error when that is prova.infra's, found by type and never read from
 /// a message (D m/11771), and only on a plain failure, since a falsify inversion judges the proof.
-fn infra_of(err: Option<&mlua::Error>, outcome: Outcome, falsifying: bool) -> Option<String> {
+fn infra_of(err: Option<&mlua::Error>, outcome: Outcome, falsifying: bool) -> Option<crate::ledger::Infra> {
     err.and_then(super::setup::infra_cause).filter(|_| outcome == Outcome::Failed && !falsifying)
 }
 
@@ -511,7 +511,7 @@ pub(super) fn emit_finished(reporter: &mut dyn Reporter, summary: &mut Summary, 
             file: result.file.as_deref(),
             line: result.line,
             promise_reason: result.promises.as_deref(),
-            infra: result.cause.as_deref(),
+            infra: result.cause.as_ref(),
         });
     }
 }

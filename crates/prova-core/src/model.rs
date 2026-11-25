@@ -439,7 +439,7 @@ pub enum Event<'a> {
         promise_reason: Option<&'a str>,
         /// The first line of a `prova.infra(msg)` failure: its cause is the environment's, typed by
         /// the error itself, never inferred from a message (E m/11669, D m/11771). `None` otherwise.
-        infra: Option<&'a str>,
+        infra: Option<&'a crate::ledger::Infra>,
     },
     RunFinished {
         summary: &'a Summary,
@@ -606,7 +606,8 @@ pub fn event_to_json(event: &Event) -> serde_json::Value {
             promise_reason,
             infra,
         } => {
-            let cause_line = *infra;
+            let cause_line = infra.map(|i| i.line.as_str());
+            let infra_kind = infra.and_then(|i| i.kind.as_deref());
             json!({
                 "type": "node_finished",
                 "path": path,
@@ -619,10 +620,13 @@ pub fn event_to_json(event: &Event) -> serde_json::Value {
                 "specReason": promise_reason,
                 "cause": cause_line.as_ref().map(|_| "infra"),
                 "cause_line": cause_line,
+                "infra_kind": infra_kind,
             })
         }
         Event::RunFinished { summary } => json!({
             "type": "run_finished",
+            // The build dir whose lease the run held (L m/34449): a gate tells two runs' build dirs apart by it.
+            "build_dir": crate::ledger::build_dir(),
             "passed": summary.passed,
             "failed": summary.failed,
             "skipped": summary.skipped,

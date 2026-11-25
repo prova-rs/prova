@@ -47,6 +47,7 @@ pub(crate) fn hold() -> Held {
             // Said once, with the path (L m/33465): the sweep honours a held lease, so a gate that loses its binaries
             // mid-run reads here whether this run held the dir the sweep deleted, by value.
             eprintln!("prova: holding the build dir's lease at {}", dir.join(LEASE).display());
+            prova_core::ledger::set_build_dir(&dir);
             Held { _file: Some(file) }
         }
         Err(e) => {

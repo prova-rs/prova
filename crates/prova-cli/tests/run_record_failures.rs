@@ -7,6 +7,7 @@ use std::process::Command;
 
 use prova_core::ledger::{
     read_record, Executed, Record, CAUSE_INFRA, FAILURE_CUT_MARK, FAILURE_MESSAGE_AT_MOST,
+    INFRA_NEVER_RAN,
 };
 
 fn write(path: &Path, contents: &str) {
@@ -111,6 +112,10 @@ fn an_infra_failure_is_recorded_with_its_typed_cause() {
     assert_eq!(out.status.code(), Some(1), "{}", said(&out));
     let failure = &record.failures[&leaf(&record, Executed::Failed)];
     assert_eq!(failure.cause.as_deref(), Some(CAUSE_INFRA), "{failure:?}");
+    assert_eq!(
+        failure.infra_kind, None,
+        "an infra of no named kind: {failure:?}"
+    );
     assert!(
         failure.message.contains("the workspace cannot be read"),
         "{failure:?}"
@@ -217,6 +222,11 @@ fn a_case_its_deputy_could_not_execute_is_infra_never_red() {
         .map(|(_, f)| f)
         .unwrap_or_else(|| panic!("{:?}", record.failures));
     assert_eq!(verify.cause.as_deref(), Some(CAUSE_INFRA), "{verify:?}");
+    assert_eq!(
+        verify.infra_kind.as_deref(),
+        Some(INFRA_NEVER_RAN),
+        "its kind, by value (L m/34449): {verify:?}"
+    );
     assert!(
         verify.message.contains("2 deputed case(s) never ran")
             && verify.message.contains("k#gone_one"),
@@ -305,5 +315,39 @@ fn a_run_whose_deputy_could_not_execute_lends_no_flake() {
         record.deputed.iter().all(|d| d.outcome == "passed"),
         "{:?}",
         record.deputed
+    );
+}
+
+/// L m/34449: the record names the build dir whose lease the run held, so a gate tells two runs' build dirs apart by
+/// value; a run with no cargo project holds none and names none.
+#[test]
+fn the_record_names_the_build_dir_whose_lease_the_run_held() {
+    let tmp = Tmp::new("build-dir");
+    package(&tmp, "prova.test(\"one\", function(t) end)\n");
+    let (out, record) = run(&tmp, &[]);
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    assert_eq!(
+        record.build_dir, None,
+        "no cargo project, no lease, none named"
+    );
+    write(
+        &tmp.0.join("Cargo.toml"),
+        "[package]\nname = \"lease-row\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n",
+    );
+    write(&tmp.0.join("src/lib.rs"), "");
+    let target = tmp.0.join("built");
+    // Hermetic (rule 10): the row's build dir is its own, never the host's configured build-dir on its build volume.
+    let at = target.to_str().unwrap();
+    let (out, record) = run(
+        &tmp,
+        &[("CARGO_TARGET_DIR", at), ("CARGO_BUILD_BUILD_DIR", at)],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    let named = record
+        .build_dir
+        .unwrap_or_else(|| panic!("a held lease names its dir: {}", said(&out)));
+    assert!(
+        Path::new(&named).join(".space-lease").is_file() && named.ends_with("built"),
+        "the dir whose lease it held: {named}"
     );
 }

@@ -87,7 +87,7 @@ enum OwnedEvent {
         file: Option<String>,
         line: Option<u32>,
         promise_reason: Option<String>,
-        infra: Option<String>,
+        infra: Option<crate::ledger::Infra>,
     },
 }
 
@@ -128,7 +128,7 @@ impl Reporter for ChannelReporter {
                 file: file.map(str::to_string),
                 line: *line,
                 promise_reason: promise_reason.map(str::to_string),
-                infra: infra.map(str::to_string),
+                infra: infra.cloned(),
             },
             Event::RunStarted | Event::RunFinished { .. } => return,
         };
@@ -452,7 +452,7 @@ fn forward(reporter: &mut dyn Reporter, summary: &mut Summary, event: OwnedEvent
                 file: file.as_deref(),
                 line,
                 promise_reason: promise_reason.as_deref(),
-                infra: infra.as_deref(),
+                infra: infra.as_ref(),
             });
         }
     }

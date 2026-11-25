@@ -872,7 +872,8 @@ impl Reporter for FailureRecorder {
                 prova_core::Outcome::Failed => {
                     row.first_failure = flakes::first_line(*message);
                     let cause = infra.map(|_| prova_core::ledger::CAUSE_INFRA);
-                    let words = prova_core::ledger::Failure::new(message.unwrap_or("failed"), *line, cause);
+                    let mut words = prova_core::ledger::Failure::new(message.unwrap_or("failed"), *line, cause);
+                    words.infra_kind = infra.and_then(|i| i.kind.clone());
                     self.failures.insert(key.clone(), words);
                     self.failed.push(path.to_string());
                     self.executed.insert(key, record::Executed::Failed);

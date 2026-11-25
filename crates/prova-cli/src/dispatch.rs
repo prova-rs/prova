@@ -1100,6 +1100,7 @@ fn store_run_record(
             deputed,
             deputed_narrowed: !config.selection.is_empty(),
             deputed_output_unkept,
+            build_dir: prova_core::ledger::build_dir(),
             measurements: record::measurement_rows(measurements),
             reports: record::report_rows(&drain(&accounts.reports)),
             attached: accounts
