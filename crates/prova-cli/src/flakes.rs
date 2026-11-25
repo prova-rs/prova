@@ -27,6 +27,12 @@ pub(crate) struct History {
 }
 
 impl History {
+    /// Whether a prior record's deputy could not execute some case it adopted (`infra`): that run judged on
+    /// evidence that never ran, so it lends no failure to the flake check.
+    pub(crate) fn never_ran(record: &prova_core::ledger::Record) -> bool {
+        record.deputed.iter().any(|d| d.outcome == "infra")
+    }
+
     /// The deputed failures a prior record lends — only when it was recorded over `tree` by `binary`.
     pub(crate) fn deputed_from(record: &prova_core::ledger::Record, tree: &str, binary: &str) -> BTreeMap<CaseKey, (String, Option<String>)> {
         let mut out = BTreeMap::new();

@@ -43,12 +43,21 @@ pub(super) fn flake_watch(
 /// The failures earlier runs recorded over `tree` by `binary`: the previous journal of this lane (a
 /// leaf's verdicts), and the previous run record (the deputed account, whatever lane wrote it). A
 /// journal whose tree moved during its run belongs to no single tree and lends nothing.
+///
+/// A run whose deputy could not execute a case (an `infra` case: ergon:E/prova-infra-never-a-flake) judged on
+/// evidence that never ran, so it lends nothing: neither its deputed failures nor, when the journal is that same
+/// run's, the leaves that failed through it. Its failures pairing with the next run's passes would call one
+/// vanished build directory a hundred flakes (herald 091bc3e and 1db5a83, 2026-11-24).
 fn flake_history(home: &Home, key: &[String], tree: &str, binary: &str) -> crate::flakes::History {
+    let previous = record::load(home);
+    let unran = previous.as_ref().filter(|r| crate::flakes::History::never_ran(r)).map(|r| r.run_id.clone());
     let leaves = journal::load(home, key)
         .filter(|j| j.header.tree == tree && j.header.binary == binary && j.end != Some(None))
+        .filter(|j| unran.as_deref() != Some(j.header.run_id.as_str()))
         .map(|j| j.failures())
         .unwrap_or_default();
-    let deputed = record::load(home)
+    let deputed = previous
+        .filter(|_| unran.is_none())
         .map(|r| crate::flakes::History::deputed_from(&r, tree, binary))
         .unwrap_or_default();
     crate::flakes::History { leaves, deputed }

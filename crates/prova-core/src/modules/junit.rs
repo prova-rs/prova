@@ -41,6 +41,11 @@ struct Case {
     flaky_from: Option<String>,
 }
 
+/// nextest's `type` on an `<error>` for a case it could not execute (its binary gone or unspawnable): the case
+/// never ran. With nextest's double-spawn on, the same failure is a `<failure>` of exit code 70, so `shell.run`
+/// spawns every argv `cargo nextest run` with `NEXTEST_DOUBLE_SPAWN=0` to keep it typed.
+pub const EXECUTION_FAILURE: &str = "execution failure";
+
 /// The testcase property that marks a verdict carried forward by `junit.merge`.
 const REUSED_FROM: &str = "prova.reused_from";
 /// The testcase property that names the run a `flaky` case failed in, written by `junit.merge`.
@@ -165,6 +170,10 @@ fn apply_child(case: &mut Case, tag: &[u8], message: Option<String>, kind: Optio
         b"failure" | b"error" | b"skipped" => {
             case.outcome = match tag {
                 b"failure" => "failed",
+                // A case whose binary could not be executed never ran: the environment's, by the deputy's own
+                // type (nextest's `execution failure`), never read from text. It is neither red nor green, so it
+                // never pairs with a later pass into a flake (ergon:E/prova-infra-never-a-flake).
+                b"error" if kind.as_deref() == Some(EXECUTION_FAILURE) => "infra",
                 b"error" => "error",
                 _ => "skipped",
             };
@@ -325,6 +334,7 @@ fn report_table(lua: &Lua, files: &[PathBuf], cases: &[Case]) -> mlua::Result<Ta
     report.set("passed", count("passed"))?;
     report.set("failed", count("failed"))?;
     report.set("errors", count("error"))?;
+    report.set("infra", count("infra"))?;
     report.set("skipped", count("skipped"))?;
     report.set("flaky", count("flaky"))?;
 
@@ -388,9 +398,11 @@ function junit.verify(t, opts)
   junit.ingest(report)
   t:expect(report.total, "junit.verify: zero cases parsed from " .. tostring(opts.results)
     .. " — wrong glob, or the deputy ran nothing"):gt(0)
-  local red, flaky = {}, {}
+  local red, flaky, infra = {}, {}, {}
   for _, c in ipairs(report.cases) do
-    if c.outcome == "failed" or c.outcome == "error" then
+    if c.outcome == "infra" then
+      infra[#infra + 1] = c.suite .. "#" .. c.name .. " — " .. (c.message or "its binary could not be executed")
+    elseif c.outcome == "failed" or c.outcome == "error" then
       red[#red + 1] = c.suite .. "#" .. c.name .. " — " .. (c.message or c.outcome)
       if c.output then
         t:log("junit.verify: " .. c.suite .. "#" .. c.name .. ", the tail of its output:\n" .. c.output)
@@ -405,6 +417,17 @@ function junit.verify(t, opts)
     t:log("junit.verify: " .. #flaky .. " FLAKY deputed case(s):\n      " .. table.concat(flaky, "\n      "))
   end
   report.flaky_cases = flaky
+  -- A case that never ran is the environment's: with no red beside it, the leaf fails as infra (by type), so a
+  -- gate holds the run rather than bouncing it, and it never enters the flake ledger. A red beside it stands as red,
+  -- with the infra said: what ran and failed is evidence, what never ran is not.
+  if #infra > 0 then
+    local said = #infra .. " deputed case(s) never ran (the deputy could not execute them):\n  "
+      .. table.concat(infra, "\n  ", 1, math.min(#infra, 20)) .. (#infra > 20 and ("\n  and " .. (#infra - 20) .. " more") or "")
+    if #red == 0 then
+      prova.infra("junit.verify: " .. said)
+    end
+    t:log("junit.verify: " .. said)
+  end
   -- The count's "expected 0, got N" goes on a line of its own: after the last label it read as that
   -- panic's message (substrate 9ce6f90f, E 2026-11-14).
   t:expect(#red, "deputed failures:\n  " .. table.concat(red, "\n  ") .. "\nthe count of deputed failures"):equals(0)
@@ -669,6 +692,8 @@ fn render_account(cases: &[Case]) -> String {
             match c.outcome {
                 "failed" => xml.push_str(&format!("      <failure{message}/>\n")),
                 "error" => xml.push_str(&format!("      <error{message}/>\n")),
+                // Written back as the deputy typed it, so a merged account reads as infra again.
+                "infra" => xml.push_str(&format!("      <error type=\"{EXECUTION_FAILURE}\"{message}/>\n")),
                 "skipped" => xml.push_str("      <skipped/>\n"),
                 // nextest's own spelling of failed-then-passed, so every JUnit reader that knows
                 // retries reads it as a flake rather than a plain pass.
@@ -705,6 +730,25 @@ mod tests {
         let mut cases = Vec::new();
         parse_document(xml, file, &mut cases).expect("parses");
         cases
+    }
+
+    /// A case nextest could not execute is infra by nextest's own type; any other `<error>` stays an error. A merged
+    /// account writes infra back typed, and a re-run pass over it is a pass, never a flake: it never failed, it never
+    /// ran (ergon:E/prova-infra-never-a-flake).
+    #[test]
+    fn a_case_never_executed_is_infra_by_type_and_a_pass_over_it_is_no_flake() {
+        let prior = slice(
+            r#"<testsuites><testsuite name="k"><testcase name="gone" classname="k"><error message="error spawning child process" type="execution failure"/></testcase><testcase name="erred" classname="k"><error message="setup panicked" type="test error"/></testcase></testsuite></testsuites>"#,
+            "p.xml",
+        );
+        let outcomes: Vec<&str> = prior.iter().map(|c| c.outcome).collect();
+        assert_eq!(outcomes, ["infra", "error"]);
+        let kept = merge_accounts(prior, Vec::new(), "run-0");
+        assert_eq!(slice(&kept, "k.xml")[0].outcome, "infra", "{kept}");
+        let prior = slice(&kept, "k.xml");
+        let rerun = slice(r#"<testsuites><testsuite name="k"><testcase name="gone" classname="k"/></testsuite></testsuites>"#, "r.xml");
+        let merged = slice(&merge_accounts(prior, rerun, "run-0"), "m.xml");
+        assert_eq!((merged[0].name.as_str(), merged[0].outcome, merged[0].flaky_from.as_deref()), ("gone", "passed", None));
     }
 
     /// A partitioned conduct's slices are one account to its readers, and a case two slices both

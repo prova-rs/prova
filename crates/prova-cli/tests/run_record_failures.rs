@@ -181,3 +181,129 @@ fn a_flaky_leaf_keeps_the_words_of_the_failure_it_passed_after() {
         "{failure:?}"
     );
 }
+
+/// nextest's account when it could not execute two cases (their binary gone under the run, as a pressure sweep
+/// deleted herald's build directory, 2026-11-24), spawned directly (`NEXTEST_DOUBLE_SPAWN=0`): its own type.
+const NEVER_RAN: &str = r#"<testsuites><testsuite name="k" tests="3" errors="2" failures="0">
+<testcase name="ran" classname="k" time="0.010"></testcase>
+<testcase name="gone_one" classname="k" time="0.000"><error message="error spawning child process" type="execution failure">error spawning child process</error></testcase>
+<testcase name="gone_two" classname="k" time="0.000"><error message="error spawning child process" type="execution failure">error spawning child process</error></testcase>
+</testsuite></testsuites>"#;
+const ALL_GREEN: &str = r#"<testsuites><testsuite name="k" tests="3"><testcase name="ran" classname="k"/><testcase name="gone_one" classname="k"/><testcase name="gone_two" classname="k"/></testsuite></testsuites>"#;
+const ONE_RED: &str = r#"<testsuites><testsuite name="k" tests="2"><testcase name="ran" classname="k"><failure message="assertion failed: it broke"/></testcase><testcase name="gone_one" classname="k" time="0.000"><error message="error spawning child process" type="execution failure"/></testcase></testsuite></testsuites>"#;
+
+/// The account's verifier and a claim row that reads it, as herald's `spoken_for` does: the account chosen by env.
+const DEPUTY_PROOF: &str = r#"local results = os.getenv("PROVA_ROW_ACCOUNT")
+prova.test("the account holds", function(t) junit.verify(t, { results = results }) end)
+prova.test("the claim is spoken for", function(t)
+  for _, c in ipairs(junit.load(results).cases) do
+    if c.name == "gone_one" then t:expect(c.outcome, c.name):equals("passed") end
+  end
+end)
+"#;
+
+/// A case its deputy could not execute never ran: the verifier fails as infra, by the deputy's own type, never red.
+#[test]
+fn a_case_its_deputy_could_not_execute_is_infra_never_red() {
+    let tmp = Tmp::new("never-ran");
+    package(&tmp, DEPUTY_PROOF);
+    write(&tmp.0.join("never.xml"), NEVER_RAN);
+    let (out, record) = run(&tmp, &[("PROVA_ROW_ACCOUNT", "never.xml")]);
+    assert_eq!(out.status.code(), Some(1), "{}", said(&out));
+    let verify = record
+        .failures
+        .iter()
+        .find(|(k, _)| k.contains("the account holds"))
+        .map(|(_, f)| f)
+        .unwrap_or_else(|| panic!("{:?}", record.failures));
+    assert_eq!(verify.cause.as_deref(), Some(CAUSE_INFRA), "{verify:?}");
+    assert!(
+        verify.message.contains("2 deputed case(s) never ran")
+            && verify.message.contains("k#gone_one"),
+        "{verify:?}"
+    );
+    let outcomes: Vec<(&str, &str)> = record
+        .deputed
+        .iter()
+        .map(|d| (d.name.as_str(), d.outcome.as_str()))
+        .collect();
+    assert_eq!(
+        outcomes,
+        [
+            ("ran", "passed"),
+            ("gone_one", "infra"),
+            ("gone_two", "infra")
+        ],
+        "{outcomes:?}"
+    );
+}
+
+/// What ran and failed is evidence: a red beside a case that never ran stays red, with the infra said.
+#[test]
+fn a_red_beside_a_case_that_never_ran_stays_red() {
+    let tmp = Tmp::new("red-beside");
+    package(&tmp, DEPUTY_PROOF);
+    write(&tmp.0.join("red.xml"), ONE_RED);
+    let (out, record) = run(&tmp, &[("PROVA_ROW_ACCOUNT", "red.xml")]);
+    assert_eq!(out.status.code(), Some(1), "{}", said(&out));
+    let verify = record
+        .failures
+        .iter()
+        .find(|(k, _)| k.contains("the account holds"))
+        .map(|(_, f)| f)
+        .unwrap_or_else(|| panic!("{:?}", record.failures));
+    assert_eq!(verify.cause, None, "a red is red: {verify:?}");
+    assert!(verify.message.contains("it broke"), "{verify:?}");
+    assert!(
+        said(&out).contains("1 deputed case(s) never ran"),
+        "{}",
+        said(&out)
+    );
+}
+
+/// The run whose deputy could not execute judged on evidence that never ran, so it lends nothing: the next run on the
+/// same tree passing is green, never a hundred flakes (herald 091bc3e, 1db5a83). Its claim row's red lends nothing
+/// either, since the journal is that same run's.
+#[test]
+fn a_run_whose_deputy_could_not_execute_lends_no_flake() {
+    let tmp = Tmp::new("lends-none");
+    package(&tmp, DEPUTY_PROOF);
+    write(&tmp.0.join("never.xml"), NEVER_RAN);
+    write(&tmp.0.join("green.xml"), ALL_GREEN);
+    let git = |args: &[&str]| {
+        let ok = Command::new("git")
+            .current_dir(&tmp.0)
+            .args(args)
+            .output()
+            .expect("git")
+            .status
+            .success();
+        assert!(ok, "git {args:?}");
+    };
+    write(&tmp.0.join(".gitignore"), "record.json\n.x/\n.prova/\n");
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&[
+        "-c",
+        "user.email=p@example.com",
+        "-c",
+        "user.name=p",
+        "commit",
+        "-qm",
+        "a package",
+    ]);
+    let (out, _) = run(&tmp, &[("PROVA_ROW_ACCOUNT", "never.xml")]);
+    assert_eq!(out.status.code(), Some(1), "{}", said(&out));
+    let (out, record) = run(&tmp, &[("PROVA_ROW_ACCOUNT", "green.xml")]);
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    assert!(
+        !record.executed.values().any(|o| *o == Executed::Flaky),
+        "no leaf flaky: {:?}",
+        record.executed
+    );
+    assert!(
+        record.deputed.iter().all(|d| d.outcome == "passed"),
+        "{:?}",
+        record.deputed
+    );
+}

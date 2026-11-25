@@ -1011,9 +1011,21 @@ impl CommandSpec {
         for (name, value) in crate::isolation::applied() {
             c.env(name, value);
         }
+        // nextest's double-spawn turns a case it cannot execute (its binary gone under the run) into a plain failure
+        // of exit 70; spawned directly, nextest types it `<error type="execution failure">`, which junit reads as
+        // infra, never a red that pairs into a flake (ergon:E/prova-infra-never-a-flake). By argv, so every conduct
+        // gets it, prova.cargo's and a repo's own; a host's setting, and the caller's overlay after this, win.
+        if let Self::Argv(argv) = self {
+            if is_nextest_run(argv) && std::env::var_os(NEXTEST_DOUBLE_SPAWN).is_none() {
+                c.env(NEXTEST_DOUBLE_SPAWN, "0");
+            }
+        }
         c
     }
 }
+
+/// nextest's switch for spawning each test through itself; prova sets it to `0` on a `cargo nextest run`.
+pub const NEXTEST_DOUBLE_SPAWN: &str = "NEXTEST_DOUBLE_SPAWN";
 
 /// Set to `0` to run every cargo build without horai.
 pub const HORAI_ENV: &str = "PROVA_HORAI";
@@ -1357,5 +1369,33 @@ mod horai_tests {
         assert!(!is_nextest_run(&argv("cargo build")));
         assert!(!is_nextest_run(&argv("cargo llvm-cov nextest run")));
         assert!(!is_nextest_run(&argv("horai run -- cargo nextest run")));
+    }
+}
+
+#[cfg(test)]
+mod double_spawn_tests {
+    use super::{CommandSpec, NEXTEST_DOUBLE_SPAWN};
+
+    fn set(argv: &str) -> Option<String> {
+        let spec = CommandSpec::Argv(argv.split_whitespace().map(String::from).collect());
+        let c = spec.build();
+        c.as_std()
+            .get_envs()
+            .find(|(k, _)| *k == NEXTEST_DOUBLE_SPAWN)
+            .and_then(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
+    }
+
+    /// A `cargo nextest run` is spawned without nextest's double-spawn, so a case it cannot execute is typed
+    /// `execution failure` (infra) rather than a plain red of exit 70; no other command is touched.
+    #[test]
+    fn a_nextest_run_is_spawned_without_double_spawn_and_nothing_else_is() {
+        if std::env::var_os(NEXTEST_DOUBLE_SPAWN).is_some() {
+            eprintln!("skipped: this host sets {NEXTEST_DOUBLE_SPAWN}, which wins by design");
+            return;
+        }
+        assert_eq!(set("cargo nextest run --workspace --profile prova").as_deref(), Some("0"));
+        assert_eq!(set("cargo +nightly nextest r").as_deref(), Some("0"));
+        assert_eq!(set("cargo build --workspace"), None);
+        assert_eq!(set("cargo nextest list"), None);
     }
 }

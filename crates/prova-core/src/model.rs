@@ -232,7 +232,8 @@ pub struct DeputedCase {
     /// The suite/class the deputy groups the case under (JUnit's `classname`).
     pub suite: String,
     pub name: String,
-    /// `"passed"` | `"failed"` | `"error"` | `"skipped"` — the deputy's own vocabulary, kept.
+    /// `"passed"` | `"failed"` | `"error"` | `"skipped"` — the deputy's own vocabulary, kept — and `"infra"` for a
+    /// case the deputy could not execute (never ran).
     pub outcome: String,
     pub message: Option<String>,
     pub time_ms: Option<u64>,

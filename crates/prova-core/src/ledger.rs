@@ -155,7 +155,9 @@ pub struct DeputedRow {
     pub name: String,
     /// The deputy's own vocabulary, kept: `"passed"` | `"failed"` | `"error"` | `"skipped"` — plus
     /// `"flaky"`: it passed here, and a failure is recorded for it on the same tree (a retry, the run
-    /// a resume re-ran it from, an earlier run). Never evidence, never red.
+    /// a resume re-ran it from, an earlier run). Never evidence, never red. And `"infra"`: the deputy could not
+    /// execute it (nextest's `execution failure`), so it never ran; never red, and a record holding one lends no
+    /// failure to the flake check. A reader that predates it reads an unknown outcome as neither red nor green.
     pub outcome: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
