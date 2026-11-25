@@ -67,11 +67,17 @@ fn a_read_failure_carries_stderr_the_child_status_and_the_label() {
             Framing::Line,
             Codec::Bytes,
         );
-        // Let the reader task pick the stderr line up before we ask for it.
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        let msg = this.diagnose("recv: timed out", 0, " after 10ms").to_string();
-        assert!(msg.contains("FATAL: config missing"), "stderr is in the message: {msg}");
+        // The reader task picks the stderr line up when it is scheduled, not by a fixed time: a 200 ms sleep went
+        // red under a loaded suite (E, 2026-11-25). So wait for the line by value, bounded, and say the last seen.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        let msg = loop {
+            let msg = this.diagnose("recv: timed out", 0, " after 10ms").to_string();
+            if msg.contains("FATAL: config missing") {
+                break msg;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "stderr never reached the message in 20 s: {msg}");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
         assert!(msg.contains("still running"), "the child's state is named: {msg}");
         assert!(msg.contains("test-child"), "and WHICH process it was: {msg}");
         assert!(msg.contains("0 turns read"), "and how far the conversation got: {msg}");
