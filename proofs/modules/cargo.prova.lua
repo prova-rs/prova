@@ -93,6 +93,44 @@ prova.test("a change conducts exactly the modules it can reach, and the rest are
   expect_run(t, ws, "--uncached conducts everything (the audit)", 3, 0, "--uncached")
 end)
 
+--- A cargo wrapper that rebuilds after nextest exits (Horai's post-check) prints its own output last.
+--- A nextest whose build failed must still be said by nextest's own words: the excerpt ends at the
+--- wrapper's fixed line, and the whole output is kept in a file the error names (E m/38080: substrate
+--- sweep 1795664637094 kept 60 lines of the post-check's warnings and lost nextest's cause).
+prova.test("a failed nextest build is said in its own words, never the wrapper's post-check", {
+  requires = { "cargo", "cargo-nextest", "git", "sh" },
+  covers = "docs/plans/module-proofs.md#2-the-adapter-answers-one-question",
+  timeout = "1800s",
+}, function(t)
+  local ws = t:use(workspace)
+  local real = shell.run({ "sh", "-c", "command -v cargo" }, { check = true }).stdout:gsub("%s+$", "")
+  local path = shell.run({ "sh", "-c", 'printf %s "$PATH"' }, { check = true }).stdout
+  local shims = t:tempdir() .. "/shims"
+  fs.mkdir(shims)
+  fs.write(shims .. "/cargo", table.concat({
+    "#!/bin/sh",
+    '"' .. real .. '" "$@"; c=$?',
+    'if [ "$1" = "nextest" ]; then',
+    "  echo \"horai: post-check begins (nextest's own build failed, exit $c: its output is above)\" >&2",
+    "  i=0; while [ $i -lt 80 ]; do echo \"warning: the post-check's rebuild, line $i\" >&2; i=$((i+1)); done",
+    "fi",
+    "exit $c",
+  }, "\n") .. "\n")
+  shell.run({ "chmod", "+x", shims .. "/cargo" }, { check = true })
+  -- a's tests no longer build: nextest exits 101 and writes no junit.
+  fs.write(ws .. "/a/src/lib.rs", fs.read(ws .. "/a/src/lib.rs")
+    .. '\n#[cfg(test)]\nmod broken {\n#[test] fn words() { let _n: u32 = "words"; }\n}\n')
+  local r = run(ws, "", { PATH = shims .. ":" .. path })
+  t:expect(r.code, "red:\n" .. r.stdout):never():equals(0)
+  local said = r.stdout:match("the last of nextest's own output.-$") or ""
+  t:expect(said, "the error carries nextest's own excerpt:\n" .. r.stdout):never():equals("")
+  t:expect(said, "nextest's own cause is in the excerpt:\n" .. r.stdout):contains("mismatched types")
+  t:expect(said, "the wrapper's post-check is not"):never():contains("the post-check's rebuild, line 79")
+  local kept = ws .. "/target/prova-cargo/nextest-output.log"
+  t:expect(said, "the error names the whole output"):contains(kept)
+  t:expect(fs.read(kept), "the whole output is kept, the post-check too"):contains("the post-check's rebuild, line 79")
+end)
+
 prova.test("a red module is conducted again and never served", {
   requires = { "cargo", "cargo-nextest", "git" },
   covers = "docs/plans/module-proofs.md#3-cache-the-conduct-never-the-proof",

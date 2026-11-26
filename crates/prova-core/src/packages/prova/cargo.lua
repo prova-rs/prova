@@ -45,6 +45,20 @@ local function tail(text, n)
   return table.concat(lines, "\n", math.max(1, #lines - (n or 40) + 1))
 end
 
+-- The line Horai's cargo wrapper prints once nextest has exited and before its own post-check
+-- (horai l-nextest-101-said). What follows it is the wrapper's rebuild, never nextest's: a red's
+-- excerpt ends here, or the post-check's warnings push nextest's own error out of it (E m/38080:
+-- substrate sweep 1795664637094 kept 60 lines of the post-check and lost the cause).
+local POST_CHECK = "horai: post-check begins"
+
+-- `text` up to the wrapper's post-check line, or all of it when no wrapper ran.
+local function own_output(text)
+  text = text or ""
+  local at = text:sub(1, #POST_CHECK) == POST_CHECK and 1 or text:find("\n" .. POST_CHECK, 1, true)
+  if not at then return text end
+  return text:sub(1, at - 1)
+end
+
 -- `a/b/../c` as `a/c`: rustc writes an embedded file as its crate wrote it
 -- (`c/src/../../data/x.txt`), which read raw looks like a file inside `c`.
 local function normalize(path)
@@ -261,13 +275,20 @@ cargo.accounts = prova.fixture("prova.cargo.accounts", Scope.Run, function()
     for _, a in ipairs(settings.args) do argv[#argv + 1] = a end
     local artifact = nextest_store(g and g.workspace_root or prova.root) .. "/" .. settings.profile .. "/" .. settings.junit
     fs.remove_all(artifact)
-    local opts = { cwd = prova.root, merge_stderr = true, idle_timeout = "600s" }
+    local opts = { cwd = prova.root, idle_timeout = "600s" }
     for k, v in pairs(settings.run) do opts[k] = v end
+    -- The two streams apart: a merge appends stderr after all of stdout, so nextest's build error (on
+    -- stderr) could never be told from a wrapper's later lines. Each is cut at the wrapper's line on its own.
+    opts.merge_stderr = false
     local ran = shell.run(argv, opts)
     if not fs.exists(artifact) then
+      -- The whole of it, kept beside the run's accounts: the excerpt below is only nextest's last lines.
+      local whole_output = scratch .. "/nextest-output.log"
+      fs.write(whole_output, "--- stdout\n" .. (ran.stdout or "") .. "\n--- stderr\n" .. (ran.stderr or ""))
+      local own = own_output(ran.stdout) .. "\n" .. own_output(ran.stderr)
       error(string.format("prova.cargo: nextest exited %s and wrote no junit at %s (is junit enabled "
-        .. "for profile %q?); the last of its output:\n%s", tostring(ran.code), artifact,
-        settings.profile, tail(ran.stdout, 60)), 0)
+        .. "for profile %q?); the last of nextest's own output (the whole run's is %s):\n%s",
+        tostring(ran.code), artifact, settings.profile, whole_output, tail(own, 60)), 0)
     end
     local whole = scratch .. "/conducted.xml"
     fs.write(whole, fs.read(artifact))
